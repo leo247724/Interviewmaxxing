@@ -15,6 +15,7 @@ import http.client
 import json
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,7 +55,7 @@ from interviewmaxxing_service import (
     ServiceInteraction,
     make_server,
 )
-from interviewmaxxing_service.candidate import CandidateSetupError
+from interviewmaxxing_service.candidate import CandidateSetupError, CandidateSetupState
 
 ORIGIN = "http://127.0.0.1:4317"
 SITE_URL = "https://jobs.example.test/fictional-co/4012/apply?src=desk"
@@ -74,19 +75,24 @@ class FakeCandidates:
         self.profiles: dict[str, CandidateProfile] = {}
         self.saved_answers: list[SavedAnswer] = []
         self.upserts = 0
+        self.digests: dict[str, str] = {}
 
-    def load_profile(self, candidate_id: str) -> CandidateProfile | None:
-        return self.profiles.get(candidate_id)
-
-    def list_resumes(self, candidate_id: str) -> list[ResumeEntry]:
+    def setup(self, candidate_id: str) -> CandidateSetupState:
+        profile = self.profiles.get(candidate_id)
         with self.lock:
             entries = list(self.resumes.get(candidate_id, {}).values())
-        return sorted(entries, key=lambda e: e.uploaded_at, reverse=True)
+        return CandidateSetupState(
+            identity=profile.identity if profile else None,
+            resumes=entries,
+            selected_resume_id=profile.resume.id if profile else None,
+            complete=profile is not None,
+        )
 
-    def store_resume(
-        self, candidate_id: str, *, filename: str, content: bytes, media_type: str
-    ) -> ResumeEntry:
-        if b"REJECT" in content:
+    def list_resumes(self, candidate_id: str) -> list[ResumeEntry]:
+        return list(self.setup(candidate_id).resumes)
+
+    def store_resume(self, candidate_id: str, *, filename: str, content: bytes) -> ResumeEntry:
+        if b"REJECT" in content or not filename.lower().endswith((".pdf", ".docx", ".txt")):
             raise CandidateSetupError("resumeFile", "The candidate store rejected this file.")
         digest = hashlib.sha256(content).hexdigest()
         rid = f"res_{digest[:16]}_{len(self.resumes.get(candidate_id, {}))}"
@@ -94,9 +100,9 @@ class FakeCandidates:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         entry = ResumeEntry(
-            id=rid, filename=filename, size_bytes=len(content),
-            uploaded_at=datetime.now(UTC), sha256=digest, media_type=media_type,
+            id=rid, filename=filename, size_bytes=len(content), uploaded_at=datetime.now(UTC)
         )
+        self.digests[rid] = digest
         with self.lock:
             self.resumes.setdefault(candidate_id, {})[rid] = entry
         return entry
@@ -107,7 +113,8 @@ class FakeCandidates:
         entry = self.resumes[candidate_id][resume_id]
         resume = ResumeArtifact(
             id=entry.id, path=str(self.root / candidate_id / entry.id), filename=entry.filename,
-            media_type=entry.media_type, sha256=entry.sha256, size_bytes=entry.size_bytes,
+            media_type="application/pdf", sha256=self.digests[entry.id],
+            size_bytes=entry.size_bytes,
         )
         current = self.profiles.get(candidate_id)
         profile = (
@@ -321,7 +328,7 @@ class Client:
 class Harness:
     client: Client
     service: PresentationService
-    candidates: FakeCandidates
+    candidates: Any
     site: FictionalSite
     paths: LocalPaths
     runs: list[ServiceInteraction]
@@ -355,29 +362,34 @@ class Harness:
         )
 
 
-@pytest.fixture
-def harness(
-    isolated_imx_home: LocalPaths, mock_form: ApplicationForm, tmp_path: Path
-) -> Iterator[Harness]:
-    paths = isolated_imx_home
-    paths.ensure()
+def _site(mock_form: ApplicationForm) -> FictionalSite:
     keep = {"gender", "why_us", "privacy", "heard_from"}
     fields = [
         f.model_copy(update={"required": True}) if f.id == "heard_from" else f
         for f in mock_form.fields
         if f.id in keep
     ]
-    site = FictionalSite(form=mock_form.model_copy(update={"url": SITE_URL, "fields": fields}))
+    return FictionalSite(form=mock_form.model_copy(update={"url": SITE_URL, "fields": fields}))
+
+
+@contextmanager
+def serve(
+    paths: LocalPaths, site: FictionalSite, candidates: Any, **config: Any
+) -> Iterator[Harness]:
+    """A running service over ``paths`` with the scripted runner and ``candidates``."""
+    paths.ensure()
     runs: list[ServiceInteraction] = []
 
     def factory(interaction: ServiceInteraction) -> ScriptedRunner:
         runs.append(interaction)
         return ScriptedRunner(paths, site, interaction)
 
-    config = ServiceConfig(paths=paths, allowed_origin=ORIGIN, port=0, reconcile_wait_s=5.0)
-    candidates = FakeCandidates(tmp_path / "private-profile")
+    settings: dict[str, Any] = {"allowed_origin": ORIGIN, "port": 0, "reconcile_wait_s": 5.0}
+    settings.update(config)
     dispatcher = Dispatcher(factory)
-    service = PresentationService(config, candidates=candidates, dispatcher=dispatcher)
+    service = PresentationService(
+        ServiceConfig(paths=paths, **settings), candidates=candidates, dispatcher=dispatcher
+    )
     service.recover()
     server = make_server(service)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
@@ -393,3 +405,18 @@ def harness(
         server.server_close()
         thread.join(5)
         dispatcher.shutdown()
+
+
+@pytest.fixture
+def fictional_site(mock_form: ApplicationForm) -> FictionalSite:
+    return _site(mock_form)
+
+
+@pytest.fixture
+def harness(
+    isolated_imx_home: LocalPaths, fictional_site: FictionalSite, tmp_path: Path
+) -> Iterator[Harness]:
+    with serve(
+        isolated_imx_home, fictional_site, FakeCandidates(tmp_path / "private-profile")
+    ) as h:
+        yield h

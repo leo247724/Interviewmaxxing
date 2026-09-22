@@ -1,8 +1,9 @@
 """Candidate profile and supplied-resume access, and their presentation.
 
 ``CandidateGateway`` is the narrow seam this service needs from the candidate package
-(task C2P). ``LocalCandidateGateway`` adapts ``interviewmaxxing_candidate``; tests use
-an in-memory implementation. The service never writes profile files itself.
+(task C2P). ``integration.LocalCandidateGateway`` adapts
+``interviewmaxxing_candidate.LocalCandidateStore``; tests use an in-memory
+implementation. The service never writes profile or resume files itself.
 
 Identity mapping. The frontend edits seven strings. They map onto the canonical
 ``CandidateIdentity`` without inventing anything:
@@ -21,8 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import ValidationError
@@ -45,9 +45,22 @@ class ResumeEntry:
     id: str
     filename: str
     size_bytes: int
-    uploaded_at: datetime
-    sha256: str
-    media_type: str
+    uploaded_at: datetime | None
+    """None for a resume an imported profile already referenced (never uploaded)."""
+    file_modified_at: datetime | None = None
+    """The file's modification time, shown when there is no upload time."""
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSetupState:
+    """What the setup screen shows (C2P ``candidate_setup``). Before setup, identity and
+    the selected resume are None; nothing is invented to fill them."""
+
+    identity: CandidateIdentity | None
+    resumes: Sequence[ResumeEntry]
+    selected_resume_id: str | None
+    complete: bool
+    """True when the canonical profile loads, i.e. it can be used to apply."""
 
 
 class CandidateSetupError(ValueError):
@@ -61,27 +74,28 @@ class CandidateSetupError(ValueError):
 
 
 class CandidateDataInvalid(RuntimeError):
-    """The stored profile exists but cannot be read."""
+    """The stored profile exists but cannot be read or validated."""
 
 
 @runtime_checkable
 class CandidateGateway(Protocol):
-    def load_profile(self, candidate_id: str) -> CandidateProfile | None:
-        """The canonical profile, or None when the candidate has not been set up.
-        Raises ``CandidateDataInvalid`` when stored data is unreadable."""
+    def setup(self, candidate_id: str) -> CandidateSetupState:
+        """Contact details, supplied resumes and the selected one; works before any
+        profile exists and for profiles that do not load."""
         ...
 
-    def list_resumes(self, candidate_id: str) -> list[ResumeEntry]:
-        """Supplied resumes, newest first, including the profile's current one."""
+    def store_resume(self, candidate_id: str, *, filename: str, content: bytes) -> ResumeEntry:
+        """Store an upload under a generated id. Raises ``CandidateSetupError``
+        (``resumeFile``) when refused; nothing is stored then."""
         ...
-
-    def store_resume(
-        self, candidate_id: str, *, filename: str, content: bytes, media_type: str
-    ) -> ResumeEntry: ...
 
     def upsert_profile(
         self, candidate_id: str, *, identity: CandidateIdentity, resume_id: str
-    ) -> CandidateProfile: ...
+    ) -> CandidateProfile:
+        """Write contact details and select a listed resume, keeping facts, experience,
+        education and saved answers. Raises ``CandidateSetupError`` (``resumeId``) or
+        ``CandidateDataInvalid``."""
+        ...
 
     def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None: ...
 
@@ -178,42 +192,35 @@ def profile_view(identity: CandidateIdentity | None) -> CandidateProfileView:
     )
 
 
+_EPOCH = datetime.fromtimestamp(0, UTC)
+
+
 def resume_view(entry: ResumeEntry) -> ResumeDocumentView:
+    # A resume an imported profile referenced was never uploaded here; its file's own
+    # modification time is the only truthful date to show.
+    shown = entry.uploaded_at or entry.file_modified_at or _EPOCH
     return ResumeDocumentView(
-        id=entry.id, file_name=entry.filename, size_bytes=entry.size_bytes,
-        uploaded_at=iso(entry.uploaded_at),
+        id=entry.id, file_name=entry.filename, size_bytes=entry.size_bytes, uploaded_at=iso(shown)
     )
 
 
-def candidate_view(
-    profile: CandidateProfile | None, resumes: Sequence[ResumeEntry]
-) -> CandidateView:
+def ordered_resumes(resumes: Sequence[ResumeEntry]) -> list[ResumeEntry]:
+    """Newest upload first; a profile's own (never uploaded) resume last."""
+    uploads = sorted(
+        (r for r in resumes if r.uploaded_at is not None),
+        key=lambda r: r.uploaded_at or _EPOCH,
+        reverse=True,
+    )
+    return uploads + [r for r in resumes if r.uploaded_at is None]
+
+
+def candidate_view(state: CandidateSetupState) -> CandidateView:
+    resumes = ordered_resumes(state.resumes)
     ids = {r.id for r in resumes}
-    default = profile.resume.id if profile is not None and profile.resume.id in ids else None
+    selected = state.selected_resume_id
     return CandidateView(
-        profile=profile_view(profile.identity if profile else None),
+        profile=profile_view(state.identity),
         resumes=[resume_view(r) for r in resumes],
-        default_resume_id=default,
+        default_resume_id=selected if selected in ids else None,
     )
 
-
-# --- upload validation ------------------------------------------------------------------
-
-RESUME_MEDIA_TYPES: dict[str, str] = {
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".doc": "application/msword",
-    ".rtf": "application/rtf",
-    ".txt": "text/plain",
-    ".odt": "application/vnd.oasis.opendocument.text",
-}
-
-
-def resume_media_type(filename: str) -> str:
-    """Media type from the file extension; only document types are accepted."""
-    suffix = Path(filename).suffix.lower()
-    media = RESUME_MEDIA_TYPES.get(suffix)
-    if media is None:
-        allowed = ", ".join(sorted(RESUME_MEDIA_TYPES))
-        raise CandidateSetupError("resumeFile", f"Upload the resume as one of: {allowed}.")
-    return media

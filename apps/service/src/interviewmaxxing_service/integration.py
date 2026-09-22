@@ -1,90 +1,97 @@
-"""Adapters to the concrete candidate package (C2P) and I1 runner.
+"""Adapters to the concrete candidate package (C2P) and the I1 runner.
 
-Both are imported lazily so the presentation layer and its tests do not depend on
-their availability. ``LocalCandidateGateway`` and ``runner_factory`` are the only
-places that name their APIs; if a published signature differs, only this module
-changes.
+These are the only places that name their APIs, so a signature change touches only
+this module. Both packages are imported lazily; the presentation layer and its tests
+do not need them.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from interviewmaxxing_core import CandidateIdentity, CandidateProfile, SavedAnswer
+from interviewmaxxing_core import (
+    CandidateIdentity,
+    CandidateNotFound,
+    CandidateProfile,
+    CandidateProfileInvalid,
+    SavedAnswer,
+)
 
-from .candidate import CandidateDataInvalid, CandidateSetupError, ResumeEntry
+from .candidate import CandidateDataInvalid, CandidateSetupError, CandidateSetupState, ResumeEntry
 from .config import ServiceConfig
 from .executor import ApplicationExecutor, ExecutorFactory, ServiceInteraction
 
 
-def _entry(record: Any) -> ResumeEntry:
-    uploaded = getattr(record, "uploaded_at", None) or getattr(record, "stored_at", None)
-    if not isinstance(uploaded, datetime):
-        uploaded = datetime.fromtimestamp(0, UTC)
+def _modified_at(path: str) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime, UTC)
+    except OSError:
+        return None
+
+
+def _entry(stored: Any) -> ResumeEntry:
+    """``interviewmaxxing_candidate.StoredResume`` -> ``ResumeEntry``."""
+    artifact = stored.artifact
     return ResumeEntry(
-        id=str(record.id),
-        filename=str(record.filename),
-        size_bytes=int(record.size_bytes),
-        uploaded_at=uploaded,
-        sha256=str(record.sha256),
-        media_type=str(record.media_type),
+        id=artifact.id,
+        filename=artifact.filename,
+        size_bytes=artifact.size_bytes,
+        uploaded_at=stored.uploaded_at,
+        file_modified_at=None if stored.uploaded_at else _modified_at(artifact.path),
     )
+
+
+def _sentence(message: str) -> str:
+    message = message.strip()
+    return (message[:1].upper() + message[1:]).rstrip(".") + "." if message else message
 
 
 class LocalCandidateGateway:
     """``CandidateGateway`` over ``interviewmaxxing_candidate.LocalCandidateStore``."""
 
     def __init__(self, config: ServiceConfig) -> None:
-        from interviewmaxxing_candidate import LocalCandidateStore  # type: ignore[import-not-found]
+        from interviewmaxxing_candidate import LocalCandidateStore
 
-        self._store: Any = LocalCandidateStore.from_paths(config.paths)
-
-    def _errors(self) -> tuple[type[Exception], ...]:
-        import interviewmaxxing_candidate as candidate
-
-        return tuple(
-            e for e in (
-                getattr(candidate, "ResumeRejected", None),
-                getattr(candidate, "ProfileRejected", None),
-            ) if isinstance(e, type)
+        self._store = LocalCandidateStore.from_paths(
+            config.paths, max_resume_bytes=config.max_upload_bytes
         )
 
-    def load_profile(self, candidate_id: str) -> CandidateProfile | None:
-        from interviewmaxxing_core import CandidateNotFound, CandidateProfileInvalid
+    def setup(self, candidate_id: str) -> CandidateSetupState:
+        try:
+            state = self._store.candidate_setup(candidate_id)
+        except CandidateNotFound as exc:  # the configured id itself is unusable
+            raise CandidateDataInvalid("the configured candidate id is not usable") from exc
+        return CandidateSetupState(
+            identity=state.identity,
+            resumes=[_entry(r) for r in state.resumes],
+            selected_resume_id=state.selected_resume_id,
+            complete=state.complete,
+        )
+
+    def store_resume(self, candidate_id: str, *, filename: str, content: bytes) -> ResumeEntry:
+        from interviewmaxxing_candidate import ResumeRejected
 
         try:
-            profile: CandidateProfile = self._store.load(candidate_id)
-        except CandidateNotFound:
-            return None
-        except CandidateProfileInvalid as exc:
-            raise CandidateDataInvalid(type(exc).__name__) from exc
-        return profile
-
-    def list_resumes(self, candidate_id: str) -> list[ResumeEntry]:
-        return [_entry(r) for r in self._store.list_resumes(candidate_id)]
-
-    def store_resume(
-        self, candidate_id: str, *, filename: str, content: bytes, media_type: str
-    ) -> ResumeEntry:
-        try:
-            record = self._store.store_resume(
-                candidate_id, filename=filename, content=content, media_type=media_type
-            )
-        except self._errors() as exc:
-            raise CandidateSetupError("resumeFile", str(exc)) from exc
-        return _entry(record)
+            stored = self._store.store_resume(candidate_id, filename=filename, content=content)
+        except ResumeRejected as exc:
+            raise CandidateSetupError("resumeFile", _sentence(str(exc))) from exc
+        return _entry(stored)
 
     def upsert_profile(
         self, candidate_id: str, *, identity: CandidateIdentity, resume_id: str
     ) -> CandidateProfile:
+        from interviewmaxxing_candidate import ResumeNotFound
+
         try:
-            profile: CandidateProfile = self._store.upsert_profile(
-                candidate_id, identity=identity, resume_id=resume_id
-            )
-        except self._errors() as exc:
-            raise CandidateSetupError("resumeId", str(exc)) from exc
-        return profile
+            return self._store.upsert_profile(candidate_id, identity=identity, resume_id=resume_id)
+        except ResumeNotFound as exc:
+            raise CandidateSetupError(
+                "resumeId", "Choose one of your saved resumes or upload one."
+            ) from exc
+        except CandidateProfileInvalid as exc:
+            raise CandidateDataInvalid("the saved profile does not validate") from exc
 
     def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None:
         self._store.save_answer(candidate_id, answer)

@@ -46,7 +46,6 @@ from .candidate import (
     CandidateSetupError,
     candidate_view,
     identity_from_input,
-    resume_media_type,
     resume_view,
 )
 from .config import ServiceConfig
@@ -196,10 +195,11 @@ class PresentationService:
 
     def _current_resume_name(self) -> str | None:
         try:
-            profile = self.candidates.load_profile(self.config.candidate_id)
+            state = self.candidates.setup(self.config.candidate_id)
         except Exception:
             return None
-        return profile.resume.filename if profile else None
+        selected = next((r for r in state.resumes if r.id == state.selected_resume_id), None)
+        return selected.filename if selected else None
 
     def _settle(self, application_id: str, timeout: float = 5.0) -> None:
         """Let a run for this application that has stopped for the user finish its
@@ -233,16 +233,7 @@ class PresentationService:
     # --- candidate --------------------------------------------------------------------
 
     def get_candidate(self) -> CandidateView:
-        cid = self.config.candidate_id
-        try:
-            profile = self.candidates.load_profile(cid)
-            resumes = self.candidates.list_resumes(cid)
-        except CandidateDataInvalid as exc:
-            raise errors.conflict(
-                "Your saved profile can't be read. Check the profile files in your "
-                "Interviewmaxxing profile folder."
-            ) from exc
-        return candidate_view(profile, resumes)
+        return candidate_view(self.candidates.setup(self.config.candidate_id))
 
     def upload_resume(self, filename: str, content: bytes) -> ResumeDocumentView:
         name = filename.strip()
@@ -264,9 +255,8 @@ class PresentationService:
                 {"resumeFile": f"Upload a file under {self.config.max_upload_bytes // (1024 * 1024)} MB."},
             )
         try:
-            media_type = resume_media_type(name)
             entry = self.candidates.store_resume(
-                self.config.candidate_id, filename=name, content=content, media_type=media_type
+                self.config.candidate_id, filename=name, content=content
             )
         except CandidateSetupError as exc:
             raise errors.invalid(exc.message, {exc.field: exc.message}) from exc
@@ -280,26 +270,20 @@ class PresentationService:
         url_error = _url_problem(url)
         if url_error:
             raise errors.invalid(url_error, {"applicationUrl": url_error})
-        try:
-            profile = self.candidates.load_profile(cid)
-            resume_ids = {r.id for r in self.candidates.list_resumes(cid)}
-        except CandidateDataInvalid as exc:
-            raise errors.conflict("Your saved profile can't be read.") from exc
-        if body.resume_id not in resume_ids:
+        state = self.candidates.setup(cid)
+        if body.resume_id not in {r.id for r in state.resumes}:
             message = "Choose one of your saved resumes or upload one."
             raise errors.invalid(message, {"resumeId": message})
         try:
             identity = identity_from_input(
-                body.profile,
-                current=profile.identity if profile else None,
-                now=datetime.now(UTC),
+                body.profile, current=state.identity, now=datetime.now(UTC)
             )
         except CandidateSetupError as exc:
             raise errors.invalid(exc.message, {exc.field: exc.message}) from exc
         needs_upsert = (
-            profile is None
-            or identity is not profile.identity
-            or profile.resume.id != body.resume_id
+            not state.complete
+            or identity is not state.identity
+            or state.selected_resume_id != body.resume_id
         )
 
         with self.dispatcher.lock, self._store() as store:
@@ -327,6 +311,11 @@ class PresentationService:
                         )
                     except CandidateSetupError as exc:
                         raise errors.invalid(exc.message, {exc.field: exc.message}) from exc
+                    except CandidateDataInvalid as exc:
+                        raise errors.conflict(
+                            "Your saved profile can't be read, so it wasn't changed. Check "
+                            "profile.json in your Interviewmaxxing profile folder."
+                        ) from exc
                 self.dispatcher.submit(
                     app.id,
                     "apply",

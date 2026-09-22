@@ -4,7 +4,7 @@ Loopback-only HTTP service between the frontend's same-origin gateway (`apps/web
 
 Owner: queue-runtime. Package `interviewmaxxing-service`, import `interviewmaxxing_service`, script `interviewmaxxing-service`. Standard library HTTP only; no hosted platform, queue or extra dependency.
 
-**Status: checkpoint.** The HTTP boundary, view mapping, answer validation, background dispatch and recovery are implemented and tested against the real store (a scripted runner performs the runner recipe's store operations). The real integration waits on **C2P** (candidate resume/profile API) and **I1** (reusable runner). `integration.py` is the only module that names their APIs, and final acceptance against the real runner and browser is still to run. See [Integration needs](#integration-needs).
+**Status: checkpoint.** The HTTP boundary, view mapping, answer validation, background dispatch and recovery are implemented and tested against the real store. A scripted runner performs the runner recipe's store operations. The candidate side runs against the real **C2P** `LocalCandidateStore` (candidate-brain `4d0d421`). The remaining dependency is the **I1** reusable runner: final acceptance against the real runner, Chromium and the localhost mock ATS is still to run. `integration.py` is the only module that names either API. See [Integration needs](#integration-needs).
 
 ## Run
 
@@ -64,7 +64,7 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
   - `X-Imx-Filename: <encodeURIComponent(file.name)>` (percent-encoded UTF-8; the header must be ASCII)
   - body = the file bytes, with `Content-Length`
 
-  Accepted extensions: `.pdf .docx .doc .rtf .txt .odt`. Names with `/`, `\`, control characters or a leading `.` are refused. Errors come back in `fieldErrors.resumeFile`.
+  The candidate store decides what it accepts (`RESUME_UPLOAD_TYPES`: `.pdf .doc .docx .odt .rtf .txt .md`, with a matching content signature). The service first refuses names with `/`, `\`, control characters or a leading `.`. Errors come back in `fieldErrors.resumeFile`.
 - **Evidence.** `href` values in views are `<IMX_SERVICE_PUBLIC_BASE>/applications/{id}/evidence/{evidenceId}`: an opaque id resolved from the canonical evidence record under the artifacts root. Paths are never exposed. Images and plain text are served `inline`. HTML, PDF, SVG and unknown types are served as `attachment`. Every response has `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. The gateway should forward `Content-Type`, `Content-Disposition`, `Content-Security-Policy` and `X-Content-Type-Options` for this route.
 - Query strings are refused everywhere. Personal data travels only in bodies.
 - `recheck` waits up to 25 s for the browser check, below the gateway's 30 s timeout. If the check is still running, the view says so in `uncertain.lastCheckResult`.
@@ -107,16 +107,18 @@ class ApplicationExecutor(Protocol):
     async def reconcile(self, application_id: str) -> ApplyOutcome: ...   # browser recheck, never resubmits
 ```
 
-`CandidateGateway` (what the service needs from C2P):
+`CandidateGateway` (what the service needs from C2P; `integration.LocalCandidateGateway` implements it over `LocalCandidateStore`):
 
 ```python
 class CandidateGateway(Protocol):
-    def load_profile(self, candidate_id: str) -> CandidateProfile | None: ...   # None = not set up
-    def list_resumes(self, candidate_id: str) -> list[ResumeEntry]: ...        # newest first, incl. the profile's resume
-    def store_resume(self, candidate_id: str, *, filename: str, content: bytes, media_type: str) -> ResumeEntry: ...
+    def setup(self, candidate_id: str) -> CandidateSetupState: ...   # candidate_setup(): identity | None, resumes, selected id, complete
+    def store_resume(self, candidate_id: str, *, filename: str, content: bytes) -> ResumeEntry: ...   # ResumeRejected -> resumeFile
     def upsert_profile(self, candidate_id: str, *, identity: CandidateIdentity, resume_id: str) -> CandidateProfile: ...
+        # ResumeNotFound -> resumeId; CandidateProfileInvalid -> 409, nothing written
     def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None: ...
 ```
+
+C2P decides the stored file name (a safe ASCII name) and media type, checks the content signature and applies the size bound (`IMX_SERVICE_MAX_UPLOAD` is passed as `max_resume_bytes`). A resume an imported profile already referenced has no upload time, so `uploadedAt` shows its file's modification time. Resumes are listed newest upload first, and the profile's own resume last.
 
 ## Integration needs
 
@@ -140,7 +142,7 @@ class Runner:
 - `reconcile(application_id)` re-inspects the site for this application in the browser and calls `store.reconcile_submission` only with concrete proof (ACCEPTED signals or definite NOT_SUBMITTED). It never submits. It returns the stored state otherwise.
 - Release the claim before returning. Record evidence under `<artifacts>/<application_id>/` with `EvidenceRef.path`.
 
-**C2P (candidate-brain).** The seam proposed in the task, returning a resume record with `id`, `filename`, `size_bytes`, `sha256`, `media_type` and `uploaded_at` (datetime). Errors for rejected uploads/profile writes should be distinct exception types (the adapter looks for `ResumeRejected`/`ProfileRejected`; any documented names work). `load` keeps raising `CandidateNotFound` before setup. `list_resumes` includes an imported/manual profile's existing resume.
+**C2P (candidate-brain `4d0d421`): integrated.** `tests/service/test_candidate_integration.py` runs the service over the real `LocalCandidateStore`. It covers upload before a profile exists, private permissions, setup and reload, preserved facts/answers/resume on update, resume selection, a reused answer written to `answers.json`, an unreadable profile left untouched and the shared upload bound. It is skipped when the package is not installed.
 
 **Dependencies.** `pyproject.toml` pins `interviewmaxxing-core==0.1.0`, `interviewmaxxing-candidate==0.1.0` and `interviewmaxxing-cli==0.1.0` (workspace sources). No third-party dependency beyond `pydantic` (already in core). The root lock needs regenerating by core/coordinator to include this member.
 
@@ -149,9 +151,11 @@ class Runner:
 ```bash
 uv venv .venv-task --python 3.12
 uv pip install --python .venv-task/bin/python -e packages/core -e apps/cli pytest ruff mypy
-uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/service   # until C2P is in this tree
+uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/service
+# until the coordinator merges C2P here, install it read-only from its worktree:
+uv pip install --python .venv-task/bin/python --no-deps --no-sources ../candidate-brain/packages/candidate
 .venv-task/bin/python -m pytest tests/service
 .venv-task/bin/ruff check apps/service tests/service && .venv-task/bin/mypy --strict apps/service/src
 ```
 
-`tests/service` starts the real server on an ephemeral loopback port over a real SQLite store in a temporary `IMX_HOME`. It uses an in-memory candidate gateway and a scripted runner that performs the runner recipe's store operations against a fictional site. Everything is fictional and local.
+`tests/service` starts the real server on an ephemeral loopback port over a real SQLite store in a temporary `IMX_HOME`. It uses a scripted runner that performs the runner recipe's store operations against a fictional site, with either an in-memory candidate gateway or the real C2P store. Everything is fictional and local.
