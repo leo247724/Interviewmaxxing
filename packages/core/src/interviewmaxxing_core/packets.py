@@ -1,12 +1,26 @@
 """Application packets: per-field answers with provenance, and missing inputs.
 
-A packet answers one ``ApplicationForm`` step. Every answer records where it came
-from. Anything that cannot be answered from verified data is reported as a
+A packet answers one inspected ``ApplicationForm`` step. Every answer records where
+it came from. Anything that cannot be answered from verified data is reported as a
 ``MissingInput`` rather than guessed.
+
+Validation happens against the *actual* inspected field, never against what an
+answer claims about itself:
+
+* ``answer_problems(field, value)`` — value kind, enabled option, label/value
+  agreement, placeholders, duplicates, length, required, file type.
+* ``ApplicationPacket.problems_against(form)`` — the packet belongs to this form
+  step (scope and fingerprint), each answer's semantic type equals the field's, and
+  fields whose actual type needs an explicit answer are only answered from a saved
+  answer or user input.
+* ``provenance_problems(packet, ...)`` — every referenced fact is verified, every
+  saved answer is in scope for the job, user inputs belong to this form step and
+  question, and the resume reference matches the supplied file.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
@@ -14,15 +28,22 @@ from pydantic import Field, model_validator
 
 from ._base import Confidence, Contract, NonEmptyStr, UtcDatetime, new_id, utc_now
 from .artifacts import ArtifactRef
+from .candidate import AnswerScope, CandidateProfile, SavedAnswer, SavedAnswerValue
 from .forms import (
     EXPLICIT_ANSWER_REQUIRED,
     MULTI_CHOICE_CONTROLS,
+    PROFILE_IDENTITY_TYPES,
     ApplicationField,
     ApplicationForm,
     ControlType,
     FieldOption,
+    FormScope,
     SemanticType,
+    normalize_text,
 )
+from .jobs import JobRecord
+
+_SHA256 = r"^[0-9a-f]{64}$"
 
 # --- answer values ---------------------------------------------------------------
 
@@ -33,8 +54,7 @@ class TextValue(Contract):
 
 
 class ChoiceValue(Contract):
-    """A single option, by machine ``value``; ``label`` is kept for display and
-    for verifying that the page still shows the expected text."""
+    """A single option: machine ``value`` plus the visible ``label`` it must match."""
 
     kind: Literal["choice"] = "choice"
     value: str
@@ -74,27 +94,68 @@ _ACCEPTED_VALUES: dict[ControlType, tuple[type[Contract], ...]] = {
 }
 
 
+def _option_problems(field: ApplicationField, value: str, label: str) -> list[str]:
+    option = field.option_for_value(value)
+    if option is None:
+        return [f"{value!r} is not an option of {field.id!r}"]
+    problems = []
+    if option.disabled:
+        problems.append(f"option {value!r} of {field.id!r} is disabled")
+    if not option.value.strip():
+        problems.append(f"{field.id!r}: the empty option {option.label!r} is not an answer")
+    if normalize_text(label) != normalize_text(option.label):
+        problems.append(
+            f"{field.id!r}: label {label!r} does not match option {value!r} ({option.label!r})"
+        )
+    return problems
+
+
+def _accepts(accept: list[str], artifact: ArtifactRef) -> bool:
+    name = artifact.filename.lower()
+    media = artifact.media_type.lower()
+    for raw in accept:
+        rule = raw.strip().lower()
+        if rule.startswith("."):
+            if name.endswith(rule):
+                return True
+        elif rule.endswith("/*"):
+            if media.startswith(rule[:-1]):
+                return True
+        elif media == rule:
+            return True
+    return False
+
+
 def answer_problems(field: ApplicationField, value: AnswerValue) -> list[str]:
     """Why ``value`` cannot be applied to ``field`` (empty when compatible)."""
     accepted = _ACCEPTED_VALUES[field.control_type]
     if not isinstance(value, accepted):
         return [f"{field.control_type} field {field.id!r} cannot take a {value.kind} value"]
     problems: list[str] = []
-    known = set(field.option_values())
-    if isinstance(value, ChoiceValue) and value.value not in known:
-        problems.append(f"{value.value!r} is not an option of {field.id!r}")
-    if isinstance(value, MultiChoiceValue):
-        unknown = [c.value for c in value.choices if c.value not in known]
-        if unknown:
-            problems.append(f"{unknown} are not options of {field.id!r}")
-    if isinstance(value, TextValue) and field.max_length and len(value.text) > field.max_length:
-        problems.append(f"text for {field.id!r} exceeds max_length {field.max_length}")
-    if field.required and isinstance(value, TextValue) and not value.text.strip():
-        problems.append(f"required field {field.id!r} has an empty answer")
-    if field.required and isinstance(value, MultiChoiceValue) and not value.choices:
-        problems.append(f"required field {field.id!r} has no selected options")
-    if field.required and isinstance(value, BooleanValue) and not value.checked:
-        problems.append(f"required checkbox {field.id!r} is left unchecked")
+    if isinstance(value, ChoiceValue):
+        problems.extend(_option_problems(field, value.value, value.label))
+    elif isinstance(value, MultiChoiceValue):
+        values = [c.value for c in value.choices]
+        repeated = sorted({v for v in values if values.count(v) > 1})
+        if repeated:
+            problems.append(f"{field.id!r}: options selected more than once: {repeated}")
+        for choice in value.choices:
+            problems.extend(_option_problems(field, choice.value, choice.label))
+        if field.required and not value.choices:
+            problems.append(f"required field {field.id!r} has no selected options")
+    elif isinstance(value, TextValue):
+        if field.max_length and len(value.text) > field.max_length:
+            problems.append(f"text for {field.id!r} exceeds max_length {field.max_length}")
+        if field.required and not value.text.strip():
+            problems.append(f"required field {field.id!r} has an empty answer")
+    elif isinstance(value, BooleanValue):
+        if field.required and not value.checked:
+            problems.append(f"required checkbox {field.id!r} is left unchecked")
+    elif isinstance(value, FileValue) and field.accept and not _accepts(field.accept, value.artifact):
+        problems.append(
+            f"{value.artifact.filename!r} ({value.artifact.media_type}) is not accepted by "
+            f"{field.id!r} ({', '.join(field.accept)})"
+        )
     return problems
 
 
@@ -103,7 +164,7 @@ def answer_problems(field: ApplicationField, value: AnswerValue) -> list[str]:
 
 class AnswerSource(StrEnum):
     PROFILE_IDENTITY = "PROFILE_IDENTITY"
-    """Verified contact details (``CandidateIdentity``)."""
+    """Verified contact details (``CandidateIdentity``); only ``PROFILE_IDENTITY_TYPES``."""
     CANDIDATE_FACT = "CANDIDATE_FACT"
     SAVED_ANSWER = "SAVED_ANSWER"
     RESUME = "RESUME"
@@ -111,7 +172,7 @@ class AnswerSource(StrEnum):
     USER_INPUT = "USER_INPUT"
     """Answered by the user for this application (missing-input resume)."""
     GENERATED_FROM_FACTS = "GENERATED_FROM_FACTS"
-    """Text drafted from candidate facts; ``reference_ids`` must list those facts."""
+    """Text drafted from verified candidate facts; ``reference_ids`` lists them."""
 
 
 EXPLICIT_SOURCES: frozenset[AnswerSource] = frozenset(
@@ -127,14 +188,7 @@ class Provenance(Contract):
 
     @model_validator(mode="after")
     def _references_required(self) -> Self:
-        needs_refs = {
-            AnswerSource.CANDIDATE_FACT,
-            AnswerSource.SAVED_ANSWER,
-            AnswerSource.GENERATED_FROM_FACTS,
-            AnswerSource.RESUME,
-            AnswerSource.USER_INPUT,
-        }
-        if self.source in needs_refs and not self.reference_ids:
+        if self.source is not AnswerSource.PROFILE_IDENTITY and not self.reference_ids:
             raise ValueError(f"{self.source} provenance must reference its source ids")
         return self
 
@@ -142,12 +196,14 @@ class Provenance(Contract):
 class PacketAnswer(Contract):
     field_id: NonEmptyStr
     semantic_type: SemanticType
+    """Must equal the inspected field's semantic type (checked by ``problems_against``)."""
     value: AnswerValue
     provenance: Provenance
     confidence: Confidence = 1.0
 
     @model_validator(mode="after")
     def _explicit_when_sensitive(self) -> Self:
+        # First line of defence; problems_against repeats this against the actual field.
         if (
             self.semantic_type in EXPLICIT_ANSWER_REQUIRED
             and self.provenance.source not in EXPLICIT_SOURCES
@@ -159,14 +215,14 @@ class PacketAnswer(Contract):
         return self
 
 
-# --- missing input ---------------------------------------------------------------
+# --- missing input and user answers ------------------------------------------------
 
 
 class MissingReason(StrEnum):
     NO_ANSWER = "NO_ANSWER"
     """No verified data answers this required question."""
     EXPLICIT_ANSWER_REQUIRED = "EXPLICIT_ANSWER_REQUIRED"
-    """Consent, protected attribute, eligibility or salary with no saved answer."""
+    """Consent, protected attribute, eligibility or salary with no applicable saved answer."""
     UNCOVERED_ATTESTATION = "UNCOVERED_ATTESTATION"
     """A personal attestation the user has not already made."""
     AMBIGUOUS = "AMBIGUOUS"
@@ -177,11 +233,19 @@ class MissingReason(StrEnum):
 
 
 class MissingInput(Contract):
-    """A question the user must answer (or an action they must take) to continue."""
+    """A question the user must answer (or an action they must take) to continue.
+
+    Field questions carry their form scope (``form_url``/``form_step``) and the
+    question's ``field_fingerprint`` so the answer can be bound to exactly this
+    question. Build them with ``MissingInput.for_field``.
+    """
 
     id: NonEmptyStr = Field(default_factory=lambda: new_id("mi"))
     field_id: str | None
     """None only for ``USER_ACTION`` items that are not tied to a field."""
+    form_url: str | None = None
+    form_step: int | None = Field(default=None, ge=0)
+    field_fingerprint: str | None = Field(default=None, pattern=_SHA256)
     label: str
     reason: MissingReason
     prompt: NonEmptyStr
@@ -195,23 +259,192 @@ class MissingInput(Contract):
 
     @model_validator(mode="after")
     def _field_or_action(self) -> Self:
-        if self.field_id is None and self.reason is not MissingReason.USER_ACTION:
-            raise ValueError("only USER_ACTION missing inputs may omit field_id")
+        if self.field_id is None:
+            if self.reason is not MissingReason.USER_ACTION:
+                raise ValueError("only USER_ACTION missing inputs may omit field_id")
+        elif self.form_url is None or self.form_step is None or self.field_fingerprint is None:
+            raise ValueError("field missing inputs need form_url, form_step and field_fingerprint")
         return self
+
+    @classmethod
+    def for_field(
+        cls,
+        form: ApplicationForm,
+        field: ApplicationField,
+        *,
+        reason: MissingReason,
+        prompt: str,
+        candidates: Sequence[AnswerValue] = (),
+    ) -> MissingInput:
+        return cls(
+            field_id=field.id,
+            form_url=form.url,
+            form_step=form.step,
+            field_fingerprint=field.fingerprint,
+            label=field.label,
+            reason=reason,
+            prompt=prompt,
+            semantic_type=field.semantic_type,
+            control_type=field.control_type,
+            options=field.options,
+            required=field.required,
+            candidates=list(candidates),
+        )
+
+    @property
+    def scope(self) -> FormScope | None:
+        if self.form_url is None or self.form_step is None:
+            return None
+        return FormScope.of(self.form_url, self.form_step)
+
+    def matches(self, form: ApplicationForm) -> bool:
+        """True if this item is the same question on ``form`` (scope + fingerprint)."""
+        if self.field_id is None:
+            return True
+        field = form.find(self.field_id)
+        return (
+            self.scope == form.scope
+            and field is not None
+            and field.fingerprint == self.field_fingerprint
+        )
+
+
+class AnswerReuse(StrEnum):
+    """How far the user allowed an answer to be reused. Default: this application."""
+
+    APPLICATION = "APPLICATION"
+    JOB = "JOB"
+    GLOBAL = "GLOBAL"
 
 
 class UserInput(Contract):
-    """The user's answer to a ``MissingInput``, stored for resume."""
+    """The user's answer to one question on one form step, stored for resume.
+
+    Identity is (form scope, ``field_id``, ``field_fingerprint``). An input applies
+    only to a form whose step has the same scope and whose field with that id asks
+    the same question (``matches``). Build with ``UserInput.answering(missing, ...)``
+    or ``UserInput.for_field(form, field_id, ...)``.
+    """
 
     id: NonEmptyStr = Field(default_factory=lambda: new_id("ui"))
+    form_url: NonEmptyStr
+    form_step: int = Field(ge=0)
     field_id: NonEmptyStr
+    field_fingerprint: str = Field(pattern=_SHA256)
     question: str
     """The field label the user saw when answering."""
     semantic_type: SemanticType = SemanticType.UNKNOWN
     value: AnswerValue
-    save_for_reuse: bool = False
-    """The user asked to keep this as a saved answer for future applications."""
+    reuse: AnswerReuse = AnswerReuse.APPLICATION
+    """APPLICATION keeps the answer local; JOB/GLOBAL ask the candidate package to save
+    it as a ``SavedAnswer`` with that scope (``to_saved_answer``)."""
     provided_at: UtcDatetime = Field(default_factory=utc_now)
+
+    @property
+    def scope(self) -> FormScope:
+        return FormScope.of(self.form_url, self.form_step)
+
+    def matches(self, form: ApplicationForm) -> bool:
+        field = form.find(self.field_id)
+        return (
+            self.scope == form.scope
+            and field is not None
+            and field.fingerprint == self.field_fingerprint
+        )
+
+    @classmethod
+    def answering(
+        cls,
+        missing: MissingInput,
+        value: AnswerValue,
+        *,
+        reuse: AnswerReuse = AnswerReuse.APPLICATION,
+    ) -> UserInput:
+        """Answer a ``MissingInput``; the value is checked against its options."""
+        if (
+            missing.field_id is None
+            or missing.form_url is None
+            or missing.form_step is None
+            or missing.field_fingerprint is None
+        ):
+            raise ValueError("USER_ACTION items are not answered with a UserInput")
+        if missing.control_type is not None:
+            probe = ApplicationField(
+                id=missing.field_id,
+                label=missing.label,
+                control_type=missing.control_type,
+                selector="-",
+                required=missing.required,
+                options=missing.options,
+            )
+            problems = answer_problems(probe, value)
+            if problems:
+                raise ValueError("; ".join(problems))
+        return cls(
+            form_url=missing.form_url,
+            form_step=missing.form_step,
+            field_id=missing.field_id,
+            field_fingerprint=missing.field_fingerprint,
+            question=missing.label,
+            semantic_type=missing.semantic_type,
+            value=value,
+            reuse=reuse,
+        )
+
+    @classmethod
+    def for_field(
+        cls,
+        form: ApplicationForm,
+        field_id: str,
+        value: AnswerValue,
+        *,
+        reuse: AnswerReuse = AnswerReuse.APPLICATION,
+    ) -> UserInput:
+        field = form.field(field_id)
+        problems = answer_problems(field, value)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return cls(
+            form_url=form.url,
+            form_step=form.step,
+            field_id=field.id,
+            field_fingerprint=field.fingerprint,
+            question=field.label,
+            semantic_type=field.semantic_type,
+            value=value,
+            reuse=reuse,
+        )
+
+    def to_saved_answer(
+        self, *, job: JobRecord, answer_id: str | None = None
+    ) -> SavedAnswer | None:
+        """The ``SavedAnswer`` the user asked for, or None for APPLICATION reuse.
+        JOB answers are bound to ``job`` (identity key when known, else its URL)."""
+        if self.reuse is AnswerReuse.APPLICATION:
+            return None
+        value: SavedAnswerValue
+        if isinstance(self.value, TextValue):
+            value = self.value.text
+        elif isinstance(self.value, ChoiceValue):
+            value = self.value.label
+        elif isinstance(self.value, MultiChoiceValue):
+            value = [c.label for c in self.value.choices]
+        elif isinstance(self.value, BooleanValue):
+            value = self.value.checked
+        else:
+            raise ValueError("file answers are not saved for reuse")
+        job_scoped = self.reuse is AnswerReuse.JOB
+        return SavedAnswer(
+            id=answer_id or new_id("sa"),
+            scope=AnswerScope.JOB if job_scoped else AnswerScope.GLOBAL,
+            job_identity_key=job.identity_key if job_scoped else None,
+            job_url=job.normalized_url if job_scoped and not job.identity_key else None,
+            employer=job.company if job_scoped else None,
+            semantic_type=None if self.semantic_type is SemanticType.UNKNOWN else self.semantic_type,
+            question=self.question or self.field_id,
+            value=value,
+            confirmed_at=self.provided_at,
+        )
 
 
 # --- packet ----------------------------------------------------------------------
@@ -224,6 +457,8 @@ class ApplicationPacket(Contract):
     candidate_id: NonEmptyStr
     form_url: NonEmptyStr
     form_step: int = Field(ge=0)
+    form_fingerprint: str = Field(pattern=_SHA256)
+    """``ApplicationForm.fingerprint`` of the inspection this packet answers."""
     resume_variant: NonEmptyStr = "supplied"
     answers: list[PacketAnswer] = Field(default_factory=list)
     missing_inputs: list[MissingInput] = Field(default_factory=list)
@@ -242,6 +477,10 @@ class ApplicationPacket(Contract):
         return self
 
     @property
+    def scope(self) -> FormScope:
+        return FormScope.of(self.form_url, self.form_step)
+
+    @property
     def unresolved_fields(self) -> list[str]:
         return [m.field_id for m in self.missing_inputs if m.field_id is not None]
 
@@ -254,22 +493,105 @@ class ApplicationPacket(Contract):
         return next((a for a in self.answers if a.field_id == field_id), None)
 
     def problems_against(self, form: ApplicationForm) -> list[str]:
-        """Consistency problems between this packet and the form it answers:
-        unknown fields, incompatible values, and required fields neither answered
-        nor reported missing."""
+        """Problems applying this packet to ``form`` as currently inspected. Empty
+        means the packet belongs to this exact form step and every answer is
+        compatible with, and permitted for, the actual field it targets."""
+        if self.scope != form.scope:
+            return [f"packet is for {self.scope.key}, not the current form {form.scope.key}"]
         problems: list[str] = []
-        by_id = {f.id: f for f in form.fields}
+        if self.form_fingerprint != form.fingerprint:
+            problems.append("packet was resolved against a different inspection of this form step")
         for answer in self.answers:
-            field = by_id.get(answer.field_id)
+            field = form.find(answer.field_id)
             if field is None:
                 problems.append(f"answer for unknown field {answer.field_id!r}")
                 continue
+            if answer.semantic_type is not field.semantic_type:
+                problems.append(
+                    f"answer for {field.id!r} claims {answer.semantic_type}, "
+                    f"field is {field.semantic_type}"
+                )
+            if (
+                field.semantic_type in EXPLICIT_ANSWER_REQUIRED
+                and answer.provenance.source not in EXPLICIT_SOURCES
+            ):
+                problems.append(
+                    f"{field.id!r} is {field.semantic_type}; it needs a saved answer or user "
+                    f"input, not {answer.provenance.source}"
+                )
+            if (
+                answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+                and field.semantic_type not in PROFILE_IDENTITY_TYPES
+            ):
+                problems.append(f"{field.id!r} ({field.semantic_type}) is not an identity field")
             problems.extend(answer_problems(field, answer.value))
+        for missing in self.missing_inputs:
+            if missing.field_id is not None and not missing.matches(form):
+                problems.append(f"missing input {missing.field_id!r} is not a question on this form")
         accounted = {a.field_id for a in self.answers} | set(self.unresolved_fields)
         for field in form.required_fields():
             if field.id not in accounted:
                 problems.append(f"required field {field.id!r} is neither answered nor missing")
         return problems
+
+
+def provenance_problems(
+    packet: ApplicationPacket,
+    *,
+    form: ApplicationForm,
+    candidate: CandidateProfile,
+    job: JobRecord,
+    user_inputs: Sequence[UserInput] = (),
+) -> list[str]:
+    """Problems with where the packet's answers came from: unknown or unverified
+    facts, out-of-scope or mistyped saved answers, user inputs for another question,
+    or a resume that is not the supplied one."""
+    problems: list[str] = []
+    if packet.candidate_id != candidate.id:
+        problems.append("packet is for a different candidate")
+    if packet.job_id != job.id:
+        problems.append("packet is for a different job")
+    inputs = {u.id: u for u in user_inputs}
+    for answer in packet.answers:
+        src, refs, fid = answer.provenance.source, answer.provenance.reference_ids, answer.field_id
+        if src in (AnswerSource.CANDIDATE_FACT, AnswerSource.GENERATED_FROM_FACTS):
+            for ref in refs:
+                fact = candidate.find_fact(ref)
+                if fact is None:
+                    problems.append(f"{fid!r} cites unknown fact {ref!r}")
+                elif not fact.is_verified:
+                    problems.append(f"{fid!r} cites unverified fact {ref!r}")
+        elif src is AnswerSource.SAVED_ANSWER:
+            for ref in refs:
+                saved = candidate.find_saved_answer(ref)
+                if saved is None:
+                    problems.append(f"{fid!r} cites unknown saved answer {ref!r}")
+                    continue
+                if not saved.applies_to(job):
+                    problems.append(f"{fid!r} cites saved answer {ref!r} scoped to another job")
+                if saved.semantic_type is not None and saved.semantic_type is not answer.semantic_type:
+                    problems.append(
+                        f"{fid!r} ({answer.semantic_type}) cites saved answer {ref!r} "
+                        f"about {saved.semantic_type}"
+                    )
+        elif src is AnswerSource.RESUME:
+            if refs != [candidate.resume.id]:
+                problems.append(f"{fid!r} must reference the supplied resume {candidate.resume.id!r}")
+            if not (
+                isinstance(answer.value, FileValue)
+                and answer.value.artifact.sha256 == candidate.resume.sha256
+            ):
+                problems.append(f"{fid!r} does not upload the supplied resume file")
+        elif src is AnswerSource.USER_INPUT:
+            for ref in refs:
+                user = inputs.get(ref)
+                if user is None:
+                    problems.append(f"{fid!r} cites unknown user input {ref!r}")
+                elif user.field_id != fid or not user.matches(form):
+                    problems.append(f"{fid!r} cites user input {ref!r} for a different question")
+                elif user.value != answer.value:
+                    problems.append(f"{fid!r} does not use the value the user gave")
+    return problems
 
 
 def is_multi_choice(field: ApplicationField) -> bool:

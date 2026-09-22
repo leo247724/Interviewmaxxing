@@ -18,6 +18,7 @@ from interviewmaxxing_core import (
     ClaimUnavailable,
     EvidenceKind,
     EvidenceRef,
+    FieldOption,
     IdentityConflict,
     InvalidTransition,
     ReconciliationMethod,
@@ -425,7 +426,7 @@ def test_recovery_sweep_marks_orphaned_submissions(store, clock):
 # --- missing input -----------------------------------------------------------------
 
 
-def test_missing_input_pause_and_resume(store, clock, mock_packet):
+def test_missing_input_pause_and_resume(store, clock, mock_packet, mock_form):
     app = store.record_request(CAND, URL).application
     claim = store.claim(app.id, "run-1")
     store.transition(claim, S.INSPECTING)
@@ -440,22 +441,80 @@ def test_missing_input_pause_and_resume(store, clock, mock_packet):
     assert store.record_request(CAND, URL).disposition is RequestDisposition.RESUMABLE
     saved = store.latest_packet(app.id)
     assert saved == packet and saved.unresolved_fields == ["gender", "why_us"]
+    gender, why_us = saved.missing_inputs
     claim = store.claim(app.id, "run-2")
     store.save_user_inputs(claim, [
-        UserInput(field_id="gender", question="Gender (voluntary)",
-                  value=ChoiceValue(value="decline", label="I decline to self-identify")),
-        UserInput(field_id="why_us", question="Why Mock Co?", value=TextValue(text="Draft")),
+        UserInput.answering(gender, ChoiceValue(value="decline",
+                                                label="I decline to self-identify")),
+        UserInput.answering(why_us, TextValue(text="Draft")),
     ])
     clock.advance(seconds=5)
-    store.save_user_inputs(claim, [
-        UserInput(field_id="why_us", question="Why Mock Co?", value=TextValue(text="Final"),
-                  provided_at=clock()),
-    ])
-    inputs = {i.field_id: i.value for i in store.get_user_inputs(app.id)}
+    store.save_user_inputs(claim, [UserInput.answering(why_us, TextValue(text="Final"))])
+    inputs = {i.field_id: i.value for i in store.get_user_inputs(app.id, mock_form)}
     assert inputs["why_us"] == TextValue(text="Final")
     assert inputs["gender"].value == "decline"  # type: ignore[union-attr]
     assert store.transition(claim, S.INSPECTING).state is S.INSPECTING
-    assert "input.received" in _events(store, app.id)
+    received = [e for e in store.list_events(app.id) if e.event == "input.received"]
+    assert received[0].metadata["inputs"][0]["form_scope"] == mock_form.scope.key
+
+
+def test_same_field_id_on_two_steps_keeps_both_answers(store, multistep_forms):
+    step0, step1 = multistep_forms
+    assert step0.field("question_0").fingerprint != step1.field("question_0").fingerprint
+    app = store.record_request(CAND, URL).application
+    claim = store.claim(app.id, "run")
+    relocate = UserInput.for_field(step0, "question_0", ChoiceValue(value="no", label="No"))
+    years = UserInput.for_field(step1, "question_0", TextValue(text="7"))
+    store.save_user_inputs(claim, [relocate])
+    store.save_user_inputs(claim, [years])  # later, same field id, different step
+
+    assert store.get_user_inputs(app.id, step0) == [relocate]
+    assert store.get_user_inputs(app.id, step1) == [years]
+    assert {u.id for u in store.list_user_inputs(app.id)} == {relocate.id, years.id}
+
+
+def test_changed_question_under_a_reused_field_id_is_not_answered(store, multistep_forms):
+    step0, _ = multistep_forms
+    app = store.record_request(CAND, URL).application
+    claim = store.claim(app.id, "run")
+    store.save_user_inputs(
+        claim, [UserInput.for_field(step0, "question_0", ChoiceValue(value="yes", label="Yes"))]
+    )
+    # Re-inspection finds the same id and step asking something else.
+    changed_field = step0.field("question_0").model_copy(
+        update={"label": "Are you willing to relocate to Denver, CO?"}
+    )
+    reinspected = step0.model_copy(update={"fields": [changed_field]})
+    assert store.get_user_inputs(app.id, reinspected) == []
+    # Different options under the same label also count as a different question.
+    reoptioned = step0.model_copy(update={"fields": [step0.field("question_0").model_copy(
+        update={"options": [FieldOption(value="yes", label="Yes, with support"),
+                            FieldOption(value="no", label="No")]})]})
+    assert store.get_user_inputs(app.id, reoptioned) == []
+    # The same question re-inspected (new selector, new timestamp) still matches.
+    moved = step0.model_copy(update={"fields": [step0.field("question_0").model_copy(
+        update={"selector": "#new-id"})]})
+    assert len(store.get_user_inputs(app.id, moved)) == 1
+
+
+def test_v1_database_is_migrated_and_unscoped_inputs_are_ignored(store_path, clock):
+    store_path.parent.mkdir(parents=True)
+    raw = sqlite3.connect(store_path)
+    raw.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+        "INSERT INTO meta VALUES ('schema_version', '1');"
+        "CREATE TABLE user_inputs (id TEXT PRIMARY KEY, application_id TEXT NOT NULL,"
+        " field_id TEXT NOT NULL, provided_at TEXT NOT NULL, body TEXT NOT NULL);"
+        "INSERT INTO user_inputs VALUES ('ui_old', 'app_old', 'question_0', 'x', '{}');"
+    )
+    raw.close()
+    with ApplicationStore.open(store_path, clock=clock) as s:
+        assert s.list_user_inputs("app_old") == []
+    raw = sqlite3.connect(store_path)
+    assert raw.execute("SELECT value FROM meta").fetchone() == ("2",)
+    columns = {r[1] for r in raw.execute("PRAGMA table_info(user_inputs)")}
+    assert {"form_scope", "field_fingerprint"} <= columns
+    raw.close()
 
 
 def test_packet_must_belong_to_claimed_application(store, mock_packet):

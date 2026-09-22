@@ -1,0 +1,16 @@
+{
+  "id": "ui_gender",
+  "form_url": "http://127.0.0.1:0/jobs/mock-4012/apply",
+  "form_step": 0,
+  "field_id": "gender",
+  "field_fingerprint": "db013070c4540ab89aa4cd25f05eb70be07a151ec57c52f2440c33f63d49ebbc",
+  "question": "Gender (voluntary)",
+  "semantic_type": "EEO_GENDER",
+  "value": {
+    "kind": "choice",
+    "value": "decline",
+    "label": "I decline to self-identify"
+  },
+  "reuse": "APPLICATION",
+  "provided_at": "2026-09-22T20:05:00Z"
+}

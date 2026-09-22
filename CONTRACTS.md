@@ -1,6 +1,6 @@
 # Interviewmaxxing contracts
 
-Owner: **core-contracts** (WT-00). Contract version `1` (`interviewmaxxing_core.CONTRACT_VERSION`).
+Owner: **core-contracts** (WT-00). Contract version `2` (`interviewmaxxing_core.CONTRACT_VERSION`). Version 2 is the C1R review revision: form/question identity, choice validity, saved-answer scope and fact verification.
 Scope: the supplied-URL MVP (ARCHITECTURE.md §2 and §17). Discovery, Jev selection, queues and dashboards are out of scope.
 
 Downstream packages **import** these types; they never redeclare, subclass-to-extend, or copy them. A needed change is a request to core (see [Change requests](#change-requests)).
@@ -42,7 +42,15 @@ build-backend = "hatchling.build"
 packages = ["src/interviewmaxxing_<name>"]
 ```
 
-Then `uv sync --all-packages`. The glob membership needs no root edit. `uv.lock` stays core-owned: adding a member or dependency regenerates it, and you may commit that regenerated lockfile on your branch so `scripts/verify.sh` (which uses `--locked`) passes, but list every new third-party dependency in your handoff. At merge the coordinator re-runs `uv lock` instead of merging lockfile text. Do not edit the root `pyproject.toml`, `tests/conftest.py`, or `scripts/verify.sh`; request changes instead. `scripts/verify.sh` lints and type-checks (`mypy --strict`) every workspace member's sources.
+**Root dependencies and `uv.lock` belong to core/coordinator** (WORKTREES.md). Downstream workers must not edit or commit the root `pyproject.toml`, `uv.lock`, `tests/conftest.py` or `scripts/verify.sh`. The glob membership needs no root edit. For targeted checks in your worktree, use a task-local environment without touching the lock:
+
+```bash
+uv venv .venv-task && . .venv-task/bin/activate
+uv pip install -e packages/core -e packages/<name> pytest   # plus your own test deps
+python -m pytest tests/<name>
+```
+
+Report every third-party dependency (name and version range) you need as a dependency request in your handoff. The coordinator/core adds it and regenerates the shared `uv.lock` at integration; `scripts/verify.sh` (locked install, `ruff`, `mypy --strict` over every workspace member, full tests) is then the acceptance check.
 
 ## 2. Core module map
 
@@ -50,11 +58,11 @@ Everything below is re-exported from `interviewmaxxing_core`.
 
 | Module | Contents |
 | --- | --- |
-| `forms` | `SemanticType`, `ControlType`, `FieldOption`, `ApplicationField`, `ApplicationForm`, `EXPLICIT_ANSWER_REQUIRED`, `PROTECTED_ATTRIBUTE_TYPES` |
-| `candidate` | `CandidateProfile`, `CandidateIdentity`, `PostalAddress`, `CandidateFact`, `ResumeArtifact`, `SavedAnswer`, `Experience`, `Education` |
+| `forms` | `SemanticType`, `ControlType`, `FieldOption`, `ApplicationField`, `ApplicationForm`, `FormScope`, `normalize_text`, `EXPLICIT_ANSWER_REQUIRED`, `PROTECTED_ATTRIBUTE_TYPES`, `PROFILE_IDENTITY_TYPES` |
+| `candidate` | `CandidateProfile`, `CandidateIdentity`, `PostalAddress`, `CandidateFact`, `FactVerification`, `VerificationStatus`, `VerificationMethod`, `ResumeArtifact`, `SavedAnswer`, `AnswerScope`, `Experience`, `Education` |
 | `artifacts` | `ArtifactRef`, `EvidenceRef`, `EvidenceKind`, `sha256_file` |
 | `jobs` | `JobIdentityObservation`, `IdentityEvidenceKind`, `JobRecord` |
-| `packets` | `ApplicationPacket`, `PacketAnswer`, `Provenance`, `AnswerSource`, `AnswerValue` (`TextValue`/`ChoiceValue`/`MultiChoiceValue`/`BooleanValue`/`FileValue`), `MissingInput`, `MissingReason`, `UserInput`, `answer_problems` |
+| `packets` | `ApplicationPacket`, `PacketAnswer`, `Provenance`, `AnswerSource`, `AnswerValue` (`TextValue`/`ChoiceValue`/`MultiChoiceValue`/`BooleanValue`/`FileValue`), `MissingInput`, `MissingReason`, `UserInput`, `AnswerReuse`, `answer_problems`, `provenance_problems` |
 | `execution` | `PageInspection`, `PageKind`, `FillResult`, `FieldFillResult`, `FieldFillStatus`, `NavigationResult`, `SubmitActionResult`, `SubmissionObservation`, `SubmissionOutcome`, `NotSubmittedNext`, `SubmissionReconciliation`, `ReconciliationMethod` |
 | `applications` | `ApplicationState`, `TRANSITIONS`, state sets, `ApplicationRequest`, `Application`, `ApplicationEvent`, `Claim`, `SubmissionAttempt`, `Receipt`, `RequestDisposition` |
 | `interfaces` | service `Protocol`s (§6) and `PacketContext`, `BrowserOptions`, `ApplyOutcome` |
@@ -70,10 +78,18 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 `CandidateProfile(id, identity, resume, facts, saved_answers, experience, education)`
 
 - `CandidateIdentity` — verified contact details; `verified_at` is **required**.
-- `CandidateFact(id, key, value, source, confidence, evidence)` — factual claims with source and supporting quotes. Every generated claim must trace to fact ids.
+- `CandidateFact(id, key, value, source, verification, confidence, evidence)`. `verification: FactVerification(status, method, verified_at)` is **required, with no default**:
+  - `VERIFIED` requires `method` (`USER_STATED`: the user entered it; `USER_CONFIRMED`: extracted, e.g. from the resume, then explicitly confirmed by the user) and `verified_at`.
+  - `UNVERIFIED` must carry neither (for example, an extracted fact awaiting confirmation).
+  - `confidence` is extraction confidence only. **It is never proof**: `confidence=1.0` with `UNVERIFIED` is still unverified. `CandidateFact.is_verified`, `CandidateProfile.verified_facts()` and `verified_only()` are the only verification tests.
 - `ResumeArtifact(ArtifactRef)` — the supplied resume: absolute local `path`, `sha256`, `size_bytes`, `media_type`, `variant="supplied"`, optional `extracted_text`. `verify()` rechecks the file digest.
-- `SavedAnswer(id, semantic_type, question, match_phrases, value, confirmed_at)` — answers the user explicitly gave for reuse; `value` is in the user's terms (`"Yes"`, `False`, list of labels). Mapping to a form's option values is the resolver's job, and ambiguity must be reported, not guessed.
-- Experience/education `fact_ids` must reference existing facts (validated).
+- `SavedAnswer(id, scope, job_identity_key, job_url, employer, semantic_type, question, match_phrases, value, confirmed_at)` — an answer the user explicitly saved for reuse. `value` is in the user's terms (`"Yes"`, `False`, list of labels). Mapping it to a form's option values is the resolver's job, and ambiguity must be reported, not guessed. `scope: AnswerScope` is **required**:
+  - `GLOBAL` — explicitly reusable for any job; must not name a job or employer.
+  - `JOB` — only for one job; needs `job_identity_key` (preferred; `JobIdentityObservation.identity_key`) or `job_url` (stored normalized). `employer` is informational only.
+  - `SavedAnswer.applies_to(job)`: GLOBAL always applies. A JOB answer with an identity key applies only to a job bound to that identity (not to an unbound job); otherwise it applies only to the same normalized URL. Nothing is matched by employer name, so an answer about one employer is never promoted to another. Use `CandidateProfile.saved_answers_for(type, job=...)` / `applicable_saved_answers(job)`.
+- Experience/education `fact_ids` must reference existing facts (validated). Answers cite fact ids, never experience/education ids.
+
+**Loading contract (`CandidateLoader`).** The user supplies identity with `verified_at`, the resume file, facts each with an explicit verification, and saved answers each with an explicit scope. The loader validates the schema, checks that the resume exists and its digest matches (or computes it), and checks reference integrity. It never fabricates data, never upgrades `UNVERIFIED` to `VERIFIED`, never sets `verified_at` itself, and never widens a scope. It may return unverified facts (so the user can be asked to confirm them); resolvers must use verified facts only, which `provenance_problems` enforces.
 
 ## 4. Forms, packets and answers
 
@@ -86,6 +102,12 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 - `FieldOption(value, label, selector, disabled)`: **`value` is the machine value** the page submits and the one a packet selects; **`label` is the user-visible text**. Choice controls require options with unique values; non-choice controls must not have options; `accept` is FILE-only.
 - `SemanticType` follows ARCHITECTURE.md §7, plus `FULL_NAME`, `PREFERRED_NAME`, `COUNTRY`, `LOCATION`, `CURRENT_COMPANY`, `CURRENT_TITLE`, `START_DATE`, `RELOCATION`, `REFERRAL_SOURCE`, `EEO_*`, `PRONOUNS`, `CONSENT`, `ATTESTATION`, `CUSTOM_TEXT`, `UNKNOWN`.
 
+**Identity.**
+- `ApplicationForm.scope` → `FormScope(url, step)`, where `url` is normalized with `normalize_application_url` (tracking parameters do not change it) and `.key` is `"<url>|step=<n>"`.
+- `ApplicationField.fingerprint` is the SHA-256 of the question the user sees: the normalized label (`normalize_text`: case-folded, whitespace collapsed), the control type, and sorted `(value, normalized label)` options. Selector, requiredness, help text and inspection time are excluded, so re-inspecting the same question matches but a changed label or options does not.
+- `ApplicationForm.fingerprint` is the SHA-256 of the scope plus every `(field id, field fingerprint)` pair.
+- A question is therefore identified by **(form scope, field id, field fingerprint)**. The same `question_0` on two steps, or a changed question reusing an id, are different questions.
+
 | `ControlType` | Answer value | Notes |
 | --- | --- | --- |
 | `TEXT` | `TextValue(text)` | `input_type` = HTML type (email, tel, url, number, date) |
@@ -95,30 +117,37 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 | `MULTISELECT` | `MultiChoiceValue(choices: list[FieldOption])` | |
 | `CHECKBOX_GROUP` | `MultiChoiceValue(choices)` | several checkboxes, one question |
 | `CHECKBOX` | `BooleanValue(checked)` | a required checkbox must be checked |
-| `FILE` | `FileValue(artifact: ArtifactRef)` | |
+| `FILE` | `FileValue(artifact: ArtifactRef)` | must satisfy `accept` (`.ext`, `type/*` or exact media type) |
 | `UNSUPPORTED` | none | report as `MissingInput(reason=UNSUPPORTED_CONTROL)` |
 
-`answer_problems(field, value) -> list[str]` checks kind/option/length/required compatibility; `ApplicationPacket.problems_against(form)` checks a whole packet (unknown fields, bad values, and required fields neither answered nor reported missing).
+`answer_problems(field, value) -> list[str]` checks a value against the **actual** field. Every chosen option (single or multi) must exist, be **enabled**, have a non-empty value (placeholders such as `value=""` "Select..." are never answers, whether disabled or not), and its answer `label` must equal the option's label after `normalize_text` (so `value="US", label="Canada"` is rejected when `US` is "United States"). Multi-choice values may not repeat, and a required multi-choice needs at least one. Text is checked against `max_length` and must be non-blank when required.
 
 ### Packets (application-packets produces)
 
-`ApplicationPacket(id, application_id, job_id, candidate_id, form_url, form_step, resume_variant, answers, missing_inputs, cover_letter, created_at)`; properties `unresolved_fields`, `is_complete`; `answer_for(field_id)`.
+`ApplicationPacket(id, application_id, job_id, candidate_id, form_url, form_step, form_fingerprint, resume_variant, answers, missing_inputs, cover_letter, created_at)`; properties `scope`, `unresolved_fields`, `is_complete`; `answer_for(field_id)`. `form_fingerprint` is the `ApplicationForm.fingerprint` of the inspection the packet answers.
 
 `PacketAnswer(field_id, semantic_type, value, provenance, confidence)` with `Provenance(source, reference_ids, note)`:
 
-| `AnswerSource` | `reference_ids` |
-| --- | --- |
-| `PROFILE_IDENTITY` | optional |
-| `CANDIDATE_FACT`, `GENERATED_FROM_FACTS` | the fact ids (required) |
-| `SAVED_ANSWER` | saved-answer ids (required) |
-| `RESUME` | the artifact id (required) |
-| `USER_INPUT` | `UserInput.id` (required) |
+| `AnswerSource` | `reference_ids` | Allowed for |
+| --- | --- | --- |
+| `PROFILE_IDENTITY` | optional | only `PROFILE_IDENTITY_TYPES` (name, email, phone, address parts, country, location, LinkedIn/website/GitHub) |
+| `CANDIDATE_FACT`, `GENERATED_FROM_FACTS` | fact ids (required) | facts must exist and be **verified** |
+| `SAVED_ANSWER` | saved-answer ids (required) | must `applies_to(job)`; its `semantic_type`, if set, must equal the answer's |
+| `RESUME` | exactly `[candidate.resume.id]` | the `FileValue` digest must equal the supplied resume's |
+| `USER_INPUT` | `UserInput.id` (required) | same question (scope, field id, fingerprint) and the same value the user gave |
 
-**Never infer.** For `EXPLICIT_ANSWER_REQUIRED` — work authorization, sponsorship, salary, consent, attestation, EEO/protected attributes and pronouns — a `PacketAnswer` is *rejected at construction* unless its source is `SAVED_ANSWER` or `USER_INPUT`. Without one, emit `MissingInput`.
+**Never infer.** Work authorization, sponsorship, salary, consent, attestation, EEO/protected attributes and pronouns (`EXPLICIT_ANSWER_REQUIRED`) may be answered only from `SAVED_ANSWER` or `USER_INPUT`. Without one, emit a `MissingInput`. This is enforced twice: `PacketAnswer` rejects it at construction based on its own `semantic_type`, and `problems_against` rejects it based on the **inspected field's** type, so a mislabelled answer cannot slip through.
 
-`MissingInput(id, field_id, label, reason, prompt, semantic_type, control_type, options, required, candidates)`; `reason` ∈ `NO_ANSWER`, `EXPLICIT_ANSWER_REQUIRED`, `UNCOVERED_ATTESTATION`, `AMBIGUOUS`, `UNSUPPORTED_CONTROL`, `USER_ACTION` (sign-in/CAPTCHA; the only reason that may omit `field_id`).
+Validation, all returning `list[str]` (empty means valid):
+- `packet.problems_against(form)` — the packet's scope equals `form.scope` (else that is the only problem reported) and its `form_fingerprint` equals `form.fingerprint`. Every answer targets an existing field, and **its `semantic_type` equals the field's**. The field's actual type is checked for explicit-answer and identity-source permissions, then `answer_problems`. Every missing input is a question on this form (`MissingInput.matches`), and every required field is answered or reported missing.
+- `provenance_problems(packet, form=, candidate=, job=, user_inputs=)` — the provenance rules in the table above, plus packet candidate and job ids.
+- `PacketContext.problems(packet)` — both of the above plus the application id. **The runner rejects any packet for which this is non-empty.**
 
-`UserInput(id, field_id, question, semantic_type, value, save_for_reuse, provided_at)` — the user's answer, persisted by the store for resume.
+`MissingInput(id, field_id, form_url, form_step, field_fingerprint, label, reason, prompt, semantic_type, control_type, options, required, candidates)`. Build field items with `MissingInput.for_field(form, field, reason=, prompt=)`. A field item must carry `form_url`, `form_step` and `field_fingerprint`; only `USER_ACTION` (sign-in/CAPTCHA) may omit the field and its scope. `reason` ∈ `NO_ANSWER`, `EXPLICIT_ANSWER_REQUIRED`, `UNCOVERED_ATTESTATION`, `AMBIGUOUS`, `UNSUPPORTED_CONTROL`, `USER_ACTION`.
+
+`UserInput(id, form_url, form_step, field_id, field_fingerprint, question, semantic_type, value, reuse, provided_at)` — the user's answer to one question on one step. Create it with `UserInput.answering(missing_input, value)` (checked against the item's options) or `UserInput.for_field(form, field_id, value)` (checked with `answer_problems`). `matches(form)` is true only for the same scope, field id and fingerprint.
+
+`reuse: AnswerReuse` defaults to **`APPLICATION`: the answer stays local to this application.** Only `JOB` or `GLOBAL`, chosen by the user, produce a `SavedAnswer` via `to_saved_answer(job=)`. `JOB` binds it to that job's identity key (or its normalized URL when unbound). The candidate package persists it through `SavedAnswerWriter`. File answers are never saved.
 
 ## 5. Browser results and job identity (browser-ats produces)
 
@@ -140,19 +169,25 @@ All in `interviewmaxxing_core.interfaces`, `@runtime_checkable` `Protocol`s. Bro
 ```python
 class CandidateLoader(Protocol):                               # candidate-brain
     def load(self, candidate_id: str) -> CandidateProfile: ...
-    # raises CandidateNotFound / CandidateProfileInvalid; never fabricates data
+    # raises CandidateNotFound / CandidateProfileInvalid; see "Loading contract" (§3)
+
+class SavedAnswerWriter(Protocol):                             # candidate-brain
+    def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None: ...
+    # persists UserInput.to_saved_answer(...) results with their scope unchanged
 
 @dataclass(frozen=True)
 class PacketContext:
     application: Application
-    job: JobRecord
-    form: ApplicationForm
-    candidate: CandidateProfile
-    user_inputs: Sequence[UserInput] = ()
+    job: JobRecord                 # must be application.job_id
+    form: ApplicationForm          # the current inspection
+    candidate: CandidateProfile    # must be application.candidate_id
+    user_inputs: Sequence[UserInput] = ()   # store.get_user_inputs(app_id, form)
+    # __post_init__ raises ValueError if any user input does not match(form)
+    def problems(self, packet: ApplicationPacket) -> list[str]: ...
 
 class PacketResolver(Protocol):                                # application-packets
     async def resolve(self, context: PacketContext) -> ApplicationPacket: ...
-    # result must satisfy packet.problems_against(context.form) == []
+    # result must satisfy context.problems(packet) == []
 
 @dataclass(frozen=True)
 class BrowserOptions:
@@ -169,6 +204,7 @@ class ApplicationBrowser(Protocol):                            # browser-ats
     async def open(self, url: str) -> PageInspection: ...
     async def inspect(self) -> PageInspection: ...
     async def fill(self, form: ApplicationForm, packet: ApplicationPacket) -> FillResult: ...
+                                                         # raise if packet.problems_against(form)
     async def advance(self) -> NavigationResult: ...     # must refuse a submitting action
     async def submit(self) -> SubmitActionResult: ...    # only after begin_submission
     async def confirm(self) -> SubmissionObservation: ...
@@ -228,7 +264,9 @@ transition(claim, to_state, *, reason=None, failure_reason=None, metadata=None) 
 bind_job_identity(claim, observation: JobIdentityObservation) -> BindResult
     # BindResult(job, application, merged_from_job_id, duplicate_of, moved_application_ids)
 save_packet(claim, packet) -> Application;  latest_packet(app_id);  get_packet(packet_id)
-save_user_inputs(claim, inputs);  get_user_inputs(app_id)        # latest per field
+save_user_inputs(claim, inputs)            # stored under (form scope, field id, fingerprint)
+get_user_inputs(app_id, form) -> list[UserInput]   # latest per question on this form, fingerprint-checked
+list_user_inputs(app_id) -> list[UserInput]        # latest per (scope, field id), all steps; display only
 append_event(claim, event, metadata=None) -> ApplicationEvent    # e.g. form.discovered
 add_evidence(claim, evidence, *, attempt_id=None)
 begin_submission(claim, *, packet_id=None, lease=10min) -> SubmissionAttempt
@@ -247,6 +285,7 @@ Guarantees (each operation is one `BEGIN IMMEDIATE` transaction; WAL, `synchrono
 - **Claims**: mutating operations need the current, unexpired `Claim` (`ClaimLost` otherwise). Terminal transitions release the claim.
 - **Events**: every transition writes exactly one event in the same transaction (`application.<state>`), plus `job.identity_bound`, `job.merged`, `packet.saved`, `input.received`, `evidence.recorded`, `application.request_repeated`. Events are append-only (SQL triggers). Prefixes `application.`, `job.`, `submission.`, `packet.`, `input.` are reserved for the store; `append_event` accepts others (`form.discovered`, `field.unresolved`, `page.completed`, `validation.failed`).
 - **Submission**: `begin_submission` requires `FILLING`, durably writes `SUBMITTING` plus an open attempt and extends the claim ≥ 10 min, **before** the caller clicks. At most one open attempt per application (partial unique index). `SUBMITTED` is only reachable via an `ACCEPTED` observation or reconciliation, writes a `Receipt`, and is final (SQL trigger).
+- **User inputs** are keyed by (form scope, field id). The latest answer per key wins; `get_user_inputs(app_id, form)` returns only answers whose scope is `form.scope` and whose fingerprint still matches the field. An answer to a changed question is never reused (the question is asked again). Schema v2 migrates a v1 database by adding the scope/fingerprint columns; unscoped v1 rows are ignored. The C1 skeleton never wrote inputs or packets.
 - **Crash / uncertainty**: if the owner of a `SUBMITTING` application disappears (claim lapses or is released), the next `claim()` or `recover_interrupted_submissions()` marks it `SUBMISSION_UNKNOWN` (attempt outcome `INTERRUPTED`). `SUBMISSION_UNKNOWN` blocks every retry until `reconcile_submission` records `ACCEPTED` (→ `SUBMITTED`, receipt with `reconciliation_method`) or definite `NOT_SUBMITTED` (→ `FAILED_RETRYABLE`, which may then be retried as a new attempt).
 
 ### Runner recipe (for I1)
@@ -257,9 +296,13 @@ claim = store.claim(r.application.id, owner)
 page = await browser.open(url);  store.transition(claim, INSPECTING)
   if page.kind in USER_ACTION_PAGES: await user.request_action(...); page = await browser.wait_for_user(...)
   if page.job_identity: b = store.bind_job_identity(claim, page.job_identity); stop if b.duplicate_of
-packet = await resolver.resolve(PacketContext(..., user_inputs=store.get_user_inputs(app_id)))
+ctx = PacketContext(app, job, page.form, candidate, store.get_user_inputs(app_id, page.form))
+packet = await resolver.resolve(ctx);  reject unless ctx.problems(packet) == []
 store.save_packet(claim, packet)
-  if not packet.is_complete: store.transition(claim, NEEDS_INPUT); ask; store.save_user_inputs(...); re-inspect
+  if not packet.is_complete: store.transition(claim, NEEDS_INPUT)
+      inputs = [UserInput.answering(m, value) for each missing field item]   # user chooses reuse
+      store.save_user_inputs(claim, inputs); save to_saved_answer(job=) results via SavedAnswerWriter
+      resume: re-inspect the current page, then resolve again
 store.transition(claim, PACKET_READY); store.transition(claim, FILLING); await browser.fill(form, packet)
   more steps: nav = await browser.advance(); store.transition(claim, INSPECTING); loop
 attempt = store.begin_submission(claim, packet_id=packet.id)      # durable BEFORE the click
@@ -283,7 +326,7 @@ Personal data never enters source control. `LocalPaths.from_env()` resolves:
 | `IMX_BROWSER_DIR` | `$IMX_HOME/browser` | persistent browser profile |
 | `IMX_CANDIDATE_ID` | `default` | candidate used by `apply` |
 
-`LocalPaths.ensure()` creates the state, artifacts and browser directories with mode `0700`. In a worktree, develop with `IMX_HOME=$PWD/.imx` (ignored). Tests get an isolated temporary `IMX_HOME` automatically (`tests/conftest.py`). Use ephemeral localhost ports for mock servers.
+`LocalPaths.ensure()` creates the home, state, artifacts and browser directories with mode `0700`. In a worktree, develop with `IMX_HOME=$PWD/.imx` (ignored). Tests get an isolated temporary `IMX_HOME` automatically (`tests/conftest.py`). Use ephemeral localhost ports for mock servers.
 
 ## 9. Fixtures
 
@@ -291,14 +334,16 @@ Personal data never enters source control. `LocalPaths.from_env()` resolves:
 
 | File | Model |
 | --- | --- |
-| `candidate_profile.json` | `CandidateProfile` (+ `resume-avery-example.pdf`) |
-| `application_form.json` | `ApplicationForm` with every operable control type, value≠label options, EEO/consent fields |
-| `application_packet.json` | `ApplicationPacket` answering that form; `gender` and `why_us` missing |
+| `candidate_profile.json` | `CandidateProfile` (+ `resume-avery-example.pdf`): verified facts plus one UNVERIFIED (`fact.team_size`, confidence 0.9); GLOBAL saved answers; JOB answers for Mock Co 4012 (`sa.mock_co_start`) and another employer (`sa.other_co_salary`) |
+| `application_form.json` | `ApplicationForm` with every operable control type, value≠label options, a disabled placeholder, EEO/consent fields |
+| `application_packet.json` | `ApplicationPacket` for that exact form (fingerprint bound); `gender` and `why_us` missing, with question scope |
+| `multistep_form_step0.json` / `multistep_form_step1.json` | two steps of one form, each with an unrelated `question_0` |
+| `user_input_gender.json` | `UserInput` answering the packet's `gender` item (reuse `APPLICATION`) |
 | `job_identity_observation.json` | `JobIdentityObservation` |
 | `submission_observation_accepted.json` / `_unknown.json` | `SubmissionObservation` |
 | `page_inspection_sign_in.json` | `PageInspection` (`SIGN_IN_REQUIRED`) |
 
-Artifact paths in fixtures are relative to the fixtures directory. Shared pytest fixtures (any package's tests): `core_fixture(name)` (JSON with paths resolved), `fictional_candidate`, `mock_form`, `mock_packet`, `mock_identity`, `accepted_observation`, `clock` (manually advanced UTC clock), `store_path`, `store`, `isolated_imx_home` (autouse).
+Artifact paths in fixtures are relative to the fixtures directory. Shared pytest fixtures (any package's tests): `core_fixture(name)` (JSON with paths resolved), `fictional_candidate`, `mock_form`, `mock_packet`, `mock_job` (the identity-bound Mock Co `JobRecord` of the packet), `multistep_forms`, `gender_input`, `mock_identity`, `accepted_observation`, `clock` (manually advanced UTC clock), `store_path`, `store`, `isolated_imx_home` (autouse).
 
 ## 10. Verification
 

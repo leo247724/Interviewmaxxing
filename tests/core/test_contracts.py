@@ -37,6 +37,7 @@ from interviewmaxxing_core import (
     SubmissionOutcome,
     SubmissionReconciliation,
     TextValue,
+    UserInput,
     answer_problems,
 )
 from interviewmaxxing_core import applications as applications_mod
@@ -55,6 +56,9 @@ FIXTURE_MODELS = {
     "submission_observation_accepted.json": SubmissionObservation,
     "submission_observation_unknown.json": SubmissionObservation,
     "page_inspection_sign_in.json": PageInspection,
+    "multistep_form_step0.json": ApplicationForm,
+    "multistep_form_step1.json": ApplicationForm,
+    "user_input_gender.json": UserInput,
 }
 
 
@@ -230,11 +234,12 @@ def test_missing_input_needs_field_unless_user_action():
 # --- candidate --------------------------------------------------------------------
 
 
-def test_fictional_candidate_resume_is_verifiable(fictional_candidate):
+def test_fictional_candidate_resume_is_verifiable(fictional_candidate, mock_job):
     assert Path(fictional_candidate.resume.path).is_absolute()
     assert fictional_candidate.resume.verify()
     assert fictional_candidate.identity.full_name == "Avery Example"
-    assert [a.id for a in fictional_candidate.saved_answers_for(SemanticType.SPONSORSHIP)] == [
+    assert [a.id for a in fictional_candidate.saved_answers_for(SemanticType.SPONSORSHIP,
+                                                                     job=mock_job)] == [
         "sa.sponsorship"
     ]
 

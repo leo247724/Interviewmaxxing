@@ -3,16 +3,35 @@
 The browser package produces these from a live page; the packet package answers
 them. Answers target ``ApplicationField.id`` and option ``value``s, never raw DOM
 selectors or visible labels (ARCHITECTURE.md section 7).
+
+Identity. A form step is identified by its ``FormScope`` (normalized URL + step) and
+its ``ApplicationForm.fingerprint``. A question is identified by its scope, its
+``field_id`` and ``ApplicationField.fingerprint`` (normalized label, control type and
+options). A field id reused on another step, or for a changed question, therefore
+never matches an answer given for the original question.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import Field, model_validator
 
 from ._base import Contract, NonEmptyStr, UtcDatetime, utc_now
+from .urls import InvalidApplicationUrl, normalize_application_url
+
+
+def normalize_text(value: str) -> str:
+    """Case-folded text with collapsed whitespace, for comparing visible labels."""
+    return " ".join(value.split()).casefold()
+
+
+def _digest(data: Any) -> str:
+    raw = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 class SemanticType(StrEnum):
@@ -100,6 +119,28 @@ these types are rejected if their provenance is anything else (see
 ``interviewmaxxing_core.packets.PacketAnswer``)."""
 
 
+PROFILE_IDENTITY_TYPES: frozenset[SemanticType] = frozenset(
+    {
+        SemanticType.FIRST_NAME,
+        SemanticType.LAST_NAME,
+        SemanticType.FULL_NAME,
+        SemanticType.PREFERRED_NAME,
+        SemanticType.EMAIL,
+        SemanticType.PHONE,
+        SemanticType.ADDRESS,
+        SemanticType.CITY,
+        SemanticType.STATE,
+        SemanticType.ZIP,
+        SemanticType.COUNTRY,
+        SemanticType.LOCATION,
+        SemanticType.LINKEDIN,
+        SemanticType.WEBSITE,
+        SemanticType.GITHUB,
+    }
+)
+"""The only semantic types a ``PROFILE_IDENTITY``-sourced answer may fill."""
+
+
 class ControlType(StrEnum):
     """How the page renders a field, which determines how the browser operates it."""
 
@@ -172,11 +213,42 @@ class ApplicationField(Contract):
             raise ValueError("accept is only valid for FILE controls")
         return self
 
+    @property
+    def fingerprint(self) -> str:
+        """Identity of the question the user sees: normalized label, control type and
+        options (value and label). Selector, requiredness and help text are excluded."""
+        options = sorted(
+            [o.value, normalize_text(o.label)] for o in self.options or []
+        )
+        return _digest(
+            {"label": normalize_text(self.label), "control": self.control_type.value,
+             "options": options}
+        )
+
     def option_values(self) -> list[str]:
         return [o.value for o in self.options or []]
 
     def option_for_value(self, value: str) -> FieldOption | None:
         return next((o for o in self.options or [] if o.value == value), None)
+
+
+class FormScope(Contract):
+    """Which form step something belongs to: the normalized form URL and step index."""
+
+    url: NonEmptyStr
+    step: int = Field(ge=0)
+
+    @classmethod
+    def of(cls, url: str, step: int) -> FormScope:
+        try:
+            normalized = normalize_application_url(url)
+        except InvalidApplicationUrl:
+            normalized = url.strip()
+        return cls(url=normalized, step=step)
+
+    @property
+    def key(self) -> str:
+        return f"{self.url}|step={self.step}"
 
 
 class ApplicationForm(Contract):
@@ -202,6 +274,22 @@ class ApplicationForm(Contract):
         if dupes:
             raise ValueError(f"duplicate field ids: {dupes}")
         return self
+
+    @property
+    def scope(self) -> FormScope:
+        return FormScope.of(self.url, self.step)
+
+    @property
+    def fingerprint(self) -> str:
+        """Identity of this inspected step: scope plus every field id and question
+        fingerprint. A packet is valid only for the form it was resolved against."""
+        return _digest(
+            {"scope": self.scope.key,
+             "fields": sorted([f.id, f.fingerprint] for f in self.fields)}
+        )
+
+    def find(self, field_id: str) -> ApplicationField | None:
+        return next((f for f in self.fields if f.id == field_id), None)
 
     def field(self, field_id: str) -> ApplicationField:
         for f in self.fields:

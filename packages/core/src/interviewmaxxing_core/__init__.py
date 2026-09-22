@@ -22,14 +22,18 @@ from .applications import (
 )
 from .artifacts import ArtifactRef, EvidenceKind, EvidenceRef, sha256_file
 from .candidate import (
+    AnswerScope,
     CandidateFact,
     CandidateIdentity,
     CandidateProfile,
     Education,
     Experience,
+    FactVerification,
     PostalAddress,
     ResumeArtifact,
     SavedAnswer,
+    VerificationMethod,
+    VerificationStatus,
 )
 from .config import LocalPaths
 from .errors import (
@@ -58,12 +62,15 @@ from .execution import (
 )
 from .forms import (
     EXPLICIT_ANSWER_REQUIRED,
+    PROFILE_IDENTITY_TYPES,
     PROTECTED_ATTRIBUTE_TYPES,
     ApplicationField,
     ApplicationForm,
     ControlType,
     FieldOption,
+    FormScope,
     SemanticType,
+    normalize_text,
 )
 from .interfaces import (
     ApplicationBrowser,
@@ -77,10 +84,12 @@ from .interfaces import (
     CandidateProfileInvalid,
     PacketContext,
     PacketResolver,
+    SavedAnswerWriter,
     UserInteraction,
 )
 from .jobs import IdentityEvidenceKind, JobIdentityObservation, JobRecord
 from .packets import (
+    AnswerReuse,
     AnswerSource,
     AnswerValue,
     ApplicationPacket,
@@ -95,6 +104,7 @@ from .packets import (
     TextValue,
     UserInput,
     answer_problems,
+    provenance_problems,
 )
 from .store import ApplicationStore, BindResult, RequestResult
 from .urls import InvalidApplicationUrl, normalize_application_url
@@ -103,12 +113,15 @@ __all__ = [
     "CONTRACT_VERSION",
     "EXPLICIT_ANSWER_REQUIRED",
     "PRE_SUBMISSION_STATES",
+    "PROFILE_IDENTITY_TYPES",
     "PROTECTED_ATTRIBUTE_TYPES",
     "SUBMISSION_BLOCKING_STATES",
     "TERMINAL_STATES",
     "TRANSITIONS",
     "USER_ACTION_PAGES",
     "ATSAdapter",
+    "AnswerReuse",
+    "AnswerScope",
     "AnswerSource",
     "AnswerValue",
     "Application",
@@ -143,11 +156,13 @@ __all__ = [
     "EvidenceKind",
     "EvidenceRef",
     "Experience",
+    "FactVerification",
     "FieldFillResult",
     "FieldFillStatus",
     "FieldOption",
     "FileValue",
     "FillResult",
+    "FormScope",
     "IdentityConflict",
     "IdentityEvidenceKind",
     "InvalidApplicationUrl",
@@ -174,6 +189,7 @@ __all__ = [
     "RequestResult",
     "ResumeArtifact",
     "SavedAnswer",
+    "SavedAnswerWriter",
     "SemanticType",
     "StoreError",
     "SubmissionAttempt",
@@ -185,10 +201,14 @@ __all__ = [
     "TextValue",
     "UserInput",
     "UserInteraction",
+    "VerificationMethod",
+    "VerificationStatus",
     "answer_problems",
     "can_transition",
     "new_id",
     "normalize_application_url",
+    "normalize_text",
+    "provenance_problems",
     "sha256_file",
     "utc_now",
 ]

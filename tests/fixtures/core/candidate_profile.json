@@ -34,14 +34,26 @@
       "key": "current_title",
       "value": "Paid Media Lead",
       "source": "resume",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_CONFIRMED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
       "confidence": 1.0,
-      "evidence": ["resume line 1: 'Paid Media Lead'"]
+      "evidence": [
+        "resume line 1: 'Paid Media Lead'"
+      ]
     },
     {
       "id": "fact.current_company",
       "key": "current_company",
       "value": "Fictional Widgets Co",
       "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
       "confidence": 1.0,
       "evidence": []
     },
@@ -50,6 +62,11 @@
       "key": "years_experience.paid_media",
       "value": 7,
       "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
       "confidence": 1.0,
       "evidence": []
     },
@@ -58,21 +75,53 @@
       "key": "monthly_paid_media_spend",
       "value": 400000,
       "source": "resume",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_CONFIRMED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
       "confidence": 1.0,
-      "evidence": ["resume: 'managed $400k/month across search and social'"]
+      "evidence": [
+        "resume: 'managed $400k/month across search and social'"
+      ]
+    },
+    {
+      "id": "fact.team_size",
+      "key": "team_size_managed",
+      "value": 12,
+      "source": "resume",
+      "verification": {
+        "status": "UNVERIFIED",
+        "method": null,
+        "verified_at": null
+      },
+      "confidence": 0.9,
+      "evidence": [
+        "resume: 'led a team of 12' (extracted, not yet confirmed)"
+      ]
     }
   ],
   "saved_answers": [
     {
       "id": "sa.work_auth_us",
+      "scope": "GLOBAL",
+      "job_identity_key": null,
+      "job_url": null,
+      "employer": null,
       "semantic_type": "WORK_AUTHORIZATION",
       "question": "Are you legally authorized to work in the United States?",
-      "match_phrases": ["authorized to work in the us"],
+      "match_phrases": [
+        "authorized to work in the us"
+      ],
       "value": "Yes",
       "confirmed_at": "2026-09-01T12:00:00Z"
     },
     {
       "id": "sa.sponsorship",
+      "scope": "GLOBAL",
+      "job_identity_key": null,
+      "job_url": null,
+      "employer": null,
       "semantic_type": "SPONSORSHIP",
       "question": "Will you now or in the future require visa sponsorship?",
       "match_phrases": [],
@@ -81,11 +130,42 @@
     },
     {
       "id": "sa.privacy_consent",
+      "scope": "GLOBAL",
+      "job_identity_key": null,
+      "job_url": null,
+      "employer": null,
       "semantic_type": "CONSENT",
       "question": "I consent to the processing of my data for recruiting purposes",
-      "match_phrases": ["privacy policy", "data processing"],
+      "match_phrases": [
+        "privacy policy",
+        "data processing"
+      ],
       "value": true,
       "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.other_co_salary",
+      "scope": "JOB",
+      "job_identity_key": "ats:mock:other-co:9001",
+      "job_url": null,
+      "employer": "Other Co",
+      "semantic_type": "SALARY_EXPECTATION",
+      "question": "What are your salary expectations for this role at Other Co?",
+      "match_phrases": [],
+      "value": "150000",
+      "confirmed_at": "2026-09-10T12:00:00Z"
+    },
+    {
+      "id": "sa.mock_co_start",
+      "scope": "JOB",
+      "job_identity_key": "ats:mock:mock-co:4012",
+      "job_url": null,
+      "employer": "Mock Co",
+      "semantic_type": "START_DATE",
+      "question": "When could you start at Mock Co?",
+      "match_phrases": [],
+      "value": "2026-11-01",
+      "confirmed_at": "2026-09-10T12:00:00Z"
     }
   ],
   "experience": [
@@ -97,7 +177,11 @@
       "end": null,
       "current": true,
       "summary": null,
-      "fact_ids": ["fact.current_title", "fact.current_company", "fact.monthly_spend"]
+      "fact_ids": [
+        "fact.current_title",
+        "fact.current_company",
+        "fact.monthly_spend"
+      ]
     }
   ],
   "education": [

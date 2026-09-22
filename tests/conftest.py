@@ -22,8 +22,10 @@ from interviewmaxxing_core import (
     ApplicationStore,
     CandidateProfile,
     JobIdentityObservation,
+    JobRecord,
     LocalPaths,
     SubmissionObservation,
+    UserInput,
 )
 
 CORE_FIXTURES = Path(__file__).parent / "fixtures" / "core"
@@ -81,6 +83,38 @@ def mock_form() -> ApplicationForm:
 @pytest.fixture
 def mock_packet() -> ApplicationPacket:
     return ApplicationPacket.model_validate(load_core_fixture("application_packet.json"))
+
+
+@pytest.fixture
+def multistep_forms() -> tuple[ApplicationForm, ApplicationForm]:
+    """Two steps of one application; both name an unrelated field ``question_0``."""
+    return (
+        ApplicationForm.model_validate(load_core_fixture("multistep_form_step0.json")),
+        ApplicationForm.model_validate(load_core_fixture("multistep_form_step1.json")),
+    )
+
+
+@pytest.fixture
+def gender_input() -> UserInput:
+    """The user's answer to the fixture packet's missing ``gender`` question."""
+    return UserInput.model_validate(load_core_fixture("user_input_gender.json"))
+
+
+@pytest.fixture
+def mock_job(mock_packet: ApplicationPacket) -> JobRecord:
+    """The Mock Co job (identity bound) that the fixture packet belongs to."""
+    return JobRecord(
+        id=mock_packet.job_id,
+        application_url="http://127.0.0.1:0/jobs/mock-4012/apply",
+        normalized_url="http://127.0.0.1:0/jobs/mock-4012/apply",
+        identity_key="ats:mock:mock-co:4012",
+        ats_type="mock",
+        external_job_id="4012",
+        company="Mock Co",
+        title="Senior Paid Media Manager",
+        created_at="2026-09-22T20:00:00Z",
+        updated_at="2026-09-22T20:00:00Z",
+    )
 
 
 @pytest.fixture

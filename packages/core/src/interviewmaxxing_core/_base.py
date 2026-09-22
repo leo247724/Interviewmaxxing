@@ -15,7 +15,7 @@ from pydantic import (
     StringConstraints,
 )
 
-CONTRACT_VERSION = "1"
+CONTRACT_VERSION = "2"
 """Bumped whenever a published contract changes incompatibly."""
 
 

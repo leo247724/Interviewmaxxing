@@ -1,6 +1,6 @@
 """Public service interfaces implemented by the downstream packages.
 
-* ``CandidateLoader``         — packages/candidate   (candidate-brain)
+* ``CandidateLoader``, ``SavedAnswerWriter`` — packages/candidate (candidate-brain)
 * ``PacketResolver``          — packages/generation  (application-packets)
 * ``BrowserSessionFactory`` / ``ApplicationBrowser`` / ``ATSAdapter``
                               — packages/browser, packages/ats (browser-ats)
@@ -23,7 +23,7 @@ from pydantic import Field
 
 from ._base import Contract, NonEmptyStr
 from .applications import Application, ApplicationState, Receipt
-from .candidate import CandidateProfile
+from .candidate import CandidateProfile, SavedAnswer
 from .execution import (
     FillResult,
     NavigationResult,
@@ -33,7 +33,7 @@ from .execution import (
 )
 from .forms import ApplicationForm
 from .jobs import JobRecord
-from .packets import ApplicationPacket, MissingInput, UserInput
+from .packets import ApplicationPacket, MissingInput, UserInput, provenance_problems
 
 # --- candidate ---------------------------------------------------------------------
 
@@ -49,9 +49,25 @@ class CandidateProfileInvalid(ValueError):
 @runtime_checkable
 class CandidateLoader(Protocol):
     def load(self, candidate_id: str) -> CandidateProfile:
-        """Load the verified profile, resume reference and saved answers from the
-        local profile directory. Raises ``CandidateNotFound`` or
-        ``CandidateProfileInvalid``; never fabricates missing data."""
+        """Load the profile, resume reference and saved answers from the local profile
+        directory (``LocalPaths.profile_dir``).
+
+        The user supplies: identity with ``verified_at``; the resume file; facts, each
+        with an explicit ``FactVerification``; saved answers, each with an explicit
+        ``AnswerScope``. The loader verifies: schema validity; that the resume exists
+        and its digest matches (or computes it); reference integrity. It never
+        fabricates data, never upgrades an UNVERIFIED fact, and never widens an
+        answer's scope. It may return unverified facts (flagged); consumers use only
+        verified ones (``CandidateProfile.verified_facts``/``verified_only``).
+        Raises ``CandidateNotFound`` or ``CandidateProfileInvalid``."""
+        ...
+
+
+@runtime_checkable
+class SavedAnswerWriter(Protocol):
+    def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None:
+        """Persist an answer the user chose to reuse (``UserInput.to_saved_answer``),
+        keeping its scope exactly as given."""
         ...
 
 
@@ -60,13 +76,40 @@ class CandidateLoader(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class PacketContext:
-    """Everything the resolver may use. Nothing else is a valid source of answers."""
+    """Everything the resolver may use. Nothing else is a valid source of answers.
+
+    Construction fails unless every user input belongs to this form step and
+    question (``UserInput.matches``); fetch them with
+    ``ApplicationStore.get_user_inputs(application_id, form)``.
+    """
 
     application: Application
     job: JobRecord
     form: ApplicationForm
     candidate: CandidateProfile
     user_inputs: Sequence[UserInput] = ()
+
+    def __post_init__(self) -> None:
+        if self.job.id != self.application.job_id:
+            raise ValueError("job does not belong to the application")
+        if self.candidate.id != self.application.candidate_id:
+            raise ValueError("candidate does not belong to the application")
+        foreign = [u.field_id for u in self.user_inputs if not u.matches(self.form)]
+        if foreign:
+            raise ValueError(f"user inputs for another form step or question: {foreign}")
+
+    def problems(self, packet: ApplicationPacket) -> list[str]:
+        """Everything wrong with ``packet`` as an answer to this context: form
+        identity, field compatibility and permissions, and provenance."""
+        problems = []
+        if packet.application_id != self.application.id:
+            problems.append("packet is for a different application")
+        problems += packet.problems_against(self.form)
+        problems += provenance_problems(
+            packet, form=self.form, candidate=self.candidate, job=self.job,
+            user_inputs=self.user_inputs,
+        )
+        return problems
 
 
 @runtime_checkable
@@ -76,8 +119,10 @@ class PacketResolver(Protocol):
 
         Every answer carries provenance. Required questions without a grounded answer
         (and every ``EXPLICIT_ANSWER_REQUIRED`` type lacking a saved answer or user
-        input) are returned as ``missing_inputs``; they are never guessed. The
-        returned packet must satisfy ``packet.problems_against(context.form) == []``.
+        input) are returned as ``missing_inputs`` built with
+        ``MissingInput.for_field``; they are never guessed. Only verified facts and
+        saved answers that apply to ``context.job`` may be used. The returned packet
+        must satisfy ``context.problems(packet) == []``.
         """
         ...
 
@@ -114,7 +159,8 @@ class ApplicationBrowser(Protocol):
 
     async def fill(self, form: ApplicationForm, packet: ApplicationPacket) -> FillResult:
         """Fill and upload every answered field on the current step, then read the
-        values back. Must not click next or submit."""
+        values back. Must not click next or submit. Must refuse (raise ValueError)
+        when ``packet.problems_against(form)`` is not empty."""
         ...
 
     async def advance(self) -> NavigationResult:

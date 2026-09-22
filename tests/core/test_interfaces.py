@@ -78,6 +78,8 @@ class FakeResolver:
         return self.base.model_copy(update={
             "id": new_id("pkt"), "application_id": context.application.id, "job_id": context.job.id,
             "candidate_id": context.candidate.id, "answers": answers, "missing_inputs": missing,
+            "form_url": context.form.url, "form_step": context.form.step,
+            "form_fingerprint": context.form.fingerprint,
         })
 
 
@@ -173,8 +175,9 @@ class MiniRunner:
             assert page.form is not None
             ctx = PacketContext(application=app, job=self.store.get_job(app.job_id),
                                 form=page.form, candidate=candidate,
-                                user_inputs=self.store.get_user_inputs(app_id))
+                                user_inputs=self.store.get_user_inputs(app_id, page.form))
             packet = await self.resolver.resolve(ctx)
+            assert ctx.problems(packet) == []
             self.store.save_packet(claim, packet)
             if not packet.is_complete:
                 self.store.transition(claim, S.NEEDS_INPUT)
@@ -219,11 +222,12 @@ def test_missing_input_then_resume_then_confirmed_submission(
     assert [m.field_id for m in first.missing_inputs] == ["gender", "why_us"]
     assert browser.submits == 0
 
+    gender, why_us = first.missing_inputs
     claim = store.claim(first.application_id, "cli-prompt")
     store.save_user_inputs(claim, [
-        UserInput(field_id="gender", question="Gender (voluntary)", semantic_type="EEO_GENDER",
-                  value=ChoiceValue(value="decline", label="I decline to self-identify")),
-        UserInput(field_id="why_us", question="Why Mock Co?", value=TextValue(text="Because.")),
+        UserInput.answering(gender, ChoiceValue(value="decline",
+                                                label="I decline to self-identify")),
+        UserInput.answering(why_us, TextValue(text="Because.")),
     ])
     store.release(claim)
 

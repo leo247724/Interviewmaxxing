@@ -67,12 +67,13 @@ from .execution import (
     SubmissionOutcome,
     SubmissionReconciliation,
 )
+from .forms import ApplicationForm
 from .jobs import JobIdentityObservation, JobRecord
 from .packets import ApplicationPacket, UserInput
 from .urls import normalize_application_url
 
 S = ApplicationState
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_CLAIM_TTL = timedelta(minutes=5)
 SUBMISSION_LEASE = timedelta(minutes=10)
 RESERVED_EVENT_PREFIXES = ("application.", "job.", "submission.", "packet.", "input.")
@@ -174,7 +175,9 @@ CREATE TABLE IF NOT EXISTS user_inputs (
     application_id TEXT NOT NULL REFERENCES applications(id),
     field_id TEXT NOT NULL,
     provided_at TEXT NOT NULL,
-    body TEXT NOT NULL
+    body TEXT NOT NULL,
+    form_scope TEXT,
+    field_fingerprint TEXT
 );
 
 CREATE TABLE IF NOT EXISTS evidence (
@@ -322,10 +325,26 @@ class ApplicationStore:
             + "COMMIT;"
         )
         row = self._conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-        if int(row["value"]) > SCHEMA_VERSION:
+        version = int(row["value"])
+        if version > SCHEMA_VERSION:
             raise RuntimeError(
-                f"state database schema {row['value']} is newer than this code "
+                f"state database schema {version} is newer than this code "
                 f"({SCHEMA_VERSION}); upgrade interviewmaxxing"
+            )
+        with self._tx() as c:
+            # v1 -> v2: user inputs gained a form scope and question fingerprint.
+            # v1 rows have neither and are never returned (the question is re-asked).
+            columns = {r["name"] for r in c.execute("PRAGMA table_info(user_inputs)")}
+            for column in ("form_scope", "field_fingerprint"):
+                if column not in columns:
+                    c.execute(f"ALTER TABLE user_inputs ADD COLUMN {column} TEXT")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS user_inputs_by_question"
+                " ON user_inputs (application_id, form_scope, field_id)"
+            )
+            c.execute(
+                "UPDATE meta SET value = ? WHERE key = 'schema_version' AND CAST(value AS INTEGER) < ?",
+                (str(SCHEMA_VERSION), SCHEMA_VERSION),
             )
 
     def _event(
@@ -913,20 +932,27 @@ class ApplicationStore:
             return self._to_application(self._app_row(c, row["id"]))
 
     def save_user_inputs(self, claim: Claim, inputs: Sequence[UserInput]) -> None:
-        """Persist the user's answers to missing inputs so the run can resume."""
+        """Persist the user's answers to missing inputs so the run can resume. Each is
+        stored under its form scope, field id and question fingerprint."""
         now = self._now()
         with self._tx() as c:
             row = self._check_claim(c, claim, now)
             for item in inputs:
                 c.execute(
-                    "INSERT INTO user_inputs (id, application_id, field_id, provided_at, body)"
-                    " VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO user_inputs (id, application_id, field_id, provided_at, body,"
+                    " form_scope, field_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (item.id, row["id"], item.field_id, _ts(item.provided_at),
-                     item.model_dump_json()),
+                     item.model_dump_json(), item.scope.key, item.field_fingerprint),
                 )
             self._event(
                 c, row["id"], "input.received", now=now, actor=claim.owner,
-                metadata={"field_ids": [i.field_id for i in inputs]},
+                metadata={
+                    "inputs": [
+                        {"id": i.id, "form_scope": i.scope.key, "field_id": i.field_id,
+                         "reuse": i.reuse.value}
+                        for i in inputs
+                    ]
+                },
             )
 
     def add_evidence(
@@ -1257,17 +1283,30 @@ class ApplicationStore:
         ).fetchone()
         return ApplicationPacket.model_validate_json(row["body"]) if row else None
 
-    def get_user_inputs(self, application_id: str) -> list[UserInput]:
-        """Effective user inputs: the most recently saved answer per field."""
-        latest: dict[str, UserInput] = {}
+    def list_user_inputs(self, application_id: str) -> list[UserInput]:
+        """Effective user inputs across all form steps: the most recently saved answer
+        per (form scope, field id). For display; resolution uses ``get_user_inputs``."""
+        latest: dict[tuple[str, str], UserInput] = {}
         for r in self._conn.execute(
-            "SELECT body FROM user_inputs WHERE application_id = ? ORDER BY rowid",
+            "SELECT body, form_scope, field_id FROM user_inputs"
+            " WHERE application_id = ? AND form_scope IS NOT NULL ORDER BY rowid",
             (application_id,),
         ).fetchall():
-            item = UserInput.model_validate_json(r["body"])
-            latest.pop(item.field_id, None)
-            latest[item.field_id] = item
+            key = (r["form_scope"], r["field_id"])
+            latest.pop(key, None)
+            latest[key] = UserInput.model_validate_json(r["body"])
         return list(latest.values())
+
+    def get_user_inputs(self, application_id: str, form: ApplicationForm) -> list[UserInput]:
+        """User inputs that answer questions on ``form`` as currently inspected: same
+        form scope, and the latest answer for each field id whose question
+        fingerprint still matches. Answers to a changed question are not returned."""
+        scope = form.scope.key
+        return [
+            item
+            for item in self.list_user_inputs(application_id)
+            if item.scope.key == scope and item.matches(form)
+        ]
 
     def list_evidence(self, application_id: str) -> list[EvidenceRef]:
         return [
