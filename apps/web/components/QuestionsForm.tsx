@@ -1,0 +1,281 @@
+"use client";
+
+import { useState, type FormEvent } from "react";
+import type { AnswerValue, InputRequestView, RequiredQuestionView } from "@/lib/service/types";
+import { validateAnswers, type FieldErrors } from "@/lib/validation";
+import { formatClock } from "@/lib/format";
+import type { DeskActions } from "./ApplicationDesk";
+import { ErrorSummary } from "./ErrorSummary";
+import { FieldMessages, RequirementTag, describedBy } from "./fields";
+
+type QuestionsNeeds = Extract<InputRequestView, { kind: "questions" }>;
+
+function initialValue(question: RequiredQuestionView): AnswerValue {
+  if (question.value !== null && question.value !== undefined) return question.value;
+  return question.control === "multi_select" ? [] : question.control === "boolean" ? null : "";
+}
+
+export function QuestionsForm({ needs, actions }: { needs: QuestionsNeeds; actions: DeskActions }) {
+  const [answers, setAnswers] = useState<Record<string, AnswerValue>>(() =>
+    Object.fromEntries(needs.questions.map((question) => [question.id, initialValue(question)])),
+  );
+  const [accepted, setAccepted] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(needs.attestations.map((attestation) => [attestation.id, attestation.accepted])),
+  );
+  const [clientErrors, setClientErrors] = useState<FieldErrors>({});
+  const [attempt, setAttempt] = useState(0);
+  const [pending, setPending] = useState<"continue" | "save" | null>(null);
+  const [edited, setEdited] = useState<Set<string>>(new Set());
+
+  // Service errors stay visible until the user edits that answer.
+  const serviceErrors = Object.fromEntries(Object.entries(needs.errors).filter(([id]) => !edited.has(id)));
+  const errors: FieldErrors = { ...serviceErrors, ...clientErrors };
+  const order = [...needs.questions.map((question) => question.id), ...needs.attestations.map((item) => item.id)];
+  const summary = order.filter((id) => errors[id]).map((id) => ({ fieldId: id, message: errors[id] }));
+  const requiredCount = needs.questions.filter((question) => question.required).length;
+
+  function update(id: string, value: AnswerValue) {
+    setAnswers((current) => ({ ...current, [id]: value }));
+    setEdited((current) => new Set(current).add(id));
+    setClientErrors(({ [id]: _removed, ...rest }) => rest);
+  }
+
+  async function submit(mode: "continue" | "save") {
+    const found = validateAnswers(needs.questions, needs.attestations, answers, accepted, mode === "continue");
+    setClientErrors(found);
+    setAttempt((count) => count + 1);
+    if (Object.keys(found).length > 0) return;
+    setPending(mode);
+    setEdited(new Set());
+    const input = { answers, attestations: accepted };
+    if (mode === "continue") await actions.answerAndContinue(input);
+    else await actions.answer(input);
+    setPending(null);
+    setAttempt((count) => count + 1);
+  }
+
+  return (
+    <form
+      className="questions"
+      method="post"
+      noValidate
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        void submit("continue");
+      }}
+      aria-describedby="questions-intro"
+    >
+      <p id="questions-intro" className="lede">
+        {`The site asks ${needs.questions.length} ${needs.questions.length === 1 ? "question" : "questions"} (${requiredCount} required) that your saved profile doesn’t answer.`}{" "}
+        Nothing here is guessed. Answer them and the desk picks up where it paused.
+      </p>
+
+      <ErrorSummary
+        title={summary.length === 1 ? "One answer needs attention" : `${summary.length} answers need attention`}
+        items={summary}
+        attempt={attempt}
+      />
+
+      <ol className="questions__list">
+        {needs.questions.map((question, index) => (
+          <li key={question.id} className={`question${errors[question.id] ? " is-invalid" : ""}`}>
+            <span className="question__number" aria-hidden="true">
+              {String(index + 1).padStart(2, "0")}
+            </span>
+            <QuestionControl
+              question={question}
+              value={answers[question.id]}
+              error={errors[question.id]}
+              onChange={(value) => update(question.id, value)}
+            />
+          </li>
+        ))}
+      </ol>
+
+      {needs.attestations.length > 0 && (
+        <fieldset className="attestations">
+          <legend className="attestations__legend">Statements from the site</legend>
+          <p className="field__hint">Check a statement only if it&rsquo;s true for you. None are checked for you.</p>
+          {needs.attestations.map((attestation) => (
+            <div key={attestation.id} className={`attestation${errors[attestation.id] ? " is-invalid" : ""}`}>
+              <input
+                id={attestation.id}
+                type="checkbox"
+                checked={accepted[attestation.id] ?? false}
+                aria-invalid={errors[attestation.id] ? true : undefined}
+                aria-describedby={describedBy(attestation.id, null, errors[attestation.id])}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setAccepted((current) => ({ ...current, [attestation.id]: checked }));
+                  setClientErrors(({ [attestation.id]: _removed, ...rest }) => rest);
+                }}
+              />
+              <label htmlFor={attestation.id}>
+                <span className="attestation__statement">{attestation.statement}</span>
+                <RequirementTag required={attestation.required} />
+              </label>
+              <FieldMessages id={attestation.id} error={errors[attestation.id]} />
+            </div>
+          ))}
+        </fieldset>
+      )}
+
+      <div className="questions__actions">
+        <button type="submit" className="button button--primary" disabled={pending !== null}>
+          {pending === "continue" ? "Saving and continuing…" : "Save answers and continue"}
+          <span aria-hidden="true" className="button__arrow">
+            →
+          </span>
+        </button>
+        <button
+          type="button"
+          className="button button--secondary"
+          disabled={pending !== null}
+          onClick={() => void submit("save")}
+        >
+          {pending === "save" ? "Saving…" : "Save for later"}
+        </button>
+        <p className="questions__saved" role="status">
+          {needs.savedAt
+            ? `Saved at ${formatClock(needs.savedAt)}. The application stays paused until you continue.`
+            : ""}
+        </p>
+      </div>
+    </form>
+  );
+}
+
+function QuestionControl({
+  question,
+  value,
+  error,
+  onChange,
+}: {
+  question: RequiredQuestionView;
+  value: AnswerValue;
+  error?: string;
+  onChange: (value: AnswerValue) => void;
+}) {
+  const { id, help } = question;
+  const hint = [help, question.reason ? `Asked because: ${question.reason}` : null].filter(Boolean).join(" ");
+  const describe = describedBy(id, hint, error);
+
+  if (question.control === "boolean" || question.control === "single_select" || question.control === "multi_select") {
+    const options =
+      question.control === "boolean"
+        ? [
+            { value: "yes", label: "Yes" },
+            { value: "no", label: "No" },
+          ]
+        : (question.options ?? []);
+    const multi = question.control === "multi_select";
+    const selected = (option: string) =>
+      multi
+        ? Array.isArray(value) && value.includes(option)
+        : question.control === "boolean"
+          ? (value === true && option === "yes") || (value === false && option === "no")
+          : value === option;
+
+    if (!multi && options.length > 6) {
+      return (
+        <div className="field">
+          <label htmlFor={id} className="field__label question__label">
+            {question.label} <RequirementTag required={question.required} />
+          </label>
+          <select
+            id={id}
+            className="input"
+            value={typeof value === "string" ? value : ""}
+            required={question.required}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={describe}
+            onChange={(event) => onChange(event.target.value)}
+          >
+            <option value="">Choose…</option>
+            {options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <FieldMessages id={id} hint={hint} error={error} />
+        </div>
+      );
+    }
+
+    return (
+      <fieldset id={id} className="field choice-group" aria-describedby={describe}>
+        <legend className="field__label question__label">
+          {question.label} <RequirementTag required={question.required} />
+        </legend>
+        <div className={`choices${options.length <= 3 ? " choices--inline" : ""}`}>
+          {options.map((option) => (
+            <label key={option.value} className="choice">
+              <input
+                type={multi ? "checkbox" : "radio"}
+                name={id}
+                value={option.value}
+                required={question.required && !multi}
+                aria-invalid={error ? true : undefined}
+                checked={selected(option.value)}
+                onChange={(event) => {
+                  if (multi) {
+                    const current = Array.isArray(value) ? value : [];
+                    onChange(
+                      event.target.checked
+                        ? [...current, option.value]
+                        : current.filter((item) => item !== option.value),
+                    );
+                  } else if (question.control === "boolean") {
+                    onChange(option.value === "yes");
+                  } else {
+                    onChange(option.value);
+                  }
+                }}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+        <FieldMessages id={id} hint={hint} error={error} />
+      </fieldset>
+    );
+  }
+
+  const text = typeof value === "string" ? value : "";
+  const common = {
+    id,
+    name: id,
+    className: "input",
+    value: text,
+    required: question.required,
+    "aria-invalid": error ? true : undefined,
+    "aria-describedby": describe,
+  } as const;
+
+  return (
+    <div className="field">
+      <label htmlFor={id} className="field__label question__label">
+        {question.label} <RequirementTag required={question.required} />
+      </label>
+      {question.control === "long_text" ? (
+        <>
+          <textarea {...common} rows={5} onChange={(event) => onChange(event.target.value)} />
+          {question.maxLength && (
+            <p className={`counter${text.length > question.maxLength ? " is-over" : ""}`}>
+              {text.length} / {question.maxLength}
+            </p>
+          )}
+        </>
+      ) : (
+        <input
+          {...common}
+          type={question.control === "number" ? "text" : question.control === "text" ? "text" : question.control}
+          inputMode={question.control === "number" ? "numeric" : undefined}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+      <FieldMessages id={id} hint={hint} error={error} />
+    </div>
+  );
+}
