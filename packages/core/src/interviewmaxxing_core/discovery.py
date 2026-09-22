@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Any, Self
 
@@ -82,6 +83,13 @@ class WorkArrangement(StrEnum):
     REMOTE = "REMOTE"
     UNKNOWN = "UNKNOWN"
     """The source did not say. Never guessed from the title or location."""
+
+
+class LocationPriority(StrEnum):
+    STRONGLY_PREFER_ONSITE_HYBRID = "STRONGLY_PREFER_ONSITE_HYBRID"
+    """Matching onsite/hybrid targets rank well above eligible remote roles."""
+    BALANCED = "BALANCED"
+    PREFER_REMOTE = "PREFER_REMOTE"
 
 
 class CompensationPeriod(StrEnum):
@@ -165,6 +173,7 @@ class JobSearchQuery(Contract):
     excluded_keywords: list[str] = Field(default_factory=list)
     onsite: list[OnsiteTarget] = Field(default_factory=_default_onsite)
     remote: RemoteTarget | None = Field(default_factory=_default_remote)
+    location_priority: LocationPriority = LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
     minimum_compensation: CompensationFloor | None = Field(default_factory=_default_floor)
     """Used to rank/filter where a source supports it. Listings without comparable
     pay are kept (compensation unknown), never dropped for lacking a salary."""
@@ -195,6 +204,7 @@ class JobSearchQuery(Contract):
             "excluded_keywords": preferences.excluded_keywords,
             "onsite": preferences.onsite,
             "remote": preferences.remote,
+            "location_priority": preferences.location_priority,
             "minimum_compensation": preferences.minimum_compensation,
         }
         return cls(**{**base, **overrides})
@@ -340,54 +350,122 @@ def meets_floor(pay: Compensation | None, floor: CompensationFloor) -> bool | No
     return True if pay.minimum * factor >= floor.amount else None
 
 
+def _posting_url_key(url: str) -> str:
+    try:
+        return normalize_application_url(url)
+    except InvalidApplicationUrl:
+        return url.strip()
+
+
+def _slug(value: str) -> str:
+    return value.strip().lower()
+
+
+def employer_job_key(ats_type: str, tenant: str, external_job_id: str) -> str:
+    """Cross-source identity of one employer job, in the same format as
+    ``JobIdentityObservation.identity_key``: ``ats:<ats type>:<tenant>:<job id>``.
+
+    Set it only from job-specific evidence, such as an ATS posting URL or page that
+    contains this job's own id (``boards.greenhouse.io/<tenant>/jobs/<id>``,
+    ``jobs.lever.co/<tenant>/<id>``). Never derive it from a generic apply endpoint,
+    a careers home page, a search page, or a title/company match."""
+    parts = [_slug(ats_type), _slug(tenant), _slug(external_job_id)]
+    if not all(parts) or any(":" in part for part in parts[:2]):
+        raise ValueError("employer_job_key needs a non-empty ats type, tenant and job id")
+    return "ats:" + ":".join(parts)
+
+
 class ListingSource(Contract):
-    """Where a listing was observed. Kept for every source that showed it."""
+    """One source's observation of one posting. Kept for every source that showed it.
+
+    Where it was seen and what it is are separate:
+
+    * ``source_url`` is where the observation was made. It may be a search or
+      results page shared by many postings, so it is never identity.
+    * ``source_listing_id`` (the source's own job id) or ``posting_url`` (a URL for
+      this posting alone) identifies the posting within the source. At least one is
+      required; an observation without either is rejected rather than keyed on a
+      search URL.
+    * ``employer_job_key`` (optional) is proven cross-source identity, from
+      ``employer_job_key(...)``.
+    * ``application_url`` is only the link shown to apply. It may be a generic
+      endpoint shared by many jobs, so it is never identity.
+    """
 
     source: SourceName
     source_listing_id: str | None = None
     """The source's own id for the posting (e.g. a LinkedIn job id), if shown."""
+    posting_url: str | None = None
+    """A URL that shows this posting alone (a detail page or job-specific ATS
+    posting), never a search, results or generic apply page."""
     source_url: NonEmptyStr
+    """Where the observation was made (may be a shared search page)."""
+    employer_job_key: str | None = Field(default=None, pattern=r"^ats:[^:\s]+:[^:\s]+:\S+$")
+    """Proven employer/ATS job identity; see ``employer_job_key(...)``."""
     application_url: str | None = None
-    """The actual application link this source pointed to, if visible."""
+    """The application link this source pointed to, if visible. Not identity."""
     observed_at: UtcDatetime
     evidence: NonEmptyStr
-    """What was observed, e.g. ``"search card + detail page, job id in URL"``."""
+    """What was observed, e.g. ``"search card + detail page, job id in URL"``. When
+    ``employer_job_key`` is set, say where its job id was read."""
     query_id: str | None = None
 
+    @field_validator("source_listing_id", "posting_url")
+    @classmethod
+    def _blank_is_none(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
-def listing_id_for(source: str, source_listing_id: str | None, source_url: str) -> str:
-    """Stable listing id: the source plus its own id, else the normalized source URL."""
-    key = source_listing_id.strip() if source_listing_id and source_listing_id.strip() else None
-    if key is None:
-        try:
-            key = "url:" + normalize_application_url(source_url)
-        except InvalidApplicationUrl:
-            key = "url:" + source_url.strip()
-    digest = hashlib.sha256(f"{source.strip().lower()}\x00{key}".encode()).hexdigest()
+    @model_validator(mode="after")
+    def _identified(self) -> Self:
+        if self.source_listing_id is None and self.posting_url is None:
+            raise ValueError(
+                "a listing observation needs source_listing_id or a job-specific "
+                "posting_url; a search page URL is not a posting identity"
+            )
+        return self
+
+    @property
+    def posting_key(self) -> str:
+        """Identity of the posting within its source: ``src:<source>:id:<id>`` when
+        the source showed its own id, else ``src:<source>:url:<normalized posting URL>``."""
+        if self.source_listing_id is not None:
+            return f"src:{self.source}:id:{self.source_listing_id}"
+        assert self.posting_url is not None
+        return f"src:{self.source}:url:{_posting_url_key(self.posting_url)}"
+
+
+def listing_id_for(
+    source: str, source_listing_id: str | None = None, posting_url: str | None = None
+) -> str:
+    """Stable listing id from the same key ``ListingSource.posting_key`` uses: the
+    source plus its own id, else the source plus a job-specific posting URL. Raises
+    ``ValueError`` when neither is given (never falls back to a search URL)."""
+    record = ListingSource(
+        source=source, source_listing_id=source_listing_id, posting_url=posting_url,
+        source_url=posting_url or "about:blank", observed_at=utc_now(), evidence="id",
+    )
+    digest = hashlib.sha256(record.posting_key.encode()).hexdigest()
     return f"lst_{digest[:32]}"
 
 
-def _application_key(url: str | None) -> str | None:
-    if not url:
-        return None
-    try:
-        return "app:" + normalize_application_url(url)
-    except InvalidApplicationUrl:
-        return None
+def _source_ids(listing: JobListing) -> dict[str, str]:
+    return {p.source: p.source_listing_id for p in listing.provenance if p.source_listing_id}
 
 
 class JobListing(Contract):
     """One observed posting. Fields hold only what a source showed."""
 
     id: NonEmptyStr
-    """Stable id; use ``listing_id_for(source, source_listing_id, source_url)``."""
+    """Must equal ``listing_id_for(source, source_listing_id, posting_url)``."""
     source: SourceName
     """The source this record was first observed on."""
     source_listing_id: str | None = None
+    posting_url: str | None = None
+    """This posting's own URL on ``source`` (see ``ListingSource.posting_url``)."""
     source_url: NonEmptyStr
     application_url: str | None = None
-    """The actual application URL when visible (employer ATS). This is what the
-    application flow is given if the listing is selected."""
+    """The application link when visible. The application flow is given this (or
+    ``posting_url``) if the listing is selected. Not identity: it may be generic."""
     title: NonEmptyStr
     company: str | None = None
     location: str | None = None
@@ -406,50 +484,92 @@ class JobListing(Contract):
     provenance: list[ListingSource] = Field(min_length=1)
     """Every source that showed this posting; the first is ``source``."""
 
+    @field_validator("source_listing_id", "posting_url")
+    @classmethod
+    def _blank_is_none(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         first = self.provenance[0]
-        if (first.source, first.source_url) != (self.source, self.source_url):
-            raise ValueError("provenance[0] must be the listing's own source and URL")
+        own = (self.source, self.source_listing_id, self.posting_url, self.source_url)
+        if (first.source, first.source_listing_id, first.posting_url, first.source_url) != own:
+            raise ValueError(
+                "provenance[0] must be the listing's own source, id, posting_url and source_url"
+            )
+        if self.id != listing_id_for(self.source, self.source_listing_id, self.posting_url):
+            raise ValueError("id must equal listing_id_for(source, source_listing_id, posting_url)")
         has_text = bool((self.description or "").strip())
         if has_text == (self.description_completeness is DescriptionCompleteness.NONE):
             raise ValueError("description_completeness must be NONE exactly when there is no text")
-        pairs = [(p.source, p.source_listing_id, p.source_url) for p in self.provenance]
-        if len(set(pairs)) != len(pairs):
+        keys = [(p.posting_key, p.source_url) for p in self.provenance]
+        if len(set(keys)) != len(keys):
             raise ValueError("duplicate provenance records")
+        ids: dict[str, str] = {}
+        for record in self.provenance:
+            if record.source_listing_id is None:
+                continue
+            seen = ids.setdefault(record.source, record.source_listing_id)
+            if seen != record.source_listing_id:
+                raise ValueError(
+                    f"contradictory {record.source} ids {seen!r} and "
+                    f"{record.source_listing_id!r} for one posting"
+                )
+        employer = {p.employer_job_key for p in self.provenance if p.employer_job_key}
+        if len(employer) > 1:
+            raise ValueError(f"contradictory employer job keys {sorted(employer)}")
         return self
 
     @property
     def identity_keys(self) -> frozenset[str]:
-        """Keys that prove two listings are the same posting: a source's own id
-        (``src:<source>:<id>``) or a common application URL (``app:<normalized>``).
-        Title, company and location are deliberately not keys."""
-        keys: set[str] = set()
-        for record in self.provenance:
-            if record.source_listing_id and record.source_listing_id.strip():
-                keys.add(f"src:{record.source}:{record.source_listing_id.strip()}")
-            app = _application_key(record.application_url)
-            if app:
-                keys.add(app)
-        app = _application_key(self.application_url)
-        if app:
-            keys.add(app)
+        """Keys that prove two listings are the same posting: each observation's
+        ``posting_key`` and any proven ``employer_job_key`` (as ``job:<key>``).
+        Search URLs, application URLs, titles, companies and locations are never keys."""
+        keys = {p.posting_key for p in self.provenance}
+        keys |= {f"job:{p.employer_job_key}" for p in self.provenance if p.employer_job_key}
         return frozenset(keys)
 
+    def contradicts(self, other: JobListing) -> bool:
+        """True when one source gives the two listings different ids of its own, or
+        they carry different employer job keys: they are different postings."""
+        mine, theirs = _source_ids(self), _source_ids(other)
+        if any(mine[s] != theirs[s] for s in mine.keys() & theirs.keys()):
+            return True
+        a = {p.employer_job_key for p in self.provenance if p.employer_job_key}
+        b = {p.employer_job_key for p in other.provenance if p.employer_job_key}
+        return bool(a and b and a != b)
+
     def is_same_posting(self, other: JobListing) -> bool:
-        """True only on a shared source id or a verified common application URL."""
-        return bool(self.identity_keys & other.identity_keys)
+        """True only on a shared identity key and no contradiction. Equal listing ids
+        imply this, because ids are derived from the same posting key."""
+        return not self.contradicts(other) and bool(self.identity_keys & other.identity_keys)
 
     def merged_with(self, other: JobListing) -> JobListing:
         """Keep this listing's fields and add ``other``'s provenance (for example a
-        Google result that points to the same application URL). Missing fields are
-        filled from ``other`` only where this listing has none. Raises if the two
-        are not provably the same posting."""
+        Google result proven to be the same employer job). Missing fields are filled
+        from ``other`` only where this listing has none. Raises unless the two are
+        provably the same posting."""
         if not self.is_same_posting(other):
             raise ValueError("listings are not provably the same posting")
-        seen = {(p.source, p.source_listing_id, p.source_url) for p in self.provenance}
-        extra = [p for p in other.provenance
-                 if (p.source, p.source_listing_id, p.source_url) not in seen]
+        records = {(p.posting_key, p.source_url): p for p in self.provenance}
+        for incoming in other.provenance:
+            key = (incoming.posting_key, incoming.source_url)
+            previous = records.get(key)
+            if previous is None:
+                records[key] = incoming
+                continue
+            # A later detail-page observation may establish the employer identity
+            # absent from the initial search card. Keep that proof and its evidence.
+            evidence = previous.evidence
+            if incoming.evidence != evidence and incoming.evidence not in evidence.split("\n"):
+                evidence += "\n" + incoming.evidence
+            records[key] = ListingSource.model_validate({
+                **previous.model_dump(),
+                "employer_job_key": previous.employer_job_key or incoming.employer_job_key,
+                "application_url": previous.application_url or incoming.application_url,
+                "observed_at": max(previous.observed_at, incoming.observed_at),
+                "evidence": evidence,
+            })
         fill: dict[str, Any] = {}
         for name in ("application_url", "company", "location", "remote_eligibility",
                      "compensation", "posted_text"):
@@ -468,7 +588,7 @@ class JobListing(Contract):
         elif self.status is ListingStatus.UNKNOWN:
             fill["status"] = other.status
         return type(self).model_validate(
-            {**self.model_dump(), **fill, "provenance": [*self.provenance, *extra]}
+            {**self.model_dump(), **fill, "provenance": list(records.values())}
         )
 
 
@@ -489,6 +609,7 @@ class SelectionPreferences(Contract):
     target_titles: list[str] = Field(default_factory=lambda: list(DEFAULT_TITLE_PHRASES))
     onsite: list[OnsiteTarget] = Field(default_factory=_default_onsite)
     remote: RemoteTarget | None = Field(default_factory=_default_remote)
+    location_priority: LocationPriority = LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
     minimum_compensation: CompensationFloor | None = Field(default_factory=_default_floor)
     unknown_compensation: UnknownCompensationPolicy = UnknownCompensationPolicy.KEEP
     excluded_keywords: list[str] = Field(default_factory=list)
@@ -695,13 +816,14 @@ class PipelineEntry(Contract):
     stage: NonEmptyStr
     notes: str | None = None
     next_action: str | None = None
-    next_action_due: UtcDatetime | None = None
+    next_action_due: date | UtcDatetime | None = None
+    """Preserve a calendar due date as a date; never invent a midnight timestamp."""
     application_id: str | None = None
     selection_id: str | None = None
     import_source: str | None = None
     """E.g. the workbook name the row came from."""
     imported_values: dict[str, str] = Field(default_factory=dict)
-    """The imported row's original cells, verbatim, for columns without a field here."""
+    """All original nonblank imported cells, including raw Stage and Status, verbatim."""
     created_at: UtcDatetime = Field(default_factory=utc_now)
     updated_at: UtcDatetime = Field(default_factory=utc_now)
 

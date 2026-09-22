@@ -1134,3 +1134,6 @@ expected offer value
 ```
 
 **Applications are inventory. Interviews are the conversion. Offers are revenue.**
+
+
+User clarification, 2026-09-22: strongly prefer Austin onsite/hybrid roles over US-wide remote. Remote remains eligible; USD100000 annual minimum remains. Canonical location_priority defaults to STRONGLY_PREFER_ONSITE_HYBRID; retain it in persisted preferences, Jev rubric/cache, search result ranking and dashboard controls.
