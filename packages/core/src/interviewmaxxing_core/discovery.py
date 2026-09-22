@@ -816,7 +816,7 @@ class PipelineEntry(Contract):
     stage: NonEmptyStr
     notes: str | None = None
     next_action: str | None = None
-    next_action_due: date | UtcDatetime | None = None
+    next_action_due: Annotated[date, Field(strict=True)] | UtcDatetime | None = None
     """Preserve a calendar due date as a date; never invent a midnight timestamp."""
     application_id: str | None = None
     selection_id: str | None = None
@@ -826,6 +826,15 @@ class PipelineEntry(Contract):
     """All original nonblank imported cells, including raw Stage and Status, verbatim."""
     created_at: UtcDatetime = Field(default_factory=utc_now)
     updated_at: UtcDatetime = Field(default_factory=utc_now)
+
+    @field_validator("next_action_due", mode="before")
+    @classmethod
+    def _preserve_due_precision(cls, value: Any) -> Any:
+        # Only an actual ISO calendar date can enter the date branch. Otherwise
+        # pydantic can coerce a midnight timestamp (including naive ones) to date.
+        if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-":
+            return date.fromisoformat(value)
+        return value
 
     @model_validator(mode="after")
     def _identifiable(self) -> Self:

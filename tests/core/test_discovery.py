@@ -155,6 +155,25 @@ def test_pipeline_due_timestamp_remains_aware_and_naive_is_rejected():
                       next_action_due="2026-09-29T10:30:00")
 
 
+@pytest.mark.parametrize("due", ["2026-09-29T00:00:00", datetime(2026, 9, 29)])
+def test_naive_midnight_is_never_silently_changed_to_a_date(due):
+    with pytest.raises(ValidationError):
+        PipelineEntry(candidate_id="candidate", title="Fictional role", stage="Saved",
+                      next_action_due=due)
+    text_due = due.isoformat() if isinstance(due, datetime) else due
+    with pytest.raises(ValidationError):
+        PipelineEntry.model_validate_json(json.dumps({"candidate_id": "candidate",
+            "title": "Fictional role", "stage": "Saved", "next_action_due": text_due}))
+
+
+def test_aware_midnight_keeps_its_timestamp_through_dict_and_json():
+    raw = {"candidate_id": "candidate", "title": "Fictional role", "stage": "Saved",
+           "next_action_due": "2026-09-29T00:00:00-05:00"}
+    expected = datetime(2026, 9, 29, 5, tzinfo=UTC)
+    assert PipelineEntry.model_validate(raw).next_action_due == expected
+    assert PipelineEntry.model_validate_json(json.dumps(raw)).next_action_due == expected
+
+
 # --- source results ------------------------------------------------------------------------
 
 
