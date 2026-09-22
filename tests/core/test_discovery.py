@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -25,6 +25,7 @@ from interviewmaxxing_core import (
     JobSelection,
     ListingSource,
     ListingStatus,
+    LocationPriority,
     ModelDecision,
     OnsiteTarget,
     PipelineEntry,
@@ -107,6 +108,51 @@ def test_query_from_preferences_follows_edits():
     query = JobSearchQuery.from_preferences(prefs, max_results_per_source=10)
     assert query.title_phrases == ["Director of Marketing"]
     assert query.max_results_per_source == 10
+
+
+def test_location_priority_is_explicit_editable_and_invalidates_decisions():
+    preferred = SelectionPreferences()
+    assert preferred.location_priority is LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
+    assert preferred.remote == RemoteTarget(eligible_region="United States")
+    assert preferred.minimum_compensation.amount == 100000
+    assert JobSearchQuery.from_preferences(preferred).location_priority == preferred.location_priority
+    balanced = SelectionPreferences(location_priority="BALANCED")
+    assert balanced.fingerprint != preferred.fingerprint
+    assert JobSearchQuery.from_preferences(balanced).location_priority is LocationPriority.BALANCED
+
+
+def test_repeat_observation_retains_new_employer_identity_and_evidence():
+    first = _listing("linkedin", "4001")
+    enriched = _listing("linkedin", "4001", employer_key=employer_job_key("greenhouse", "demo", "7001"))
+    enriched = enriched.model_copy(update={"provenance": [enriched.provenance[0].model_copy(update={
+        "evidence": "Verified employer posting job 7001 on detail page",
+        "observed_at": NOW + timedelta(minutes=1),
+    })]})
+    google = _listing("google", None, ATS_URL, employer_key=enriched.provenance[0].employer_job_key)
+    merged = first.merged_with(enriched)
+    assert merged.id == first.id
+    assert merged.is_same_posting(google)
+    assert enriched.provenance[0].evidence in merged.provenance[0].evidence
+    assert first.provenance[0].evidence in merged.provenance[0].evidence
+    assert merged.provenance[0].observed_at == NOW + timedelta(minutes=1)
+    assert merged.merged_with(enriched) == merged
+
+
+@pytest.mark.parametrize("due", ["2026-09-29", date(2026, 9, 29)])
+def test_pipeline_due_date_roundtrips_without_inventing_a_time(due):
+    entry = PipelineEntry(candidate_id="candidate", title="Fictional role", stage="Saved",
+                          next_action_due=due)
+    assert entry.next_action_due == date(2026, 9, 29)
+    assert entry.model_dump(mode="json")["next_action_due"] == "2026-09-29"
+
+
+def test_pipeline_due_timestamp_remains_aware_and_naive_is_rejected():
+    entry = PipelineEntry(candidate_id="candidate", title="Fictional role", stage="Saved",
+                          next_action_due=NOW)
+    assert entry.next_action_due == NOW
+    with pytest.raises(ValidationError):
+        PipelineEntry(candidate_id="candidate", title="Fictional role", stage="Saved",
+                      next_action_due="2026-09-29T10:30:00")
 
 
 # --- source results ------------------------------------------------------------------------

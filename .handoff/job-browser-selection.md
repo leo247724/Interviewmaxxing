@@ -47,3 +47,6 @@ Cover APPLY/SKIP/REVIEW, missing/contradictory evidence, provider failure, malfo
 ## Integration follow-ups
 
 S1 will expose search/preferences/listings/selection/pipeline endpoints using J1/J2 after its application bridge is integrated. F3 will add a jobs browser and pipeline board with editable keywords/location/preferences, per-source progress/login states, deduped listings, Jev decisions/reasons, stage moves, next-action tracking and an Apply action entering the existing application desk. The user's private Numbers workbook supplies the pipeline reference and an explicit import path; private records stay out of fixtures/source control. CLI gets corresponding jobs search/list/select operations from core after I1. These are required for the expanded backend/frontend build; package-only code is not the final product.
+
+
+User clarification, 2026-09-22: strongly prefer Austin onsite/hybrid roles over US-wide remote. Remote remains eligible; USD100000 annual minimum remains. Canonical location_priority defaults to STRONGLY_PREFER_ONSITE_HYBRID; retain it in persisted preferences, Jev rubric/cache, search result ranking and dashboard controls.
