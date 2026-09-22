@@ -1,0 +1,12 @@
+{
+  "ats_type": "mock",
+  "ats_tenant": "mock-co",
+  "external_job_id": "4012",
+  "evidence_kind": "ATS_JOB_ID_ON_PAGE",
+  "evidence": "form action '/boards/mock-co/jobs/4012/applications' and hidden input job_id=4012",
+  "observed_url": "http://127.0.0.1:0/jobs/mock-4012/apply",
+  "company": "Mock Co",
+  "title": "Senior Paid Media Manager",
+  "location": "Remote (US)",
+  "observed_at": "2026-09-22T20:00:01Z"
+}

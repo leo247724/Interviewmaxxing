@@ -1,0 +1,29 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local personal data and run state. Never commit profiles, resumes, answers,
+# state databases, browser profiles or evidence. See CONTRACTS.md "Local data".
+/.imx/
+/.interviewmaxxing/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+/artifacts/
+/browser-profile/
+/profile/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,56 @@
+{
+  "id": "pkt_fixture",
+  "application_id": "app_fixture",
+  "job_id": "job_fixture",
+  "candidate_id": "cand_avery_example",
+  "form_url": "http://127.0.0.1:0/jobs/mock-4012/apply",
+  "form_step": 0,
+  "resume_variant": "supplied",
+  "cover_letter": null,
+  "created_at": "2026-09-22T20:00:05Z",
+  "answers": [
+    {"field_id": "first_name", "semantic_type": "FIRST_NAME", "value": {"kind": "text", "text": "Avery"}, "provenance": {"source": "PROFILE_IDENTITY"}, "confidence": 1.0},
+    {"field_id": "last_name", "semantic_type": "LAST_NAME", "value": {"kind": "text", "text": "Example"}, "provenance": {"source": "PROFILE_IDENTITY"}, "confidence": 1.0},
+    {"field_id": "email", "semantic_type": "EMAIL", "value": {"kind": "text", "text": "avery@example.test"}, "provenance": {"source": "PROFILE_IDENTITY"}, "confidence": 1.0},
+    {"field_id": "phone", "semantic_type": "PHONE", "value": {"kind": "text", "text": "+1 555 010 0199"}, "provenance": {"source": "PROFILE_IDENTITY"}, "confidence": 1.0},
+    {
+      "field_id": "resume", "semantic_type": "RESUME",
+      "value": {"kind": "file", "artifact": {
+        "id": "resume_supplied", "path": "resume-avery-example.pdf", "filename": "resume-avery-example.pdf",
+        "media_type": "application/pdf", "sha256": "cbda0ba74ea1118125d92ee4b9f9515f8f8f7e5b88e908d276d826682a7d9906", "size_bytes": 648
+      }},
+      "provenance": {"source": "RESUME", "reference_ids": ["resume_supplied"]}, "confidence": 1.0
+    },
+    {"field_id": "linkedin", "semantic_type": "LINKEDIN", "value": {"kind": "text", "text": "https://www.linkedin.example/in/avery-example"}, "provenance": {"source": "PROFILE_IDENTITY"}, "confidence": 1.0},
+    {
+      "field_id": "work_auth", "semantic_type": "WORK_AUTHORIZATION", "value": {"kind": "choice", "value": "1", "label": "Yes"},
+      "provenance": {"source": "SAVED_ANSWER", "reference_ids": ["sa.work_auth_us"]}, "confidence": 1.0
+    },
+    {
+      "field_id": "sponsorship", "semantic_type": "SPONSORSHIP", "value": {"kind": "choice", "value": "no", "label": "No"},
+      "provenance": {"source": "SAVED_ANSWER", "reference_ids": ["sa.sponsorship"]}, "confidence": 1.0
+    },
+    {
+      "field_id": "privacy", "semantic_type": "CONSENT", "value": {"kind": "boolean", "checked": true},
+      "provenance": {"source": "SAVED_ANSWER", "reference_ids": ["sa.privacy_consent"]}, "confidence": 1.0
+    }
+  ],
+  "missing_inputs": [
+    {
+      "id": "mi_gender", "field_id": "gender", "label": "Gender (voluntary)", "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "prompt": "This form requires an answer to 'Gender (voluntary)'. Choose one (you may decline to self-identify).",
+      "semantic_type": "EEO_GENDER", "control_type": "SELECT", "required": true,
+      "options": [
+        {"value": "f", "label": "Female"},
+        {"value": "m", "label": "Male"},
+        {"value": "x", "label": "Non-binary"},
+        {"value": "decline", "label": "I decline to self-identify"}
+      ]
+    },
+    {
+      "id": "mi_why_us", "field_id": "why_us", "label": "Why do you want to work at Mock Co?", "reason": "NO_ANSWER",
+      "prompt": "Why do you want to work at Mock Co? (required, up to 2000 characters)",
+      "semantic_type": "CUSTOM_LONG_TEXT", "control_type": "TEXTAREA", "required": true
+    }
+  ]
+}
