@@ -27,8 +27,9 @@ packet = await resolver.resolve(context)            # context: interviewmaxxing_
   the synchronous equivalent.
 - `missing_input_id(form, field) -> str` returns the stable `MissingInput.id` of a
   question.
-- `QuestionText`, `wording_key`, `question_key`, `is_neutral_hint` and
-  `saved_answer_matches` expose the question-binding rules below, for UIs and tests.
+- `QuestionText`, `wording_key`, `question_key`, `is_neutral_hint`,
+  `saved_answer_matches` and `display_question` expose the question-binding and
+  display rules below, for UIs and tests.
 
 A packet gets a new `id` on every resolution. Answers are keyed by `field_id`.
 `MissingInput.id` is derived from `(form scope, field id, field fingerprint)`. It
@@ -82,25 +83,60 @@ If none of these apply, an optional field stays blank and a required field becom
 | `AMBIGUOUS` | the saved data conflicts or maps to more than one option |
 | `NO_ANSWER` | anything else |
 
-The prompt names the question and its help text, and says why no answer was used.
+The prompt shows the complete question (label, help text and any meaningful
+placeholder) and says why no answer was used.
 For example: "is not one of the options", "longer than the 5-character limit" or "the
 supplied resume file has changed". It also lists the usable options.
 
 ## Question binding
 
-Question text is compared with `wording_key`: case, whitespace, punctuation and
-trailing `*`/`(required)` markers are ignored, and nothing else. A saved answer's
-`question` or one of its `match_phrases` must **equal** one of these:
+Question text is compared with `wording_key`. Only these differences are ignored:
+
+- case and whitespace;
+- sentence punctuation: `. , ; : ! ? ' " ( ) [ ]`;
+- a dash standing alone between spaces;
+- trailing `*` or `(required)` markers.
+
+Everything that can carry meaning is kept:
+
+- comparison symbols: `< > =`;
+- currency symbols: `$ € £`;
+- `% + # & / @`;
+- attached hyphens;
+- punctuation inside numbers, as in `1.5` or `100,000`.
+
+A saved answer's `question` or one of its `match_phrases` must **equal** one of these:
 
 - the field's full question: label, help text and placeholder;
-- the label alone, when there is no help text and the placeholder is only a neutral
-  format hint such as "Select...", "e.g. 5" or "MM/YYYY".
+- the label alone, when there is no help text and the placeholder is a genuinely
+  neutral format hint (see below).
 
-"Will you require visa sponsorship?" therefore does not answer "Will you require
-sponsorship?". "Relocate to Austin" does not answer "Relocate to Denver". An "I agree"
-answer given for one attestation's help text does not answer an "I agree" checkbox
-whose help text states a different attestation. Match phrases are whole alternative
-phrasings, never substrings.
+A placeholder is neutral only if it is empty, a prompt such as "Select..." or
+"Your answer", a date format such as "MM/YYYY", or an example number marked as one,
+such as "e.g. 5". A placeholder with any of the following is part of the question:
+
+- a currency or other symbol (`€`, `$`, `%`, `<`);
+- a unit or any other word ("years", "per hour", "USD");
+- a bare number or scale ("1-5", "100000").
+
+Examples:
+
+- "Will you require visa sponsorship?" does not answer "Will you require
+  sponsorship?".
+- "Relocate to Austin" does not answer "Relocate to Denver".
+- A saved "Yes" to "Have you managed a budget > $100,000?" does not answer "... <
+  $100,000?".
+- A salary saved for "Expected salary $" does not fill "Expected salary" with
+  placeholder "€".
+- An "I agree" answer given for one attestation's help text does not answer an "I
+  agree" checkbox whose help text states a different attestation.
+
+Match phrases are whole alternative phrasings, never substrings.
+
+Prompts show the complete question through `display_question(field)`: the label, the
+help text, and the placeholder in `[...]` when it carries meaning. That function is
+the only display seam. When core provides its shared full-question renderer (C1R3),
+it will delegate to it. Matching does not depend on display text.
 
 ## Value translation
 

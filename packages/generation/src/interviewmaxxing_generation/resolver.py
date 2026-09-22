@@ -52,6 +52,7 @@ from interviewmaxxing_core import (
 
 from .questions import (
     QuestionText,
+    display_question,
     factual_template,
     parse_years_question,
     saved_answer_matches,
@@ -410,10 +411,7 @@ def _instruction(fld: ApplicationField) -> str:
 
 
 def _prompt(fld: ApplicationField, reason: MissingReason, detail: str) -> str:
-    question = fld.label.strip() or fld.id
-    parts = [f'Required: "{question}".']
-    if fld.help_text and fld.help_text.strip():
-        parts.append(f"Details: {fld.help_text.strip()}")
+    parts = [f'Required: "{display_question(fld)}".']
     if reason is MissingReason.EXPLICIT_ANSWER_REQUIRED:
         parts.append(_explicit_text(fld))
     elif not (detail and reason is MissingReason.NO_ANSWER):

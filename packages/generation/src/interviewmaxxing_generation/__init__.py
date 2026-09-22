@@ -8,6 +8,7 @@ required as a scoped ``MissingInput``. See the package README.
 
 from .questions import (
     QuestionText,
+    display_question,
     is_neutral_hint,
     question_key,
     saved_answer_matches,
@@ -24,6 +25,7 @@ __all__ = [
     "FactualPacketResolver",
     "PacketResolutionError",
     "QuestionText",
+    "display_question",
     "is_neutral_hint",
     "missing_input_id",
     "question_key",
