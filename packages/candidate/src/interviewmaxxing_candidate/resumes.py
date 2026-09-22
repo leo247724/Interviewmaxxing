@@ -171,12 +171,22 @@ def write_upload(
 
 
 def read_upload(resumes_dir: Path, resume_id: str) -> StoredResume:
-    """The stored upload ``resume_id``; its file must still match its digest."""
+    """The stored upload ``resume_id``; its file must still match its digest.
+
+    Raises ``ResumeNotFound`` when there is no such upload (or its metadata is
+    missing) and ``CandidateProfileInvalid`` when it is damaged, including a file or
+    metadata that cannot be read (filesystem errors are reported, not raised raw)."""
     if not UPLOAD_ID.fullmatch(resume_id):
         raise ResumeNotFound(f"no uploaded resume {resume_id!r}")
     directory = resumes_dir / resume_id
     meta_path = directory / RESUME_META_FILENAME
-    if not meta_path.is_file():
+    try:
+        has_meta = meta_path.is_file()
+    except OSError as exc:
+        raise CandidateProfileInvalid(
+            f"{directory}: cannot read uploaded resume ({exc.strerror or exc})"
+        ) from None
+    if not has_meta:
         raise ResumeNotFound(f"no uploaded resume {resume_id!r}")
     meta: Any = read_json(meta_path)
     try:
@@ -196,7 +206,14 @@ def read_upload(resumes_dir: Path, resume_id: str) -> StoredResume:
         )
     except (KeyError, TypeError, ValueError, ResumeRejected, ValidationError) as exc:
         raise CandidateProfileInvalid(f"{meta_path}: unreadable resume metadata ({exc})") from None
-    if not artifact.verify():
+    try:
+        intact = artifact.verify()
+    except OSError as exc:
+        raise CandidateProfileInvalid(
+            f"uploaded resume {resume_id} ({directory / filename}) cannot be read "
+            f"({exc.strerror or exc}); upload it again"
+        ) from None
+    if not intact:
         raise CandidateProfileInvalid(
             f"uploaded resume {resume_id} ({directory / filename}) is missing or no longer "
             "matches its recorded sha256; upload it again"
@@ -225,14 +242,13 @@ def scan_uploads(resumes_dir: Path) -> tuple[list[StoredResume], list[DamagedRes
     for entry in sorted(resumes_dir.iterdir()):
         if not (entry.is_dir() and UPLOAD_ID.fullmatch(entry.name)):
             continue
-        if not (entry / RESUME_META_FILENAME).is_file():
+        try:
+            uploads.append(read_upload(resumes_dir, entry.name))
+        except ResumeNotFound:
             # Complete uploads are renamed into place with their metadata, so a
             # published directory without it is damaged, not absent.
             damaged.append(DamagedResume(entry.name, f"{entry}: resume metadata is missing"))
-            continue
-        try:
-            uploads.append(read_upload(resumes_dir, entry.name))
-        except (ResumeNotFound, CandidateProfileInvalid) as exc:
+        except CandidateProfileInvalid as exc:
             damaged.append(DamagedResume(entry.name, str(exc)))
     uploads.sort(key=lambda r: (r.uploaded_at or _EPOCH, r.id))
     return uploads, damaged

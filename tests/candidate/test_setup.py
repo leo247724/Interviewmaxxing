@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import interviewmaxxing_candidate.resumes as resumes_module
 from interviewmaxxing_candidate import (
     CandidateSetup,
     DamagedResume,
@@ -586,3 +588,131 @@ def test_setup_snapshot_is_consistent_with_concurrent_selection(
     later = writer.candidate_setup("default")
     assert later.selected_resume_id == second.id
     assert [r.id for r in later.resumes] == [first.id, second.id]
+
+
+# --- unreadable uploads and strict private upload ids (C2P2) ----------------------------
+
+needs_permissions = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root can read files regardless of their mode"
+)
+
+
+@pytest.fixture
+def locked_paths() -> Iterator[list[Path]]:
+    """Paths made unreadable by a test; their access is restored at teardown."""
+    locked: list[Path] = []
+    yield locked
+    for path in locked:
+        path.chmod(0o700)
+
+
+def _two_uploads_select_current(
+    store: LocalCandidateStore,
+) -> tuple[StoredResume, StoredResume]:
+    other = store.store_resume("default", filename="other.txt", content=b"Other CV\n")
+    current = store.store_resume("default", filename="current.txt", content=b"Current CV\n")
+    store.upsert_profile("default", identity=identity(), resume_id=current.id)
+    return other, current
+
+
+@needs_permissions
+@pytest.mark.parametrize("target", ["file", "directory"])
+def test_unreadable_unselected_upload_is_reported_not_raised(
+    candidate_store: LocalCandidateStore, locked_paths: list[Path], target: str
+) -> None:
+    old, current = _two_uploads_select_current(candidate_store)
+    stored = Path(old.artifact.path)
+    unreadable = stored if target == "file" else stored.parent
+    unreadable.chmod(0o000)
+    locked_paths.append(unreadable)
+
+    assert candidate_store.load("default").resume.id == current.id
+    setup = candidate_store.candidate_setup("default")
+    assert setup.complete and setup.problem is None
+    assert [r.id for r in setup.resumes] == [current.id]
+    assert [d.resume_id for d in setup.damaged_resumes] == [old.id]
+    assert "cannot" in setup.damaged_resumes[0].problem
+    assert [r.id for r in candidate_store.list_resumes("default")] == [current.id]
+    with pytest.raises(CandidateProfileInvalid, match="cannot"):
+        candidate_store.get_resume("default", old.id)
+
+
+@needs_permissions
+def test_unreadable_selected_upload_is_incomplete_and_recoverable(
+    candidate_store: LocalCandidateStore, locked_paths: list[Path]
+) -> None:
+    other, current = _two_uploads_select_current(candidate_store)
+    stored = Path(current.artifact.path)
+    stored.chmod(0o000)
+    locked_paths.append(stored)
+
+    with pytest.raises(CandidateProfileInvalid, match="cannot"):
+        candidate_store.load("default")
+    with pytest.raises(CandidateProfileInvalid, match="cannot"):
+        candidate_store.get_resume("default", current.id)
+    setup = candidate_store.candidate_setup("default")
+    assert not setup.complete and setup.problem is not None
+    assert setup.selected_resume_id == current.id and setup.identity == identity()
+    assert [r.id for r in setup.resumes] == [other.id]
+    assert [d.resume_id for d in setup.damaged_resumes] == [current.id]
+
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=other.id)
+    repaired = candidate_store.candidate_setup("default")
+    assert repaired.complete and repaired.selected_resume_id == other.id
+
+
+def test_selected_upload_without_metadata_never_falls_back_to_profile(
+    candidate_store: LocalCandidateStore,
+) -> None:
+    other, current = _two_uploads_select_current(candidate_store)
+    profile_file = candidate_store.profile_path("default")
+    _break_missing_meta(current)
+    assert Path(current.artifact.path).read_bytes() == b"Current CV\n"  # data still intact
+
+    with pytest.raises(ResumeNotFound):
+        candidate_store.get_resume("default", current.id)  # strict, not origin PROFILE
+    with pytest.raises(CandidateProfileInvalid, match="has no metadata"):
+        candidate_store.load("default")
+    setup = candidate_store.candidate_setup("default")
+    assert not setup.complete and setup.problem is not None
+    assert setup.selected_resume_id == current.id
+    assert [r.id for r in setup.resumes] == [other.id]
+    assert [d.resume_id for d in setup.damaged_resumes] == [current.id]
+    assert all(r.origin is ResumeOrigin.UPLOADED for r in setup.resumes)
+
+    # Keeping the damaged selection is refused without writing anything.
+    before = profile_file.read_bytes()
+    with pytest.raises(CandidateProfileInvalid, match="has no metadata"):
+        candidate_store.upsert_profile("default", identity=identity(), resume_id=current.id)
+    assert profile_file.read_bytes() == before
+
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=other.id)
+    repaired = candidate_store.candidate_setup("default")
+    assert repaired.complete and repaired.selected_resume_id == other.id
+
+
+def test_external_profile_resume_with_upload_shaped_id_still_loads(
+    write_candidate: WriteCandidate, candidate_store: LocalCandidateStore
+) -> None:
+    legacy_id = "resume_" + "a" * 32
+    write_candidate("default", edit=lambda d: d["resume"].update(id=legacy_id))
+
+    assert candidate_store.load("default").resume.id == legacy_id
+    setup = candidate_store.candidate_setup("default")
+    assert setup.complete and setup.selected_resume_id == legacy_id
+    [resume] = setup.resumes
+    assert resume.origin is ResumeOrigin.PROFILE
+    assert candidate_store.get_resume("default", legacy_id) == resume
+
+
+def test_unexpected_errors_are_not_swallowed(
+    candidate_store: LocalCandidateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate_store.store_resume("default", filename="cv.pdf", content=PDF)
+
+    def broken(resumes_dir: Path, resume_id: str) -> StoredResume:
+        raise RuntimeError("programming error")
+
+    monkeypatch.setattr(resumes_module, "read_upload", broken)
+    with pytest.raises(RuntimeError, match="programming error"):
+        candidate_store.candidate_setup("default")

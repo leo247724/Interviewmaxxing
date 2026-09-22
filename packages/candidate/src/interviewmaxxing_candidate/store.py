@@ -228,6 +228,7 @@ class LocalCandidateStore:
                 f'{profile_path}: "resume" is required: an object with at least "id" and '
                 f'"path" (the resume file, absolute or relative to {profile_path.parent})'
             )
+        self._private_upload_for(candidate_id, profile_path, resume_raw)
         resume, resume_path, computed = _resolve_resume(profile_path, resume_raw)
 
         try:
@@ -367,11 +368,11 @@ class LocalCandidateStore:
         """One resume from ``list_resumes``. Strict: raises ``ResumeNotFound`` for an
         unknown id (or an upload without metadata) and ``CandidateProfileInvalid`` for
         a damaged upload."""
-        if UPLOAD_ID.fullmatch(resume_id):
-            try:
-                return read_upload(self.resumes_dir(candidate_id), resume_id)
-            except ResumeNotFound:
-                pass
+        uploads = self.resumes_dir(candidate_id)
+        if UPLOAD_ID.fullmatch(resume_id) and os.path.lexists(uploads / resume_id):
+            # A private upload is only ever served with its metadata and digest intact;
+            # it never falls back to the profile's copy of the reference.
+            return read_upload(uploads, resume_id)
         profile_resume = self._profile_resume(candidate_id)
         if profile_resume is not None and profile_resume.id == resume_id:
             return profile_resume
@@ -463,18 +464,54 @@ class LocalCandidateStore:
             resume_raw = raw.get("resume")
             if not isinstance(resume_raw, dict):
                 return None
+            upload = self._private_upload_for(candidate_id, profile_path, resume_raw)
             resume, _, _ = _resolve_resume(profile_path, resume_raw)
+            if upload is not None:
+                return upload
             artifact = ResumeArtifact.model_validate(resume)
         except (CandidateNotFound, CandidateProfileInvalid, ValidationError):
             return None
-        if UPLOAD_ID.fullmatch(artifact.id):
-            try:
-                upload = read_upload(self.resumes_dir(candidate_id), artifact.id)
-            except (ResumeNotFound, CandidateProfileInvalid):
-                upload = None
-            if upload is not None and upload.artifact.path == artifact.path:
-                return upload
         return StoredResume(artifact=artifact, origin=ResumeOrigin.PROFILE, uploaded_at=None)
+
+    def _private_upload_for(
+        self, candidate_id: str, profile_path: Path, resume_raw: dict[str, Any]
+    ) -> StoredResume | None:
+        """The intact upload a profile resume entry refers to, or ``None`` for an
+        external (imported or hand-placed) resume.
+
+        An entry is a private upload when its id has the generated upload form and
+        its path lies in this candidate's ``resumes/`` directory or an upload
+        directory with that id exists. Such an entry must pass the full upload
+        check (metadata, digest, readable file) and point at the upload's own file;
+        otherwise ``CandidateProfileInvalid`` is raised. It is never accepted on
+        the strength of the profile's copy of the reference alone."""
+        resume_id = resume_raw.get("id")
+        if not isinstance(resume_id, str) or not UPLOAD_ID.fullmatch(resume_id):
+            return None
+        uploads = self.resumes_dir(candidate_id)
+        path_value = resume_raw.get("path")
+        target: Path | None = None
+        if isinstance(path_value, str) and path_value.strip():
+            given = Path(path_value).expanduser()
+            target = (given if given.is_absolute() else profile_path.parent / given).resolve()
+        if not (
+            (target is not None and target.is_relative_to(uploads))
+            or os.path.lexists(uploads / resume_id)
+        ):
+            return None
+        try:
+            upload = read_upload(uploads, resume_id)
+        except ResumeNotFound:
+            raise CandidateProfileInvalid(
+                f"{profile_path}: the selected uploaded resume {resume_id} has no metadata "
+                f"in {uploads / resume_id}; upload the resume again and select it"
+            ) from None
+        if target is not None and Path(upload.artifact.path) != target:
+            raise CandidateProfileInvalid(
+                f"{profile_path}: resume {resume_id} does not point at its uploaded file "
+                f"{upload.artifact.path}"
+            )
+        return upload
 
     def _partial_profile(self, candidate_id: str) -> tuple[CandidateIdentity | None, str | None]:
         """Identity and resume id of a profile that does not fully load."""
@@ -537,17 +574,23 @@ def _resolve_resume(
     where = f"resume.path {path_value!r}" + (
         "" if given.is_absolute() else f" (relative to {base})"
     )
-    if not resolved.exists():
+    try:
+        if not resolved.exists():
+            raise CandidateProfileInvalid(
+                f"{profile_path}: resume file not found: {resolved} from {where}"
+            )
+        if not resolved.is_file():
+            raise CandidateProfileInvalid(
+                f"{profile_path}: resume is not a regular file: {resolved}"
+            )
+        size = resolved.stat().st_size
+        if size == 0:
+            raise CandidateProfileInvalid(f"{profile_path}: resume file is empty: {resolved}")
+        digest = sha256_file(resolved)
+    except OSError as exc:
         raise CandidateProfileInvalid(
-            f"{profile_path}: resume file not found: {resolved} from {where}"
-        )
-    if not resolved.is_file():
-        raise CandidateProfileInvalid(f"{profile_path}: resume is not a regular file: {resolved}")
-    size = resolved.stat().st_size
-    if size == 0:
-        raise CandidateProfileInvalid(f"{profile_path}: resume file is empty: {resolved}")
-
-    digest = sha256_file(resolved)
+            f"{profile_path}: cannot read resume file {resolved} ({exc.strerror or exc})"
+        ) from None
     declared = resume_raw.get("sha256")
     if isinstance(declared, str) and declared != digest:
         raise CandidateProfileInvalid(
