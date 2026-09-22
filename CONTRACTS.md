@@ -108,6 +108,15 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 - **Browser inspectors (C4)** must put all instruction or attestation text that belongs to a field (`aria-describedby` text, adjacent description, legend text beyond the label) into `label` or `help_text`. Text that is not captured cannot be part of question identity.
 - `ApplicationForm.fingerprint` is the SHA-256 of the scope plus every `(field id, field fingerprint)` pair.
 - A question is therefore identified by **(form scope, field id, field fingerprint)**. The same `question_0` on two steps, or a changed question reusing an id, are different questions.
+- **Question wording (the one renderer).** `render_question(label, help_text=None, placeholder=None) -> str` and `ApplicationField.question_text` (= `render_question(field.label, field.help_text, field.placeholder)`) in `interviewmaxxing_core.forms`, re-exported from `interviewmaxxing_core` with `QUESTION_PART_SEPARATOR`:
+  - Parts appear in the fixed order **label, help text, placeholder**. Each part is trimmed and its internal whitespace runs collapse to one space. Empty or whitespace-only parts are omitted. The remaining parts are joined with `QUESTION_PART_SEPARATOR` (`"\n"`).
+  - Nothing else changes. Case, punctuation, comparison signs, currency and units (`<`, `>`, `$`, `€`, `%`) are kept verbatim, and no decoration such as `placeholder:` is added. `normalize_text` therefore treats the separator as one space, so `normalize_text(question_text)` equals the three parts joined by spaces.
+  - It covers exactly the text in `fingerprint`. Examples: `"I agree\nI certify that all application information is accurate."` and `"Expected salary\n€"`.
+- **Carriers.** `MissingInput.for_field` puts `field.question_text` in `MissingInput.label` (the user-facing wording). `UserInput.for_field` puts it in `UserInput.question`, and `UserInput.answering(missing, ...)` copies `missing.label` there. `UserInput.to_saved_answer` copies `question` to `SavedAnswer.question`. An answer given for "I agree" plus help text is therefore saved under that complete wording, not under "I agree". No schema changed, and matching and provenance rules are unchanged.
+- **Integration.**
+  - Generation (C3) should compare a saved answer's `question`/`match_phrases` with `field.question_text`, applying one comparison normalization to both sides. That normalization must keep meaning-bearing symbols.
+  - UIs (CLI/F2) display `MissingInput.label` as multi-line text and must not rebuild wording from the field label.
+  - Producers must build items with `MissingInput.for_field`/`UserInput.for_field` rather than setting `label`/`question` by hand.
 
 | `ControlType` | Answer value | Notes |
 | --- | --- | --- |

@@ -27,3 +27,9 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+# Local credentials; examples may use explicit placeholder files.
+env.local
+.env
+.env.*
+!.env.example
+.venv-task/

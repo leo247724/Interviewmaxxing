@@ -247,6 +247,9 @@ class MissingInput(Contract):
     form_step: int | None = Field(default=None, ge=0)
     field_fingerprint: str | None = Field(default=None, pattern=_SHA256)
     label: str
+    """The complete question wording shown to the user (``ApplicationField.question_text``:
+    label, help text and placeholder, newline-separated). ``UserInput.answering`` copies it
+    to ``UserInput.question``."""
     reason: MissingReason
     prompt: NonEmptyStr
     """What to ask the user, in plain language."""
@@ -281,7 +284,7 @@ class MissingInput(Contract):
             form_url=form.url,
             form_step=form.step,
             field_fingerprint=field.fingerprint,
-            label=field.label,
+            label=field.question_text,
             reason=reason,
             prompt=prompt,
             semantic_type=field.semantic_type,
@@ -332,7 +335,8 @@ class UserInput(Contract):
     field_id: NonEmptyStr
     field_fingerprint: str = Field(pattern=_SHA256)
     question: str
-    """The field label the user saw when answering."""
+    """The complete question wording the user answered (``render_question`` of label,
+    help text and placeholder). ``to_saved_answer`` copies it to ``SavedAnswer.question``."""
     semantic_type: SemanticType = SemanticType.UNKNOWN
     value: AnswerValue
     reuse: AnswerReuse = AnswerReuse.APPLICATION
@@ -409,7 +413,7 @@ class UserInput(Contract):
             form_step=form.step,
             field_id=field.id,
             field_fingerprint=field.fingerprint,
-            question=field.label,
+            question=field.question_text,
             semantic_type=field.semantic_type,
             value=value,
             reuse=reuse,

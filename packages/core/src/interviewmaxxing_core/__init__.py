@@ -64,6 +64,7 @@ from .forms import (
     EXPLICIT_ANSWER_REQUIRED,
     PROFILE_IDENTITY_TYPES,
     PROTECTED_ATTRIBUTE_TYPES,
+    QUESTION_PART_SEPARATOR,
     ApplicationField,
     ApplicationForm,
     ControlType,
@@ -71,6 +72,7 @@ from .forms import (
     FormScope,
     SemanticType,
     normalize_text,
+    render_question,
 )
 from .interfaces import (
     ApplicationBrowser,
@@ -115,6 +117,7 @@ __all__ = [
     "PRE_SUBMISSION_STATES",
     "PROFILE_IDENTITY_TYPES",
     "PROTECTED_ATTRIBUTE_TYPES",
+    "QUESTION_PART_SEPARATOR",
     "SUBMISSION_BLOCKING_STATES",
     "TERMINAL_STATES",
     "TRANSITIONS",
@@ -209,6 +212,7 @@ __all__ = [
     "normalize_application_url",
     "normalize_text",
     "provenance_problems",
+    "render_question",
     "sha256_file",
     "utc_now",
 ]
