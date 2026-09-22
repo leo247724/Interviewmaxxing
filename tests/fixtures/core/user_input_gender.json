@@ -3,7 +3,7 @@
   "form_url": "http://127.0.0.1:0/jobs/mock-4012/apply",
   "form_step": 0,
   "field_id": "gender",
-  "field_fingerprint": "db013070c4540ab89aa4cd25f05eb70be07a151ec57c52f2440c33f63d49ebbc",
+  "field_fingerprint": "d15aca904dd7ce77f731d7bd8128eed16c862f9d683fc889830639f608c26d29",
   "question": "Gender (voluntary)",
   "semantic_type": "EEO_GENDER",
   "value": {

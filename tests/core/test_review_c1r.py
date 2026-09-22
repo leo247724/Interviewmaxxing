@@ -13,6 +13,8 @@ from interviewmaxxing_core import (
     AnswerScope,
     Application,
     ApplicationField,
+    ApplicationForm,
+    ApplicationPacket,
     ApplicationState,
     ArtifactRef,
     BooleanValue,
@@ -408,3 +410,72 @@ def test_resume_answer_must_be_the_supplied_file(mock_packet, mock_form, mock_jo
         candidate=fictional_candidate, job=mock_job,
     )
     assert problems == ["'resume' does not upload the supplied resume file"]
+
+
+# --- C1R2: question text beyond the label is part of question identity ---------------
+
+
+def _attestation_form(help_text: str, *, required: bool = True, placeholder: str | None = None):
+    agree = ApplicationField(
+        id="agree", label="I agree", semantic_type=SemanticType.ATTESTATION,
+        control_type=ControlType.CHECKBOX, selector="#agree", required=required,
+        help_text=help_text, placeholder=placeholder,
+    )
+    return ApplicationForm(url="http://127.0.0.1:0/jobs/mock-4012/apply", step=0, fields=[agree])
+
+
+ACCURATE = "By checking this box I certify that my application is accurate and complete."
+NEVER_DISMISSED = "By checking this box I certify that I have never been dismissed from any job."
+
+
+def test_changed_attestation_help_text_cannot_reuse_old_authorization(
+    store, fictional_candidate
+):
+    request = store.record_request(fictional_candidate.id, "http://127.0.0.1:0/jobs/mock-4012/apply")
+    app, job = request.application, request.job
+    claim = store.claim(app.id, "run")
+    old_form = _attestation_form(ACCURATE)
+    missing = MissingInput.for_field(old_form, old_form.field("agree"),
+                                     reason=MissingReason.UNCOVERED_ATTESTATION,
+                                     prompt="Do you certify this?")
+    agreed = UserInput.answering(missing, BooleanValue(checked=True))
+    store.save_user_inputs(claim, [agreed])
+    old_packet = ApplicationPacket(
+        application_id=app.id, job_id=job.id, candidate_id=fictional_candidate.id,
+        form_url=old_form.url, form_step=0, form_fingerprint=old_form.fingerprint,
+        answers=[PacketAnswer(
+            field_id="agree", semantic_type=SemanticType.ATTESTATION, value=agreed.value,
+            provenance=Provenance(source="USER_INPUT", reference_ids=[agreed.id]),
+        )],
+    )
+    old_ctx = PacketContext(application=app, job=job, form=old_form,
+                            candidate=fictional_candidate,
+                            user_inputs=store.get_user_inputs(app.id, old_form))
+    assert old_ctx.problems(old_packet) == []  # control: valid for the question answered
+
+    # Same URL, step, id, label and control; only the attestation text changed.
+    new_form = _attestation_form(NEVER_DISMISSED)
+    assert new_form.field("agree").fingerprint != old_form.field("agree").fingerprint
+    assert not agreed.matches(new_form)
+    assert not missing.matches(new_form)
+    assert store.get_user_inputs(app.id, new_form) == []
+    with pytest.raises(ValueError, match="another form step or question"):
+        PacketContext(application=app, job=job, form=new_form, candidate=fictional_candidate,
+                      user_inputs=[agreed])
+    new_ctx = PacketContext(application=app, job=job, form=new_form,
+                            candidate=fictional_candidate,
+                            user_inputs=store.get_user_inputs(app.id, new_form))
+    problems = new_ctx.problems(old_packet)
+    assert "packet was resolved against a different inspection of this form step" in problems
+    assert f"'agree' cites unknown user input '{agreed.id}'" in problems
+
+
+def test_question_identity_ignores_formatting_and_requiredness_only():
+    base = _attestation_form(ACCURATE).field("agree")
+    reformatted = _attestation_form("  by CHECKING this box I certify that my application\n"
+                                    " is accurate and complete. ").field("agree")
+    now_optional = _attestation_form(ACCURATE, required=False).field("agree")
+    with_placeholder = _attestation_form(ACCURATE, placeholder="Type YES").field("agree")
+    assert reformatted.fingerprint == base.fingerprint
+    assert now_optional.fingerprint == base.fingerprint
+    assert with_placeholder.fingerprint != base.fingerprint

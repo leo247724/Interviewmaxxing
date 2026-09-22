@@ -215,13 +215,18 @@ class ApplicationField(Contract):
 
     @property
     def fingerprint(self) -> str:
-        """Identity of the question the user sees: normalized label, control type and
-        options (value and label). Selector, requiredness and help text are excluded."""
+        """Identity of the question the user sees: the complete normalized question
+        text (label, help text, placeholder), control type and options (value and
+        label). Any wording change makes it a different question. Selector,
+        requiredness, validation messages and input type are excluded."""
         options = sorted(
             [o.value, normalize_text(o.label)] for o in self.options or []
         )
         return _digest(
-            {"label": normalize_text(self.label), "control": self.control_type.value,
+            {"label": normalize_text(self.label),
+             "help_text": normalize_text(self.help_text or ""),
+             "placeholder": normalize_text(self.placeholder or ""),
+             "control": self.control_type.value,
              "options": options}
         )
 
