@@ -17,14 +17,14 @@ Build the supplied-URL application flow: the user chooses a job and asks to appl
 
 | Worker | Superset workspace ID | Status | Next dependency |
 | --- | --- | --- | --- |
-| core-contracts | `6a218556-206b-446f-ab32-7659bd383217` | C1 running; package files being written | Minimal contracts, SQLite store and CLI; coordinator verification before downstream dispatch |
+| core-contracts | `6a218556-206b-446f-ab32-7659bd383217` | C1 committed; C1R review fixes running | Correct and verify shared contracts before downstream dispatch |
 | job-ingestion | `60876c0b-328b-4fc8-ba66-5ef7028922eb` | parked | Later job-discovery milestone |
 | jev-selection | `82112dc8-f635-439f-a61d-c9c33f6636e3` | parked | Later automated job-selection milestone |
 | candidate-brain | `4d16e305-b074-4bdd-9ff9-f46a553ccfbf` | Opus handshake verified; C2 pending | Approved core contracts; user profile and resume for live application |
 | application-packets | `7333147f-5e19-441c-b25c-e08dc161282e` | Opus handshake verified; C3 pending | Approved core and candidate contracts |
-| browser-ats | `acff6e42-6b2f-407e-b5c8-0978a8017ca4` | C4a running: independent fixture server | C1 approval before C4 runtime; first application URL for target ATS |
+| browser-ats | `acff6e42-6b2f-407e-b5c8-0978a8017ca4` | C4a verified and merged; C4 pending | C1R approval before runtime; first application URL for target ATS |
 | queue-runtime | `04292d12-950d-40a8-b8ca-355593be29d9` | parked | Later hosted/distributed execution |
-| dashboard | `ec7d3896-d6e4-407e-85eb-a5c452224509` | F1 running; Next.js setup underway | Service interface first; integrated executor needed for F2 |
+| dashboard | `ec7d3896-d6e4-407e-85eb-a5c452224509` | F1 running; real-browser UI checks underway | Service interface first; integrated executor needed for F2 |
 
 All workers are on the local host. Their directories are `/Users/leo/.superset/worktrees/Interviewmaxxing/build/<workspace-name>`. The existing coordinator remains at `caramel-ketch` on `j-workspace`.
 
@@ -33,11 +33,18 @@ Bounded assignments and acceptance requirements are in [.handoff/mvp-build-tasks
 | Task | Terminal | Claude session | Verified model | Result |
 | --- | --- | --- | --- | --- |
 | control handshake | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `a953ca77-51e6-4b01-89cd-d7527d957d1a` | `claude-opus-5-5` from `modelUsage` | Initial and resumed assistant acknowledgments verified through terminal reads and `agents read` |
-| C1 | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `c7b3b809-7801-421c-95c1-499f7330cd14` | `claude-opus-5-5`, verified from task assistant messages | Writing contracts and store; no completion receipt yet |
-| C4a | `599558c3-fd93-43ce-a29c-9c9702b23b69` | `5947e2df-8de9-43a3-ae01-09ac9898b1af` | `claude-opus-5-5`, verified from task assistant messages | Running; no completion receipt yet |
+| C1 / C1R | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `c7b3b809-7801-421c-95c1-499f7330cd14` | `claude-opus-5-5`, verified from task assistant messages | C1 `897c08e7e54c6d0c62431e6061c63cb77737c15d`, worker reports 179 tests, ruff, strict mypy and clean install; C1R assigned via same session before merge |
+| C4a | `599558c3-fd93-43ce-a29c-9c9702b23b69` | `5947e2df-8de9-43a3-ae01-09ac9898b1af` | `claude-opus-5-5`, verified from task assistant messages | `2382f65` independently verified and merged as `f2e3d6b`; terminal kept for C4 |
 | Candidate readiness | `8ea7cdf0-d32c-4938-87fa-df5f94f48ec1` | `a02f1151-7b8a-4f99-bdbb-3cf48fa103b8` | Actual acknowledgment and `claude-opus-5-5` model usage verified | No implementation assigned yet |
 | Packet readiness | `277d2333-35ea-4ebb-83d4-3f0985a2eaa5` | `aa8b5af2-edcb-4a1e-81db-4788ff33874c` | Actual acknowledgment and `claude-opus-5-5` model usage verified | No implementation assigned yet |
 | F1 | `043d3f36-8a95-49a6-bc97-ea1255a7283f` | `7741a68f-82d8-4d3a-89fd-41dab783e3f6` | `claude-opus-5-5`, verified from task assistant messages | Next.js dependencies installed; frontend implementation in progress |
+
+## Completed verification
+
+- C4a changes are confined to its six allowed fixture files. The coordinator reran all 28 stdlib HTTP tests successfully on Python 3.12 and checked the text diff. PDF cross-reference trailing spaces are valid fixture bytes and were excluded from text whitespace checking.
+- The coordinator started an isolated mock server from the merged tree and used Playwright CLI/Chromium to fill native controls, select machine-backed choices and upload the fictional resume. The page showed acceptance for BWA-ENG-101 with reference `BWA-000001` at `2026-09-22T22:02:16Z`; an independent server query found exactly one accepted POST and the correct uploaded SHA-256.
+- That coordinator-only browser session and mock server were closed cleanly. Snapshot evidence is under `/var/folders/wy/jv0dwczn75d5s_7w71jb7vpr0000gn/T/imx-coordinator-browser-4u0ulxsr/.playwright-cli/`; no real employer or candidate data was used.
+- Initial C1 review found concrete packet/form provenance, multistep answer identity, and disabled/mismatched choice validation issues. [.handoff/c1-review.md](.handoff/c1-review.md) contains the assigned corrections plus explicit saved-answer scope and verified-fact requirements. C1R must also restore the documented core/coordinator-only shared lockfile ownership before downstream tasks start.
 
 ## Control-path evidence — 2026-09-22
 
@@ -52,4 +59,4 @@ Bounded assignments and acceptance requirements are in [.handoff/mvp-build-tasks
 
 ## Next action
 
-Monitor C1, C4a and F1 through Superset, inspect actual code and test results, and integrate approved contracts. Then dispatch candidate and browser runtime work, followed by packet resolution, CLI integration and the real frontend bridge. A read-only reviewer is inspecting the emerging core contracts while the coordinator manages the other workers. The user has been asked for the target URL and verified profile/resume source paths needed for real acceptance; local fixture development proceeds independently. No Jev setup is required for this milestone.
+Monitor C1R and F1 through Superset. Independently verify the corrected contracts and integrate them, then refresh and dispatch candidate and browser runtime work. Packet resolution, CLI integration and the real frontend bridge follow. The user has been asked for the target URL and verified profile/resume source paths needed for real acceptance; local fixture development proceeds independently. No Jev setup is required for this milestone.
