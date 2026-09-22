@@ -18,7 +18,7 @@ import fcntl
 import os
 import re
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -50,13 +50,14 @@ from .resumes import (
     DEFAULT_MAX_RESUME_BYTES,
     RESUMES_DIRNAME,
     UPLOAD_ID,
+    DamagedResume,
     ResumeNotFound,
     ResumeOrigin,
     StoredResume,
     check_resume_content,
-    list_uploads,
     read_upload,
     safe_resume_filename,
+    scan_uploads,
     write_upload,
 )
 
@@ -138,6 +139,8 @@ class CandidateSetup:
     """True when ``load`` succeeds, i.e. the profile can be used to apply."""
     problem: str | None
     """The ``CandidateProfileInvalid`` message when the profile exists but cannot load."""
+    damaged_resumes: tuple[DamagedResume, ...] = ()
+    """Uploads left out of ``resumes`` because their file or metadata is damaged."""
 
 
 class LocalCandidateStore:
@@ -346,17 +349,24 @@ class LocalCandidateStore:
         )
 
     def list_resumes(self, candidate_id: str) -> list[StoredResume]:
-        """Uploaded resumes (oldest first), then the resume an existing ``profile.json``
-        references if it is not an upload and its file checks out (origin PROFILE).
-        Arbitrary files are never copied or listed."""
-        resumes = list_uploads(self.resumes_dir(candidate_id))
+        """Usable uploaded resumes (oldest first), then the resume an existing
+        ``profile.json`` references if it is not an upload and its file checks out
+        (origin PROFILE). Damaged uploads are skipped individually (see
+        ``candidate_setup().damaged_resumes``). Arbitrary files are never copied or
+        listed."""
+        return self._scan_resumes(candidate_id)[0]
+
+    def _scan_resumes(self, candidate_id: str) -> tuple[list[StoredResume], list[DamagedResume]]:
+        resumes, damaged = scan_uploads(self.resumes_dir(candidate_id))
         profile_resume = self._profile_resume(candidate_id)
         if profile_resume is not None and profile_resume.id not in {r.id for r in resumes}:
             resumes.append(profile_resume)
-        return resumes
+        return resumes, damaged
 
     def get_resume(self, candidate_id: str, resume_id: str) -> StoredResume:
-        """One resume from ``list_resumes``. Raises ``ResumeNotFound``."""
+        """One resume from ``list_resumes``. Strict: raises ``ResumeNotFound`` for an
+        unknown id (or an upload without metadata) and ``CandidateProfileInvalid`` for
+        a damaged upload."""
         if UPLOAD_ID.fullmatch(resume_id):
             try:
                 return read_upload(self.resumes_dir(candidate_id), resume_id)
@@ -417,17 +427,30 @@ class LocalCandidateStore:
 
     def candidate_setup(self, candidate_id: str) -> CandidateSetup:
         """Contact details, resumes and completeness for the setup UI. Works before
-        any profile exists (nothing is invented) and for imported profiles."""
-        resumes = tuple(self.list_resumes(candidate_id))
-        if not self.profile_path(candidate_id).exists():
-            return CandidateSetup(candidate_id, None, resumes, None, False, None)
-        try:
-            profile = self.load(candidate_id)
-        except CandidateProfileInvalid as exc:
-            identity, selected = self._partial_profile(candidate_id)
-            return CandidateSetup(candidate_id, identity, resumes, selected, False, str(exc))
+        any profile exists (nothing is invented) and for imported profiles.
+
+        The resumes and the profile are read as one snapshot under a shared candidate
+        lock, so a concurrent ``upsert_profile`` (exclusive lock) happens entirely
+        before or after it: a selected upload is always among ``resumes`` unless it
+        is damaged. Damaged uploads are reported in ``damaged_resumes`` without
+        hiding the usable ones."""
+        directory = self.candidate_dir(candidate_id)
+        if not directory.is_dir():
+            return CandidateSetup(candidate_id, None, (), None, False, None)
+        with _candidate_lock(directory / _LOCK_FILENAME, shared=True):
+            listed, damaged_list = self._scan_resumes(candidate_id)
+            resumes, damaged = tuple(listed), tuple(damaged_list)
+            if not self.profile_path(candidate_id).exists():
+                return CandidateSetup(candidate_id, None, resumes, None, False, None, damaged)
+            try:
+                profile = self.load(candidate_id)
+            except CandidateProfileInvalid as exc:
+                identity, selected = self._partial_profile(candidate_id)
+                return CandidateSetup(
+                    candidate_id, identity, resumes, selected, False, str(exc), damaged
+                )
         return CandidateSetup(
-            candidate_id, profile.identity, resumes, profile.resume.id, True, None
+            candidate_id, profile.identity, resumes, profile.resume.id, True, None, damaged
         )
 
     # --- internals -----------------------------------------------------------------
@@ -593,11 +616,16 @@ def _read_answers(path: Path) -> list[SavedAnswer]:
     return answers
 
 
+def _exclusive_lock(path: Path) -> AbstractContextManager[None]:
+    return _candidate_lock(path, shared=False)
+
+
 @contextmanager
-def _exclusive_lock(path: Path) -> Iterator[None]:
+def _candidate_lock(path: Path, *, shared: bool) -> Iterator[None]:
+    """Per-candidate ``flock``: writers exclusive, snapshot readers shared."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)

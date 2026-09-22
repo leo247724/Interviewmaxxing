@@ -36,8 +36,9 @@ if saved is not None:
 store.store_resume(candidate_id, *, filename: str, content: bytes,
                    media_type: str | None = None) -> StoredResume
     # Raises ResumeRejected (400-type input error; nothing stored) or CandidateNotFound (invalid id).
-store.list_resumes(candidate_id) -> list[StoredResume]
-store.get_resume(candidate_id, resume_id: str) -> StoredResume          # raises ResumeNotFound
+store.list_resumes(candidate_id) -> list[StoredResume]                 # usable resumes only; damaged uploads skipped
+store.get_resume(candidate_id, resume_id: str) -> StoredResume
+    # Strict: ResumeNotFound (unknown id, or upload without metadata), CandidateProfileInvalid (damaged upload).
 store.upsert_profile(candidate_id, *, identity: CandidateIdentity,
                      resume_id: str) -> CandidateProfile
     # Raises ResumeNotFound, CandidateProfileInvalid (nothing written), CandidateNotFound (invalid id).
@@ -58,6 +59,12 @@ class CandidateSetup:
     selected_resume_id: str | None       # the resume profile.json references
     complete: bool                       # load() succeeds: ready to apply
     problem: str | None                  # CandidateProfileInvalid message (contains local paths) when not loadable
+    damaged_resumes: tuple[DamagedResume, ...] = ()   # uploads left out of `resumes` (C2P1 addition)
+
+@dataclass(frozen=True)
+class DamagedResume:
+    resume_id: str
+    problem: str                         # missing file or metadata, unreadable metadata, sha256 mismatch (contains local paths)
 ```
 
 Mapping to the frontend `CandidateView`: `profile` ← `identity` (all fields empty when `None`); `resumes[]` ← `{id, fileName: artifact.filename, sizeBytes: artifact.size_bytes, uploadedAt: uploaded_at}` (a PROFILE resume has no upload time); `defaultResumeId` ← `selected_resume_id`. `CandidateProfileInput.location` is one string while `CandidateIdentity.address` is structured. The service decides how to map it; this package does not parse it.
@@ -71,7 +78,11 @@ Mapping to the frontend `CandidateView`: `profile` ← `identity` (all fields em
   - Every other key of an existing `profile.json` is kept verbatim: facts, experience, education, and embedded `saved_answers`, including tied conflicts. Loading reconciles them but this function does not. `answers.json` and application history (the state database) are untouched, and the candidate id does not change.
   - A new profile starts with empty facts, answers, experience and education.
   - The resulting profile is validated as `load()` would before it is written, atomically (`0600`), under the same per-candidate lock as `save_answer`. An existing profile that cannot be parsed or validated raises `CandidateProfileInvalid`, and nothing is overwritten.
-- **Concurrency.** Uploads need no lock because each has a fresh id and an atomic rename. `upsert_profile` and `save_answer` serialize on `<candidate_id>/.answers.lock`.
+- **Damaged uploads.** Listing checks each upload directory separately. An upload whose file or `meta.json` is missing or unreadable, or whose file no longer matches its sha256, is left out of `list_resumes()` and `CandidateSetup.resumes` and reported in `CandidateSetup.damaged_resumes`. The other resumes stay selectable, so one damaged old upload never blocks the setup view or a replacement upload. `get_resume` stays strict. If the *selected* upload is damaged, `candidate_setup` reports `complete=False` with a `problem`, and selecting another resume repairs the profile.
+- **Concurrency.**
+  - Uploads need no lock because each has a fresh id and an atomic rename.
+  - `upsert_profile` and `save_answer` take an exclusive lock on `<candidate_id>/.answers.lock`.
+  - `candidate_setup` takes a shared lock on the same file across listing and the profile read, so the result is a consistent snapshot. A concurrent selection happens entirely before or after it, and a usable selected upload is always among `resumes`.
 
 ## Files
 

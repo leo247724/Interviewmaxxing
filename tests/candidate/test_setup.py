@@ -15,10 +15,12 @@ import pytest
 
 from interviewmaxxing_candidate import (
     CandidateSetup,
+    DamagedResume,
     LocalCandidateStore,
     ResumeNotFound,
     ResumeOrigin,
     ResumeRejected,
+    StoredResume,
     safe_resume_filename,
 )
 from interviewmaxxing_core import (
@@ -445,3 +447,142 @@ def test_concurrent_profile_updates_and_answer_saves(
     assert profile.resume.id in {u.id for u in uploads}
     assert {f"sa.q{i}" for i in range(6)} <= {a.id for a in profile.saved_answers}
     assert profile.fact("fact.current_title").value == "Paid Media Lead"
+
+
+# --- damaged uploads (C2P1) -------------------------------------------------------------
+
+
+def _break_missing_data(upload: StoredResume) -> None:
+    Path(upload.artifact.path).unlink()
+
+
+def _break_digest(upload: StoredResume) -> None:
+    stored = Path(upload.artifact.path)
+    stored.chmod(0o600)
+    stored.write_text("Changed after upload\n")
+
+
+def _break_missing_meta(upload: StoredResume) -> None:
+    (Path(upload.artifact.path).parent / "meta.json").unlink()
+
+
+def _break_malformed_meta(upload: StoredResume) -> None:
+    meta = Path(upload.artifact.path).parent / "meta.json"
+    meta.chmod(0o600)
+    meta.write_text('{"id": ')
+
+
+@pytest.mark.parametrize(
+    ("damage", "strict_error"),
+    [
+        (_break_missing_data, CandidateProfileInvalid),
+        (_break_digest, CandidateProfileInvalid),
+        (_break_missing_meta, ResumeNotFound),
+        (_break_malformed_meta, CandidateProfileInvalid),
+    ],
+)
+def test_damaged_unselected_upload_does_not_break_setup(
+    candidate_store: LocalCandidateStore,
+    damage: Callable[[StoredResume], None],
+    strict_error: type[Exception],
+) -> None:
+    old = candidate_store.store_resume("default", filename="old.txt", content=b"Old CV\n")
+    current = candidate_store.store_resume("default", filename="current.txt", content=b"CV\n")
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=current.id)
+    damage(old)
+
+    assert candidate_store.load("default").resume.id == current.id
+    setup = candidate_store.candidate_setup("default")
+    assert setup.complete and setup.problem is None
+    assert [r.id for r in setup.resumes] == [current.id]  # valid choices retained
+    assert setup.selected_resume_id == current.id
+    assert [d.resume_id for d in setup.damaged_resumes] == [old.id]
+    assert setup.damaged_resumes[0].problem
+    assert [r.id for r in candidate_store.list_resumes("default")] == [current.id]
+    with pytest.raises(strict_error):
+        candidate_store.get_resume("default", old.id)  # direct access stays strict
+
+    # Uploading and selecting a replacement still works.
+    replacement = candidate_store.store_resume("default", filename="new.pdf", content=PDF)
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=replacement.id)
+    after = candidate_store.candidate_setup("default")
+    assert after.complete and after.selected_resume_id == replacement.id
+    assert [r.id for r in after.resumes] == [current.id, replacement.id]
+    assert [d.resume_id for d in after.damaged_resumes] == [old.id]
+
+
+def test_damaged_selected_upload_is_reported_and_recoverable(
+    candidate_store: LocalCandidateStore,
+) -> None:
+    other = candidate_store.store_resume("default", filename="other.txt", content=b"Other\n")
+    current = candidate_store.store_resume("default", filename="current.txt", content=b"CV\n")
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=current.id)
+    _break_digest(current)
+
+    setup = candidate_store.candidate_setup("default")
+    assert not setup.complete
+    assert setup.problem is not None and "sha256" in setup.problem
+    assert setup.identity == identity() and setup.selected_resume_id == current.id
+    assert [r.id for r in setup.resumes] == [other.id]
+    assert [d.resume_id for d in setup.damaged_resumes] == [current.id]
+
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=other.id)
+    recovered = candidate_store.candidate_setup("default")
+    assert recovered.complete and recovered.selected_resume_id == other.id
+
+
+# --- consistent setup snapshot (C2P1) ---------------------------------------------------
+
+
+def test_setup_snapshot_is_consistent_with_concurrent_selection(
+    candidate_store: LocalCandidateStore, paths: LocalPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = candidate_store.store_resume("default", filename="first.pdf", content=PDF)
+    candidate_store.upsert_profile("default", identity=identity(), resume_id=first.id)
+
+    reader = LocalCandidateStore.from_paths(paths)
+    writer = LocalCandidateStore.from_paths(paths)
+    enumerated = threading.Event()
+    proceed = threading.Event()
+    scan = reader._scan_resumes
+
+    def paused_scan(candidate_id: str) -> tuple[list[StoredResume], list[DamagedResume]]:
+        result = scan(candidate_id)
+        enumerated.set()
+        assert proceed.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(reader, "_scan_resumes", paused_scan)
+    results: list[CandidateSetup] = []
+    reader_thread = threading.Thread(
+        target=lambda: results.append(reader.candidate_setup("default"))
+    )
+    reader_thread.start()
+    assert enumerated.wait(timeout=10)
+
+    # While the reader is paused between enumeration and profile read, another
+    # store uploads a new resume and tries to select it.
+    second = writer.store_resume("default", filename="second.pdf", content=PDF)
+    selected = threading.Event()
+
+    def select_second() -> None:
+        writer.upsert_profile("default", identity=identity(), resume_id=second.id)
+        selected.set()
+
+    writer_thread = threading.Thread(target=select_second)
+    writer_thread.start()
+    assert not selected.wait(timeout=0.3)  # the selection waits for the snapshot
+
+    proceed.set()
+    reader_thread.join(timeout=10)
+    writer_thread.join(timeout=10)
+    assert not reader_thread.is_alive() and not writer_thread.is_alive()
+    assert selected.is_set()
+
+    [snapshot] = results
+    assert snapshot.complete and snapshot.selected_resume_id == first.id
+    assert snapshot.selected_resume_id in {r.id for r in snapshot.resumes}
+
+    later = writer.candidate_setup("default")
+    assert later.selected_resume_id == second.id
+    assert [r.id for r in later.resumes] == [first.id, second.id]

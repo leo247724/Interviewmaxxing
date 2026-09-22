@@ -204,16 +204,43 @@ def read_upload(resumes_dir: Path, resume_id: str) -> StoredResume:
     return StoredResume(artifact=artifact, origin=ResumeOrigin.UPLOADED, uploaded_at=uploaded_at)
 
 
-def list_uploads(resumes_dir: Path) -> list[StoredResume]:
-    """Complete uploads, oldest first. Staging directories are ignored."""
+@dataclass(frozen=True)
+class DamagedResume:
+    """An upload directory that can no longer be offered: its file or metadata is
+    missing, unreadable or does not match the recorded sha256."""
+
+    resume_id: str
+    problem: str
+    """Why, as ``read_upload`` reports it (may contain local paths)."""
+
+
+def scan_uploads(resumes_dir: Path) -> tuple[list[StoredResume], list[DamagedResume]]:
+    """Every upload directory, checked one by one: usable uploads oldest first, and
+    damaged ones by id. One damaged upload never hides the others. Hidden staging
+    directories are ignored."""
     if not resumes_dir.is_dir():
-        return []
-    uploads = [
-        read_upload(resumes_dir, entry.name)
-        for entry in resumes_dir.iterdir()
-        if entry.is_dir() and UPLOAD_ID.fullmatch(entry.name)
-    ]
-    return sorted(uploads, key=lambda r: (r.uploaded_at or _EPOCH, r.id))
+        return [], []
+    uploads: list[StoredResume] = []
+    damaged: list[DamagedResume] = []
+    for entry in sorted(resumes_dir.iterdir()):
+        if not (entry.is_dir() and UPLOAD_ID.fullmatch(entry.name)):
+            continue
+        if not (entry / RESUME_META_FILENAME).is_file():
+            # Complete uploads are renamed into place with their metadata, so a
+            # published directory without it is damaged, not absent.
+            damaged.append(DamagedResume(entry.name, f"{entry}: resume metadata is missing"))
+            continue
+        try:
+            uploads.append(read_upload(resumes_dir, entry.name))
+        except (ResumeNotFound, CandidateProfileInvalid) as exc:
+            damaged.append(DamagedResume(entry.name, str(exc)))
+    uploads.sort(key=lambda r: (r.uploaded_at or _EPOCH, r.id))
+    return uploads, damaged
+
+
+def list_uploads(resumes_dir: Path) -> list[StoredResume]:
+    """Usable uploads, oldest first; damaged ones are skipped (see ``scan_uploads``)."""
+    return scan_uploads(resumes_dir)[0]
 
 
 def _write_readonly(path: Path, content: bytes) -> None:

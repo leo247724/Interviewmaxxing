@@ -14,6 +14,7 @@ from .answers import (
 from .resumes import (
     DEFAULT_MAX_RESUME_BYTES,
     RESUME_UPLOAD_TYPES,
+    DamagedResume,
     ResumeNotFound,
     ResumeOrigin,
     ResumeRejected,
@@ -40,6 +41,7 @@ __all__ = [
     "AnswerReconciliation",
     "CandidateLoadReport",
     "CandidateSetup",
+    "DamagedResume",
     "LocalCandidateStore",
     "ResumeNotFound",
     "ResumeOrigin",
