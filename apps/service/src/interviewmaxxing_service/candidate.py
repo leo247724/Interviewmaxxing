@@ -9,10 +9,11 @@ Identity mapping. The frontend edits seven strings. They map onto the canonical
 ``CandidateIdentity`` without inventing anything:
 
 * ``location`` is the rendering the packet resolver uses for LOCATION questions:
-  ``"City, Region, Country"`` (empty parts omitted). An unchanged location keeps the
+  ``"City, Region[, Country]"`` (empty parts omitted). An unchanged location keeps the
   stored ``PostalAddress`` exactly (street and postal code included). A new location
-  is split on commas: one part is a city, two are city and country, three are city,
-  region and country. Anything else is rejected with a field error rather than guessed.
+  is split on commas: one part is a city, two are city and region (``"Austin, TX"``),
+  three are city, region and country. No country is inferred from a region. Anything
+  else is rejected with a field error rather than guessed.
 * ``preferred_name`` and ``github_url`` are not edited by the frontend and are kept.
 * ``verified_at`` is the time the user confirmed the details on screen. It changes only
   when a value changed; resubmitting identical details keeps the original time.
@@ -108,17 +109,20 @@ def render_location(address: PostalAddress) -> str:
 
 
 def _parse_location(text: str) -> PostalAddress:
+    # The frontend labels this field "City and region" ("Austin, TX"). Two parts are
+    # city and region; a country is never inferred from a region. Only an explicit
+    # third part is a country.
     parts = [" ".join(p.split()) for p in text.split(",")]
     if any(not p for p in parts):
-        raise CandidateSetupError("location", "Write the location as “City, Region, Country”.")
+        raise CandidateSetupError("location", "Write the location as “City, Region”.")
     if len(parts) == 1:
         return PostalAddress(city=parts[0])
     if len(parts) == 2:
-        return PostalAddress(city=parts[0], country=parts[1])
+        return PostalAddress(city=parts[0], region=parts[1])
     if len(parts) == 3:
         return PostalAddress(city=parts[0], region=parts[1], country=parts[2])
     raise CandidateSetupError(
-        "location", "Use at most three parts: “City, Region, Country”."
+        "location", "Use “City, Region” or “City, Region, Country”."
     )
 
 

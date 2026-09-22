@@ -156,11 +156,27 @@ class EvidenceView(View):
     source: Literal["site", "user"]
 
 
+ConfirmationAuthority = Literal["site", "user"]
+ConfirmationMethod = Literal[
+    "SUBMISSION_OBSERVED",
+    "SITE_CONFIRMATION",
+    "ATS_CANDIDATE_PORTAL",
+    "CONFIRMATION_EMAIL",
+    "USER_CONFIRMED",
+]
+
+
 class SubmissionReceiptView(View):
     receipt_id: str
     submitted_at: str
     confirmation_reference: str | None
     evidence: list[EvidenceView]
+    confirmation_method: ConfirmationMethod
+    """How acceptance was established: observed right after submit, or the
+    ``ReconciliationMethod`` that settled an uncertain submission."""
+    confirmation_authority: ConfirmationAuthority
+    """Who established it. ``user`` exactly when the method is ``USER_CONFIRMED``, even
+    if site artifacts (screenshots of the uncertain page) are listed as evidence."""
 
 
 class PriorSubmissionView(View):

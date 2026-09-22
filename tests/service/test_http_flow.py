@@ -122,6 +122,8 @@ def test_full_flow_answers_resume_receipt_and_repeat(harness: Harness) -> None:
     done = poll(harness, app_id, {"SUBMITTED"})
     receipt = done["receipt"]
     assert receipt["confirmationReference"] == "FIC-000001"
+    assert receipt["confirmationMethod"] == "SUBMISSION_OBSERVED"
+    assert receipt["confirmationAuthority"] == "site"
     assert {e["source"] for e in receipt["evidence"]} == {"site"}
     assert any(e["kind"] == "screenshot" and e["href"] for e in receipt["evidence"])
     assert harness.site.accepted_posts == 1
@@ -264,6 +266,8 @@ def test_uncertain_submission_locks_and_reconciles_through_the_site(harness: Har
     settled = harness.client.post(f"/applications/{app_id}/reconcile", {"kind": "recheck"})
     assert settled.json["state"] == "SUBMITTED"
     assert settled.json["receipt"]["confirmationReference"] == "FIC-000001"
+    assert settled.json["receipt"]["confirmationMethod"] == "SITE_CONFIRMATION"
+    assert settled.json["receipt"]["confirmationAuthority"] == "site"
     assert harness.site.accepted_posts == 1
 
 
@@ -283,6 +287,11 @@ def test_user_found_confirmation_is_attributed_to_the_user(harness: Harness) -> 
     assert view["receipt"]["confirmationReference"] == "EM-42"
     sources = {e["source"] for e in view["receipt"]["evidence"] if e["kind"] == "user_report"}
     assert sources == {"user"}
+    # The uncertain page's screenshots are still listed as site artifacts, but they
+    # did not confirm anything: the receipt's authority is the user's report.
+    assert {e["source"] for e in view["receipt"]["evidence"]} == {"site", "user"}
+    assert view["receipt"]["confirmationMethod"] == "USER_CONFIRMED"
+    assert view["receipt"]["confirmationAuthority"] == "user"
     assert "on your report" in view["events"][-1]["message"]
     with harness.store() as store:
         receipt = store.get_receipt(app_id)

@@ -162,18 +162,32 @@ class Dispatcher:
             if isinstance(run.error, (KeyboardInterrupt, SystemExit)):
                 raise run.error
 
-    def shutdown(self, timeout: float = 5.0) -> None:
-        """Stop the loop. A run still in progress is cancelled; the store's claim and
-        submission lease make an interrupted submit durable SUBMISSION_UNKNOWN."""
+    def shutdown(self, timeout: float = 5.0, *, cancel_timeout: float = 10.0) -> None:
+        """Stop the loop.
+
+        A run still in progress after ``timeout`` is cancelled, and the loop keeps
+        running until the cancelled coroutines have finished (bounded by
+        ``cancel_timeout``), so the runner's ``finally`` blocks can await their cleanup
+        (close the browser, release the claim). Only then is the loop stopped. An
+        interrupted submit stays durable through the store's claim and submission
+        lease and becomes SUBMISSION_UNKNOWN, never a retry."""
         run = self.current
         if run is not None:
             run.done.wait(timeout)
 
-        def _cancel_all() -> None:
-            for task in asyncio.all_tasks(self._loop):
+        async def _cancel_and_wait() -> None:
+            me = asyncio.current_task()
+            tasks = [t for t in asyncio.all_tasks() if t is not me and not t.done()]
+            for task in tasks:
                 task.cancel()
-            self._loop.call_soon(self._loop.stop)
+            if tasks:
+                await asyncio.wait(tasks, timeout=cancel_timeout)
 
         if self._loop.is_running():
-            self._loop.call_soon_threadsafe(_cancel_all)
+            done = asyncio.run_coroutine_threadsafe(_cancel_and_wait(), self._loop)
+            try:
+                done.result(cancel_timeout + 1.0)
+            except Exception as exc:  # timeout or loop already closing
+                log.warning("executor shutdown did not finish cleanly: %s", type(exc).__name__)
+            self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout)

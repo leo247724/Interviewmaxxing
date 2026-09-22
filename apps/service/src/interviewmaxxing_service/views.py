@@ -398,11 +398,18 @@ def _receipt_view(public_base: str, receipt: Receipt) -> SubmissionReceiptView:
                 source="user" if by_user else "site",
             )
         )
+    method = (
+        receipt.reconciliation_method.value
+        if receipt.reconciliation_method is not None
+        else "SUBMISSION_OBSERVED"
+    )
     return SubmissionReceiptView(
         receipt_id=f"rcpt_{receipt.attempt_id}",
         submitted_at=iso(receipt.submitted_at),
         confirmation_reference=receipt.confirmation_reference,
         evidence=items,
+        confirmation_method=method,
+        confirmation_authority="user" if by_user else "site",
     )
 
 

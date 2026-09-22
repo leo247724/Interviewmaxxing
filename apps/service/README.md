@@ -24,7 +24,7 @@ IMX_HOME=$PWD/.imx IMX_SERVICE_ORIGIN=http://127.0.0.1:4317 \
 | `IMX_SERVICE_MAX_UPLOAD` | `10485760` | Resume upload limit (bytes) |
 | `IMX_HOME`, `IMX_CANDIDATE_ID`, ... | see CONTRACTS.md §8 | Local data paths and the configured stable candidate id |
 
-On start the service marks submissions interrupted by an earlier process as `SUBMISSION_UNKNOWN` (`recover_interrupted_submissions`). Stop it with Ctrl-C or SIGTERM. A run still in progress is cancelled. An interrupted submit stays durable `SUBMITTING`/`SUBMISSION_UNKNOWN` through the store's claim lease, so it is never retried.
+On start the service marks submissions interrupted by an earlier process as `SUBMISSION_UNKNOWN` (`recover_interrupted_submissions`). Stop it with Ctrl-C or SIGTERM. A run still in progress is cancelled. The executor loop keeps running until the cancelled run's `finally` blocks finish (bounded), so the runner can await browser cleanup and release its claim. Only then does the loop stop. An interrupted submit stays durable `SUBMITTING`/`SUBMISSION_UNKNOWN` through the store's claim lease, so it is never retried.
 
 ## HTTP contract (for F2)
 
@@ -72,7 +72,7 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
 ## Behaviour
 
 - **Candidate.** `GET /candidate` shows the canonical profile (or empty strings before setup), the supplied resumes and `defaultResumeId` (the profile's resume). The configured `IMX_CANDIDATE_ID` is the identity; nothing is keyed by content.
-- **Start.** Validates the URL, the chosen resume and the confirmed profile. `location` is `"City, Region, Country"`, split on commas into 1-3 parts; other shapes are a field error, never a guess. An unchanged location keeps the stored `PostalAddress` and an unchanged profile keeps its `verified_at`. The profile is saved through C2P only when it changed. The service then records the request through `store.record_request` **synchronously**, before any run, and returns the id (`201`) while the run continues on the executor thread. A repeat returns the same application (`200`), and nothing is sent again when it was submitted, is submitting or is unknown. Only one run uses the browser at a time. A request for another application while one is running gets `409` and is **not** recorded.
+- **Start.** Validates the URL, the chosen resume and the confirmed profile. `location` is the frontend's "City and region" field: `"Austin, TX"` is city `Austin`, region `TX`. Only an explicit third part is a country (`"Austin, TX, USA"`); no country is inferred from a region. More than three parts is a field error, never a guess. An unchanged location keeps the stored `PostalAddress` and an unchanged profile keeps its `verified_at`. The profile is saved through C2P only when it changed. The service then records the request through `store.record_request` **synchronously**, before any run, and returns the id (`201`) while the run continues on the executor thread. A repeat returns the same application (`200`), and nothing is sent again when it was submitted, is submitting or is unknown. Only one run uses the browser at a time. A request for another application while one is running gets `409` and is **not** recorded.
 - **Questions.** `needs.questions`/`attestations` come from the latest packet's missing inputs. Labels, help text and options are the site's own, verbatim; placeholder and disabled options are never offered. Question ids are `q_` + a hash of (form scope, field id, field fingerprint), stable across reloads and new if the site changes the wording. Single checkboxes for consent/attestation are `attestations`; they show `accepted: true` only when the user accepted them.
 - **Answers.** Every value is translated against the question's own options (machine `value` + visible `label`) and built with `UserInput.answering`, which keeps the exact wording, scope and fingerprint. All-or-nothing: any invalid value → `needs.errors`, nothing saved. An unknown/stale id → `409`. Blank values are skipped (draft save). Reuse defaults to **this application**. The optional request field `reuse: {questionId: "application"|"job"|"global"}` saves the answer through the candidate package's `save_answer` with that scope. Declining a required statement is refused.
 - **Resume.** Allowed from `NEEDS_INPUT` (all required questions answered, else `422` keyed by id), `FAILED_RETRYABLE` and an interrupted pre-submission state. The run is started with browser actions allowed, so the user can sign in or solve a CAPTCHA in the visible window. Refused (`409`) for `SUBMITTING`, `SUBMISSION_UNKNOWN`, `SUBMITTED` and closed states.
@@ -82,6 +82,21 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
   - `user_confirmed_not_received` is recorded as user evidence and an event. The state **stays `SUBMISSION_UNKNOWN`**: a user's report is not proof of non-submission, so it does not unlock a second submission (this intentionally differs from the F1 preview). Only a site recheck can establish `NOT_SUBMITTED`.
 - **Failures.** If a run raises before submitting, the service moves the application to `FAILED_RETRYABLE` ("nothing was sent"), so the user can try again. A run that dies during submit is left to the store: it becomes `SUBMISSION_UNKNOWN` when the lease lapses, and status reads trigger that recovery.
 - **Logs** contain method, route template and status only. Runner errors are logged by exception type.
+
+### Receipt confirmation (S1R, additive DTO fields for F2)
+
+`ApplicationView.receipt` (`SubmissionReceiptView`) carries two explicit fields in addition to the F1 shape:
+
+```ts
+confirmationMethod: "SUBMISSION_OBSERVED" | "SITE_CONFIRMATION" | "ATS_CANDIDATE_PORTAL" | "CONFIRMATION_EMAIL" | "USER_CONFIRMED";
+confirmationAuthority: "site" | "user";
+```
+
+- `SUBMISSION_OBSERVED`: the site's acceptance was observed right after submit (`Receipt.reconciliation_method` is null).
+- The other methods are the canonical `ReconciliationMethod` that settled a `SUBMISSION_UNKNOWN`.
+- `confirmationAuthority` is `"user"` exactly when the method is `USER_CONFIRMED`, and `"site"` otherwise.
+
+The frontend must label a receipt from these fields, not from its evidence list. A user-confirmed receipt can still list site artifacts (for example, screenshots of the uncertain page, `source: "site"`). They did not confirm anything, so the receipt stays user-reported.
 
 ## Public Python API
 

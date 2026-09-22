@@ -71,8 +71,12 @@ def test_identity_mapping_keeps_what_the_user_did_not_change() -> None:
     assert moved.address == current.address  # location unchanged: street/postal kept
     assert moved.preferred_name == "Ave" and moved.github_url == current.github_url
 
-    relocated = identity_from_input(_input(location="Lyon, France"), current=current, now=NOW)
-    assert relocated.address == PostalAddress(city="Lyon", country="France")
+    # The frontend field is "City and region": two parts are city and region, and no
+    # country is invented from a region.
+    austin = identity_from_input(_input(location="Austin, TX"), current=current, now=NOW)
+    assert austin.address == PostalAddress(city="Austin", region="TX")
+    explicit = identity_from_input(_input(location="Austin, TX, USA"), current=None, now=NOW)
+    assert explicit.address == PostalAddress(city="Austin", region="TX", country="USA")
     assert identity_from_input(_input(location=""), current=None, now=NOW).address == PostalAddress()
     with pytest.raises(CandidateSetupError) as err:
         identity_from_input(_input(location="a,,b"), current=None, now=NOW)
