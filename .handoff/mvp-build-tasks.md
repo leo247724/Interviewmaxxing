@@ -75,6 +75,19 @@ For required free text, prefer an explicitly supplied answer. Only assemble grou
 
 Acceptance: typed fixture-to-packet tests; truthful provenance; missing required answers; optional omissions; boolean/zero handling; exact option translation; no inferred consent/protected data/eligibility; stable answer keys across a resumed form.
 
+## C4a — Independent localhost application fixture
+
+Workspace: `build/browser-ats`; can run while C1 establishes contracts.
+Allowed writes: `scripts/mock_ats.py`, `tests/fixtures/browser/**`, `tests/browser/test_mock_ats.py`, `tests/browser/MOCK_ATS.md`.
+
+Build the deterministic localhost mock ATS needed by C4 and I1, using the Python standard library so it needs no pending package contracts. It must bind localhost by default, support a configurable/ephemeral port and state directory, print its actual origin, and expose a documented server-side receipt/submission-count endpoint strictly for test assertions. Use a fictional company and candidate data. Document how to start and stop only this process. Do not build browser or canonical models until C1 is approved.
+
+Include native text/email/textarea, select (different labels and machine values), radio, checkbox, multiselect and a real multipart resume upload, plus a multistep form. Provide routes for normal acceptance, missing required answers, explicit attestation, visible validation rejection, sign-in/CAPTCHA, and accepted-without-visible-confirmation. The uncertain case must count the submission before withholding confirmation; a test-only reveal operation can expose a real receipt on a subsequent visit so the runtime can reconcile through the page, not by calling the test-only API. Count every accepted POST so a mistaken retry is detectable. Avoid artificial delays.
+
+Forms should be normal accessible HTML, not require a product-specific test-only field resolver. The record should include received field values and uploaded content metadata or a hash for independent assertions. Tests/fixtures must remain local and fictional.
+
+Acceptance: run the server and meaningful stdlib HTTP tests, verify payload/upload parsing, native and multistep navigation, count increments, clear validation rejection, uncertain acceptance and later revealed confirmation. Stop at the C4a commit/envelope and wait for C1 contracts before C4 implementation. Do not write root dependencies or shared test configuration.
+
 ## C4 — Browser inspection and execution
 
 Workspace: `build/browser-ats` (`acff6e42-6b2f-407e-b5c8-0978a8017ca4`).
@@ -101,3 +114,36 @@ Wire `apply <url>` to load candidate data, claim the application, inspect/resolv
 End-to-end checks must execute the installed CLI and real browser against the separately running localhost mock ATS. Assert both CLI-visible result and server-side submission count, persisted state/events and uploaded content. Cover the happy path, multistep inputs, missing-answer resume after process restart, repeated apply after success, an uncertain submission followed by a blocked retry, and reconciliation. Capture ignored Playwright traces/screenshots for failures.
 
 Acceptance: the repository's documented setup and verification commands work in a fresh environment; unit/integration and full CLI browser tests pass; README explains profile setup, apply, missing-input resume, receipts, uncertain outcomes and the actual supported form/ATS limits. A separately authorized real application with the user's URL and verified information remains required for live acceptance under architecture section 17.
+
+## F1 — Application frontend in parallel
+
+Workspace: `build/dashboard` (`ec7d3896-d6e4-407e-85eb-a5c452224509`).
+User explicitly activated this worktree on 2026-09-22 while C1 and C4a were in progress. This overrides older documents that park the entire frontend. Discovery, selection and outcome analytics remain deferred.
+Dependencies: existing supplied-URL scope and state names. Build against a small frontend service interface; coordinator will supply approved backend contracts for F2 integration.
+Allowed writes: `apps/web/**` only, including its package manifest/lockfile, local configuration, documentation, tests, preview fixtures and screenshots under ignored output. Do not create a root Node workspace or modify Python/shared contracts.
+
+Build a Next.js/TypeScript frontend for the current application flow. Apply the installed `/Users/leo/.agents/skills/frontend-design/SKILL.md` and use official current framework documentation. Choose and execute a polished, distinctive visual direction appropriate for a focused personal job-application tool: strong typography, deliberate spacing, restrained color and clear state. Avoid analytics filler, generic template cards, invented activity metrics and implementation jargon in the product flow.
+
+The real UI needs:
+
+- an application URL input and a clearly labeled apply action;
+- candidate profile/contact fields and resume selection/upload, with truthful missing-data errors;
+- a running application view and event timeline that reflects the service response;
+- required-question controls with their actual options, explicit attestations, save-and-resume action, and visible validation errors;
+- a confirmed submission receipt with job, URL, time, available confirmation reference and evidence;
+- clear views for prior submission, sign-in/CAPTCHA interaction, genuine failure and uncertain submission. An uncertain outcome must offer reconciliation rather than a blind retry.
+
+The user's apply action already authorizes submission. Do not add a routine approval modal. Do not preselect consent or invent missing profile information. Keep personal data out of URL query parameters and logs.
+
+Use a documented frontend service interface with asynchronous start/status/answer/resume/reconcile operations. Its types are presentation/view models pending C1 alignment, not a second canonical backend. The default application must never simulate a successful real submission when the backend is unavailable. Use a clearly labeled, isolated `/preview` route or equivalent explicit test mode to exercise fixture states. A real backend connection is F2; include actionable service-unavailable handling until then.
+
+Acceptance: working responsive UI at desktop and mobile sizes; accessible labels, focus, keyboard use and reduced-motion support; no inert primary controls in the preview flow; meaningful interaction checks for URL/profile validation, required questions, status updates and receipt/unknown states. Run type checking and a production build. Start only a task-owned localhost dev server on an available port. Use the installed Playwright CLI skill first to inspect and verify the real rendered UI, then its documented fallbacks if needed. Report the exact URL, commands, screenshots and limitations. Commit only `apps/web/**`, return the required envelope, and keep the terminal available for F2.
+
+## F2 — Connect the frontend to the local executor
+
+Workspace: dashboard, with core supplying any CLI/service contract changes.
+Dependencies: F1 and I1. Allowed writes: `apps/web/**`; shared Python changes stay with the core owner.
+
+Replace the service-unavailable boundary with an actual local server-side bridge to the approved Python runner/store. Preserve one authoritative application state machine and candidate/job idempotency; do not implement a second executor in JavaScript. User files belong in private local storage, not source control. Use structured process arguments or a narrow local API, never shell-interpolated URL/answer text. Restrict local control endpoints to the intended local origin and protect mutation requests from cross-site use.
+
+Acceptance: the real frontend starts a localhost fixture application, submits the actual browser form, displays a confirmed receipt, resolves missing inputs across reloads, detects a duplicate request and reconciles an uncertain submission. Verify service state and test server submission count in addition to the UI. No default mock responses, blank controls, unimplemented bridge or hardcoded success may remain in the completed MVP.

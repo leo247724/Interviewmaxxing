@@ -46,6 +46,8 @@ The first end-to-end milestone is:
 interviewmaxxing apply <application-url>
 ```
 
+The local Next.js frontend exposes the same flow: enter a URL, supply candidate information and a resume, resolve genuinely missing inputs, and receive the saved submission receipt. The frontend uses the Python executor's state and duplicate protection rather than creating a second execution path.
+
 That command should:
 
 1. Record the user's application request and load their verified profile, resume, and saved answers.
@@ -147,8 +149,9 @@ In the later discovery flow, Jev's job-selection decision happens before packet 
 - Browser agents execute plans; they should not own career strategy.
 
 ### Frontend
-- MVP: CLI progress, missing-input prompts, and a submission receipt, with a visible browser when user interaction is needed.
-- Later: **Next.js** / TypeScript dashboard for queue, review, analytics, failures, and outcomes.
+- MVP: **Next.js / TypeScript** interface for application URL entry, candidate/profile and resume setup, progress, missing questions, and submission receipts. Build it in parallel with the Python executor.
+- The CLI remains the local execution and diagnostic interface, with a visible browser when user interaction is needed. A narrow local server-side bridge connects the frontend to the same executor and durable state.
+- Later: discovery queues, ranking, analytics and interview/offer outcomes.
 
 ### Models
 - **GPT Astra**: project orchestrator / integration manager.
@@ -575,7 +578,7 @@ A worker retry must never accidentally create a second submission record for the
 
 # 12. Parallel worktree plan
 
-Eight worktrees are available, with four in the current MVP plan: `core-contracts`, `candidate-brain`, `application-packets`, and `browser-ats`. Job ingestion, Jev selection, distributed runtime, and dashboard work are parked. WT-05 and WT-06 share the `browser-ats` worktree. The exact ownership and dispatch protocol are in [WORKTREES.md](WORKTREES.md).
+Eight worktrees are available, with five in the current MVP plan: `core-contracts`, `candidate-brain`, `application-packets`, `browser-ats`, and `dashboard`. Job ingestion, Jev selection, and distributed runtime are parked. WT-05 and WT-06 share the `browser-ats` worktree. The exact ownership and dispatch protocol are in [WORKTREES.md](WORKTREES.md).
 
 ## WT-00 — Core Contracts
 
@@ -796,9 +799,9 @@ Kill workers randomly during a 100-job test and recover without corrupting state
 
 **Model:** Opus 5.5
 
-**Status:** deferred. The MVP returns progress, missing-input prompts, and a submission receipt through the CLI.
+**Status:** active for the supplied-URL MVP. Build the Next.js interface in parallel with the executor: application URL, profile/resume, progress, missing required answers, recovery states, and saved submission receipt. The frontend must use the canonical executor and must never display simulated success for a real application. The local CLI remains available.
 
-Build Next.js control plane.
+The broader dashboard and analytics responsibilities below are deferred until the application flow is reliable.
 
 ### Dashboard
 - jobs discovered
@@ -841,7 +844,7 @@ Conversion rates by:
 - company size
 
 ### Acceptance criterion
-Any failed application can be diagnosed from the dashboard without opening raw server logs.
+The frontend can run the supplied-URL flow through the real local executor, resolve missing inputs, and show truthful confirmation, duplicate and uncertain states. Users can understand a failed application and its next required action without opening raw server logs.
 
 ---
 
@@ -996,7 +999,7 @@ WT-03 + WT-04 + WT-05/06
     -> confirmed submission and local receipt
 ```
 
-Job ingestion, Jev selection, distributed queues and the dashboard join in later milestones. Integrate the supplied-URL flow continuously rather than waiting for the broader roadmap.
+Build the frontend against a narrow service interface in parallel, then connect it to the integrated executor and verify the same submission flow through the UI. Job ingestion, Jev selection, distributed queues and outcome analytics join in later milestones. Integrate the supplied-URL flow continuously rather than waiting for the broader roadmap.
 
 ---
 
@@ -1062,7 +1065,7 @@ User's application URL + verified profile/resume
 
 The receipt identifies the job, application URL, submission time, and available confirmation reference or evidence. Until confirmation is observed, report the actual blocked or uncertain state.
 
-Verify missing-answer resume, duplicate prevention, and ambiguous submission recovery using local fixtures. Then verify the supported real application flow using the user's supplied URL and information. Job discovery, Jev selection, distributed queues and analytics are outside this acceptance criterion.
+Verify missing-answer resume, duplicate prevention, and ambiguous submission recovery using local fixtures. Verify the complete frontend flow against the same real local executor and fixture server, including persisted state and server-side submission counts. Then verify the supported real application flow using the user's supplied URL and information. Job discovery, Jev selection, distributed queues and analytics are outside this acceptance criterion.
 
 ---
 
