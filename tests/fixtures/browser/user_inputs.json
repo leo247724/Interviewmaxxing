@@ -1,0 +1,19 @@
+{
+  "_note": "Fictional answers the test user gives when the runtime asks for missing input. Keyed by mock-ATS job id, then question label; values are the visible option labels a person would choose.",
+  "missing-required": {
+    "What is your notice period?": "2 weeks",
+    "Desired annual base salary (USD)": "150000",
+    "Do you hold an active FAA Part 107 remote pilot certificate?": "No"
+  },
+  "attestation": {
+    "I certify that the information in this application is true and complete to the best of my knowledge.": true,
+    "I have read and acknowledge the Brambleway Analytics Applicant Privacy Notice.": true
+  },
+  "validation": {
+    "Phone": "3035550142"
+  },
+  "signin": {
+    "email": "avery.quill@example.test",
+    "password": "fixture-password-123"
+  }
+}
