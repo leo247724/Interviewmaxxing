@@ -170,7 +170,7 @@ def test_false_zero_and_empty_answers_survive(
 # --- conflicts -----------------------------------------------------------------------
 
 
-def test_conflicting_answers_are_not_used(
+def test_tied_conflicting_answers_are_kept_and_reported(
     write_candidate: WriteCandidate, candidate_store: LocalCandidateStore
 ) -> None:
     yes = answer("sa.a", "Yes")
@@ -178,11 +178,59 @@ def test_conflicting_answers_are_not_used(
     write_candidate("default", answers=dump(yes, no))
     report = candidate_store.load_report("default")
 
-    assert report.profile.find_saved_answer("sa.a") is None
-    assert report.profile.find_saved_answer("sa.b") is None
+    assert report.profile.find_saved_answer("sa.a") == yes
+    assert report.profile.find_saved_answer("sa.b") == no
     assert [c.answer_ids for c in report.answer_conflicts] == [("sa.a", "sa.b")]
-    assert any("sa.a, sa.b" in w and "none is used" in w for w in report.warnings())
+    assert report.superseded_answers == ()
+    assert any("sa.a, sa.b" in w and "ambiguous" in w for w in report.warnings())
     assert report.answer_sources["sa.a"] == report.answers_path
+
+
+def test_tied_job_conflict_is_not_hidden_behind_global_answer(
+    write_candidate: WriteCandidate, candidate_store: LocalCandidateStore, mock_job: JobRecord
+) -> None:
+    # Review C2R-1: dropping both JOB answers let the GLOBAL 100000 answer the question.
+    salary = SemanticType.SALARY_EXPECTATION
+    question = "What are your salary expectations?"
+    key = "ats:mock:mock-co:4012"
+    global_salary = answer("sa.salary_global", "100000", question=question, semantic_type=salary)
+    job_a = answer(
+        "sa.salary_a",
+        "150000",
+        question=question,
+        semantic_type=salary,
+        confirmed_at=T1,
+        job_identity_key=key,
+    )
+    job_b = answer(
+        "sa.salary_b",
+        "175000",
+        question=question,
+        semantic_type=salary,
+        confirmed_at=T1,
+        job_identity_key=key,
+    )
+    write_candidate("default", answers=dump(global_salary, job_a, job_b))
+    report = candidate_store.load_report("default")
+
+    applicable = report.profile.saved_answers_for(salary, job=mock_job)
+    assert applicable == [global_salary, job_a, job_b]
+    assert [c.answer_ids for c in report.answer_conflicts] == [("sa.salary_a", "sa.salary_b")]
+    assert report.superseded_answers == ()
+
+
+def test_older_answers_are_superseded_by_a_tied_conflict() -> None:
+    old_a = answer("sa.old_a", "A")
+    old_b = answer("sa.old_b", "B")
+    new_b = answer("sa.new_b", "B", confirmed_at=T1)
+    new_c = answer("sa.new_c", "C", confirmed_at=T1)
+    result = reconcile_saved_answers([old_a, old_b, new_b, new_c])
+
+    assert result.kept == (old_b, new_b, new_c)
+    assert [(s.answer.id, s.superseded_by) for s in result.superseded] == [
+        ("sa.old_a", ("sa.new_b", "sa.new_c"))
+    ]
+    assert [c.answer_ids for c in result.conflicts] == [("sa.old_b", "sa.new_b", "sa.new_c")]
 
 
 def test_later_confirmation_replaces_earlier_answer(
@@ -203,7 +251,7 @@ def test_later_confirmation_replaces_earlier_answer(
     assert report.profile.find_saved_answer("sa.sponsorship") is None
     assert report.profile.find_saved_answer("sa.sponsorship_2") == newer
     assert [(s.answer.id, s.superseded_by) for s in report.superseded_answers] == [
-        ("sa.sponsorship", "sa.sponsorship_2")
+        ("sa.sponsorship", ("sa.sponsorship_2",))
     ]
     assert report.answer_sources["sa.sponsorship"] == directory / "profile.json"
     assert report.answer_conflicts == ()
@@ -223,7 +271,7 @@ def test_later_confirmation_replaces_earlier_answer(
 def test_value_comparison_keeps_types_distinct(first: Any, second: Any, conflict: bool) -> None:
     result = reconcile_saved_answers([answer("sa.a", first), answer("sa.b", second)])
     assert bool(result.conflicts) is conflict
-    assert len(result.kept) == (0 if conflict else 2)
+    assert len(result.kept) == 2  # conflicting answers are reported, never dropped
 
 
 def test_different_scopes_or_targets_never_conflict() -> None:
@@ -375,6 +423,96 @@ def test_scope_cannot_be_dropped_from_saved_answer() -> None:
         SavedAnswer(  # type: ignore[call-arg]
             id="sa.x", question="Q?", value="Yes", confirmed_at=T0
         )
+
+
+def _stored(directory: Path) -> list[tuple[str, Any]]:
+    return [(a["id"], a["value"]) for a in json.loads((directory / "answers.json").read_text())]
+
+
+def test_stale_retry_never_replaces_newer_answer(
+    write_candidate: WriteCandidate, candidate_store: LocalCandidateStore
+) -> None:
+    # Review C2R-2: save old T0, new T1, retry old T0 must keep the new answer.
+    directory = write_candidate("default")
+    old = answer("sa.old", "Yes")
+    new = answer("sa.new", "No", confirmed_at=T1)
+    candidate_store.save_answer("default", old)
+    candidate_store.save_answer("default", new)
+    before = (directory / "answers.json").read_bytes()
+
+    candidate_store.save_answer("default", old)
+    candidate_store.save_answer("default", answer("sa.old_retry", "Yes"))  # fresh id, same T0
+
+    assert (directory / "answers.json").read_bytes() == before
+    assert _stored(directory) == [("sa.new", "No")]
+    report = candidate_store.load_report("default")
+    assert report.profile.find_saved_answer("sa.new") == new
+    assert report.answer_conflicts == () and report.superseded_answers == ()
+
+
+def test_equal_time_disagreement_is_preserved_not_last_writer_wins(
+    write_candidate: WriteCandidate, candidate_store: LocalCandidateStore
+) -> None:
+    directory = write_candidate("default")
+    first = answer("sa.first", "Yes")
+    second = answer("sa.second", "No")
+    candidate_store.save_answer("default", first)
+    candidate_store.save_answer("default", second)
+
+    assert _stored(directory) == [("sa.first", "Yes"), ("sa.second", "No")]
+    report = candidate_store.load_report("default")
+    assert report.profile.find_saved_answer("sa.first") == first
+    assert report.profile.find_saved_answer("sa.second") == second
+    assert [c.answer_ids for c in report.answer_conflicts] == [("sa.first", "sa.second")]
+
+    # A later confirmation then resolves the conflict and replaces both.
+    candidate_store.save_answer("default", answer("sa.third", "No", confirmed_at=T1))
+    assert _stored(directory) == [("sa.third", "No")]
+    assert candidate_store.load_report("default").answer_conflicts == ()
+
+
+def test_retried_user_input_is_stored_once(
+    write_candidate: WriteCandidate,
+    candidate_store: LocalCandidateStore,
+    mock_form: ApplicationForm,
+    mock_job: JobRecord,
+) -> None:
+    directory = write_candidate("default")
+    user_input = _sponsorship_input(mock_form, AnswerReuse.GLOBAL)
+    first = user_input.to_saved_answer(job=mock_job)
+    retry = user_input.to_saved_answer(job=mock_job)
+    assert first is not None and retry is not None and first.id != retry.id
+
+    candidate_store.save_answer("default", first)
+    candidate_store.save_answer("default", retry)
+
+    assert _stored(directory) == [(first.id, "No")]
+    assert candidate_store.load_report("default").answer_conflicts == ()
+
+
+def test_explicit_false_and_zero_under_freshness_rules(
+    write_candidate: WriteCandidate, candidate_store: LocalCandidateStore
+) -> None:
+    directory = write_candidate("default")
+    candidate_store.save_answer("default", answer("sa.false", False))
+    candidate_store.save_answer("default", answer("sa.false_retry", False))  # retry: no-op
+    assert _stored(directory) == [("sa.false", False)]
+
+    candidate_store.save_answer("default", answer("sa.zero", 0))  # same time, 0 is not False
+    stored = json.loads((directory / "answers.json").read_text())
+    assert [(a["id"], a["value"], type(a["value"])) for a in stored] == [
+        ("sa.false", False, bool),
+        ("sa.zero", 0, int),
+    ]
+    report = candidate_store.load_report("default")
+    assert [c.answer_ids for c in report.answer_conflicts] == [("sa.false", "sa.zero")]
+
+    candidate_store.save_answer("default", answer("sa.zero_later", 0, confirmed_at=T1))
+    candidate_store.save_answer("default", answer("sa.false_again", False))  # stale
+    stored = json.loads((directory / "answers.json").read_text())
+    assert [(a["id"], a["value"], type(a["value"])) for a in stored] == [("sa.zero_later", 0, int)]
+    loaded = candidate_store.load("default").find_saved_answer("sa.zero_later")
+    assert loaded is not None and loaded.value == 0 and type(loaded.value) is int
 
 
 def test_concurrent_writers_keep_every_answer(

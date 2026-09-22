@@ -6,10 +6,12 @@ after ``normalize_text``. Nothing else makes answers equivalent: an answer about
 job or employer is never related to another, and a JOB answer never merges with a
 GLOBAL one.
 
-When the same question has different answers, the one confirmed strictly later
-replaces the older ones (the user re-answered). If the latest confirmations
-disagree, none of that question's answers is used: they are reported as a conflict
-so the question is asked again instead of guessing.
+When the same question has different answers, only its newest confirmation counts:
+an older answer whose value differs from every newest one is superseded (the user
+re-answered) and dropped. If the newest confirmations themselves disagree, they are
+all kept and reported as a conflict. Keeping them lets the resolver see the
+disagreement and report the question as ambiguous. Dropping them would let a less
+specific answer (e.g. a GLOBAL one) fill the field instead.
 """
 
 from __future__ import annotations
@@ -53,12 +55,15 @@ class SupersededAnswer:
     """A saved answer replaced by a later confirmation of the same question."""
 
     answer: SavedAnswer
-    superseded_by: str
+    superseded_by: tuple[str, ...]
+    """Ids of the newest confirmations (more than one if they conflict)."""
 
 
 @dataclass(frozen=True)
 class AnswerConflict:
-    """Answers to one question that disagree with no later confirmation to decide."""
+    """Kept answers to one question that disagree, with no later confirmation to decide.
+
+    They stay in the profile; a resolver must treat the question as ambiguous."""
 
     answers: tuple[SavedAnswer, ...]
 
@@ -78,10 +83,17 @@ class AnswerReconciliation:
     conflicts: tuple[AnswerConflict, ...]
 
 
-def reconcile_saved_answers(answers: Sequence[SavedAnswer]) -> AnswerReconciliation:
-    """Drop superseded and conflicting answers; keep the rest in their original order.
+def newest_confirmations(group: Sequence[SavedAnswer]) -> list[SavedAnswer]:
+    """The answers in ``group`` with the latest ``confirmed_at``."""
+    latest = max(a.confirmed_at for a in group)
+    return [a for a in group if a.confirmed_at == latest]
 
-    Answer ids must already be unique."""
+
+def reconcile_saved_answers(answers: Sequence[SavedAnswer]) -> AnswerReconciliation:
+    """Drop superseded answers and report conflicts; keep the rest in original order.
+
+    Conflicting answers are kept (see the module docstring). Answer ids must
+    already be unique."""
     groups: dict[QuestionKey, list[SavedAnswer]] = {}
     for answer in answers:
         groups.setdefault(question_key(answer), []).append(answer)
@@ -92,17 +104,15 @@ def reconcile_saved_answers(answers: Sequence[SavedAnswer]) -> AnswerReconciliat
     for group in groups.values():
         if len({value_key(a.value) for a in group}) <= 1:
             continue
-        latest = max(a.confirmed_at for a in group)
-        newest = [a for a in group if a.confirmed_at == latest]
-        if len({value_key(a.value) for a in newest}) > 1:
-            conflicts.append(AnswerConflict(tuple(group)))
-            excluded.update(a.id for a in group)
-            continue
-        winner = newest[0]
+        newest = newest_confirmations(group)
+        newest_ids = tuple(a.id for a in newest)
+        newest_values = {value_key(a.value) for a in newest}
         for answer in group:
-            if value_key(answer.value) != value_key(winner.value):
-                superseded.append(SupersededAnswer(answer, superseded_by=winner.id))
+            if value_key(answer.value) not in newest_values:
+                superseded.append(SupersededAnswer(answer, superseded_by=newest_ids))
                 excluded.add(answer.id)
+        if len(newest_values) > 1:
+            conflicts.append(AnswerConflict(tuple(a for a in group if a.id not in excluded)))
 
     return AnswerReconciliation(
         kept=tuple(a for a in answers if a.id not in excluded),

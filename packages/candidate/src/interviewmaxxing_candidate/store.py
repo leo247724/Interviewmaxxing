@@ -38,6 +38,7 @@ from .answers import (
     SupersededAnswer,
     question_key,
     reconcile_saved_answers,
+    value_key,
 )
 from .files import describe_validation_error, read_json, write_json_private
 
@@ -83,20 +84,20 @@ class CandidateLoadReport:
         return tuple(f.id for f in self.profile.facts if not f.is_verified)
 
     def warnings(self) -> list[str]:
-        """Human-readable notes about data that will not be used as-is."""
+        """Human-readable notes about unverified facts and replaced or conflicting answers."""
         notes = [
             f"fact {f.id} ({f.key}) is UNVERIFIED and will not be used until you confirm it"
             for f in self.profile.facts
             if not f.is_verified
         ]
         notes += [
-            f"saved answer {s.answer.id} was replaced by {s.superseded_by} "
+            f"saved answer {s.answer.id} was replaced by {', '.join(s.superseded_by)} "
             "(same question, confirmed later)"
             for s in self.superseded_answers
         ]
         notes += [
             f"saved answers {', '.join(c.answer_ids)} disagree on {c.question!r} with no later "
-            "confirmation; none is used until you remove the wrong one"
+            "confirmation; the question stays ambiguous until you remove the wrong one"
             for c in self.answer_conflicts
         ]
         return notes
@@ -147,13 +148,14 @@ class LocalCandidateStore:
     def load(self, candidate_id: str) -> CandidateProfile:
         """The profile with its resume checked and saved answers merged.
 
-        Unverified facts are returned unchanged (flagged by their verification);
-        superseded and conflicting saved answers are left out. Raises
+        Unverified facts are returned unchanged (flagged by their verification).
+        Superseded saved answers are left out; conflicting ones are kept and listed in
+        ``load_report().answer_conflicts``. Raises
         ``CandidateNotFound`` or ``CandidateProfileInvalid``."""
         return self.load_report(candidate_id).profile
 
     def load_report(self, candidate_id: str) -> CandidateLoadReport:
-        """Like ``load``, with sources and the answers that were left out."""
+        """Like ``load``, with sources, superseded answers and conflicts."""
         profile_path = self._existing_profile_path(candidate_id)
         raw = self._read_profile_object(profile_path, candidate_id)
 
@@ -198,10 +200,18 @@ class LocalCandidateStore:
     def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None:
         """Persist ``answer`` to ``answers.json`` exactly as given (scope included).
 
-        It replaces a stored answer to the same question (same scope, job target,
-        semantic type and question text); answers with another scope or target are
-        untouched. Saving an identical answer again is a no-op. Raises
-        ``SavedAnswerRejected`` if the id is already used by a different answer."""
+        Stored answers to the same question (same scope, job target, semantic type
+        and question text) are compared by ``confirmed_at`` under the file lock:
+
+        * older ones are replaced;
+        * if one is newer, ``answer`` is stale and nothing is written;
+        * one confirmed at the same time with the same value makes this a retry
+          (no-op); one with a different value is kept alongside ``answer``, and
+          loading reports the pair as a conflict.
+
+        Answers with another scope or target are untouched. Saving an identical
+        answer again is a no-op. Raises ``SavedAnswerRejected`` if the id is already
+        used by a different answer."""
         if not isinstance(answer, SavedAnswer):
             raise TypeError(f"expected SavedAnswer, got {type(answer).__name__}")
         profile_path = self._existing_profile_path(candidate_id)
@@ -227,7 +237,18 @@ class LocalCandidateStore:
                     f"{answers_path}; save the new answer under a new id"
                 )
             key = question_key(answer)
-            kept = [a for a in stored if question_key(a) != key]
+            same_question = [a for a in stored if question_key(a) == key]
+            if any(a.confirmed_at > answer.confirmed_at for a in same_question):
+                return
+            if any(
+                a.confirmed_at == answer.confirmed_at
+                and value_key(a.value) == value_key(answer.value)
+                for a in same_question
+            ):
+                return
+            kept = [
+                a for a in stored if question_key(a) != key or a.confirmed_at == answer.confirmed_at
+            ]
             write_json_private(answers_path, [a.model_dump(mode="json") for a in [*kept, answer]])
 
     # --- internals -----------------------------------------------------------------

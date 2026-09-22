@@ -13,7 +13,7 @@ store = LocalCandidateStore.from_env(env=None)                 # same, from os.e
 store = LocalCandidateStore(profile_dir)                       # Path | str; relative → resolved against CWD now
 
 profile: CandidateProfile = store.load(candidate_id)           # CandidateLoader
-report: CandidateLoadReport = store.load_report(candidate_id)  # load() plus sources and exclusions
+report: CandidateLoadReport = store.load_report(candidate_id)  # load() plus sources, superseded answers and conflicts
 store.save_answer(candidate_id, saved_answer)                  # SavedAnswerWriter
 store.exists(candidate_id) -> bool
 store.candidate_dir(id) / store.profile_path(id) / store.answers_path(id) -> Path
@@ -22,7 +22,7 @@ store.candidate_dir(id) / store.profile_path(id) / store.answers_path(id) -> Pat
 The store holds no open resources and is safe to construct per request. The runner's missing-input step is:
 
 ```python
-saved = user_input.to_saved_answer(job=job)   # None for AnswerReuse.APPLICATION
+saved = user_input.to_saved_answer(job=job)  # None for AnswerReuse.APPLICATION
 if saved is not None:
     store.save_answer(candidate_id, saved)
 ```
@@ -50,7 +50,12 @@ Under `LocalPaths.profile_dir` (`$IMX_HOME/profile`; outside source control):
 - **Nothing is fabricated or upgraded.** The loader never sets `verified_at`, never changes a fact's verification and never changes an answer's scope. Unverified facts are returned unchanged. Only `verified_facts()` / `verified_only()` should feed answers. `report.unverified_fact_ids` and `report.warnings()` let the UI ask the user to confirm them.
 - **Scope is explicit.** A `JOB` answer needs `job_identity_key` or `job_url`, and a `GLOBAL` answer may not name a job or employer. Otherwise the whole load fails. Matching remains `SavedAnswer.applies_to(job)`, so a job-specific answer never applies to another job or employer.
 - **Saved attestations work as given.** An explicitly saved attestation or consent answer loads like any other answer; no per-application approval is added.
-- **Same question, different answers.** Two answers ask the same question when their scope, `job_identity_key`, `job_url`, `semantic_type` and `normalize_text(question)` are all equal. When they disagree, the one with the strictly latest `confirmed_at` is kept and the others go to `report.superseded_answers`. If the latest confirmations disagree, none of that question's answers is returned; they go to `report.answer_conflicts`, so the question is asked again instead of guessed. Values compare type-strictly: `False` ≠ `0` ≠ `"No"`. Text compares with `normalize_text`, and label lists compare as sets. Answers with different scopes or targets are never merged. For example, when a JOB answer and a GLOBAL answer both apply to a job, both are returned and the resolver decides.
+- **Same question, different answers.** Two answers ask the same question when their scope, `job_identity_key`, `job_url`, `semantic_type` and `normalize_text(question)` are all equal. Values compare type-strictly: `False` ≠ `0` ≠ `"No"`. Text compares with `normalize_text`, and label lists compare as sets. When answers to one question disagree, only the newest confirmation (latest `confirmed_at`) counts:
+  - **Superseded.** An older answer whose value differs from every newest answer is left out of the profile and listed in `report.superseded_answers`, with `superseded_by` naming the newest answer ids.
+  - **Conflict.** If the newest answers disagree with each other (the same `confirmed_at`, different values), all of them **stay in `profile.saved_answers`** and are listed in `report.answer_conflicts`. The resolver sees both and must report the field as `AMBIGUOUS` instead of choosing one. Dropping them would let a less specific answer fill the field silently. For example, with a GLOBAL salary of 100000 and two JOB salaries (150000, 175000) confirmed at the same time for one job, the job's salary question is ambiguous; it is not answered with 100000.
+  - **Kept.** Everything else is returned unchanged, including older answers whose value matches a newest one.
+
+  Answers with different scopes or targets are never merged. For example, when a JOB answer and a GLOBAL answer both apply to a job, both are returned and the resolver decides.
 - **Errors are actionable.** `CandidateNotFound` names the expected `profile.json` path. `CandidateProfileInvalid` names the file and either the JSON line and column or each schema problem as a location such as `facts[0].verification: Field required` or `[2].scope: Field required` in `answers.json`. Resume problems give the resolved path and what to change. JSON with duplicate keys, `NaN` or `Infinity` is rejected.
 
 ## Writing answers
@@ -58,7 +63,12 @@ Under `LocalPaths.profile_dir` (`$IMX_HOME/profile`; outside source control):
 `save_answer(candidate_id, answer)` writes the `SavedAnswer` exactly as given, scope included, to `answers.json`:
 
 - It writes atomically and with owner-only permissions (`0600`). A lock file serializes concurrent writers (the CLI and the frontend).
-- It replaces a stored answer to the same question (same key as above). Answers with another scope or target are untouched, so saving a JOB answer can never replace or widen a GLOBAL one, or the reverse.
+- It compares the new answer with stored answers to the same question (same key as above) by `confirmed_at`, under the lock:
+  - Older stored answers are replaced.
+  - If a stored answer is newer, the new one is stale: nothing is written, so a delayed retry of an old answer cannot overwrite a newer one.
+  - A stored answer with the same `confirmed_at` and the same value makes the save a retry, so nothing is written. This covers a retried `to_saved_answer`, which gets a fresh id. `False` and `0` are different values here.
+  - A stored answer with the same `confirmed_at` and a different value is kept alongside the new one; the writer does not pick whichever came last. Loading then reports the pair as a conflict (above).
+- Answers with another scope or target are untouched, so saving a JOB answer can never replace or widen a GLOBAL one, or the reverse. Answers in `profile.json` are not compared at write time; loading reconciles them by `confirmed_at` as above.
 - Saving an identical answer again is a no-op. Reusing an id for a different answer, or an id already present in `profile.json`, raises `SavedAnswerRejected` and writes nothing.
 - It requires an existing `profile.json` (`CandidateNotFound` otherwise). A corrupt `answers.json` raises `CandidateProfileInvalid` and is left untouched. `profile.json` is never modified.
 
