@@ -69,7 +69,7 @@ Everything below is re-exported from `interviewmaxxing_core`.
 | `store` | `ApplicationStore`, `RequestResult`, `BindResult` |
 | `errors` | `StoreError`, `NotFound`, `InvalidTransition`, `ClaimUnavailable`, `ClaimLost`, `SubmissionBlocked`, `IdentityConflict` |
 | `urls` | `normalize_application_url`, `InvalidApplicationUrl` |
-| `discovery` | D0 job discovery/selection/pipeline contracts (§11): `JobSearchQuery`, `OnsiteTarget`, `RemoteTarget`, `CompensationFloor`, `SourceSearchResult`, `JobSearchRun`, `JobListing`, `ListingSource`, `Compensation`, `SelectionPreferences`, `JobSelection`, `ModelDecision`, `PolicyHold`, `PipelineEntry`, `PipelineStages`, helpers `listing_id_for`, `meets_floor`, `snapshot_hash` |
+| `discovery` | D0 job discovery/selection/pipeline contracts (§11): `JobSearchQuery`, `OnsiteTarget`, `RemoteTarget`, `CompensationFloor`, `SourceSearchResult`, `JobSearchRun`, `JobListing`, `ListingSource`, `Compensation`, `SelectionPreferences`, `JobSelection`, `ModelDecision`, `PolicyHold`, `PipelineEntry`, `PipelineStages`, helpers `listing_id_for`, `employer_job_key`, `meets_floor`, `snapshot_hash` |
 | `config` | `LocalPaths` |
 
 All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(update=...)`), **extra fields forbidden**, datetimes **timezone-aware and normalized to UTC** (naive datetimes are rejected). Every contract serializes with `model_dump_json()` / `model_validate_json()` and publishes `model_json_schema()`.
@@ -387,16 +387,34 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 - `JobSearchRun(id, query, results, started_at, finished_at)` checks that every result belongs to its query and to one of its sources.
 
 **Listings (`JobListing`)**
-- Fields: `id`, `source`, `source_listing_id`, `source_url`, `application_url`, `title`, `company`, `location`, `work_arrangement` (`ONSITE|HYBRID|REMOTE|UNKNOWN`), `remote_eligibility`, `compensation`, `description`, `description_completeness` (`FULL|PARTIAL|NONE`), `status` (`OPEN|CLOSED|UNKNOWN`), `posted_text`, `observed_at`, `evidence` and `provenance: list[ListingSource]` (at least one; `provenance[0]` is the listing's own source and URL).
+- Fields: `id`, `source`, `source_listing_id`, `posting_url`, `source_url`, `application_url`, `title`, `company`, `location`, `work_arrangement` (`ONSITE|HYBRID|REMOTE|UNKNOWN`), `remote_eligibility`, `compensation`, `description`, `description_completeness` (`FULL|PARTIAL|NONE`), `status` (`OPEN|CLOSED|UNKNOWN`), `posted_text`, `observed_at`, `evidence` and `provenance: list[ListingSource]` (at least one; `provenance[0]` repeats the listing's own `source`, `source_listing_id`, `posting_url` and `source_url`).
 - Unshown data stays `None`/`UNKNOWN`. `description_completeness` is `NONE` exactly when there is no text.
 - `Compensation(raw_text, minimum, maximum, currency, period)`: `raw_text` is verbatim. Numeric bounds are allowed only with an explicit currency and period, and are never estimated.
 - `meets_floor(pay, floor) -> bool | None` is deterministic:
   - `True` when the stated range reaches the floor.
   - `False` when its top is below the floor.
   - `None` (unknown) for missing pay, another currency, or periods not exactly convertible. Only MONTH↔YEAR ×12 is converted.
-- Stable ids: `listing_id_for(source, source_listing_id, source_url)` hashes the source plus its own id, else the normalized source URL.
-- **Dedupe.** `identity_keys` contains only `src:<source>:<source id>` and `app:<normalized application URL>`. `is_same_posting` requires a shared key, so the same title/company/location is never a duplicate.
-- `merged_with(other)` keeps this listing's values and adds the other's provenance (e.g. a Google result pointing to the same application URL). It fills only missing fields, prefers the fuller description, and any `CLOSED` wins. It raises if the listings are not provably the same.
+
+**Posting identity and dedupe (D0R).** Where a posting was seen is separate from what it is. Each `ListingSource` observation has:
+
+| Field | Meaning | Identity? |
+| --- | --- | --- |
+| `source_url` | Where it was observed; may be a search or results page shared by many postings | never |
+| `source_listing_id` | The source's own job id (LinkedIn job id, Indeed `jk`, …) | yes, within the source |
+| `posting_url` | A URL showing **this posting alone** (a detail page or job-specific ATS posting) | yes, within the source, when there is no id |
+| `employer_job_key` | Proven cross-source employer job, `employer_job_key(ats_type, tenant, job_id)` → `ats:<type>:<tenant>:<job id>` (the `JobIdentityObservation.identity_key` format) | yes, across sources |
+| `application_url` | The apply link shown; may be a generic endpoint shared by many jobs | never |
+
+- **J1 construction rules**
+  1. Every observation needs `source_listing_id` or a job-specific `posting_url`. An observation with neither is rejected (`ValueError`/`ValidationError`), so a search URL can never become an identity. If a result has no job-specific link, open it or leave it out; do not key it on the results page.
+  2. Set `id = listing_id_for(source, source_listing_id, posting_url)`. The listing validates this, and ids use the same key as `ListingSource.posting_key` (`src:<source>:id:<id>`, else `src:<source>:url:<normalized posting URL>`). Equal ids therefore always mean the same posting.
+  3. Set `employer_job_key` only from job-specific evidence: an ATS posting URL or page containing this job's own id, such as `boards.greenhouse.io/<tenant>/jobs/<id>` or `jobs.lever.co/<tenant>/<id>`. Say where the id was read in `evidence`. Never set it from a careers home page, a generic apply endpoint, a search page or a title/company match.
+  4. Put Google (and other aggregator) outbound results under their own `source` with the job-specific target as `posting_url`. They merge with another source's listing only through a shared `employer_job_key` (or, rarely, the same source's id or posting URL).
+- **Rules the contract enforces**
+  - `identity_keys` holds each observation's `posting_key` plus `job:<employer_job_key>`.
+  - `contradicts(other)` is true when one source gives the two listings different ids of its own, or they carry different employer keys. A single listing with such contradictions is rejected.
+  - `is_same_posting(other)` requires a shared key and no contradiction. The same title/company/location, a shared search page or a shared application URL never counts.
+  - `merged_with(other)` keeps this listing's values and appends the other's provenance. It fills only missing fields, prefers the fuller description, and any `CLOSED` wins. It raises unless the two are provably the same posting, so a closed posting can never close a different one.
 
 **Preferences and decisions**
 - `SelectionPreferences`:
@@ -476,10 +494,11 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 <!-- D0-EXAMPLE: JobListing -->
 ```json
 {
-  "id": "lst_31a1b821d73a8a89295a841ff2093919",
+  "id": "lst_542448c2ff017a0c096a518a67984655",
   "source": "linkedin",
   "source_listing_id": "4001",
-  "source_url": "https://www.linkedin.example/jobs/view/4001",
+  "posting_url": "https://www.linkedin.example/jobs/view/4001",
+  "source_url": "https://www.linkedin.example/jobs/search?keywords=marketing+manager&location=Austin",
   "application_url": "https://boards.greenhouse.example/fictionalco/jobs/7001",
   "title": "Senior Marketing Manager",
   "company": "Fictional Co",
@@ -503,19 +522,23 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
     {
       "source": "linkedin",
       "source_listing_id": "4001",
-      "source_url": "https://www.linkedin.example/jobs/view/4001",
+      "posting_url": "https://www.linkedin.example/jobs/view/4001",
+      "source_url": "https://www.linkedin.example/jobs/search?keywords=marketing+manager&location=Austin",
+      "employer_job_key": "ats:greenhouse:fictionalco:7001",
       "application_url": "https://boards.greenhouse.example/fictionalco/jobs/7001",
       "observed_at": "2026-09-22T21:00:00Z",
-      "evidence": "search card; job id in URL",
+      "evidence": "search card; job id 4001 in URL; Apply links to Greenhouse job 7001",
       "query_id": "qry_example"
     },
     {
       "source": "google",
       "source_listing_id": null,
+      "posting_url": "https://boards.greenhouse.example/fictionalco/jobs/7001",
       "source_url": "https://www.google.example/search?q=fictional+co+marketing+manager",
+      "employer_job_key": "ats:greenhouse:fictionalco:7001",
       "application_url": "https://boards.greenhouse.example/fictionalco/jobs/7001?gh_src=google",
       "observed_at": "2026-09-22T21:00:00Z",
-      "evidence": "Google Jobs card linking the same Greenhouse posting",
+      "evidence": "Google Jobs card linking Greenhouse job 7001 (id in the posting URL)",
       "query_id": "qry_example"
     }
   ]
@@ -558,13 +581,13 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 ```json
 {
   "id": "sel_example",
-  "listing_id": "lst_31a1b821d73a8a89295a841ff2093919",
+  "listing_id": "lst_542448c2ff017a0c096a518a67984655",
   "candidate_id": "default",
   "requested_model": "typesafe/jev-1.13",
   "returned_model": "typesafe/jev-1.13-20260917",
   "rubric_version": "selection-rubric-1",
   "preferences_fingerprint": "a9621ce5ff116ebe9ff6d0e2d054eeb5cf8846e49d6b38913b61c013aa5df9a2",
-  "job_evidence_hash": "13a0ac487d5bdc1f2d332b10fed634a90225360873eca56c057d74a8583ee955",
+  "job_evidence_hash": "4504aedafa9dcac891a2f53c3a915d6d3f0384be3598a1c9470e642e041a32cc",
   "candidate_evidence_hash": "c2b4b28561c7b311142d7314892152036ea7c609d4485c2f8d48969d44d8cdff",
   "model_decision": {
     "choice": "APPLY",

@@ -38,6 +38,7 @@ from interviewmaxxing_core import (
     SelectionPreferences,
     SourceSearchResult,
     WorkArrangement,
+    employer_job_key,
     listing_id_for,
     meets_floor,
     snapshot_hash,
@@ -48,14 +49,20 @@ CONTRACTS = Path(__file__).resolve().parents[2] / "CONTRACTS.md"
 ATS_URL = "https://boards.greenhouse.example/fictionalco/jobs/7001"
 
 
-def _listing(source: str, source_id: str | None, source_url: str, **fields) -> JobListing:
-    record = ListingSource(source=source, source_listing_id=source_id, source_url=source_url,
+def _listing(source: str, source_id: str | None, posting_url: str | None = None, *,
+             source_url: str | None = None, employer_key: str | None = None,
+             **fields) -> JobListing:
+    """A fictional listing observed on one source."""
+    seen_at = source_url or posting_url or f"https://{source}.example/jobs/{source_id}"
+    record = ListingSource(source=source, source_listing_id=source_id, posting_url=posting_url,
+                           source_url=seen_at, employer_job_key=employer_key,
                            application_url=fields.get("application_url"), observed_at=NOW,
                            evidence="fictional test observation")
     base = dict(
-        id=listing_id_for(source, source_id, source_url), source=source,
-        source_listing_id=source_id, source_url=source_url, title="Marketing Manager",
-        observed_at=NOW, evidence="fictional test observation", provenance=[record],
+        id=listing_id_for(source, source_id, posting_url), source=source,
+        source_listing_id=source_id, posting_url=posting_url, source_url=seen_at,
+        title="Marketing Manager", observed_at=NOW, evidence="fictional test observation",
+        provenance=[record],
     )
     return JobListing(**{**base, **fields})
 
@@ -133,11 +140,21 @@ def test_run_results_must_belong_to_the_query():
 
 
 def test_listing_ids_are_stable_and_source_scoped():
-    a = listing_id_for("linkedin", "4001", "https://www.linkedin.example/jobs/view/4001")
-    assert a == listing_id_for("linkedin", "4001", "https://www.linkedin.example/jobs/view/4001?utm_source=x")
-    assert a != listing_id_for("indeed", "4001", "https://www.indeed.example/viewjob?jk=4001")
+    a = listing_id_for("linkedin", "4001")
+    assert a == listing_id_for("linkedin", "4001", "https://www.linkedin.example/jobs/view/4001")
+    assert a != listing_id_for("indeed", "4001")
     by_url = listing_id_for("builtin", None, "https://builtin.example/job/x/1?utm_medium=y")
     assert by_url == listing_id_for("builtin", None, "https://builtin.example/job/x/1")
+
+
+def test_an_observation_without_a_posting_identity_is_rejected():
+    with pytest.raises(ValueError, match="search page URL is not a posting identity"):
+        listing_id_for("google")
+    with pytest.raises(ValidationError, match="search page URL is not a posting identity"):
+        ListingSource(source="google", source_url="https://www.google.example/search?q=x",
+                      observed_at=NOW, evidence="search card without a job link")
+    with pytest.raises(ValidationError, match="must equal listing_id_for"):
+        _listing("linkedin", "4001", id="lst_" + "0" * 32)
 
 
 def test_missing_source_data_stays_unknown():
@@ -180,43 +197,112 @@ def test_meets_floor_is_deterministic_and_tristate(pay, expected):
 
 
 def test_same_title_and_company_is_not_a_duplicate():
-    a = _listing("linkedin", "4001", "https://www.linkedin.example/jobs/view/4001",
-                 company="Fictional Co")
-    b = _listing("linkedin", "4002", "https://www.linkedin.example/jobs/view/4002",
-                 company="Fictional Co")
-    other_co = _listing("indeed", "abc", "https://www.indeed.example/viewjob?jk=abc",
-                        company="Other Fictional Inc")
+    a = _listing("linkedin", "4001", company="Fictional Co")
+    b = _listing("linkedin", "4002", company="Fictional Co")
+    other_co = _listing("indeed", "abc", company="Other Fictional Inc")
     assert not a.is_same_posting(b)
     assert not a.is_same_posting(other_co)
     with pytest.raises(ValueError, match="not provably"):
         a.merged_with(b)
 
 
-def test_google_result_for_the_same_application_keeps_both_provenance_records():
+# D0R review case 1: a generic apply endpoint shared by different postings.
+def test_shared_generic_apply_url_never_merges_postings():
+    generic = "https://fictional.example/careers/apply"
+    manager = _listing("linkedin", "4001", application_url=generic, title="Marketing Manager",
+                       status="OPEN")
+    director = _listing("linkedin", "4002", application_url=generic, title="Brand Director",
+                        status="CLOSED")
+    assert not manager.is_same_posting(director)
+    assert manager.contradicts(director)
+    with pytest.raises(ValueError, match="not provably"):
+        manager.merged_with(director)
+    assert manager.status is ListingStatus.OPEN
+
+
+# D0R review case 2: results sharing one search page but pointing at different jobs.
+def test_results_on_one_search_page_are_keyed_by_their_own_posting():
+    search = "https://www.google.example/search?q=marketing+manager+austin"
+    g1 = _listing("google", None, "https://boards.greenhouse.example/fictionalco/jobs/1",
+                  source_url=search)
+    g2 = _listing("google", None, "https://boards.greenhouse.example/fictionalco/jobs/2",
+                  source_url=search)
+    assert g1.id != g2.id
+    assert not g1.is_same_posting(g2)
+
+
+# D0R review case 3: ids and dedupe agree.
+def test_equal_listing_ids_imply_the_same_posting():
+    posting = "https://builtin.example/job/marketing-manager/77"
+    first = _listing("builtin", None, posting, source_url="https://builtin.example/jobs?page=1")
+    again = _listing("builtin", None, posting + "?utm_source=x",
+                     source_url="https://builtin.example/jobs?page=2")
+    assert first.id == again.id
+    assert first.is_same_posting(again)
+    merged = first.merged_with(again)
+    assert [p.source_url for p in merged.provenance] == [
+        "https://builtin.example/jobs?page=1", "https://builtin.example/jobs?page=2"
+    ]
+
+
+def test_contradictory_same_source_ids_are_rejected():
+    posting = "https://www.linkedin.example/jobs/view/4001"
+    a = _listing("linkedin", "4001", posting)
+    b = _listing("linkedin", "4002", posting)
+    assert not a.is_same_posting(b)  # the source's own ids disagree
+    with pytest.raises(ValidationError, match="contradictory linkedin ids"):
+        a.model_validate({**a.model_dump(), "provenance": [
+            *a.model_dump()["provenance"],
+            {**b.model_dump()["provenance"][0], "source_url": "https://other.example/x"},
+        ]})
+    key = employer_job_key("greenhouse", "fictionalco", "7001")
+    other = employer_job_key("greenhouse", "fictionalco", "7002")
+    x = _listing("linkedin", "4001", employer_key=key)
+    y = _listing("google", None, "https://www.google.example/jobs?htidocid=abc", employer_key=other)
+    assert x.contradicts(y) and not x.is_same_posting(y)
+
+
+def test_employer_job_key_format_matches_job_identity_and_validates():
+    assert employer_job_key(" Greenhouse ", "FictionalCo", "7001") == "ats:greenhouse:fictionalco:7001"
+    with pytest.raises(ValueError):
+        employer_job_key("greenhouse", "", "7001")
+    with pytest.raises(ValidationError):
+        ListingSource(source="indeed", source_listing_id="x", source_url="https://i.example/x",
+                      employer_job_key="https://fictional.example/careers/apply",
+                      observed_at=NOW, evidence="x")
+
+
+def test_proven_same_employer_job_across_sources_keeps_both_provenance_records():
+    key = employer_job_key("greenhouse", "fictionalco", "7001")
     linkedin = _listing("linkedin", "4001", "https://www.linkedin.example/jobs/view/4001",
-                        company="Fictional Co", application_url=ATS_URL,
+                        employer_key=key, company="Fictional Co", application_url=ATS_URL,
                         description="Snippet", description_completeness="PARTIAL")
-    google = _listing("google", None, "https://www.google.example/search?q=fictional+marketing",
-                      application_url=ATS_URL + "?gh_src=google",
+    google = _listing("google", None, ATS_URL,
+                      source_url="https://www.google.example/search?q=fictional+marketing",
+                      employer_key=key, application_url=ATS_URL + "?gh_src=google",
                       location="Austin, TX", work_arrangement="HYBRID",
                       description="Full description text", description_completeness="FULL",
                       compensation=Compensation(raw_text="$110,000 - $130,000 a year",
                                                 minimum=110000, maximum=130000,
                                                 currency="USD", period="YEAR"))
-    assert linkedin.is_same_posting(google)
+    assert linkedin.is_same_posting(google) and google.is_same_posting(linkedin)
     merged = linkedin.merged_with(google)
     assert [p.source for p in merged.provenance] == ["linkedin", "google"]
     assert merged.id == linkedin.id and merged.company == "Fictional Co"
     assert merged.location == "Austin, TX" and merged.work_arrangement is WorkArrangement.HYBRID
     assert merged.description_completeness is DescriptionCompleteness.FULL
     assert merged.compensation.maximum == 130000
+    # Without the proven key, the same ATS link alone is not enough.
+    unproven = _listing("google", None, "https://www.google.example/jobs?htidocid=zz",
+                        application_url=ATS_URL)
+    assert not linkedin.is_same_posting(unproven)
 
 
-def test_closed_status_survives_a_merge():
-    open_one = _listing("linkedin", "4001", "https://www.linkedin.example/jobs/view/4001",
-                        application_url=ATS_URL, status="OPEN")
-    closed = _listing("builtin", None, "https://builtin.example/job/x/1",
-                      application_url=ATS_URL, status="CLOSED")
+def test_closed_status_survives_a_proven_merge():
+    key = employer_job_key("greenhouse", "fictionalco", "7001")
+    open_one = _listing("linkedin", "4001", employer_key=key, status="OPEN")
+    closed = _listing("builtin", None, "https://builtin.example/job/x/1", employer_key=key,
+                      status="CLOSED")
     assert open_one.merged_with(closed).status is ListingStatus.CLOSED
 
 
