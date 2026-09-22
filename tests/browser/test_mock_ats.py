@@ -103,7 +103,7 @@ class Page(HTMLParser):
         self.text = _norm(" ".join(self._text))
 
     @property
-    def form(self) -> "NativeForm":
+    def form(self) -> NativeForm:
         return self.forms[0]
 
     def handle_starttag(self, tag: str, attrs_list: list[tuple[str, str | None]]) -> None:
@@ -292,7 +292,7 @@ def encode_multipart(items: list[tuple]) -> tuple[bytes, str]:
             out += (
                 f'Content-Disposition: form-data; name="{name}"; filename="{safe}"\r\n'
                 f"Content-Type: {ctype}\r\n\r\n"
-            ).encode("utf-8")
+            ).encode()
             out += data + b"\r\n"
     out += f"--{boundary}--\r\n".encode()
     return bytes(out), f"multipart/form-data; boundary={boundary}"
@@ -392,7 +392,7 @@ def fill_core(form: NativeForm, phone: str | None = None) -> None:
 
 
 def fill_extended(form: NativeForm) -> None:
-    form.select("Years of professional experience", "6–9 years")
+    form.select("Years of professional experience", "6 to 9 years")
     form.select("Primary skills", *CANDIDATE["facts"]["skills"])
     for arrangement in CANDIDATE["facts"]["work_arrangements"]:
         form.choose("Which work arrangements would you consider?", arrangement)
@@ -664,7 +664,7 @@ class StandardSubmissionTests(MockATSTestCase):
         form = self.open_form("standard").form
         fill_core(form)
         fill_extended(form)
-        body, ctype = encode_multipart(form.entries() + [("field", "surprise", "value")])
+        body, ctype = encode_multipart([*form.entries(), ("field", "surprise", "value")])
         resp = self.client.follow(
             self.client.request("POST", "/jobs/standard/apply", body, {"Content-Type": ctype})
         )
@@ -908,7 +908,7 @@ class MultistepTests(MockATSTestCase):
         self.assertEqual(form.enctype, "multipart/form-data")
         self.assert_rejected(self.client.submit(form), "Resume: Attach a file.")
         form.attach("Resume", RESUME_PATH.name, RESUME_BYTES, "application/pdf")
-        form.select("Years of professional experience", "6–9 years")
+        form.select("Years of professional experience", "6 to 9 years")
         form.select(
             "Are you legally authorized to work in the United States?",
             "Yes, I am authorized to work in the US",
@@ -937,7 +937,7 @@ class MultistepTests(MockATSTestCase):
         self.assertIn("Step 4 of 4", text)
         for expected in (
             "Avery",
-            "6–9 years",
+            "6 to 9 years",
             "Yes, I am authorized to work in the US",
             "No, I will not require sponsorship",
             "Python, SQL, Apache Spark, dbt",
@@ -984,6 +984,81 @@ def fill_extended_step3(form: NativeForm) -> None:
         "Why do you want to work at Brambleway Analytics?",
         CANDIDATE["saved_answers"]["why_brambleway"],
     )
+
+
+class BrowserRuntimeScenarioTests(MockATSTestCase):
+    """Scenarios added for the C4 browser runtime."""
+
+    def test_disabled_option_is_shown_but_rejected(self) -> None:
+        form = self.open_form("missing-required").form
+        notice = form.by_label("What is your notice period?")
+        self.assertIn(
+            ["notice_3m_plus", "3 months or more (no longer offered)", False], notice.options
+        )
+        self.assertIn('value="notice_3m_plus" disabled', self.client.get("/jobs/missing-required/apply").text)
+        fill_core(form)
+        form.fill("Desired annual base salary (USD)", "150000")
+        form.choose("Do you hold an active FAA Part 107 remote pilot certificate?", "No")
+        notice.options[-1][2] = True  # force-post the disabled value
+        self.assert_rejected(
+            self.client.submit(form), "What is your notice period?: Select one of the listed options."
+        )
+        self.assertEqual(self.counts()["accepted_count"], 0)
+
+    def test_custom_combobox_and_honeypot(self) -> None:
+        response = self.client.get("/jobs/custom-control/apply")
+        self.assertIn('role="combobox"', response.text)
+        self.assertIn('aria-required="true"', response.text)
+        self.assertRegex(response.text, r'<input type="text" id="f-referral_code"[^>]* disabled')
+        form = response.page.form
+        fill_core(form)
+        self.assert_rejected(self.client.submit(form), "Preferred office: Select an answer.")
+
+        form = self.open_form("custom-control").form
+        fill_core(form)
+        next(c for c in form.by_name("preferred_office") if c.type == "hidden").value = "office_den"
+        form.fill("Leave this field blank", "https://spam.example.test")
+        self.client.submit(form)
+        rejection = self.counts("custom-control")["rejections"][-1]
+        self.assertIn("website_hp", rejection["errors"])
+
+        form = self.open_form("custom-control").form
+        fill_core(form)
+        next(c for c in form.by_name("preferred_office") if c.type == "hidden").value = "office_den"
+        self.assert_confirmed(self.client.submit(form))
+        (record,) = self.counts("custom-control")["submissions"]
+        self.assertEqual(record["fields"]["preferred_office"], "office_den")
+        self.assertNotIn("referral_code", record["fields"])
+
+    def test_vague_confirmation_names_nothing_but_status_page_confirms(self) -> None:
+        form = self.open_form("vague-confirmation").form
+        fill_core(form)
+        response = self.client.submit(form)
+        self.assertEqual(response.status, 200)
+        self.assertIn("Thank you!", response.page.text)
+        self.assertNotRegex(response.page.text, r"BWA-|QA Engineer|submitted|received")
+        (record,) = self.counts("vague-confirmation")["submissions"]
+        status = self.client.get(
+            "/jobs/vague-confirmation/application-status?email=avery.quill%40example.test"
+        ).page.text
+        self.assertIn(record["confirmation_reference"], status)
+
+    def test_agreement_checkboxes_have_terms_outside_the_label(self) -> None:
+        response = self.client.get("/jobs/agreement/apply")
+        page = response.page
+        agree = [c for c in page.form.controls if page.form.label_of(c) == "I agree"]
+        self.assertEqual([c.name for c in agree], ["agree_declaration", "agree_retention"])
+        self.assertTrue(all(c.required for c in agree))
+        self.assertIn("<legend>Candidate declaration</legend>", response.text)
+        self.assertIn('<p class="terms">I confirm that I have never been dismissed', response.text)
+        self.assertIn('aria-describedby="f-agree_retention-hint"', response.text)
+
+    def test_sign_in_cookie_persists(self) -> None:
+        creds = self.client.api("GET", "/__test__/jobs")["signin"]
+        response = self.client.post_form(
+            "/login", [("email", creds["email"]), ("password", creds["password"]), ("next", "/")]
+        )
+        self.assertIn("Max-Age=86400", response.headers["Set-Cookie"])
 
 
 class PersistenceTests(unittest.TestCase):
