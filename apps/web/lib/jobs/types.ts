@@ -1,0 +1,160 @@
+/**
+ * Presentation models for job search (J1) and Jev selection (J2), mirroring the
+ * core D0 discovery contracts. Only observed facts are shown; anything a source
+ * didn't state stays unknown. A Jev decision is never an application receipt.
+ */
+
+export type SourceName = "linkedin" | "builtin" | "indeed" | "google" | (string & {});
+export type WorkArrangement = "ONSITE" | "HYBRID" | "REMOTE" | "UNKNOWN";
+export type CompensationPeriod = "YEAR" | "MONTH" | "WEEK" | "DAY" | "HOUR";
+export type SelectionChoice = "APPLY" | "SKIP" | "REVIEW";
+
+export interface OnsiteTargetView {
+  location: string;
+  arrangements: ("ONSITE" | "HYBRID")[];
+}
+
+export interface RemoteTargetView {
+  /** Where a remote role must allow the candidate to work, e.g. "United States". */
+  eligibleRegion: string;
+}
+
+export interface CompensationFloorView {
+  amount: number;
+  currency: string;
+  period: CompensationPeriod;
+}
+
+export interface SearchPreferencesView {
+  titlePhrases: string[];
+  keywords: string[];
+  excludedKeywords: string[];
+  excludedCompanies: string[];
+  onsite: OnsiteTargetView[];
+  remote: RemoteTargetView | null;
+  minimumCompensation: CompensationFloorView | null;
+  unknownCompensation: "KEEP" | "REVIEW";
+  sources: SourceName[];
+  maxResultsPerSource: number;
+  /** Changes whenever a selection-relevant preference changes. */
+  fingerprint: string | null;
+}
+
+export type SourceState = "QUEUED" | "RUNNING" | "OK" | "PARTIAL" | "NEEDS_USER" | "BLOCKED" | "ERROR" | "SKIPPED";
+
+export interface SourceResultView {
+  source: SourceName;
+  state: SourceState;
+  resultCount: number;
+  message: string | null;
+  /** What the user must do, e.g. "Sign in to LinkedIn in the imx-jobs-linkedin window". */
+  userAction: string | null;
+  sessionName: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface SearchRunView {
+  id: string;
+  startedAt: string;
+  finishedAt: string | null;
+  results: SourceResultView[];
+}
+
+export interface CompensationView {
+  rawText: string | null;
+  minimum: number | null;
+  maximum: number | null;
+  currency: string | null;
+  period: CompensationPeriod | null;
+}
+
+export interface ListingSourceView {
+  source: SourceName;
+  sourceUrl: string;
+  applicationUrl: string | null;
+  observedAt: string;
+}
+
+export interface PolicyHoldView {
+  code: string;
+  detail: string;
+}
+
+export interface SelectionView {
+  id: string;
+  effectiveChoice: SelectionChoice;
+  /** Jev's own answer, before policy holds. Null when the provider failed. */
+  modelChoice: SelectionChoice | null;
+  probabilities: Partial<Record<SelectionChoice, number>> | null;
+  confidence: number | null;
+  requestedModel: string;
+  returnedModel: string | null;
+  rubricVersion: string;
+  holds: PolicyHoldView[];
+  reasons: string[];
+  /** Facts the decision needed but couldn't establish. */
+  unresolved: string[];
+  providerError: { code: string; message: string; retryable: boolean } | null;
+  decidedAt: string;
+  /** True when preferences or listing evidence changed after this decision. */
+  stale: boolean;
+}
+
+export interface ListingView {
+  id: string;
+  title: string;
+  company: string | null;
+  location: string | null;
+  workArrangement: WorkArrangement;
+  remoteEligibility: string | null;
+  compensation: CompensationView | null;
+  description: string | null;
+  descriptionCompleteness: "FULL" | "PARTIAL" | "NONE";
+  status: "OPEN" | "CLOSED" | "UNKNOWN";
+  postedText: string | null;
+  observedAt: string;
+  /** Every source that showed this listing; at least one. */
+  provenance: ListingSourceView[];
+  selection: SelectionView | null;
+  pipelineEntryId: string | null;
+  applicationId: string | null;
+}
+
+export interface ListingsView {
+  listings: ListingView[];
+  lastRun: SearchRunView | null;
+}
+
+export interface JobsService {
+  readonly mode: "live" | "preview";
+  preferences(): Promise<SearchPreferencesView>;
+  savePreferences(input: Omit<SearchPreferencesView, "fingerprint">): Promise<SearchPreferencesView>;
+  startSearch(input: Omit<SearchPreferencesView, "fingerprint">): Promise<SearchRunView>;
+  searchStatus(runId: string): Promise<SearchRunView>;
+  listings(): Promise<ListingsView>;
+  /** Ask Jev for a decision on one listing. Never applies. */
+  decide(listingId: string): Promise<ListingView>;
+  /** Add the listing to the pipeline tracker. */
+  track(listingId: string): Promise<ListingView>;
+}
+
+export const DEFAULT_PREFERENCES: Omit<SearchPreferencesView, "fingerprint"> = {
+  titlePhrases: ["marketing manager", "marketing director"],
+  keywords: [],
+  excludedKeywords: [],
+  excludedCompanies: [],
+  onsite: [{ location: "Austin, TX", arrangements: ["ONSITE", "HYBRID"] }],
+  remote: { eligibleRegion: "United States" },
+  minimumCompensation: { amount: 100_000, currency: "USD", period: "YEAR" },
+  unknownCompensation: "KEEP",
+  sources: ["linkedin", "builtin", "indeed", "google"],
+  maxResultsPerSource: 50,
+};
+
+export const SOURCE_LABELS: Record<string, string> = {
+  linkedin: "LinkedIn Jobs",
+  builtin: "Built In",
+  indeed: "Indeed",
+  google: "Google Jobs",
+};
