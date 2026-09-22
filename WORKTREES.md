@@ -1,32 +1,32 @@
 # Interviewmaxxing worktrees
 
-The build uses eight Claude Opus 5.5 workers plus the existing Astra coordinator. Architecture IDs describe responsibilities; they do not require nine separate worker sessions. One worker owns both WT-05 browser runtime and WT-06 ATS adapters.
+Eight worktrees are available for Opus 5.5 workers, coordinated by Astra. The current MVP uses four: core contracts/CLI, candidate data, application packets, and browser/ATS execution. The other four are parked for later milestones.
 
-## Workspaces to create
+## Workspace scope
 
-Create isolated local worktrees in the Interviewmaxxing Superset project. Use the coordinator's `j-workspace` branch as the initial base after the shared documentation checkpoint is committed. Workers remain unassigned until Astra sends a bounded task.
+All eight isolated local worktrees have been created in the Interviewmaxxing Superset project. They initially branched from `j-workspace` at `c68643a`. Refresh the shared documentation from the coordinator before dispatching a task. Workers remain unassigned until Astra sends a bounded task.
 
-| Workspace name | Branch | Architecture scope | Ownership |
+| Workspace name | Branch | MVP status | Ownership |
 | --- | --- | --- | --- |
-| `core-contracts` | `build/core-contracts` | WT-00 | `packages/core`, migrations, root package/test configuration, shared schemas and fixtures, contract definitions |
-| `job-ingestion` | `build/job-ingestion` | WT-01 | `packages/ingestion`, source parsing, normalization, canonical jobs and deduplication |
-| `jev-selection` | `build/jev-selection` | WT-02 | `packages/scoring`, Jev integration, deciding which jobs to apply for, selection rubrics and evals |
-| `candidate-brain` | `build/candidate-brain` | WT-03 | `packages/candidate`, candidate facts, provenance, preferences and resume inventory |
-| `application-packets` | `build/application-packets` | WT-04 | `packages/generation`, application answers, tailoring, claim checks and unresolved questions |
-| `browser-ats` | `build/browser-ats` | WT-05 + WT-06 | `packages/browser`, `packages/ats`, `adapters`, mock forms, browser execution and ATS adapters |
-| `queue-runtime` | `build/queue-runtime` | WT-07 | `workers`, `apps/api`, the application CLI, pipeline orchestration, retries, idempotency and recovery |
-| `dashboard` | `build/dashboard` | WT-08 | `apps/web`, `packages/analytics`, job-selection review, application review, progress and outcomes |
+| `core-contracts` | `build/core-contracts` | In scope; first | `packages/core`, `apps/cli`, Python configuration, canonical contracts, SQLite application/event records and CLI integration |
+| `job-ingestion` | `build/job-ingestion` | Parked | Later job discovery, parsing, normalization and deduplication |
+| `jev-selection` | `build/jev-selection` | Parked | Later Jev decisions about which discovered jobs to apply for |
+| `candidate-brain` | `build/candidate-brain` | In scope | `packages/candidate`, verified profile, supplied resume, saved screening answers and factual provenance |
+| `application-packets` | `build/application-packets` | In scope | `packages/generation`, field answers, required text grounded in facts and unresolved-input handling |
+| `browser-ats` | `build/browser-ats` | In scope | Browser/form inspection, document upload, filling, submission, confirmation and the first target ATS; covers WT-05 + WT-06 |
+| `queue-runtime` | `build/queue-runtime` | Parked | Later hosted API and distributed execution; core owns the MVP CLI and local persistence |
+| `dashboard` | `build/dashboard` | Parked | Later web review screens, analytics and outcomes |
 
-Astra keeps the current coordinator worktree for architecture, task assignment, integration and verification. Shared files have one owner; each task gets an explicit file allowlist, including any fixture directories. Root dependency and lockfile changes go through the core owner. Module boundaries and CLI entrypoint location are fixed during the core task before parallel edits begin.
+Astra keeps the current coordinator worktree for architecture, task assignment, integration and verification. Shared files have one owner; each task gets an explicit file allowlist, including fixtures. Root dependency and lockfile changes go through the core owner. The MVP CLI lives in `apps/cli`; core defines its interfaces before parallel edits begin.
 
 ## Start order
 
-1. **Core first:** establish the repository scaffold, canonical Python/TypeScript contracts, state transitions, event and queue contracts, test commands, and `CONTRACTS.md`. Astra reviews this foundation before other implementations depend on it.
-2. **Parallel work against approved contracts:** ingestion, Jev selection, candidate data, browser runtime, queue/API/CLI runtime, and dashboard can develop against shared fixtures. Dashboard integration still requires the runtime API.
-3. **Dependent work:** packets consume candidate and selection contracts; the browser worker adds adapters after the generic runtime passes the mock-form acceptance test. Workers may prepare fixtures earlier, but must not invent competing interfaces.
-4. **First vertical slice:** ingestion -> Jev selects APPLY -> candidate/packet -> browser -> persisted result -> dashboard. Runtime owns connecting the executable pipeline; Astra owns the integration check. Also verify SKIP and REVIEW stop before application preparation.
+1. **Core first:** establish minimal Python contracts, the local application/event store, submission states, a CLI skeleton, shared fixtures, verification commands, and `CONTRACTS.md`.
+2. **Candidate and browser work:** build the verified profile/resume loader and live form execution against the approved contracts. The supplied URL determines the first supported ATS.
+3. **Packets:** resolve form answers from candidate data and surface only genuinely missing required input. No discovery, Jev decision, ranking, or TypeSafe access is required.
+4. **Core integration:** connect the packages into `interviewmaxxing apply <application-url>`. Verify that it submits the user's requested application, observes acceptance, and returns a saved receipt. Also verify missing-input resume, duplicate prevention and uncertain-submission recovery.
 
-All eight workspaces may exist from the start. Astra dispatches only tasks whose required contracts and inputs are ready. Tests and infrastructure must use workspace-specific ports, databases, queue namespaces and browser profiles where relevant; workers must not share mutable test state.
+The user's request to apply supplies job choice and submission authorization. Ask only for information or interactions required to complete that request. Keep the parked worktrees available without starting their roadmap tasks. Active workers use separate SQLite databases, browser profiles, artifacts and mock-server ports for their tests.
 
 ## Superset control protocol
 

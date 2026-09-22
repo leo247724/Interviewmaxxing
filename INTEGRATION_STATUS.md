@@ -2,28 +2,31 @@
 
 ## Current objective
 
-Prepare eight Opus 5.5 implementation worktrees and a verified Superset communication path. The first product milestone remains one job URL selected by Jev, followed by a truthful, inspectable application and a persisted outcome.
+Build the supplied-URL application flow: the user chooses a job and asks to apply; the system uses verified candidate information to fill and submit it, verifies acceptance, and saves a receipt. Job discovery and Jev selection are deferred. The MVP uses four of the eight prepared worktrees.
 
 ## Repository baseline
 
 - Coordinator branch: `j-workspace`.
 - Upstream baseline: `9afc591` (architecture only).
 - Shared setup documents: `ARCHITECTURE.md` and `WORKTREES.md`.
-- No application implementation or feature-worker worktrees have been created in this setup task.
+- All eight feature-worker worktrees have been created from the shared documentation checkpoint `c68643a4286d39c69ec2709684de72bbcea490b4`.
+- At creation, each worktree was verified clean, on its intended `build/<workspace-name>` branch, with HEAD at that checkpoint. The coordinator owns subsequent scope checkpoints; verify that each worker has the current documentation before dispatch.
 - Core is the first implementation assignment. `CONTRACTS.md` and executable verification commands are outputs of that task, not existing implementations.
 
 ## Worker board
 
-| Worker | Status | Next dependency |
-| --- | --- | --- |
-| core-contracts | pending creation | Common documentation base and working Claude login |
-| job-ingestion | pending creation | Approved core contracts |
-| jev-selection | pending creation | Approved core contracts; TypeSafe access for live integration verification |
-| candidate-brain | pending creation | Approved core contracts |
-| application-packets | pending creation | Approved core, candidate and selection contracts |
-| browser-ats | pending creation | Approved core contracts; generic browser acceptance before adapters |
-| queue-runtime | pending creation | Approved core contracts; module implementations for end-to-end verification |
-| dashboard | pending creation | Approved core/event/API contracts; runtime API for live integration |
+| Worker | Superset workspace ID | Status | Next dependency |
+| --- | --- | --- | --- |
+| core-contracts | `6a218556-206b-446f-ab32-7659bd383217` | MVP planned; unstarted | Working Claude login; minimal contracts, SQLite store and CLI |
+| job-ingestion | `60876c0b-328b-4fc8-ba66-5ef7028922eb` | parked | Later job-discovery milestone |
+| jev-selection | `82112dc8-f635-439f-a61d-c9c33f6636e3` | parked | Later automated job-selection milestone |
+| candidate-brain | `4d16e305-b074-4bdd-9ff9-f46a553ccfbf` | MVP planned; unstarted | Approved core contracts; user profile and resume for live application |
+| application-packets | `7333147f-5e19-441c-b25c-e08dc161282e` | MVP planned; unstarted | Approved core and candidate contracts |
+| browser-ats | `acff6e42-6b2f-407e-b5c8-0978a8017ca4` | MVP planned; unstarted | Approved core contracts; first application URL for target ATS |
+| queue-runtime | `04292d12-950d-40a8-b8ca-355593be29d9` | parked | Later hosted/distributed execution |
+| dashboard | `ec7d3896-d6e4-407e-85eb-a5c452224509` | parked | Later web interface and analytics |
+
+All workers are on the local host. Their directories are `/Users/leo/.superset/worktrees/Interviewmaxxing/build/<workspace-name>`. No worker terminal or Claude session ID has been assigned yet. The existing coordinator remains at `caramel-ketch` on `j-workspace`.
 
 ## Control-path evidence — 2026-09-22
 
@@ -37,4 +40,4 @@ Prepare eight Opus 5.5 implementation worktrees and a verified Superset communic
 
 ## Next action
 
-After Claude sign-in completes, verify the initial acknowledgment and a second message in the same session. Record the actual model and recipient mapping, then start the core task when the user has created its worktree and assigned the build.
+When Claude sign-in is working, verify a two-message Opus 5.5 handshake and assign the minimal core scaffold, supplied-URL contracts, SQLite application/event store, CLI skeleton and contract checks. Candidate, packet and browser tasks follow those contracts. A real application run also needs the user's target URL and verified profile/resume; no Jev setup is required for this milestone.

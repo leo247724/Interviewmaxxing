@@ -32,7 +32,9 @@ Expected offer value
 
 The product is not one giant autonomous agent. It is a pipeline of typed, replaceable services with explicit contracts.
 
-**Jev, from [TypeSafe AI](https://typesafe.ai/), is the AI decision maker for which jobs the candidate should apply for.** It evaluates jobs against the candidate's experience, preferences, and goals. Its selection determines which jobs enter the application pipeline.
+**Current MVP: the user supplies a job-application URL and asks the system to submit that application.** The user has already chosen the job. Build reliable application execution first.
+
+**Later, Jev, from [TypeSafe AI](https://typesafe.ai/), will decide which discovered jobs the candidate should apply for.** Job discovery and automated selection are deferred. They are not dependencies of the user-provided URL flow.
 
 ---
 
@@ -41,29 +43,44 @@ The product is not one giant autonomous agent. It is a pipeline of typed, replac
 The first end-to-end milestone is:
 
 ```bash
-interviewmaxxing apply <job-url>
+interviewmaxxing apply <application-url>
 ```
 
 That command should:
 
-1. Fetch the job.
-2. Normalize company, title, location, salary, description, and ATS.
-3. Ask Jev whether to apply, persist the selection decision, and continue only when the result is `APPLY`.
-4. Select the best resume variant.
-5. Open and inspect the application form.
-6. Convert the live form into a normalized `ApplicationForm`.
-7. Build a truthful `ApplicationPacket`.
-8. Fill the application.
-9. Surface unresolved or ambiguous questions.
-10. Require human confirmation where needed.
-11. Submit.
-12. Persist the full application event history.
+1. Record the user's application request and load their verified profile, resume, and saved answers.
+2. Open the supplied URL, identify the job and ATS, and check the local record for an existing submission.
+3. Inspect the live form and normalize its fields into an `ApplicationForm`.
+4. Build an `ApplicationPacket` using the supplied resume and factual answers.
+5. Fill fields, upload documents, and navigate application steps.
+6. Ask for missing or ambiguous required information, then resume from the saved state.
+7. Validate the completed form and submit the requested application.
+8. Verify the site's submission confirmation and persist the result, evidence, and event history.
 
-Do this for **one URL correctly** before optimizing for large-scale concurrency.
+The request to apply authorizes submission using the user's supplied information and instructions. Additional confirmation is needed only for a material unanswered question, an uncovered personal attestation, or an interaction requiring the user, such as sign-in or CAPTCHA. Do not add a routine second approval step to every application.
+
+The first deliverable includes actual submission and confirmation. Filling a form alone is incomplete. Do this for **one URL correctly** before adding job discovery, job selection, or large-scale concurrency.
 
 ---
 
 ## 3. Core architecture
+
+### Current MVP
+
+```
+User-provided application URL + verified candidate profile/resume
+    -> record request and check for prior submission
+    -> inspect the live application form
+    -> resolve answers and prepare the packet
+    -> fill, upload and navigate
+    -> ask for missing input only when needed
+    -> submit
+    -> verify confirmation and save the receipt
+```
+
+The browser extracts the minimum job identity and page context needed to apply and avoid duplicates. This does not require the job-discovery service, a `JobMatch`, a Jev call, or a P0/P1/P2 ranking.
+
+### Later: discovery, selection and outcome learning
 
 ```
                          +---------------------------+
@@ -111,7 +128,7 @@ Do this for **one URL correctly** before optimizing for large-scale concurrency.
                                                           +-------------------------------+
 ```
 
-Jev's job-selection decision happens before packet generation. `APPLY` enters the P0/P1/P2 application routes, `SKIP` archives the job, and `REVIEW` waits for a job-selection review before proceeding.
+In the later discovery flow, Jev's job-selection decision happens before packet generation. `APPLY` enters the P0/P1/P2 application routes, `SKIP` archives the job, and `REVIEW` waits for job-selection review. The user-provided URL flow enters application execution directly.
 
 ---
 
@@ -119,11 +136,10 @@ Jev's job-selection decision happens before packet generation. `APPLY` enters th
 
 ### Backend / orchestration
 - **Python 3.12+**
-- **FastAPI**
 - **Pydantic**
-- **PostgreSQL**
-- **Redis**
-- Queue runtime: start lightweight; use Dramatiq/Celery or Temporal only if needed.
+- A local CLI runs one application at a time.
+- **SQLite** stores application requests, events, submission state, and duplicate checks for the MVP; local files hold supporting artifacts.
+- **FastAPI**, **PostgreSQL**, **Redis**, and a distributed queue runtime are later additions when a hosted or concurrent workflow needs them.
 
 ### Browser runtime
 - **Playwright**
@@ -131,15 +147,14 @@ Jev's job-selection decision happens before packet generation. `APPLY` enters th
 - Browser agents execute plans; they should not own career strategy.
 
 ### Frontend
-- **Next.js**
-- TypeScript
-- Dashboard for queue, review, analytics, failures, and outcomes.
+- MVP: CLI progress, missing-input prompts, and a submission receipt, with a visible browser when user interaction is needed.
+- Later: **Next.js** / TypeScript dashboard for queue, review, analytics, failures, and outcomes.
 
 ### Models
 - **GPT Astra**: project orchestrator / integration manager.
 - **Fable 5.x**: optional specialist for difficult investigations; not part of the current eight-worker roster.
 - **Opus 5.5**: default implementation worker for bounded feature work.
-- **TypeSafe AI / Jev**: product AI decision maker for which jobs to apply for; evaluates candidate/job fit and returns `APPLY`, `SKIP`, or `REVIEW`.
+- **TypeSafe AI / Jev — deferred**: future product decision maker for which discovered jobs to apply for; evaluates candidate/job fit and returns `APPLY`, `SKIP`, or `REVIEW`.
 - Optional local/open-source models for cheap generation and classification.
 
 ---
@@ -147,6 +162,21 @@ Jev's job-selection decision happens before packet generation. `APPLY` enters th
 ## 5. Canonical domain objects
 
 These contracts belong to the core worktree and must not be independently redefined by other agents.
+
+The MVP implements the subset needed for a supplied URL: candidate data, the application request, minimal job identity, form, packet, application state, and events. Discovery/scoring fields and cross-language schemas are later work.
+
+### ApplicationRequest
+
+```python
+class ApplicationRequest:
+    id: str
+    candidate_id: str
+    application_url: str
+    requested_at: datetime
+    selection_source: Literal["USER_PROVIDED"]
+```
+
+Record the user's request directly. A user-provided URL does not produce a synthetic Jev decision.
 
 ### CandidateProfile
 Structured source of truth about the candidate.
@@ -209,7 +239,7 @@ class JobPosting:
     fingerprint: str
 ```
 
-### JobMatch
+### JobMatch — later automated selection
 
 ```python
 class JobMatch:
@@ -266,6 +296,7 @@ class ApplicationPacket:
 ```python
 class Application:
     id: str
+    request_id: str
     job_id: str
     candidate_id: str
     state: str
@@ -278,30 +309,33 @@ class Application:
 
 ## 6. Application state machine
 
+Current URL-submission flow:
+
 ```
-DISCOVERED
-  -> NORMALIZED
-  -> SCORED
+REQUESTED
+  -> INSPECTING
   -> PACKET_READY
-  -> QUEUED
-  -> EXECUTING
-  -> NEEDS_INPUT
+  -> FILLING
+  -> SUBMITTING
   -> SUBMITTED
-  -> REJECTED
-  -> RECRUITER_SCREEN
-  -> HIRING_MANAGER
-  -> FINAL_ROUND
-  -> OFFER
 ```
 
-Failure states:
+Inspection and filling may repeat for multiple pages. Missing required information moves the application to `NEEDS_INPUT`; after the user answers, re-inspect the current page and resume. `NEEDS_INPUT` is a conditional branch, not a mandatory approval step.
+
+Additional states:
 
 ```
+NEEDS_INPUT
+SUBMISSION_UNKNOWN
 FAILED_RETRYABLE
 FAILED_PERMANENT
 DUPLICATE
 WITHDRAWN
 ```
+
+Mark `SUBMITTED` only after observing acceptance evidence from the site. If the submit action may have succeeded but confirmation is unavailable, use `SUBMISSION_UNKNOWN` and reconcile before retrying. A click or a timeout must not cause an unverified success or a duplicate application.
+
+Discovery/scoring/queue states and recruiter-screen/interview/offer outcomes are later extensions.
 
 Every transition must emit an event.
 
@@ -361,7 +395,9 @@ The application packet should answer semantic fields, not raw DOM selectors.
 
 ---
 
-## 8. Jev — deciding which jobs to apply for
+## 8. Jev — deciding which jobs to apply for (deferred)
+
+This section describes the later job-discovery flow. The MVP accepts the user's job choice and does not call Jev or require TypeSafe access.
 
 **Jev owns the job-selection judgment.** The inputs are the normalized job posting, verified candidate experience and skills, compensation and location preferences, career goals, and the job-selection rubric.
 
@@ -492,7 +528,7 @@ class ATSAdapter(Protocol):
     async def detect_submission(self, page) -> bool: ...
 ```
 
-Initial adapters:
+For the MVP, support the ATS encountered at the first user-provided application URL, using the generic browser runtime and a focused adapter where needed. The broader adapter backlog is:
 
 ```
 GreenhouseAdapter
@@ -508,7 +544,9 @@ The generic browser runtime remains the fallback.
 
 ---
 
-## 11. Queues
+## 11. Queues (later) and submission idempotency
+
+The MVP runs in one local process and persists its progress. The queue names below are reserved for later distributed execution; Redis and queue workers are not MVP prerequisites.
 
 ```
 jobs.discover
@@ -537,7 +575,7 @@ A worker retry must never accidentally create a second submission record for the
 
 # 12. Parallel worktree plan
 
-The current roster is eight Opus 5.5 implementation workers plus Astra as coordinator. WT-05 and WT-06 share the `browser-ats` worktree. The exact workspace names, ownership and dispatch protocol are in [WORKTREES.md](WORKTREES.md).
+Eight worktrees are available, with four in the current MVP plan: `core-contracts`, `candidate-brain`, `application-packets`, and `browser-ats`. Job ingestion, Jev selection, distributed runtime, and dashboard work are parked. WT-05 and WT-06 share the `browser-ats` worktree. The exact ownership and dispatch protocol are in [WORKTREES.md](WORKTREES.md).
 
 ## WT-00 — Core Contracts
 
@@ -545,28 +583,28 @@ The current roster is eight Opus 5.5 implementation workers plus Astra as coordi
 
 **Role:** shared-contract owner under Astra.
 
-Build:
-- monorepo structure
-- canonical Pydantic/Zod schemas
-- Postgres schema
-- migrations
-- event model
-- state machine
-- queue names
-- configuration conventions
-- fixtures
-- contract tests
+Build for the MVP:
+- minimal Python package structure and CLI entrypoint in `apps/cli`
+- canonical Pydantic contracts for the supplied-URL flow
+- SQLite application/event storage and submission idempotency
+- state transitions, submission receipts, and artifact references
+- configuration conventions, shared fixtures, and contract tests
+- `CONTRACTS.md` and executable local verification commands
+
+Core also owns wiring the CLI to the candidate, packet, and browser packages after their interfaces are ready. Zod schemas, Postgres migrations and distributed queue configuration are later work.
 
 Own these interfaces permanently.
 
 ### Acceptance criterion
-All other worktrees can import the canonical models without redefining them.
+The active worktrees can import the canonical models without redefining them. Local records distinguish a requested application, missing input, confirmed submission, and an uncertain submission; the CLI can wire in the application services without a discovery or scoring dependency.
 
 ---
 
 ## WT-01 — Job Ingestion
 
 **Model:** Opus 5.5
+
+**Status:** deferred. The browser/CLI handles minimal metadata for the supplied URL in the MVP. The following discovery work is a later milestone.
 
 Build:
 - source adapter interface
@@ -598,6 +636,8 @@ async def dedupe(job: JobPosting) -> DuplicateResult
 
 **Product decision model:** Jev, via TypeSafe AI
 
+**Status:** deferred. The user chooses the job in the MVP; the following selection work is a later milestone.
+
 Build:
 - Jev integration for deciding which jobs to apply for
 - candidate/job context and versioned selection rubrics
@@ -616,7 +656,9 @@ Build:
 
 **Model:** Opus 5.5
 
-Build:
+**MVP scope:** load the user's verified contact details, resume, factual background and saved screening answers. Keep simple provenance for answers and claims. A broader fact graph and automated resume-variant strategy can follow later.
+
+Roadmap responsibilities; limit current work to the MVP scope above:
 - structured candidate profile
 - candidate fact graph
 - provenance
@@ -643,7 +685,9 @@ Generated content cannot introduce unsupported factual or quantitative claims.
 
 **Model:** Opus 5.5
 
-Build:
+**MVP scope:** resolve the current form's fields from the candidate profile and supplied resume, draft any required text from verified facts, and identify required answers that need user input. This package has no Jev or job-scoring dependency. Elaborate tailoring and optional cover letters are later improvements.
+
+Roadmap responsibilities; limit current work to the MVP scope above:
 - deterministic answer resolver
 - resume selection/tailoring
 - custom question generation
@@ -669,7 +713,7 @@ insufficient evidence
 ```
 
 ### Acceptance criterion
-A 50-question fixture application can be completed with unsupported questions explicitly flagged.
+A representative application fixture resolves known answers and explicitly flags unsupported required questions without inventing candidate facts.
 
 ---
 
@@ -708,7 +752,7 @@ Complete a local mock ATS application containing text, select, radio, checkbox, 
 
 **Model:** Opus 5.5
 
-Build adapters in this order:
+**MVP scope:** the first user-provided application's ATS, plus local mock forms. Add further adapters after that flow reliably submits and verifies acceptance. The later backlog is:
 
 1. Greenhouse
 2. Lever
@@ -719,7 +763,7 @@ Build adapters in this order:
 7. Generic fallback improvements
 
 ### Acceptance criterion
-The same `ApplicationPacket` can traverse multiple ATS fixtures without changing packet structure.
+The same `ApplicationPacket` works with the local mock form and the first supported ATS without changing its structure. Broader ATS coverage follows later.
 
 ---
 
@@ -727,8 +771,10 @@ The same `ApplicationPacket` can traverse multiple ATS fixtures without changing
 
 **Model:** Opus 5.5
 
+**Status:** deferred. Core owns the local CLI and durable application state in the MVP. This worktree later owns hosted/API orchestration and distributed execution.
+
 Build:
-- application CLI and FastAPI endpoints that connect the pipeline
+- FastAPI endpoints and hosted orchestration that connect the pipeline
 - worker queues
 - leases
 - retries
@@ -749,6 +795,8 @@ Kill workers randomly during a 100-job test and recover without corrupting state
 ## WT-08 — Dashboard / Analytics
 
 **Model:** Opus 5.5
+
+**Status:** deferred. The MVP returns progress, missing-input prompts, and a submission receipt through the CLI.
 
 Build Next.js control plane.
 
@@ -880,7 +928,7 @@ Most code should be produced by Opus workers.
 
 ## Jev / TypeSafe — Job Selection Decision Maker
 
-Jev runs inside the product and decides **which jobs to apply for**. WT-02 owns its integration and selection rubric under Astra's interface review.
+In a later milestone, Jev will run inside the product and decide **which jobs to apply for**. WT-02 owns that future integration and selection rubric under Astra's interface review. The current supplied-URL MVP has no Jev dependency.
 
 Its responsibility is evaluating candidate/job fit and choosing `APPLY`, `SKIP`, or `REVIEW`. The selected jobs then pass to the existing candidate, packet-generation, and browser services for preparation and execution.
 
@@ -929,34 +977,37 @@ Hard rule:
 
 ## 15. Suggested merge order
 
+Current MVP:
+
 ```
-WT-00 core
+WT-00 minimal contracts + local storage + CLI skeleton
     |
-    +--> WT-01 ingestion
-    +--> WT-02 Jev job selection / scoring
     +--> WT-03 candidate brain
     +--> WT-05 browser
-    +--> WT-07 queue
 
-WT-02 + WT-03
+WT-00 + WT-03
     -> WT-04 packet generator
 
 WT-05
-    -> WT-06 ATS adapters
+    -> WT-06 adapter for the first supplied application URL
 
-all canonical events/models
-    -> WT-08 dashboard
+WT-03 + WT-04 + WT-05/06
+    -> WT-00 CLI integration
+    -> confirmed submission and local receipt
 ```
 
-Do not wait for every worktree to finish before integrating. Merge vertical slices continuously.
+Job ingestion, Jev selection, distributed queues and the dashboard join in later milestones. Integrate the supplied-URL flow continuously rather than waiting for the broader roadmap.
 
 ---
 
 # 16. Repository layout
 
+Target layout across milestones; create only the packages needed by the current MVP.
+
 ```
 interviewmaxxing/
 ├── apps/
+│   ├── cli/
 │   ├── api/
 │   └── web/
 ├── packages/
@@ -992,36 +1043,32 @@ interviewmaxxing/
 
 # 17. First integration milestone
 
-The first milestone is not "lots of agents running."
-
-It is:
-
-> **One job URL -> one correctly prepared, inspectable application.**
+> **One user-provided application URL -> one submitted application -> verified confirmation and a saved receipt.**
 
 Definition of done:
 
 ```
-URL
- -> job scraped
- -> normalized
- -> deduplicated
- -> Jev selects APPLY
- -> resume selected
+User's application URL + verified profile/resume
+ -> application request recorded
+ -> job identity and prior submission checked
  -> form parsed
- -> packet generated
- -> browser fills form
- -> unknown fields surfaced
- -> human confirms
- -> submission recorded
+ -> factual packet prepared
+ -> browser fills fields and uploads documents
+ -> missing required answers resolved if needed
+ -> application submitted
+ -> site confirmation verified
+ -> receipt and event history saved
 ```
 
-Once this works reliably, increase worker concurrency.
+The receipt identifies the job, application URL, submission time, and available confirmation reference or evidence. Until confirmation is observed, report the actual blocked or uncertain state.
 
-Also verify the selection exits: `SKIP` records and archives the job, while `REVIEW` holds it before application preparation.
+Verify missing-answer resume, duplicate prevention, and ambiguous submission recovery using local fixtures. Then verify the supported real application flow using the user's supplied URL and information. Job discovery, Jev selection, distributed queues and analytics are outside this acceptance criterion.
 
 ---
 
-# 18. Second milestone — Interview feedback loop
+# 18. Later milestones — Discovery, Jev selection and interview feedback
+
+After URL-based application submission is reliable, add job discovery and Jev's job-selection decisions. They feed selected jobs into the same application executor. Outcome ingestion and ranking improvements follow as the product grows.
 
 After application execution is reliable, add outcome ingestion:
 
