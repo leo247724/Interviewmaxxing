@@ -1,6 +1,6 @@
 # Remaining local integration packages
 
-All workers follow the scope, fictional-data rules, commit/check receipt and owner boundaries in `mvp-build-tasks.md`. No real applications or employer messages during development. Job discovery and Jev remain deferred. These tasks implement the already requested local frontend/backend.
+All workers follow the scope, fictional-data rules, commit/check receipt and owner boundaries in `mvp-build-tasks.md`. No real applications or employer messages during development. Job discovery and Jev are now active; job-browser-selection.md supersedes the original deferral. These tasks implement the already requested local frontend/backend.
 
 ## C2P — Candidate setup and supplied resumes
 

@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Any, Self
 
@@ -82,6 +83,13 @@ class WorkArrangement(StrEnum):
     REMOTE = "REMOTE"
     UNKNOWN = "UNKNOWN"
     """The source did not say. Never guessed from the title or location."""
+
+
+class LocationPriority(StrEnum):
+    STRONGLY_PREFER_ONSITE_HYBRID = "STRONGLY_PREFER_ONSITE_HYBRID"
+    """Matching onsite/hybrid targets rank well above eligible remote roles."""
+    BALANCED = "BALANCED"
+    PREFER_REMOTE = "PREFER_REMOTE"
 
 
 class CompensationPeriod(StrEnum):
@@ -165,6 +173,7 @@ class JobSearchQuery(Contract):
     excluded_keywords: list[str] = Field(default_factory=list)
     onsite: list[OnsiteTarget] = Field(default_factory=_default_onsite)
     remote: RemoteTarget | None = Field(default_factory=_default_remote)
+    location_priority: LocationPriority = LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
     minimum_compensation: CompensationFloor | None = Field(default_factory=_default_floor)
     """Used to rank/filter where a source supports it. Listings without comparable
     pay are kept (compensation unknown), never dropped for lacking a salary."""
@@ -195,6 +204,7 @@ class JobSearchQuery(Contract):
             "excluded_keywords": preferences.excluded_keywords,
             "onsite": preferences.onsite,
             "remote": preferences.remote,
+            "location_priority": preferences.location_priority,
             "minimum_compensation": preferences.minimum_compensation,
         }
         return cls(**{**base, **overrides})
@@ -541,8 +551,25 @@ class JobListing(Contract):
         provably the same posting."""
         if not self.is_same_posting(other):
             raise ValueError("listings are not provably the same posting")
-        seen = {(p.posting_key, p.source_url) for p in self.provenance}
-        extra = [p for p in other.provenance if (p.posting_key, p.source_url) not in seen]
+        records = {(p.posting_key, p.source_url): p for p in self.provenance}
+        for incoming in other.provenance:
+            key = (incoming.posting_key, incoming.source_url)
+            previous = records.get(key)
+            if previous is None:
+                records[key] = incoming
+                continue
+            # A later detail-page observation may establish the employer identity
+            # absent from the initial search card. Keep that proof and its evidence.
+            evidence = previous.evidence
+            if incoming.evidence != evidence and incoming.evidence not in evidence.split("\n"):
+                evidence += "\n" + incoming.evidence
+            records[key] = ListingSource.model_validate({
+                **previous.model_dump(),
+                "employer_job_key": previous.employer_job_key or incoming.employer_job_key,
+                "application_url": previous.application_url or incoming.application_url,
+                "observed_at": max(previous.observed_at, incoming.observed_at),
+                "evidence": evidence,
+            })
         fill: dict[str, Any] = {}
         for name in ("application_url", "company", "location", "remote_eligibility",
                      "compensation", "posted_text"):
@@ -561,7 +588,7 @@ class JobListing(Contract):
         elif self.status is ListingStatus.UNKNOWN:
             fill["status"] = other.status
         return type(self).model_validate(
-            {**self.model_dump(), **fill, "provenance": [*self.provenance, *extra]}
+            {**self.model_dump(), **fill, "provenance": list(records.values())}
         )
 
 
@@ -582,6 +609,7 @@ class SelectionPreferences(Contract):
     target_titles: list[str] = Field(default_factory=lambda: list(DEFAULT_TITLE_PHRASES))
     onsite: list[OnsiteTarget] = Field(default_factory=_default_onsite)
     remote: RemoteTarget | None = Field(default_factory=_default_remote)
+    location_priority: LocationPriority = LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
     minimum_compensation: CompensationFloor | None = Field(default_factory=_default_floor)
     unknown_compensation: UnknownCompensationPolicy = UnknownCompensationPolicy.KEEP
     excluded_keywords: list[str] = Field(default_factory=list)
@@ -788,13 +816,14 @@ class PipelineEntry(Contract):
     stage: NonEmptyStr
     notes: str | None = None
     next_action: str | None = None
-    next_action_due: UtcDatetime | None = None
+    next_action_due: date | UtcDatetime | None = None
+    """Preserve a calendar due date as a date; never invent a midnight timestamp."""
     application_id: str | None = None
     selection_id: str | None = None
     import_source: str | None = None
     """E.g. the workbook name the row came from."""
     imported_values: dict[str, str] = Field(default_factory=dict)
-    """The imported row's original cells, verbatim, for columns without a field here."""
+    """All original nonblank imported cells, including raw Stage and Status, verbatim."""
     created_at: UtcDatetime = Field(default_factory=utc_now)
     updated_at: UtcDatetime = Field(default_factory=utc_now)
 
