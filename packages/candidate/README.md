@@ -10,13 +10,14 @@ from interviewmaxxing_core import LocalPaths
 
 store = LocalCandidateStore.from_paths(LocalPaths.from_env())  # profile_dir = IMX_PROFILE_DIR
 store = LocalCandidateStore.from_env(env=None)                 # same, from os.environ or a mapping
-store = LocalCandidateStore(profile_dir)                       # Path | str; relative → resolved against CWD now
+store = LocalCandidateStore(profile_dir, *, max_resume_bytes=10 * 1024 * 1024, clock=utc_now)
+    # profile_dir: Path | str; relative → resolved against CWD now. from_paths takes the same keywords.
 
 profile: CandidateProfile = store.load(candidate_id)           # CandidateLoader
 report: CandidateLoadReport = store.load_report(candidate_id)  # load() plus sources, superseded answers and conflicts
 store.save_answer(candidate_id, saved_answer)                  # SavedAnswerWriter
 store.exists(candidate_id) -> bool
-store.candidate_dir(id) / store.profile_path(id) / store.answers_path(id) -> Path
+store.candidate_dir(id) / store.profile_path(id) / store.answers_path(id) / store.resumes_dir(id) -> Path
 ```
 
 The store holds no open resources and is safe to construct per request. The runner's missing-input step is:
@@ -27,15 +28,61 @@ if saved is not None:
     store.save_answer(candidate_id, saved)
 ```
 
+## Candidate setup (for S1: `GET /candidate`, `POST /resumes`, starting an application)
+
+`candidate_id` is always the configured stable id (`LocalPaths.candidate_id`, `IMX_CANDIDATE_ID`, default `default`), never derived from content or generated per request.
+
+```python
+store.store_resume(candidate_id, *, filename: str, content: bytes,
+                   media_type: str | None = None) -> StoredResume
+    # Raises ResumeRejected (400-type input error; nothing stored) or CandidateNotFound (invalid id).
+store.list_resumes(candidate_id) -> list[StoredResume]
+store.get_resume(candidate_id, resume_id: str) -> StoredResume          # raises ResumeNotFound
+store.upsert_profile(candidate_id, *, identity: CandidateIdentity,
+                     resume_id: str) -> CandidateProfile
+    # Raises ResumeNotFound, CandidateProfileInvalid (nothing written), CandidateNotFound (invalid id).
+store.candidate_setup(candidate_id) -> CandidateSetup                  # never raises CandidateNotFound for a valid id
+
+@dataclass(frozen=True)
+class StoredResume:
+    artifact: ResumeArtifact        # canonical: id, absolute path, filename, media_type, sha256, size_bytes
+    origin: ResumeOrigin            # UPLOADED | PROFILE
+    uploaded_at: datetime | None    # UTC; None for a PROFILE resume (it was not uploaded here)
+    id: str                         # property, = artifact.id
+
+@dataclass(frozen=True)
+class CandidateSetup:
+    candidate_id: str
+    identity: CandidateIdentity | None   # None until contact details are saved
+    resumes: tuple[StoredResume, ...]    # = list_resumes()
+    selected_resume_id: str | None       # the resume profile.json references
+    complete: bool                       # load() succeeds: ready to apply
+    problem: str | None                  # CandidateProfileInvalid message (contains local paths) when not loadable
+```
+
+Mapping to the frontend `CandidateView`: `profile` ← `identity` (all fields empty when `None`); `resumes[]` ← `{id, fileName: artifact.filename, sizeBytes: artifact.size_bytes, uploadedAt: uploaded_at}` (a PROFILE resume has no upload time); `defaultResumeId` ← `selected_resume_id`. `CandidateProfileInput.location` is one string while `CandidateIdentity.address` is structured. The service decides how to map it; this package does not parse it.
+
+- **Uploads before a profile exists.** `store_resume` needs only a valid candidate id. Nothing about contact details or facts is created, and the upload is not selected until `upsert_profile` names it.
+- **Upload rules.** The filename is reduced to its last path component, ASCII `[A-Za-z0-9._()- ]` characters, no leading dots and at most 100 characters before the extension. The extension must be one of `RESUME_UPLOAD_TYPES` (`.pdf .doc .docx .odt .rtf .txt .md`). `media_type` may be omitted or `application/octet-stream`; any other value must equal the extension's type. The content must be non-empty and at most `max_resume_bytes` (default 10 MiB). It must also look like its type: `%PDF-`, the OLE or ZIP signature, `{\rtf`, or UTF-8 text for `.txt`/`.md`. The bytes are stored unchanged under a generated id `resume_<32 hex>`. Uploads are never modified, and their content is never read for facts or qualifications.
+- **Storage.** Each upload is `<candidate_id>/resumes/<resume_id>/<safe filename>` plus `meta.json`. Both files are `0400` and the directories `0700`. The upload directory is assembled under a hidden staging name and renamed into place, so it is complete or absent. Reads recheck the recorded sha256.
+- **`upsert_profile`.** It stores `identity` exactly as given. Pass `verified_at` as the time the user confirmed those details on screen. It selects `resume_id`, which must come from `list_resumes()`:
+  - An upload is referenced from `profile.json` as `resumes/<id>/<file>` with its digest.
+  - Choosing the profile's current resume leaves that entry untouched. This includes an imported or hand-written profile whose resume lives elsewhere. Request-supplied paths are never accepted or copied.
+  - Every other key of an existing `profile.json` is kept verbatim: facts, experience, education, and embedded `saved_answers`, including tied conflicts. Loading reconciles them but this function does not. `answers.json` and application history (the state database) are untouched, and the candidate id does not change.
+  - A new profile starts with empty facts, answers, experience and education.
+  - The resulting profile is validated as `load()` would before it is written, atomically (`0600`), under the same per-candidate lock as `save_answer`. An existing profile that cannot be parsed or validated raises `CandidateProfileInvalid`, and nothing is overwritten.
+- **Concurrency.** Uploads need no lock because each has a fresh id and an atomic rename. `upsert_profile` and `save_answer` serialize on `<candidate_id>/.answers.lock`.
+
 ## Files
 
 Under `LocalPaths.profile_dir` (`$IMX_HOME/profile`; outside source control):
 
 ```
 <candidate_id>/
-    profile.json   CandidateProfile JSON, written by the user (never modified by this package)
+    profile.json   CandidateProfile JSON, written by the user or by upsert_profile
     answers.json   JSON array of SavedAnswer, written by save_answer (may also be edited by hand)
-    resume.pdf     optional location for the resume; resume.path may point anywhere
+    resumes/       uploads from store_resume, one immutable directory per resume id
+    resume.pdf     optional location for a hand-placed resume; resume.path may point anywhere
 ```
 
 - **Candidate id.** The directory name is the candidate id. It is never derived from content, so editing the profile keeps it. `profile.json`'s `"id"` must equal it. Ids are 1-128 characters of `[A-Za-z0-9._-]` starting with a letter or digit, and other ids raise `CandidateNotFound`. The CLI default id is `default` (`IMX_CANDIDATE_ID`).
@@ -70,7 +117,7 @@ Under `LocalPaths.profile_dir` (`$IMX_HOME/profile`; outside source control):
   - A stored answer with the same `confirmed_at` and a different value is kept alongside the new one; the writer does not pick whichever came last. Loading then reports the pair as a conflict (above).
 - Answers with another scope or target are untouched, so saving a JOB answer can never replace or widen a GLOBAL one, or the reverse. Answers in `profile.json` are not compared at write time; loading reconciles them by `confirmed_at` as above.
 - Saving an identical answer again is a no-op. Reusing an id for a different answer, or an id already present in `profile.json`, raises `SavedAnswerRejected` and writes nothing.
-- It requires an existing `profile.json` (`CandidateNotFound` otherwise). A corrupt `answers.json` raises `CandidateProfileInvalid` and is left untouched. `profile.json` is never modified.
+- It requires an existing `profile.json` (`CandidateNotFound` otherwise). A corrupt `answers.json` raises `CandidateProfileInvalid` and is left untouched. `save_answer` never modifies `profile.json`.
 
 ## Tests
 
