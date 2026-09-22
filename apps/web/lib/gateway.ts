@@ -77,7 +77,14 @@ export async function proxy(
     return errorResponse(404, "not_found", "No such route.");
   }
 
-  const expectedOrigin = config.webOrigin ?? incoming.origin;
+  const expectedOrigin = config.webOrigin ?? loopbackOrigin(request, incoming);
+  if (!expectedOrigin) {
+    return errorResponse(
+      403,
+      "invalid",
+      "This app only answers requests addressed to this computer (127.0.0.1 or localhost).",
+    );
+  }
   const origin = request.headers.get("origin");
   if (request.method === "POST") {
     if (origin !== expectedOrigin) {
@@ -173,6 +180,23 @@ export async function proxy(
   }
   if (!out.has("content-type")) out.set("Content-Type", "application/json");
   return new Response(upstream.body, { status: upstream.status, headers: out });
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * Without a configured origin, the app's origin is the Host the browser addressed,
+ * accepted only for loopback names so a DNS-rebinding page can't pose as the app.
+ */
+function loopbackOrigin(request: Request, incoming: URL): string | null {
+  const host = request.headers.get("host") ?? incoming.host;
+  let parsed: URL;
+  try {
+    parsed = new URL(`${incoming.protocol}//${host}`);
+  } catch {
+    return null;
+  }
+  return LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase()) ? parsed.origin : null;
 }
 
 function uploadTooLarge(config: GatewayConfig) {

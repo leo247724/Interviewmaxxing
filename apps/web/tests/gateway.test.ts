@@ -122,6 +122,38 @@ describe("gateway mutations", () => {
     expect(captured[0].headers.origin).toBe(WEB);
   });
 
+  it("derives the origin from a loopback Host header, as the browser addressed it", async () => {
+    const request = new Request("http://localhost:3000/api/imx/applications", {
+      method: "POST",
+      headers: { Host: "127.0.0.1:4317", Origin: WEB, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const response = await proxy(request, ["applications"], config({ webOrigin: null }));
+    expect(response.status).toBe(200);
+    expect(captured[0].headers.origin).toBe(WEB);
+  });
+
+  it("refuses a rebound non-loopback host even when its origin matches", async () => {
+    const request = new Request("http://attacker.example:4317/api/imx/applications", {
+      method: "POST",
+      headers: {
+        Host: "attacker.example:4317",
+        Origin: "http://attacker.example:4317",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    const response = await proxy(request, ["applications"], config({ webOrigin: null }));
+    expect(response.status).toBe(403);
+    const read = await proxy(
+      new Request("http://attacker.example:4317/api/imx/candidate", { headers: { Host: "attacker.example:4317" } }),
+      ["candidate"],
+      config({ webOrigin: null }),
+    );
+    expect(read.status).toBe(403);
+    expect(captured).toHaveLength(0);
+  });
+
   it("requires JSON and bounds its size", async () => {
     const wrongType = await proxy(
       post("applications", { headers: { "Content-Type": "text/plain" }, body: "{}" }),
