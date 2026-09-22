@@ -32,6 +32,8 @@ Expected offer value
 
 The product is not one giant autonomous agent. It is a pipeline of typed, replaceable services with explicit contracts.
 
+**Jev, from [TypeSafe AI](https://typesafe.ai/), is the AI decision maker for which jobs the candidate should apply for.** It evaluates jobs against the candidate's experience, preferences, and goals. Its selection determines which jobs enter the application pipeline.
+
 ---
 
 ## 2. MVP
@@ -46,7 +48,7 @@ That command should:
 
 1. Fetch the job.
 2. Normalize company, title, location, salary, description, and ATS.
-3. Score the job against the candidate profile.
+3. Ask Jev whether to apply, persist the selection decision, and continue only when the result is `APPLY`.
 4. Select the best resume variant.
 5. Open and inspect the application form.
 6. Convert the live form into a normalized `ApplicationForm`.
@@ -71,7 +73,7 @@ Do this for **one URL correctly** before optimizing for large-scale concurrency.
                                        |
                                        v
 +-------------+   +-----------+   +---------+   +---------+
-| Job Sources |-->| Normalize |-->| Dedupe  |-->| Scoring |
+| Job Sources |-->| Normalize |-->| Dedupe  |-->|   Jev   |
 +-------------+   +-----------+   +---------+   +----+----+
                                                         |
                                      +------------------+------------------+
@@ -109,6 +111,8 @@ Do this for **one URL correctly** before optimizing for large-scale concurrency.
                                                           +-------------------------------+
 ```
 
+Jev's job-selection decision happens before packet generation. `APPLY` enters the P0/P1/P2 application routes, `SKIP` archives the job, and `REVIEW` waits for a job-selection review before proceeding.
+
 ---
 
 ## 4. Technical stack
@@ -133,9 +137,9 @@ Do this for **one URL correctly** before optimizing for large-scale concurrency.
 
 ### Models
 - **GPT Astra**: project orchestrator / integration manager.
-- **Fable 5.x**: architecture, scoring, distributed systems, difficult investigations.
+- **Fable 5.x**: optional specialist for difficult investigations; not part of the current eight-worker roster.
 - **Opus 5.5**: default implementation worker for bounded feature work.
-- **TypeSafe / cheap local classifiers**: high-volume typed routing and scoring.
+- **TypeSafe AI / Jev**: product AI decision maker for which jobs to apply for; evaluates candidate/job fit and returns `APPLY`, `SKIP`, or `REVIEW`.
 - Optional local/open-source models for cheap generation and classification.
 
 ---
@@ -216,8 +220,12 @@ class JobMatch:
     fit_score: float
     interview_probability: float | None
     confidence: float
-    priority: Literal["P0", "P1", "P2", "DROP"]
-    resume_variant: str
+    decision: Literal["APPLY", "SKIP", "REVIEW"]
+    decision_probabilities: dict[str, float]
+    decision_model: str
+    decision_rubric_version: str
+    priority: Literal["P0", "P1", "P2", "DROP"] | None
+    resume_variant: str | None
     reasons: list[str]
 ```
 
@@ -353,13 +361,18 @@ The application packet should answer semantic fields, not raw DOM selectors.
 
 ---
 
-## 8. Job scoring and routing
+## 8. Jev — deciding which jobs to apply for
 
-Do not ask one model:
+**Jev owns the job-selection judgment.** The inputs are the normalized job posting, verified candidate experience and skills, compensation and location preferences, career goals, and the job-selection rubric.
 
-> "Is this a good job?"
+```
+JobPosting + CandidateProfile + selection rubric
+    -> Jev fit assessments
+    -> Jev application decision
+    -> APPLY / SKIP / REVIEW
+```
 
-Ask atomic questions and combine the outputs in code.
+Use focused Jev questions to assess the factors below. Supply those assessments and their uncertainty to the final Jev selection question. This keeps the selection grounded in explicit evidence while letting Jev decide whether the job is worth applying for.
 
 Examples:
 
@@ -373,12 +386,24 @@ technical_ai_match
 location_match
 remote_compatibility
 application_complexity
-likely_interview_probability
-best_resume_variant
 human_outreach_value
 ```
 
-Initial routing:
+Use TypeSafe's `Choice` primitive for the final selection. It returns the chosen option, probabilities across the supplied options, and confidence. These are provider outputs; the meanings below are Interviewmaxxing's job-selection contract. [TypeSafe Choice documentation](https://docs.typesafe.ai/primitives/choice)
+
+| Jev decision | Meaning | Pipeline behavior |
+| --- | --- | --- |
+| `APPLY` | The job is worth pursuing for this candidate. | Assign P0/P1/P2 effort and prepare the application. |
+| `SKIP` | The job does not meet the candidate's selection criteria. | Record the decision and archive as `DROP`. |
+| `REVIEW` | The evidence is insufficient or the tradeoff needs candidate input. | Hold for job-selection review; leave priority unset. |
+
+Code enforces the candidate's explicit hard constraints, confidence thresholds, and application budgets. Missing required evidence or insufficient confidence holds the job for review. A provider failure holds selection for recovery and cannot authorize an application. Confidence thresholds must be evaluated against our own labeled job fixtures. [TypeSafe confidence documentation](https://docs.typesafe.ai/confidence)
+
+Persist the candidate/job evidence snapshot, Jev's original answer and probabilities, returned model version, rubric version, and effective routing decision. Record any policy hold or human override separately so the model's judgment remains auditable. `JobMatch.decision` is the effective decision after those checks; its probabilities and confidence describe Jev's original selection. Build the existing `reasons` from the stored fit assessments and source evidence.
+
+Jev's decision confidence describes uncertainty about job selection. `interview_probability` remains unset until an outcome model has been evaluated against observed interview results.
+
+Effort routing for selected jobs:
 
 ### P0
 Exceptional fit.
@@ -403,18 +428,7 @@ Acceptable.
 ### DROP
 Hard mismatch or low expected value.
 
-Example ranking function:
-
-```python
-priority_score = (
-    0.30 * experience_match
-    + 0.20 * seniority_match
-    + 0.20 * compensation_match
-    + 0.15 * technical_ai_match
-    + 0.10 * leadership_match
-    + 0.05 * location_match
-)
-```
+Fit scores support Jev's selection and ordering of selected jobs. Version the selection rubric and evaluate changes using candidate-labeled apply/skip/review examples.
 
 Long-term objective:
 
@@ -523,10 +537,13 @@ A worker retry must never accidentally create a second submission record for the
 
 # 12. Parallel worktree plan
 
+The current roster is eight Opus 5.5 implementation workers plus Astra as coordinator. WT-05 and WT-06 share the `browser-ats` worktree. The exact workspace names, ownership and dispatch protocol are in [WORKTREES.md](WORKTREES.md).
+
 ## WT-00 — Core Contracts
 
-**Model:** Fable 5.x  
-**Role:** architecture owner under Astra.
+**Model:** Opus 5.5
+
+**Role:** shared-contract owner under Astra.
 
 Build:
 - monorepo structure
@@ -575,21 +592,23 @@ async def dedupe(job: JobPosting) -> DuplicateResult
 
 ---
 
-## WT-02 — Scoring / Router
+## WT-02 — Jev Job Selection / Scoring / Router
 
-**Model:** Fable 5.x
+**Implementation worker:** Opus 5.5
+
+**Product decision model:** Jev, via TypeSafe AI
 
 Build:
-- typed scoring primitives
-- TypeSafe integration
-- local-model decision provider
-- scoring formula
-- confidence routing
-- P0/P1/P2/DROP
-- eval fixtures
+- Jev integration for deciding which jobs to apply for
+- candidate/job context and versioned selection rubrics
+- typed fit assessments and final `APPLY` / `SKIP` / `REVIEW` decision
+- candidate-constraint checks and confidence-based review routing
+- P0/P1/P2 effort routing for selected jobs and `DROP` for skipped jobs
+- decision records with evidence, probabilities, model/rubric versions, and overrides
+- candidate-labeled job-selection eval fixtures and provider-failure handling
 
 ### Acceptance criterion
-50 representative fixture jobs produce stable, explainable routing decisions.
+50 representative fixture jobs are evaluated against candidate-labeled apply/skip/review decisions, with disagreements reported. Verify that only eligible `APPLY` decisions enter the application pipeline, uncertain cases reach review, provider failures do not enqueue applications, and every decision has an inspectable record.
 
 ---
 
@@ -706,9 +725,10 @@ The same `ApplicationPacket` can traverse multiple ATS fixtures without changing
 
 ## WT-07 — Queue / Distributed Runtime
 
-**Model:** Fable 5.x
+**Model:** Opus 5.5
 
 Build:
+- application CLI and FastAPI endpoints that connect the pipeline
 - worker queues
 - leases
 - retries
@@ -792,7 +812,7 @@ Responsibilities:
 6. Prevent duplicate abstractions.
 7. Run integration checks.
 8. Assign bugs to the correct worktree.
-9. Decide when a task needs escalation to Fable.
+9. Triage repeated failures and assign a different approach or specialist when needed.
 10. Merge only when acceptance criteria are met.
 
 Astra maintains:
@@ -808,7 +828,9 @@ Astra should not spend its context budget writing routine adapters.
 
 ---
 
-## Fable — Architect / Difficult Problems
+## Fable — Optional Specialist / Difficult Problems
+
+Fable is not currently assigned a worktree. Astra owns escalation decisions within the eight-Opus roster and may use a specialist when one is available and assigned.
 
 Use Fable for:
 - shared architecture
@@ -830,7 +852,7 @@ Opus attempt 2
     -> still broken
 
 STOP
-    -> Fable investigation
+    -> Astra reviews the evidence and assigns a different approach or specialist
 ```
 
 Do not allow workers to burn hours repeating failed approaches.
@@ -856,21 +878,13 @@ Most code should be produced by Opus workers.
 
 ---
 
-## Cheap Decision Models / TypeSafe
+## Jev / TypeSafe — Job Selection Decision Maker
 
-Use these in the **product**, not as coding agents.
+Jev runs inside the product and decides **which jobs to apply for**. WT-02 owns its integration and selection rubric under Astra's interface review.
 
-Purpose:
-- high-volume classification
-- role-family detection
-- salary likelihood
-- fit scoring
-- seniority
-- routing
-- confidence estimation
-- cheap job triage
+Its responsibility is evaluating candidate/job fit and choosing `APPLY`, `SKIP`, or `REVIEW`. The selected jobs then pass to the existing candidate, packet-generation, and browser services for preparation and execution.
 
-Expensive models should only receive jobs/tasks that justify expensive reasoning.
+Record selection decisions alongside later screens, interviews, and offers so the team can improve the job-selection rubric from observed outcomes.
 
 ---
 
@@ -919,7 +933,7 @@ Hard rule:
 WT-00 core
     |
     +--> WT-01 ingestion
-    +--> WT-02 scoring
+    +--> WT-02 Jev job selection / scoring
     +--> WT-03 candidate brain
     +--> WT-05 browser
     +--> WT-07 queue
@@ -991,7 +1005,7 @@ URL
  -> job scraped
  -> normalized
  -> deduplicated
- -> scored
+ -> Jev selects APPLY
  -> resume selected
  -> form parsed
  -> packet generated
@@ -1002,6 +1016,8 @@ URL
 ```
 
 Once this works reliably, increase worker concurrency.
+
+Also verify the selection exits: `SKIP` records and archives the job, while `REVIEW` holds it before application preparation.
 
 ---
 
