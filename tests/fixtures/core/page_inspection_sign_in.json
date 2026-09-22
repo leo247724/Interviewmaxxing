@@ -1,0 +1,9 @@
+{
+  "kind": "SIGN_IN_REQUIRED",
+  "observed_url": "http://127.0.0.1:0/login?next=/jobs/mock-4012/apply",
+  "form": null,
+  "job_identity": null,
+  "message": "The site asks the candidate to sign in before applying.",
+  "evidence": [],
+  "inspected_at": "2026-09-22T20:00:00Z"
+}

@@ -1,0 +1,32 @@
+{
+  "url": "http://127.0.0.1:0/jobs/mock-7001/apply",
+  "ats_type": "mock",
+  "submit_selector": null,
+  "page_errors": [],
+  "inspected_at": "2026-09-22T20:10:00Z",
+  "step": 0,
+  "is_final_step": false,
+  "next_selector": "#next",
+  "fields": [
+    {
+      "id": "question_0",
+      "label": "Are you willing to relocate to Austin, TX?",
+      "semantic_type": "RELOCATION",
+      "control_type": "RADIO",
+      "selector": "fieldset[name=question_0]",
+      "required": true,
+      "options": [
+        {
+          "value": "yes",
+          "label": "Yes",
+          "selector": "#q0_yes"
+        },
+        {
+          "value": "no",
+          "label": "No",
+          "selector": "#q0_no"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "outcome": "UNKNOWN",
+  "signals": ["submit clicked; page did not settle within 30s"],
+  "confirmation_reference": null,
+  "observed_url": "http://127.0.0.1:0/jobs/mock-4012/apply",
+  "validation_errors": [],
+  "evidence": [
+    {"id": "ev_timeout_png", "kind": "SCREENSHOT", "path": "app_fixture/after-submit-timeout.png", "description": "page after submit timeout", "captured_at": "2026-09-22T20:01:30Z"}
+  ],
+  "next_state": null,
+  "detail": "navigation timeout after submit",
+  "observed_at": "2026-09-22T20:01:30Z"
+}

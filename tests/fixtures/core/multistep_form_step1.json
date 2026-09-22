@@ -1,0 +1,21 @@
+{
+  "url": "http://127.0.0.1:0/jobs/mock-7001/apply",
+  "ats_type": "mock",
+  "submit_selector": "#submit",
+  "page_errors": [],
+  "inspected_at": "2026-09-22T20:11:00Z",
+  "step": 1,
+  "is_final_step": true,
+  "next_selector": null,
+  "fields": [
+    {
+      "id": "question_0",
+      "label": "How many years of paid search experience do you have?",
+      "semantic_type": "YEARS_EXPERIENCE",
+      "control_type": "TEXT",
+      "selector": "input[name=question_0]",
+      "required": true,
+      "input_type": "number"
+    }
+  ]
+}
