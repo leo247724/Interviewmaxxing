@@ -1,12 +1,13 @@
 # Interviewmaxxing uv workspace root (virtual: it is not itself a package).
 #
-# Every directory under packages/* and apps/* that contains a pyproject.toml is a
-# workspace member. Each worker owns its own member directory and pyproject; the
+# Python directories under packages/* and apps/* are workspace members; the
+# Next.js application is explicitly excluded. Each worker owns its own pyproject; the
 # root file, uv.lock and shared tool configuration are owned by core-contracts.
 # See CONTRACTS.md for the package map and import paths.
 
 [tool.uv.workspace]
 members = ["packages/*", "apps/*"]
+exclude = ["apps/web"]
 
 [tool.uv.sources]
 interviewmaxxing-core = { workspace = true }
@@ -40,3 +41,4 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["packages", "apps"]
+exclude = ["^apps/web/"]

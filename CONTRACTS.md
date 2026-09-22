@@ -69,6 +69,7 @@ Everything below is re-exported from `interviewmaxxing_core`.
 | `store` | `ApplicationStore`, `RequestResult`, `BindResult` |
 | `errors` | `StoreError`, `NotFound`, `InvalidTransition`, `ClaimUnavailable`, `ClaimLost`, `SubmissionBlocked`, `IdentityConflict` |
 | `urls` | `normalize_application_url`, `InvalidApplicationUrl` |
+| `discovery` | D0 job discovery/selection/pipeline contracts (§11): `JobSearchQuery`, `OnsiteTarget`, `RemoteTarget`, `CompensationFloor`, `SourceSearchResult`, `JobSearchRun`, `JobListing`, `ListingSource`, `Compensation`, `SelectionPreferences`, `JobSelection`, `ModelDecision`, `PolicyHold`, `PipelineEntry`, `PipelineStages`, helpers `listing_id_for`, `employer_job_key`, `meets_floor`, `snapshot_hash` |
 | `config` | `LocalPaths` |
 
 All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(update=...)`), **extra fields forbidden**, datetimes **timezone-aware and normalized to UTC** (naive datetimes are rejected). Every contract serializes with `model_dump_json()` / `model_validate_json()` and publishes `model_json_schema()`.
@@ -361,6 +362,292 @@ Artifact paths in fixtures are relative to the fixtures directory. Shared pytest
 scripts/verify.sh          # uv sync --locked --all-packages, ruff, mypy --strict, pytest, CLI smoke
 ```
 
+## 11. Discovery, Jev selection and pipeline (D0)
+
+Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_core`. D0 is additive: the application flow, store schema and `ApplicationState` are unchanged, so the contract version stays `2`. Producers: J1 (job-ingestion) writes `JobSearchRun`/`SourceSearchResult`/`JobListing`; J2 (jev-selection) writes `JobSelection`; S1/F3 edit `SelectionPreferences`, `JobSearchQuery` and `PipelineEntry`. Each owning package stores its own records; core defines only the shapes.
+
+**Separation rules**
+- `JobListing` is an observed posting and is **not** a `JobRecord`. Selecting a listing does not create an application: the runner calls `record_request(candidate_id, listing.application_url or listing.source_url)` and the existing identity binding, duplicate protection, states and receipts apply unchanged.
+- `JobSelection` is an auditable decision. It is not a submission, not a receipt, and not an interview probability (there is no such field).
+- `PipelineEntry.stage` is the user's own wording (for example imported workbook status text), kept verbatim. It is not an `ApplicationState`: moving a card never submits, and a submission never rewrites the stage. `application_id` optionally links the canonical application. `PipelineStages` (default `DEFAULT_PIPELINE_STAGES`: Interested, Applied, Screening, Interviewing, Offer, Closed) is the user-configurable column list; entries may carry stages outside it.
+
+**Search (`JobSearchQuery`)**
+- Fields: `id`, `title_phrases`, `keywords`, `excluded_keywords`, `onsite: list[OnsiteTarget(location, arrangements⊆{ONSITE,HYBRID}, radius_miles)]`, `remote: RemoteTarget(eligible_region) | None`, `minimum_compensation: CompensationFloor(amount, currency, period) | None`, `sources`, `max_results_per_source` (1–500, default 50), `posted_within_days` and `created_at`.
+- Defaults are the user's targets: `["marketing manager", "marketing director"]`, onsite/hybrid in `"Austin, TX"`, remote eligible in `"United States"`, and a floor of 100000 USD per YEAR. Sources default to `KNOWN_SOURCES` = linkedin, builtin, indeed, google; any lower-case slug is allowed. `JobSearchQuery.from_preferences(prefs, **overrides)` builds a query from edited preferences.
+- **Remote eligibility is separate from the onsite city.** US-wide remote is `RemoteTarget(eligible_region="United States")`; a remote-in-Texas search is not the requested nationwide search.
+- A floor is for ranking and filtering only. A listing without comparable pay is kept, with pay unknown.
+
+**Per-source outcome (`SourceSearchResult`)**
+- `state`:
+  - `OK` — searched; zero results is a real result.
+  - `PARTIAL` — some listings were collected, then the search stopped.
+  - `NEEDS_USER` — requires `message`, `user_action` and preferably `session_name` (e.g. `imx-jobs-linkedin`).
+  - `BLOCKED`, `ERROR` and `SKIPPED` — each requires `message`.
+- `BLOCKED`, `NEEDS_USER` and `SKIPPED` cannot carry listings, so a blocked source is never a silent empty success. `result_count` is `len(listing_ids)`.
+- `JobSearchRun(id, query, results, started_at, finished_at)` checks that every result belongs to its query and to one of its sources.
+
+**Listings (`JobListing`)**
+- Fields: `id`, `source`, `source_listing_id`, `posting_url`, `source_url`, `application_url`, `title`, `company`, `location`, `work_arrangement` (`ONSITE|HYBRID|REMOTE|UNKNOWN`), `remote_eligibility`, `compensation`, `description`, `description_completeness` (`FULL|PARTIAL|NONE`), `status` (`OPEN|CLOSED|UNKNOWN`), `posted_text`, `observed_at`, `evidence` and `provenance: list[ListingSource]` (at least one; `provenance[0]` repeats the listing's own `source`, `source_listing_id`, `posting_url` and `source_url`).
+- Unshown data stays `None`/`UNKNOWN`. `description_completeness` is `NONE` exactly when there is no text.
+- `Compensation(raw_text, minimum, maximum, currency, period)`: `raw_text` is verbatim. Numeric bounds are allowed only with an explicit currency and period, and are never estimated.
+- `meets_floor(pay, floor) -> bool | None` is deterministic:
+  - `True` when the stated range reaches the floor.
+  - `False` when its top is below the floor.
+  - `None` (unknown) for missing pay, another currency, or periods not exactly convertible. Only MONTH↔YEAR ×12 is converted.
+
+**Posting identity and dedupe (D0R).** Where a posting was seen is separate from what it is. Each `ListingSource` observation has:
+
+| Field | Meaning | Identity? |
+| --- | --- | --- |
+| `source_url` | Where it was observed; may be a search or results page shared by many postings | never |
+| `source_listing_id` | The source's own job id (LinkedIn job id, Indeed `jk`, …) | yes, within the source |
+| `posting_url` | A URL showing **this posting alone** (a detail page or job-specific ATS posting) | yes, within the source, when there is no id |
+| `employer_job_key` | Proven cross-source employer job, `employer_job_key(ats_type, tenant, job_id)` → `ats:<type>:<tenant>:<job id>` (the `JobIdentityObservation.identity_key` format) | yes, across sources |
+| `application_url` | The apply link shown; may be a generic endpoint shared by many jobs | never |
+
+- **J1 construction rules**
+  1. Every observation needs `source_listing_id` or a job-specific `posting_url`. An observation with neither is rejected (`ValueError`/`ValidationError`), so a search URL can never become an identity. If a result has no job-specific link, open it or leave it out; do not key it on the results page.
+  2. Set `id = listing_id_for(source, source_listing_id, posting_url)`. The listing validates this, and ids use the same key as `ListingSource.posting_key` (`src:<source>:id:<id>`, else `src:<source>:url:<normalized posting URL>`). Equal ids therefore always mean the same posting.
+  3. Set `employer_job_key` only from job-specific evidence: an ATS posting URL or page containing this job's own id, such as `boards.greenhouse.io/<tenant>/jobs/<id>` or `jobs.lever.co/<tenant>/<id>`. Say where the id was read in `evidence`. Never set it from a careers home page, a generic apply endpoint, a search page or a title/company match.
+  4. Put Google (and other aggregator) outbound results under their own `source` with the job-specific target as `posting_url`. They merge with another source's listing only through a shared `employer_job_key` (or, rarely, the same source's id or posting URL).
+- **Rules the contract enforces**
+  - `identity_keys` holds each observation's `posting_key` plus `job:<employer_job_key>`.
+  - `contradicts(other)` is true when one source gives the two listings different ids of its own, or they carry different employer keys. A single listing with such contradictions is rejected.
+  - `is_same_posting(other)` requires a shared key and no contradiction. The same title/company/location, a shared search page or a shared application URL never counts.
+  - `merged_with(other)` keeps this listing's values and appends the other's provenance. It fills only missing fields, prefers the fuller description, and any `CLOSED` wins. It raises unless the two are provably the same posting, so a closed posting can never close a different one.
+
+**Preferences and decisions**
+- `SelectionPreferences`:
+  - Fields: `target_titles`, `onsite`, `remote`, `minimum_compensation`, `unknown_compensation` (`KEEP` default | `REVIEW`), `excluded_keywords`, `excluded_companies` and `notes`. Defaults are the same as the query's.
+  - `.fingerprint` is the canonical SHA-256 and changes with any edit.
+- `JobSelection` fields:
+  - Identity and inputs: `id`, `listing_id`, `candidate_id`, `requested_model` (default `DEFAULT_JEV_MODEL` = `typesafe/jev-1.13`), `returned_model`, `rubric_version`, `preferences_fingerprint`, `job_evidence_hash` and `candidate_evidence_hash` (`None` = no usable profile).
+  - Outcome: `model_decision: ModelDecision(choice, probabilities over exactly APPLY/SKIP/REVIEW, finite and summing to 1 ±0.001, confidence 0..1, provider, decision_id)`, `provider_error: ProviderError(code, message, retryable)`, `usage: ProviderUsage(tokens, cost_usd)`, `holds: list[PolicyHold(code, detail)]`, `override: SelectionOverride(choice, reason, decided_at)`, `effective_choice`, `reasons` and `decided_at`.
+  - `HoldCode`: `MISSING_PROFILE`, `INSUFFICIENT_EVIDENCE`, `PROVIDER_ERROR`, `LOW_CONFIDENCE`, `HARD_CONSTRAINT`, `UNKNOWN_COMPENSATION`, `LISTING_CLOSED`, `DUPLICATE_APPLICATION`.
+- Enforced by validation:
+  - A decision cannot have both a model decision and a provider error.
+  - A provider error needs a `PROVIDER_ERROR` hold, and missing candidate evidence needs a `MISSING_PROFILE` hold.
+  - A model decision needs `returned_model`.
+  - An override fixes `effective_choice`.
+  - **Effective APPLY is impossible** with any hold, a provider error, no model decision, or no candidate evidence. Without an explicit user override it also requires Jev's own APPLY.
+  - Jev's original answer is never rewritten; holds and overrides sit beside it.
+- `snapshot_hash(model_or_mapping)` is the canonical SHA-256 for evidence hashes. `selection.is_current_for(preferences=, job_evidence_hash=, candidate_evidence_hash=, rubric_version=)` is the cache check; any preference edit makes older decisions stale.
+
+**Examples** (fictional; validated by `tests/core/test_discovery.py`, which parses every block below):
+
+<!-- D0-EXAMPLE: JobSearchQuery -->
+```json
+{
+  "id": "qry_example",
+  "title_phrases": [
+    "marketing manager",
+    "marketing director"
+  ],
+  "keywords": [],
+  "excluded_keywords": [],
+  "onsite": [
+    {
+      "location": "Austin, TX",
+      "arrangements": [
+        "ONSITE",
+        "HYBRID"
+      ],
+      "radius_miles": null
+    }
+  ],
+  "remote": {
+    "eligible_region": "United States"
+  },
+  "minimum_compensation": {
+    "amount": 100000.0,
+    "currency": "USD",
+    "period": "YEAR"
+  },
+  "sources": [
+    "linkedin",
+    "builtin",
+    "indeed",
+    "google"
+  ],
+  "max_results_per_source": 50,
+  "posted_within_days": null,
+  "created_at": "2026-09-22T21:00:00Z",
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID"
+}
+```
+
+<!-- D0-EXAMPLE: SourceSearchResult -->
+```json
+{
+  "query_id": "qry_example",
+  "source": "linkedin",
+  "state": "NEEDS_USER",
+  "listing_ids": [],
+  "pages_visited": 0,
+  "message": "LinkedIn shows a sign-in wall before search results.",
+  "user_action": "Sign in to LinkedIn in the imx-jobs-linkedin browser session, then retry.",
+  "session_name": "imx-jobs-linkedin",
+  "started_at": "2026-09-22T21:00:00Z",
+  "finished_at": "2026-09-22T21:00:00Z"
+}
+```
+
+<!-- D0-EXAMPLE: JobListing -->
+```json
+{
+  "id": "lst_542448c2ff017a0c096a518a67984655",
+  "source": "linkedin",
+  "source_listing_id": "4001",
+  "posting_url": "https://www.linkedin.example/jobs/view/4001",
+  "source_url": "https://www.linkedin.example/jobs/search?keywords=marketing+manager&location=Austin",
+  "application_url": "https://boards.greenhouse.example/fictionalco/jobs/7001",
+  "title": "Senior Marketing Manager",
+  "company": "Fictional Co",
+  "location": "Austin, TX",
+  "work_arrangement": "HYBRID",
+  "remote_eligibility": null,
+  "compensation": {
+    "raw_text": "$110,000 - $130,000/yr",
+    "minimum": 110000.0,
+    "maximum": 130000.0,
+    "currency": "USD",
+    "period": "YEAR"
+  },
+  "description": "Lead lifecycle and paid media programs for a fictional B2B product.",
+  "description_completeness": "PARTIAL",
+  "status": "OPEN",
+  "posted_text": "3 days ago",
+  "observed_at": "2026-09-22T21:00:00Z",
+  "evidence": "search card and detail pane; job id 4001 in URL",
+  "provenance": [
+    {
+      "source": "linkedin",
+      "source_listing_id": "4001",
+      "posting_url": "https://www.linkedin.example/jobs/view/4001",
+      "source_url": "https://www.linkedin.example/jobs/search?keywords=marketing+manager&location=Austin",
+      "employer_job_key": "ats:greenhouse:fictionalco:7001",
+      "application_url": "https://boards.greenhouse.example/fictionalco/jobs/7001",
+      "observed_at": "2026-09-22T21:00:00Z",
+      "evidence": "search card; job id 4001 in URL; Apply links to Greenhouse job 7001",
+      "query_id": "qry_example"
+    },
+    {
+      "source": "google",
+      "source_listing_id": null,
+      "posting_url": "https://boards.greenhouse.example/fictionalco/jobs/7001",
+      "source_url": "https://www.google.example/search?q=fictional+co+marketing+manager",
+      "employer_job_key": "ats:greenhouse:fictionalco:7001",
+      "application_url": "https://boards.greenhouse.example/fictionalco/jobs/7001?gh_src=google",
+      "observed_at": "2026-09-22T21:00:00Z",
+      "evidence": "Google Jobs card linking Greenhouse job 7001 (id in the posting URL)",
+      "query_id": "qry_example"
+    }
+  ]
+}
+```
+
+<!-- D0-EXAMPLE: SelectionPreferences -->
+```json
+{
+  "target_titles": [
+    "marketing manager",
+    "marketing director"
+  ],
+  "onsite": [
+    {
+      "location": "Austin, TX",
+      "arrangements": [
+        "ONSITE",
+        "HYBRID"
+      ],
+      "radius_miles": null
+    }
+  ],
+  "remote": {
+    "eligible_region": "United States"
+  },
+  "minimum_compensation": {
+    "amount": 100000.0,
+    "currency": "USD",
+    "period": "YEAR"
+  },
+  "unknown_compensation": "KEEP",
+  "excluded_keywords": [],
+  "excluded_companies": [],
+  "notes": null,
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID"
+}
+```
+
+<!-- D0-EXAMPLE: JobSelection -->
+```json
+{
+  "id": "sel_example",
+  "listing_id": "lst_542448c2ff017a0c096a518a67984655",
+  "candidate_id": "default",
+  "requested_model": "typesafe/jev-1.13",
+  "returned_model": "typesafe/jev-1.13-20260917",
+  "rubric_version": "selection-rubric-1",
+  "preferences_fingerprint": "a9621ce5ff116ebe9ff6d0e2d054eeb5cf8846e49d6b38913b61c013aa5df9a2",
+  "job_evidence_hash": "4504aedafa9dcac891a2f53c3a915d6d3f0384be3598a1c9470e642e041a32cc",
+  "candidate_evidence_hash": "c2b4b28561c7b311142d7314892152036ea7c609d4485c2f8d48969d44d8cdff",
+  "model_decision": {
+    "choice": "APPLY",
+    "probabilities": {
+      "APPLY": 0.72,
+      "SKIP": 0.08,
+      "REVIEW": 0.2
+    },
+    "confidence": 0.72,
+    "provider": "TypeSafe",
+    "decision_id": "dec_fictional"
+  },
+  "provider_error": null,
+  "usage": {
+    "prompt_tokens": 850,
+    "completion_tokens": 40,
+    "total_tokens": 890,
+    "cost_usd": 0.0031
+  },
+  "holds": [],
+  "override": null,
+  "effective_choice": "APPLY",
+  "reasons": [
+    "Title matches 'marketing manager'",
+    "Hybrid in Austin, TX",
+    "Stated pay $110k-$130k meets the $100k floor"
+  ],
+  "decided_at": "2026-09-22T21:00:00Z"
+}
+```
+
+<!-- D0-EXAMPLE: PipelineEntry -->
+```json
+{
+  "id": "pipe_example",
+  "candidate_id": "default",
+  "listing_id": "lst_31a1b821d73a8a89295a841ff2093919",
+  "title": "Senior Marketing Manager",
+  "company": "Fictional Co",
+  "stage": "Waiting on recruiter",
+  "notes": "Referral from a fictional contact.",
+  "next_action": "Follow up by email",
+  "next_action_due": "2026-09-29T16:00:00Z",
+  "application_id": null,
+  "selection_id": "sel_example",
+  "import_source": null,
+  "imported_values": {},
+  "created_at": "2026-09-22T21:00:00Z",
+  "updated_at": "2026-09-22T21:00:00Z"
+}
+```
+
 ## Change requests
 
 Send the coordinator: the contract/type, the exact field or signature change, why the current contract cannot express it, and which tests/fixtures demonstrate it. Additive optional fields are cheap; renames, removed fields, and state-machine changes require coordinator approval and a `CONTRACT_VERSION` bump.
+
+### 2026-09-22 preference and provenance correction
+
+`JobSearchQuery.location_priority` and `SelectionPreferences.location_priority` use `LocationPriority`: `STRONGLY_PREFER_ONSITE_HYBRID` (default), `BALANCED`, or `PREFER_REMOTE`. The user strongly prefers Austin onsite/hybrid over US-wide remote. Remote remains eligible; USD100000 annual minimum is unchanged. Preserve this field through the frontend/service boundary, include it in Jev evidence/rubric and cache fingerprints, and order eligible matching Austin onsite/hybrid results well above remote. Do not infer Austin eligibility from a missing location or confuse this preference with a mandatory remote exclusion.
+
+Repeated observations of the same source posting retain newly verified employer identity and its evidence. `PipelineEntry.next_action_due` accepts a date or an aware timestamp; date-only input must stay a date. `imported_values` includes all original nonblank cells, especially raw Stage and Status; the board column does not overwrite their imported wording.
