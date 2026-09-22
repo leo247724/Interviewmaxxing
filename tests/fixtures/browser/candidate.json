@@ -1,0 +1,26 @@
+{
+  "_note": "Fictional candidate for local mock-ATS tests only. Raw fixture data, not a canonical Interviewmaxxing contract. Deliberately omits notice period, salary, certifications and attestations.",
+  "id": "cand_fixture_avery_quill",
+  "identity": {
+    "first_name": "Avery",
+    "last_name": "Quill",
+    "email": "avery.quill@example.test",
+    "phone": "+1 (303) 555-0142",
+    "linkedin_url": "https://www.linkedin.example.test/in/avery-quill",
+    "location": "Denver, CO"
+  },
+  "resume": {
+    "path": "resume_avery_quill.pdf",
+    "content_type": "application/pdf"
+  },
+  "facts": {
+    "authorized_to_work_in_us": true,
+    "requires_visa_sponsorship": false,
+    "years_professional_experience": 7,
+    "skills": ["Python", "SQL", "Apache Spark", "dbt"],
+    "work_arrangements": ["Remote", "Hybrid"]
+  },
+  "saved_answers": {
+    "why_brambleway": "I have spent seven years building data platforms in Python, SQL, Spark and dbt, and I want to apply that experience to forecasting tools for regional logistics networks."
+  }
+}
