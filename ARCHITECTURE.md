@@ -145,6 +145,7 @@ In the later discovery flow, Jev's job-selection decision happens before packet 
 
 ### Browser runtime
 - **Playwright**
+- **OpenCLI + Browser Bridge** for user-present workflows in an existing Chrome session, including application follow-up and assessments.
 - DOM-first inspection.
 - Browser agents execute plans; they should not own career strategy.
 
@@ -517,6 +518,16 @@ Rules:
 - Unknown or unsupported questions route back to the reasoning layer.
 - Ambiguous candidate facts route to human review.
 - Never allow generated application claims that are not grounded in the candidate fact store.
+
+### OpenCLI and user-present workflows
+
+Use a named OpenCLI session to expose the current page as structured CLI observations and actions. Keep that session and tab stable while the user participates. Read the actual question, options, and surrounding instructions after each page change; use a screenshot only when the question depends on a diagram or other visual content.
+
+The user may retain all browser actions while the assistant reads questions and suggests answers. Record who owns navigation and submission for the session. A request for advice does not itself authorize clicking an answer or starting a timed assessment. Identify the timer boundary before starting; when the user starts a timed section, prioritize the live interaction and avoid other browser work that could change focus. Respect site access controls and preserve visible lockout or failure states.
+
+Suggestions about the candidate must be grounded in their supplied facts and preferences. A broad trait such as hardworking does not answer unrelated questions about sociability, risk tolerance, or specific past behavior. Capture missing information instead of treating an unknown answer as a neutral preference. Keep follow-up/assessment completion separate from a job-application submission receipt.
+
+Reusable site commands should use observed UI semantics, explicit arguments, structured errors, and local verification. Do not commit invitation tokens, real assessment questions, answers, or candidate data. The OpenCLI path shares candidate provenance and durable state with the existing executor; it must not introduce a second submission state machine. Discovery and Jev selection remain deferred.
 
 ---
 

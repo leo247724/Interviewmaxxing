@@ -1,7 +1,7 @@
 # Interviewmaxxing contracts
 
 Owner: **core-contracts** (WT-00). Contract version `2` (`interviewmaxxing_core.CONTRACT_VERSION`). Version 2 is the C1R review revision: form/question identity, choice validity, saved-answer scope and fact verification.
-Scope: the supplied-URL MVP (ARCHITECTURE.md §2 and §17). Discovery, Jev selection, queues and dashboards are out of scope.
+Scope: the supplied-URL MVP (ARCHITECTURE.md §2 and §17), including the user-activated frontend through the same Python executor and state. Discovery, Jev selection, distributed queues and outcome analytics are out of scope.
 
 Downstream packages **import** these types; they never redeclare, subclass-to-extend, or copy them. A needed change is a request to core (see [Change requests](#change-requests)).
 
