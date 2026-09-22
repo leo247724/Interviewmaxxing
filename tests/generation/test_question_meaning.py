@@ -16,6 +16,7 @@ from interviewmaxxing_core import (
     MissingReason,
     SavedAnswer,
     SemanticType,
+    render_question,
 )
 from interviewmaxxing_generation import (
     QuestionText,
@@ -102,13 +103,14 @@ def test_currency_placeholder_is_part_of_the_question():
     assert saved_answer_matches(_saved("sa", "Expected salary (€)", "90000"), euro)
 
 
-def test_display_question_shows_help_and_meaningful_placeholder():
+def test_display_question_is_the_core_rendering():
     field = _field("s", "Expected salary", SemanticType.SALARY_EXPECTATION, ControlType.TEXT,
-                   help_text="Annual base pay.", placeholder="€")
-    assert display_question(field) == "Expected salary Annual base pay. [€]"
-    neutral = _field("n", "Notice period", SemanticType.CUSTOM_TEXT, ControlType.TEXT,
-                     placeholder="Select...")
-    assert display_question(neutral) == "Notice period"
+                   help_text="Annual  base pay.", placeholder="€")
+    assert display_question(field) == field.question_text == render_question(
+        "Expected salary", "Annual base pay.", "€")
+    assert display_question(field) == "Expected salary\nAnnual base pay.\n€"
+    plain = _field("n", "Notice period", SemanticType.CUSTOM_TEXT, ControlType.TEXT)
+    assert display_question(plain) == "Notice period"
 
 
 # --- resolver level -----------------------------------------------------------------
@@ -158,7 +160,8 @@ def test_dollar_salary_answer_does_not_fill_a_euro_salary_field(
     assert packet.answer_for("salary_usd").provenance.reference_ids == ["sa.salary_usd"]
     item = next(m for m in packet.missing_inputs if m.field_id == "salary")
     assert item.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED
-    assert '"Expected salary [€]"' in item.prompt
+    assert item.label == euro.question_text == "Expected salary\n€"
+    assert "Expected salary\n€" in item.prompt
 
 
 def test_unit_placeholder_blocks_label_only_reuse_and_is_prompted(
@@ -175,4 +178,4 @@ def test_unit_placeholder_blocks_label_only_reuse_and_is_prompted(
     assert packet.answer_for("notice") is None
     assert packet.answer_for("notice_plain").provenance.reference_ids == ["sa.notice"]
     item = next(m for m in packet.missing_inputs if m.field_id == "notice")
-    assert '"Notice period Contractual notice only. [in weeks]"' in item.prompt
+    assert "Notice period\nContractual notice only.\nin weeks" in item.prompt

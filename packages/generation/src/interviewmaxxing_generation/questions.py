@@ -10,7 +10,9 @@ and punctuation inside numbers are kept.
 A saved answer's ``question`` (or one of its ``match_phrases``) matches a field when
 it equals either
 
-* the field's full question: label, help text and placeholder joined by spaces, or
+* the field's full question, ``field.question_text`` (core ``render_question``:
+  label, help text and placeholder), which is what ``UserInput.to_saved_answer``
+  stores, or
 * the field's label alone, when the field has no help text and its placeholder is a
   neutral format hint (``"Select..."``, ``"e.g. 5"``) that adds no meaning. Units,
   currency symbols and scales in a placeholder are never neutral.
@@ -112,18 +114,11 @@ def is_neutral_hint(text: str | None) -> bool:
 
 
 def display_question(field: ApplicationField) -> str:
-    """The complete question as the user sees it, for prompts: the label, then the
-    help text, then the placeholder when it carries meaning (a neutral format hint
-    such as "Select..." is left out). Empty parts are omitted.
-
-    This is the seam for core's shared full-question renderer (C1R3); matching does
-    not depend on this text."""
-    parts = [field.label.strip() or field.id]
-    if field.help_text and field.help_text.strip():
-        parts.append(field.help_text.strip())
-    if field.placeholder and field.placeholder.strip() and not is_neutral_hint(field.placeholder):
-        parts.append(f"[{field.placeholder.strip()}]")
-    return " ".join(parts)
+    """The complete question as the user sees it: core's ``field.question_text``
+    (``render_question``: label, help text and placeholder, one per line, symbols
+    verbatim). This is the same text core puts in ``MissingInput.label`` and
+    ``UserInput.question``, so prompts, stored inputs and saved answers agree."""
+    return field.question_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +128,8 @@ class QuestionText:
     label: str
     help_text: str
     placeholder: str
+    rendered: str
+    """``wording_key`` of core's ``field.question_text`` (the full rendered wording)."""
     label_is_complete: bool
     """True when the label alone is the whole question (no help text, neutral placeholder)."""
 
@@ -142,18 +139,23 @@ class QuestionText:
             label=wording_key(field.label),
             help_text=wording_key(field.help_text),
             placeholder=wording_key(field.placeholder),
+            rendered=wording_key(field.question_text),
             label_is_complete=not wording_key(field.help_text)
             and is_neutral_hint(field.placeholder),
         )
 
     @property
     def full(self) -> str:
+        """The full wording, label, help text and placeholder, part by part."""
         return " ".join(p for p in (self.label, self.help_text, self.placeholder) if p)
 
     @property
     def keys(self) -> frozenset[str]:
-        """Question texts a saved answer must equal to answer this field."""
-        keys = {self.full}
+        """Question texts a saved answer must equal to answer this field: the
+        rendered full wording (what ``UserInput.to_saved_answer`` stores), the same
+        wording compared part by part, and the label alone only when it is the
+        whole question."""
+        keys = {self.rendered, self.full}
         if self.label_is_complete:
             keys.add(self.label)
         return frozenset(k for k in keys if k)

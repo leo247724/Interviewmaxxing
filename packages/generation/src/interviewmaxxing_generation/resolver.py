@@ -411,7 +411,7 @@ def _instruction(fld: ApplicationField) -> str:
 
 
 def _prompt(fld: ApplicationField, reason: MissingReason, detail: str) -> str:
-    parts = [f'Required: "{display_question(fld)}".']
+    parts = [f"Required:\n{display_question(fld)}\n"]
     if reason is MissingReason.EXPLICIT_ANSWER_REQUIRED:
         parts.append(_explicit_text(fld))
     elif not (detail and reason is MissingReason.NO_ANSWER):
@@ -419,7 +419,7 @@ def _prompt(fld: ApplicationField, reason: MissingReason, detail: str) -> str:
     if detail:
         parts.append(detail)
     parts.append(_instruction(fld))
-    return " ".join(p for p in parts if p)
+    return parts[0] + " ".join(p for p in parts[1:] if p)
 
 
 def missing_input_id(form: ApplicationForm, fld: ApplicationField) -> str:

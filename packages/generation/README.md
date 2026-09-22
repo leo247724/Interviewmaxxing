@@ -83,8 +83,8 @@ If none of these apply, an optional field stays blank and a required field becom
 | `AMBIGUOUS` | the saved data conflicts or maps to more than one option |
 | `NO_ANSWER` | anything else |
 
-The prompt shows the complete question (label, help text and any meaningful
-placeholder) and says why no answer was used.
+The prompt shows the complete question (`field.question_text`) and says why no answer
+was used.
 For example: "is not one of the options", "longer than the 5-character limit" or "the
 supplied resume file has changed". It also lists the usable options.
 
@@ -107,7 +107,10 @@ Everything that can carry meaning is kept:
 
 A saved answer's `question` or one of its `match_phrases` must **equal** one of these:
 
-- the field's full question: label, help text and placeholder;
+- the field's full question, `field.question_text` (core `render_question`: label,
+  help text and placeholder). This is what `UserInput.answering(...)` and
+  `to_saved_answer(...)` store, so an answer saved with JOB or GLOBAL reuse answers
+  the identical question again;
 - the label alone, when there is no help text and the placeholder is a genuinely
   neutral format hint (see below).
 
@@ -133,10 +136,14 @@ Examples:
 
 Match phrases are whole alternative phrasings, never substrings.
 
-Prompts show the complete question through `display_question(field)`: the label, the
-help text, and the placeholder in `[...]` when it carries meaning. That function is
-the only display seam. When core provides its shared full-question renderer (C1R3),
-it will delegate to it. Matching does not depend on display text.
+Prompts show the complete question through `display_question(field)`, which returns
+core's `field.question_text`: label, help text and placeholder, one part per line,
+symbols kept verbatim. This is the same text as `MissingInput.label`. Matching does
+not depend on display text.
+
+Tied conflicting saved answers kept by the candidate loader (C2) are all visible to
+the resolver. For example, two JOB salary answers with the same confirmation time
+give an `AMBIGUOUS` item listing both values, never the GLOBAL answer as a fallback.
 
 ## Value translation
 
@@ -158,7 +165,7 @@ it will delegate to it. Matching does not depend on display text.
 
 ```bash
 uv venv --python 3.12 .venv-task
-uv pip install --python .venv-task/bin/python -e packages/core -e packages/generation pytest ruff mypy
+uv pip install --python .venv-task/bin/python -e packages/core -e packages/candidate -e packages/generation pytest ruff mypy
 .venv-task/bin/python -m pytest tests/generation
 .venv-task/bin/ruff check packages/generation tests/generation
 .venv-task/bin/mypy --strict packages/generation/src
