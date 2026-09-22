@@ -31,6 +31,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from interviewmaxxing_core import (
     USER_ACTION_PAGES,
@@ -69,11 +70,12 @@ from .driver import DriverError, NotActionable, PageDriver
 from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page
 from .signals import (
-    ACCEPTANCE,
     APPLY_LINK,
     PENDING,
     STATUS_LINK,
+    UNCERTAIN,
     ButtonIntent,
+    affirmative_acceptance,
     confirmation_references,
     job_ids,
 )
@@ -111,6 +113,19 @@ _NATIVE_VALIDITY = """({form, button}) => {
     if (!out.includes(line)) out.push(line);
   }
   return out;
+}"""
+
+_EFFECTIVE_SUBMISSION = """(sel) => {
+  const b = document.querySelector(sel);
+  if (!b || !b.form) return null;
+  const f = b.form;
+  return {
+    method: (b.hasAttribute('formmethod') ? b.formMethod : (f.method || 'get')).toLowerCase(),
+    action: b.hasAttribute('formaction') ? b.formAction : f.action,
+    target: (b.hasAttribute('formtarget') ? b.formTarget : f.target) || '',
+    hasFile: !!f.querySelector('input[type=file]'),
+    hasPassword: !!f.querySelector('input[type=password]'),
+  };
 }"""
 
 _SET_MARKER = "(token) => { window.__imxSubmitMarker = token; }"
@@ -170,10 +185,13 @@ def _field_signature(form: ApplicationForm) -> set[str]:
     return {f.id for f in form.fields}
 
 
-def _same_step_shown_again(before: ApplicationForm, after: ApplicationForm | None) -> bool:
+def _same_step_shown_again(
+    before: ApplicationForm, after: ApplicationForm | None, *, any_url: bool = False
+) -> bool:
     """The same step is displayed again (typically re-rendered with errors). Field
-    fingerprints may differ (a retained upload adds help text), ids do not."""
-    if after is None or after.scope.url != before.scope.url:
+    fingerprints may differ (a retained upload adds help text), ids do not. After a
+    submit the re-rendered form often lives at the form's action URL (``any_url``)."""
+    if after is None or (not any_url and after.scope.url != before.scope.url):
         return False
     ids_before, ids_after = _field_signature(before), _field_signature(after)
     if not ids_before:
@@ -325,16 +343,48 @@ class GenericApplicationBrowser:
             except NotActionable as exc:
                 results.append(FieldFillResult(
                     field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
+        # The packet authorized exactly the inspected questions; that stays the authority.
+        self._filled = (form.scope.key, form.fingerprint)
         after = await self._model(evidence=f"filled-step-{form.step}")
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
-        if after.form is not None:
-            self._filled = (after.form.scope.key, after.form.fingerprint)
+        if after.form is None or after.form.fingerprint != form.fingerprint:
+            results.extend(await self._contain_changed_questions(form, after))
+            new_errors.append(
+                "questions on this step changed while filling; re-inspect and resolve again "
+                "before continuing"
+            )
         return FillResult(
             form_step=form.step,
             fields=results,
             page_errors=new_errors,
             evidence=after.inspection.evidence,
         )
+
+    async def _contain_changed_questions(
+        self, approved: ApplicationForm, after: PageModel
+    ) -> list[FieldFillResult]:
+        """Questions that appeared or changed while filling were not authorized by the
+        packet. Never leave a pre-checked consent/attestation among them checked."""
+        if after.form is None:
+            return []
+        known = {f.id: f.fingerprint for f in approved.fields}
+        results = []
+        for new in after.form.fields:
+            if known.get(new.id) == new.fingerprint:
+                continue
+            detail = "appeared or changed while filling; not answered by this packet"
+            binding = after.bindings[new.id]
+            if (
+                new.control_type is ControlType.CHECKBOX
+                and new.semantic_type in (SemanticType.CONSENT, SemanticType.ATTESTATION)
+                and binding.checked_values
+            ):
+                await self.driver.set_checked(binding.selector, False,
+                                              label_selector=binding.label_selectors.get(""))
+                detail += "; cleared its pre-checked box"
+            results.append(FieldFillResult(field_id=new.id, status=FieldFillStatus.FAILED,
+                                           detail=detail))
+        return results
 
     async def _leave_unanswered(self, app_field: ApplicationField, binding: FieldBinding) -> FieldFillResult:
         if app_field.control_type is ControlType.UNSUPPORTED:
@@ -560,34 +610,45 @@ class GenericApplicationBrowser:
             pending.resolved = True
         return observation
 
-    def _acceptance(self, model: PageModel, tie: ConfirmationTie) -> tuple[list[str], str | None]:
-        """Signals proving acceptance tied to this application, or [] if not proven."""
+    def _acceptance(
+        self, model: PageModel, tie: ConfirmationTie, *, fresh_reference_ties: bool
+    ) -> tuple[list[str], str | None]:
+        """Signals proving acceptance of *this* application, or [] if not proven.
+
+        Each record block (list item, row, article) is judged on its own, with only the
+        page-level text outside all records as shared context, so text from different
+        applications on one page is never combined. The acceptance statement must be
+        affirmative. A job id or title must tie it to this application; a reference seen
+        for the first time counts as a tie only immediately after our own submit
+        (``fresh_reference_ties``), never on a later status page."""
         snapshot = model.snapshot
-        text = snapshot.body_text
-        wording = [t for t in (snapshot.title, *(h.text for h in snapshot.headings),
-                               *(r.text for r in snapshot.regions)) if ACCEPTANCE.search(t)]
-        if not wording:
-            match = ACCEPTANCE.search(text[:3000])
-            if match:
-                wording = [match.group(0)]
-        if not wording:
-            return [], None
-        folded = normalize_text(text)
-        ties: list[str] = []
-        shown_ids = job_ids(text)
-        if tie.external_job_id:
-            if shown_ids and all(i.lower() != tie.external_job_id.lower() for i in shown_ids):
-                return [], None  # the page names a different job
-            if tie.external_job_id.lower() in text.lower():
-                ties.append(f"job id {tie.external_job_id!r} shown on the page")
-        if tie.job_title and normalize_text(tie.job_title) in folded:
-            ties.append(f"job title {tie.job_title!r} shown on the page")
-        refs = [r for r in confirmation_references(text) if r not in tie.known_references]
-        if refs:
-            ties.append(f"confirmation reference {refs[0]!r}")
-        if not ties:
-            return [], None
-        return [f"acceptance text {wording[0]!r}", *ties], (refs[0] if refs else None)
+        context = f"{snapshot.title}\n{snapshot.context_text}"
+        candidates: list[tuple[str, str, str]] = []  # (statement, statement's own text, tie text)
+        for record in snapshot.records:
+            statement = affirmative_acceptance(record)
+            if statement:
+                candidates.append((statement, record, f"{record}\n{context}"))
+        statement = affirmative_acceptance(snapshot.title) or affirmative_acceptance(
+            snapshot.context_text[:3000]
+        )
+        if statement:
+            candidates.append((statement, context, context))
+        for statement, own, tie_text in candidates:
+            ties: list[str] = []
+            if tie.external_job_id:
+                shown = job_ids(tie_text)
+                if shown and all(i.lower() != tie.external_job_id.lower() for i in shown):
+                    continue  # this record or page names a different job
+                if tie.external_job_id.lower() in tie_text.lower():
+                    ties.append(f"job id {tie.external_job_id!r} shown with it")
+            if tie.job_title and normalize_text(tie.job_title) in normalize_text(tie_text):
+                ties.append(f"job title {tie.job_title!r} shown with it")
+            refs = [r for r in confirmation_references(own) if r not in tie.known_references]
+            if refs and fresh_reference_ties:
+                ties.append(f"confirmation reference {refs[0]!r} appeared after the submit")
+            if ties:
+                return [f"acceptance text {statement!r}", *ties], (refs[0] if refs else None)
+        return [], None
 
     def _judge(self, pending: _PendingSubmit, model: PageModel, same_document: bool) -> SubmissionObservation:
         snapshot = model.snapshot
@@ -595,27 +656,41 @@ class GenericApplicationBrowser:
         evidence = [*pending.evidence, *model.inspection.evidence]
         before = pending.form
         after = model.form
-        if before is not None and _same_step_shown_again(before, after):
+        if before is not None and _same_step_shown_again(before, after, any_url=True):
             assert after is not None
             errors = _validation_errors(after)
-            if errors:
-                field_errors = any(f.validation_error for f in after.fields)
+            status = self.driver.last_status
+            messages = " ".join([*errors, *(r.text for r in snapshot.regions),
+                                 *(h.text for h in snapshot.headings), snapshot.title])
+            field_errors = [f for f in after.fields if f.validation_error]
+            uncertain = UNCERTAIN.search(messages)
+            server_error = status is not None and status >= 500
+            if field_errors and not uncertain and not server_error:
+                # Definite: the site re-displayed this step marking specific answers invalid.
                 return SubmissionObservation(
                     outcome=SubmissionOutcome.NOT_SUBMITTED,
-                    signals=["the site showed the form again with validation errors"],
+                    signals=["the site showed the form again marking fields invalid: "
+                             + ", ".join(f.id for f in field_errors)],
                     validation_errors=errors,
                     observed_url=url,
                     evidence=evidence,
-                    next_state=NotSubmittedNext.NEEDS_INPUT if field_errors else NotSubmittedNext.FILLING,
-                    detail="rejected by the site's validation",
+                    next_state=NotSubmittedNext.NEEDS_INPUT,
+                    detail="rejected by the site's field validation",
                 )
+            observed = ["observed: the form is shown again"]
+            if status is not None:
+                observed.append(f"observed: HTTP {status}")
+            if uncertain:
+                observed.append(f"observed: the site says {uncertain.group(0)!r}")
+            observed += [f"observed: message {e!r}" for e in errors]
             return SubmissionObservation(
                 outcome=SubmissionOutcome.UNKNOWN,
-                signals=["observed: the form is still shown, without errors or confirmation"],
+                signals=observed,
                 observed_url=url, evidence=evidence,
-                detail="no confirmation observed; the form is still displayed",
+                detail="the form is shown again without a definite field-level rejection; the "
+                       "application may have been received, so do not retry before reconciling",
             )
-        signals, reference = self._acceptance(model, pending.tie)
+        signals, reference = self._acceptance(model, pending.tie, fresh_reference_ties=True)
         if signals and model.inspection.kind is not PageKind.APPLICATION_FORM:
             if not same_document:
                 signals.append(f"a new page loaded after the submit ({url})")
@@ -688,7 +763,7 @@ class GenericApplicationBrowser:
             model = await self._model(evidence=f"reconcile-{hop}", html=True)
             evidence.extend(model.inspection.evidence)
             if model.inspection.kind is not PageKind.APPLICATION_FORM:
-                signals, reference = self._acceptance(model, tie)
+                signals, reference = self._acceptance(model, tie, fresh_reference_ties=False)
                 if signals:
                     return SubmissionObservation(
                         outcome=SubmissionOutcome.ACCEPTED,
@@ -730,13 +805,35 @@ class GenericApplicationBrowser:
         if len(fields) > 2 or len(emails) != 1:
             return False
         button = next((b for b in model.buttons if b.button.submits_form and not b.button.disabled
-                       and b.intent is not ButtonIntent.SUBMIT), None)
+                       and b.intent is not ButtonIntent.SUBMIT
+                       and b.button.effective_method == "get"), None)
         if button is None:
             return False
         await self.driver.fill(model.bindings[emails[0].id].selector, email)
+        # Re-check the request the click would really send (formmethod/formaction/
+        # formtarget overrides included) immediately before dispatching it.
+        effective = await self.driver.evaluate(_EFFECTIVE_SUBMISSION, button.button.selector)
+        if not self._safe_lookup(effective, model.snapshot.url):
+            return False
         await self.driver.click(button.button.selector)
         await self.driver.settle(self.settle_timeout_s)
         return True
+
+    @staticmethod
+    def _safe_lookup(effective: Any, page_url: str) -> bool:
+        """A lookup may only send a same-origin GET in this tab from a form without
+        file or password inputs; anything else could act on an application."""
+        if not isinstance(effective, dict):
+            return False
+        action = urlsplit(str(effective.get("action", "")))
+        page = urlsplit(page_url)
+        return (
+            effective.get("method") == "get"
+            and effective.get("target") in ("", "_self")
+            and not effective.get("hasFile")
+            and not effective.get("hasPassword")
+            and (action.scheme, action.netloc) == (page.scheme, page.netloc)
+        )
 
     async def close(self) -> None:
         if self._on_close is not None:

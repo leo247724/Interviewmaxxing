@@ -111,7 +111,8 @@
 
   const customWidgets = [];
   for (const el of document.querySelectorAll("[role], [contenteditable]")) {
-    if (NATIVE.has(el.tagName) || el.tagName === "BUTTON") continue;
+    // A <button> with a widget role (e.g. role="combobox") is a custom control, not an action.
+    if (NATIVE.has(el.tagName)) continue;
     const role = el.getAttribute("role");
     const editable = el.hasAttribute("contenteditable") && el.isContentEditable;
     if (!(CUSTOM_ROLES.has(role) || editable)) continue;
@@ -323,11 +324,15 @@
   const buttons = [];
   for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
     if (!visible(el)) continue;
+    if (CUSTOM_ROLES.has(el.getAttribute("role") || "")) continue; // a widget, reported as a control
     const isInput = el.tagName === "INPUT";
     const type = el.tagName === "BUTTON" ? (el.getAttribute("type") || "submit").toLowerCase()
       : isInput ? el.type.toLowerCase() : "role-button";
     const text = (isInput ? (el.value || el.alt || "") : textOf(el)) || el.getAttribute("aria-label") || el.title || "";
     const form = el.form || null;
+    // The request this button would actually send, including formmethod/formaction overrides.
+    const method = !form ? "" : (el.hasAttribute("formmethod") ? el.formMethod : form.method || "get").toLowerCase();
+    const action = !form ? "" : (el.hasAttribute("formaction") ? el.formAction : form.action);
     buttons.push({
       text: text.replace(/\s+/g, " ").trim(),
       type,
@@ -336,6 +341,8 @@
       form_index: form ? forms.indexOf(form) : (el.closest("form") ? forms.indexOf(el.closest("form")) : -1),
       submits_form: !!form && (type === "submit" || type === "image"),
       form_no_validate: !!el.formNoValidate,
+      effective_method: method,
+      effective_action: action,
     });
   }
   const links = [];
@@ -347,6 +354,15 @@
     .filter(visible).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h) })).filter((h) => h.text);
   const regions = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live]'))
     .filter(visible).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r) })).filter((r) => r.text);
+
+  // Record blocks (list items, rows, articles) so status portals listing several
+  // applications are read one record at a time, plus the page text outside them.
+  const RECORD = "li, tr, article, [role=listitem], [role=row], [role=article]";
+  const records = Array.from(document.querySelectorAll(RECORD))
+    .filter((r) => visible(r) && !r.querySelector(RECORD))
+    .slice(0, 300);
+  const recordTexts = records.map((r) => textOf(r)).filter(Boolean);
+  const contextText = textOf(document.body, new Set(records)).slice(0, MAX_TEXT);
 
   let step = null;
   const current = document.querySelector('[aria-current="step"]');
@@ -370,6 +386,8 @@
     headings,
     regions,
     body_text: (document.body ? document.body.innerText || "" : "").slice(0, MAX_TEXT),
+    records: recordTexts,
+    context_text: contextText,
     ld_json: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((s) => s.textContent || ""),
     meta: {
       og_site_name: (document.querySelector('meta[property="og:site_name"]') || {}).content || "",

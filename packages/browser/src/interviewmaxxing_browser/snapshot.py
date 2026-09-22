@@ -87,6 +87,10 @@ class DomButton(_Raw):
     form_index: int
     submits_form: bool
     form_no_validate: bool
+    effective_method: str
+    """Method the button would submit with (form method or its ``formmethod``)."""
+    effective_action: str
+    """URL the button would submit to (form action or its ``formaction``)."""
 
 
 class DomLink(_Raw):
@@ -141,6 +145,10 @@ class DomSnapshot(_Raw):
     headings: list[DomHeading]
     regions: list[DomRegion]
     body_text: str
+    records: list[str]
+    """Visible text of each innermost record block (li, tr, article, listitem, row)."""
+    context_text: str
+    """Visible page text outside all record blocks (headings, page-level context)."""
     ld_json: list[str]
     meta: DomMeta
     forms: list[DomForm]
