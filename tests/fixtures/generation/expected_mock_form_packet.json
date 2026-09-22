@@ -1,0 +1,70 @@
+{
+  "answers": {
+    "first_name": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "Avery"
+    },
+    "last_name": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "Example"
+    },
+    "email": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "avery@example.test"
+    },
+    "phone": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "+1 555 010 0199"
+    },
+    "resume": {
+      "source": "RESUME",
+      "refs": [
+        "resume_supplied"
+      ],
+      "value": {
+        "filename": "resume-avery-example.pdf",
+        "sha256": "cbda0ba74ea1118125d92ee4b9f9515f8f8f7e5b88e908d276d826682a7d9906"
+      }
+    },
+    "linkedin": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "https://www.linkedin.example/in/avery-example"
+    },
+    "work_auth": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.work_auth_us"
+      ],
+      "value": [
+        "1",
+        "Yes"
+      ]
+    },
+    "privacy": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.privacy_consent"
+      ],
+      "value": true
+    }
+  },
+  "missing": {
+    "sponsorship": {
+      "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "candidates": []
+    },
+    "gender": {
+      "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "candidates": []
+    },
+    "why_us": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    }
+  }
+}
