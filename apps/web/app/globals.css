@@ -1799,3 +1799,7 @@ input[type="checkbox"] {
     max-width: 780px;
   }
 }
+
+.notice--restore {
+  border-left-color: var(--ochre-ink);
+}

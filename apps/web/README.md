@@ -84,7 +84,7 @@ Error responses use `{"error": {"code", "message", "fieldErrors"?}}`. Status cod
 
 ## Privacy and accessibility notes
 
-- Forms use `method="post"` and are handled client-side, so data never lands in the URL even before hydration. The desk stores only the active application id in `sessionStorage` (live mode).
+- Forms use `method="post"` and are handled client-side, so data never lands in the URL even before hydration. The desk stores only the active application id in `sessionStorage` (live mode). On reload it restores that application (`lib/restore.ts`). A transient failure (service unreachable, 5xx, conflict) keeps the id and shows a warning that the application may still be in progress, with **Check again**. Only a definitive `404 not_found` clears it. The user can also choose to stop following it on that page.
 - Every control has a label. Errors are linked from a focused summary and reported through `aria-invalid`/`aria-describedby`. Focus moves to the state headline when the application needs the user or finishes, and state changes are announced politely.
 - `prefers-reduced-motion` disables all animation.
 

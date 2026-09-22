@@ -13,11 +13,13 @@ import type {
   ResumeDocumentView,
 } from "@/lib/service/types";
 import { isActive } from "@/lib/state";
+import { ACTIVE_ID_KEY, restoreActiveApplication, type RestoreOutcome } from "@/lib/restore";
 import { validateApplyForm, type FieldErrors } from "@/lib/validation";
 import { ComposeForm } from "./ComposeForm";
 import { ApplicationWorkspace } from "./ApplicationWorkspace";
 import { PreviewBar } from "./PreviewBar";
 import { ServiceNotice } from "./ServiceNotice";
+import { RestoreNotice } from "./RestoreNotice";
 
 const EMPTY_PROFILE: CandidateProfileInput = {
   firstName: "",
@@ -28,8 +30,6 @@ const EMPTY_PROFILE: CandidateProfileInput = {
   linkedinUrl: "",
   websiteUrl: "",
 };
-
-const ACTIVE_ID_KEY = "imx.activeApplicationId";
 
 export type Connection = "checking" | "connected" | "unavailable";
 
@@ -72,6 +72,9 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
   const [actionError, setActionError] = useState<string | null>(null);
   const [lostContact, setLostContact] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
+  const [restoreProblem, setRestoreProblem] = useState<Exclude<RestoreOutcome, { kind: "none" | "restored" }> | null>(
+    null,
+  );
   const failuresRef = useRef(0);
 
   const noteUnavailable = useCallback((error: ServiceError) => {
@@ -100,12 +103,17 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       setCandidateLoaded(true);
 
       if (service.mode === "live") {
-        const activeId = window.sessionStorage.getItem(ACTIVE_ID_KEY);
-        if (activeId) {
-          try {
-            setView(await service.status(activeId));
-          } catch {
-            window.sessionStorage.removeItem(ACTIVE_ID_KEY);
+        const outcome = await restoreActiveApplication(service, window.sessionStorage);
+        if (outcome.kind === "restored") {
+          setView(outcome.view);
+          setRestoreProblem(null);
+        } else if (outcome.kind === "none") {
+          setRestoreProblem(null);
+        } else {
+          setRestoreProblem(outcome);
+          if (outcome.kind === "pending" && outcome.code === "unavailable") {
+            setConnection("unavailable");
+            setServiceMessage(outcome.message);
           }
         }
       }
@@ -113,8 +121,23 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       const serviceError = asServiceError(error);
       setConnection(serviceError.code === "unavailable" ? "unavailable" : "connected");
       setServiceMessage(serviceError.message);
+      // Keep following a saved application even when the service can't be reached yet.
+      const activeId = service.mode === "live" ? window.sessionStorage.getItem(ACTIVE_ID_KEY) : null;
+      if (activeId) {
+        setRestoreProblem({
+          kind: "pending",
+          applicationId: activeId,
+          code: serviceError.code,
+          message: serviceError.message,
+        });
+      }
     }
   }, [service]);
+
+  function stopFollowing() {
+    window.sessionStorage.removeItem(ACTIVE_ID_KEY);
+    setRestoreProblem(null);
+  }
 
   useEffect(() => {
     void loadCandidate();
@@ -150,6 +173,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     (next: ApplicationView) => {
       setView(next);
       setActionError(null);
+      setRestoreProblem(null);
       if (service.mode === "live") window.sessionStorage.setItem(ACTIVE_ID_KEY, next.id);
     },
     [service],
@@ -311,6 +335,14 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
             />
           ) : (
             <>
+              {restoreProblem && (
+                <RestoreNotice
+                  problem={restoreProblem}
+                  onRetry={loadCandidate}
+                  onStopFollowing={stopFollowing}
+                  onDismiss={() => setRestoreProblem(null)}
+                />
+              )}
               {connection === "unavailable" && (
                 <ServiceNotice mode={mode} message={serviceMessage} onRetry={loadCandidate} />
               )}
