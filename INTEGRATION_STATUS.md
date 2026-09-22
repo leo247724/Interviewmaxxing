@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Build the supplied-URL application flow: the user chooses a job and asks to apply; the system uses verified candidate information to fill and submit it, verifies acceptance, and saves a receipt. The user has also activated the frontend worktree to build the interface in parallel. Job discovery and Jev selection are deferred. The MVP uses five of the eight prepared worktrees.
+Build the supplied-URL application flow: the user chooses a job and asks to apply; the system uses verified candidate information to fill and submit it, verifies acceptance, and saves a receipt. The user explicitly resumed the workers and requested the entire backend and frontend on 2026-09-22. Job discovery and Jev selection are deferred. The MVP now uses six of the eight prepared worktrees, including a local HTTP service in queue-runtime.
 
 ## Repository baseline
 
@@ -17,14 +17,14 @@ Build the supplied-URL application flow: the user chooses a job and asks to appl
 
 | Worker | Superset workspace ID | Status | Next dependency |
 | --- | --- | --- | --- |
-| core-contracts | `6a218556-206b-446f-ab32-7659bd383217` | C1, C1R and C1R2 verified and integrated | C2/C3/C4 implementations before I1 |
+| core-contracts | `6a218556-206b-446f-ab32-7659bd383217` | C1R3 `4fd2959` done, in review | C2/C3/C4 integration before I1 |
 | job-ingestion | `60876c0b-328b-4fc8-ba66-5ef7028922eb` | parked | Later job-discovery milestone |
 | jev-selection | `82112dc8-f635-439f-a61d-c9c33f6636e3` | parked | Later automated job-selection milestone |
-| candidate-brain | `4d16e305-b074-4bdd-9ff9-f46a553ccfbf` | Opus handshake verified; C2 pending | Approved core contracts; user profile and resume for live application |
-| application-packets | `7333147f-5e19-441c-b25c-e08dc161282e` | Opus handshake verified; C3 pending | Approved core and candidate contracts |
-| browser-ats | `acff6e42-6b2f-407e-b5c8-0978a8017ca4` | C4a verified and merged; C4 pending | C1R approval before runtime; first application URL for target ATS |
-| queue-runtime | `04292d12-950d-40a8-b8ca-355593be29d9` | parked | Later hosted/distributed execution |
-| dashboard | `ec7d3896-d6e4-407e-85eb-a5c452224509` | F1 verified; F1R recovery correction running | Preserve active application on transient status failure, then I1 for F2 |
+| candidate-brain | `4d16e305-b074-4bdd-9ff9-f46a553ccfbf` | C2/C2R through `fa99724` done, in review | C2P profile editing and resume uploads next |
+| application-packets | `7333147f-5e19-441c-b25c-e08dc161282e` | C3 `61d89af` done; C3R running | Preserve meaningful symbols, then C1R3 roundtrip |
+| browser-ats | `acff6e42-6b2f-407e-b5c8-0978a8017ca4` | C4 `bb1bb3a` done, in review | Independent runtime review and integration; OpenCLI driver follow-up |
+| queue-runtime | `04292d12-950d-40a8-b8ca-355593be29d9` | S1 local HTTP service running | I1 reusable runner and C2P setup API; hosted/distributed work deferred |
+| dashboard | `ec7d3896-d6e4-407e-85eb-a5c452224509` | F1R `620fb97` done; focused tests/types pass; visual recheck running | S1/I1 for real F2 integration |
 
 All workers are on the local host. Their directories are `/Users/leo/.superset/worktrees/Interviewmaxxing/build/<workspace-name>`. The existing coordinator remains at `caramel-ketch` on `j-workspace`.
 
@@ -35,9 +35,10 @@ Bounded assignments and acceptance requirements are in [.handoff/mvp-build-tasks
 | control handshake | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `a953ca77-51e6-4b01-89cd-d7527d957d1a` | `claude-opus-5-5` from `modelUsage` | Initial and resumed assistant acknowledgments verified through terminal reads and `agents read` |
 | C1 / C1R / C1R2 | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `c7b3b809-7801-421c-95c1-499f7330cd14` | `claude-opus-5-5`, verified from task assistant messages | Integrated through `462476c`; coordinator independently passed all 218 tests, ruff, strict mypy, locked sync and CLI smoke |
 | C4a | `599558c3-fd93-43ce-a29c-9c9702b23b69` | `5947e2df-8de9-43a3-ae01-09ac9898b1af` | `claude-opus-5-5`, verified from task assistant messages | `2382f65` independently verified and merged as `f2e3d6b`; terminal kept for C4 |
-| Candidate readiness | `8ea7cdf0-d32c-4938-87fa-df5f94f48ec1` | `a02f1151-7b8a-4f99-bdbb-3cf48fa103b8` | Actual acknowledgment and `claude-opus-5-5` model usage verified | No implementation assigned yet |
-| Packet readiness | `277d2333-35ea-4ebb-83d4-3f0985a2eaa5` | `aa8b5af2-edcb-4a1e-81db-4788ff33874c` | Actual acknowledgment and `claude-opus-5-5` model usage verified | No implementation assigned yet |
-| F1 / F1R | `043d3f36-8a95-49a6-bc97-ea1255a7283f` | `7741a68f-82d8-4d3a-89fd-41dab783e3f6` | `claude-opus-5-5`, verified from task assistant messages | F1 `d2ab964` independently checked at desktop/mobile; 18 tests and typecheck passed. F1R assigned for transient restore failure; not merged yet |
+| C2 / C2R | `8ea7cdf0-d32c-4938-87fa-df5f94f48ec1` | `612aa043-1c46-4250-83a7-f6e9924410ea` | `claude-opus-5-5`, verified from task assistant messages | `fa99724`; loader conflict and stale-save corrections under independent review |
+| C3 / C3R | `277d2333-35ea-4ebb-83d4-3f0985a2eaa5` | `052fc903-c0a3-451e-8d73-48aa674890e7` | `claude-opus-5-5`, verified from task assistant messages | `61d89af`; question matching correction running |
+| F1 / F1R | `043d3f36-8a95-49a6-bc97-ea1255a7283f` | `7741a68f-82d8-4d3a-89fd-41dab783e3f6` | `claude-opus-5-5`, verified from task assistant messages | `620fb97`; coordinator passed all 6 recovery tests and typecheck; visual review running |
+| S1 | `6aeb2dec-1fa7-4e68-9ca9-d88da8f2c7d6` | `c0180abb-71bb-400f-9d79-2b833e52014d` | `claude-opus-5-5`, verified handshake `modelUsage` | Local service implementation dispatched; allowlist `apps/service/**`, `tests/service/**` |
 
 ## Completed verification
 
@@ -45,8 +46,10 @@ Bounded assignments and acceptance requirements are in [.handoff/mvp-build-tasks
 - The coordinator started an isolated mock server from the merged tree and used Playwright CLI/Chromium to fill native controls, select machine-backed choices and upload the fictional resume. The page showed acceptance for BWA-ENG-101 with reference `BWA-000001` at `2026-09-22T22:02:16Z`; an independent server query found exactly one accepted POST and the correct uploaded SHA-256.
 - That coordinator-only browser session and mock server were closed cleanly. Snapshot evidence is under `/var/folders/wy/jv0dwczn75d5s_7w71jb7vpr0000gn/T/imx-coordinator-browser-4u0ulxsr/.playwright-cli/`; no real employer or candidate data was used.
 - C1 review corrections are complete, including explicit saved-answer scope, verified facts and complete question wording in fingerprints. A changed attestation description invalidates the prior input and packet. The coordinator reviewed the final diff and reran all 218 tests plus formatting, strict types, locked sync and CLI smoke successfully.
-- F1 independent UI review passed desktop and mobile compose, validation, missing answers, unselected attestations, draft save, receipt and uncertain reconciliation. A transient application-status error currently discards the saved active ID; F1R is correcting that before integration. Review browser/server are closed.
-- OpenCLI 1.8.6 and Browser Bridge were verified live. In a named session, the assistant read current questions while the user controlled all assessment actions. The overview confirmed the aptitude section completed; workplace behavior and AI sections are pending. This is evidence for user-present observation, not an automated application submission or a completed reusable site adapter. Private invitation data and assessment content remain outside source control.
+- F1 independent UI review passed desktop and mobile compose, validation, missing answers, unselected attestations, draft save, receipt and uncertain reconciliation. F1R now preserves the active ID across transient service failures and clears it only for a genuine missing record. Coordinator recovery tests and types pass; visual follow-up is running.
+- C2/C3 review found four reproducible defects: meaningful symbols lost by question matching, tied JOB conflicts removed before resolution, stale saves overwriting newer answers, and full wording lost in saved-answer roundtrips. Corrections are assigned in `.handoff/saved-answer-review.md`; completion requires independent verification and integration.
+- C4 worker reports 332 passing tests, strict types/lint and a real browser demo with exactly one accepted POST. Independent review and coordinator browser tests are underway; these are not yet integrated acceptance results.
+- OpenCLI 1.8.6 and Browser Bridge were verified live. In a named session, the assistant read current questions while the user controlled all assessment actions. All three assessment sections completed and the final page confirmed completion. This is evidence for user-present observation, not an automated application submission or a completed reusable site adapter. Private invitation data and assessment content remain outside source control.
 
 ## Control-path evidence — 2026-09-22
 
@@ -61,4 +64,4 @@ Bounded assignments and acceptance requirements are in [.handoff/mvp-build-tasks
 
 ## Next action
 
-Refresh and dispatch C2, C3 and C4 from the integrated version 2 contracts, while F1R corrects recovery. CLI integration and the real frontend bridge follow. The user-present OpenCLI workflow is now explicit in architecture section 9; the user's current assessment is separate from the target application and verified profile/resume still needed for live application acceptance. No Jev setup is required for this milestone.
+Integrate the reviewed corrections and browser/frontend foundations, then run I1, C2P, S1 and F2 to finish the local application product. Exact scopes and seams are in `.handoff/local-service-integration.md`. The OpenCLI driver remains a separate browser follow-up sharing the same runtime. A real target application URL and verified candidate profile/resume are still needed for live employer acceptance; build and verify all independent functionality against fictional localhost fixtures first.

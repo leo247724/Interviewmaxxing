@@ -1,0 +1,16 @@
+[project]
+name = "interviewmaxxing-candidate"
+version = "0.1.0"
+description = "Loads the user's verified candidate profile, supplied resume and saved answers from local storage."
+requires-python = ">=3.12"
+dependencies = ["interviewmaxxing-core", "pydantic>=2.8,<3"]
+
+[tool.uv.sources]
+interviewmaxxing-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interviewmaxxing_candidate"]

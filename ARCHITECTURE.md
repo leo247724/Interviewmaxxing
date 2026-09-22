@@ -32,9 +32,9 @@ Expected offer value
 
 The product is not one giant autonomous agent. It is a pipeline of typed, replaceable services with explicit contracts.
 
-**Current MVP: the user supplies a job-application URL and asks the system to submit that application.** The user has already chosen the job. Build reliable application execution first.
+**Current MVP:** reliable supplied-URL applications, a local frontend and pipeline tracker, OpenCLI job browsing, and Jev application selection. The user expanded the running build on 2026-09-22: find marketing manager/director roles in Austin onsite/hybrid or US-wide remote, with a USD 100000 annual compensation minimum. The supplied-URL flow remains available independently.
 
-**Later, Jev, from [TypeSafe AI](https://typesafe.ai/), will decide which discovered jobs the candidate should apply for.** Job discovery and automated selection are deferred. They are not dependencies of the user-provided URL flow.
+**Jev, from [TypeSafe AI](https://typesafe.ai/), decides which discovered jobs fit the candidate.** The local backend calls it through the user-funded OpenRouter Decisions API. Selection records evidence and APPLY/SKIP/REVIEW separately from a real application receipt. The requested-application executor remains the single submission path.
 
 ---
 
@@ -82,7 +82,7 @@ User-provided application URL + verified candidate profile/resume
 
 The browser extracts the minimum job identity and page context needed to apply and avoid duplicates. This does not require the job-discovery service, a `JobMatch`, a Jev call, or a P0/P1/P2 ranking.
 
-### Later: discovery, selection and outcome learning
+### Discovery and selection; outcome learning remains later
 
 ```
                          +---------------------------+
@@ -130,7 +130,7 @@ The browser extracts the minimum job identity and page context needed to apply a
                                                           +-------------------------------+
 ```
 
-In the later discovery flow, Jev's job-selection decision happens before packet generation. `APPLY` enters the P0/P1/P2 application routes, `SKIP` archives the job, and `REVIEW` waits for job-selection review. The user-provided URL flow enters application execution directly.
+In the discovery flow, Jev's job-selection decision happens before packet generation. `APPLY` enters the P0/P1/P2 application routes, `SKIP` archives the job, and `REVIEW` waits for job-selection review. The user-provided URL flow enters application execution directly.
 
 ---
 
@@ -150,15 +150,15 @@ In the later discovery flow, Jev's job-selection decision happens before packet 
 - Browser agents execute plans; they should not own career strategy.
 
 ### Frontend
-- MVP: **Next.js / TypeScript** interface for application URL entry, candidate/profile and resume setup, progress, missing questions, and submission receipts. Build it in parallel with the Python executor.
+- MVP: **Next.js / TypeScript** interface for application URL entry, candidate/profile and resume setup, progress, missing questions, submission receipts, job search/selection, and a pipeline board based on the user's supplied tracker.
 - The CLI remains the local execution and diagnostic interface, with a visible browser when user interaction is needed. A narrow local server-side bridge connects the frontend to the same executor and durable state.
-- Later: discovery queues, ranking, analytics and interview/offer outcomes.
+- Later: large-scale queues and outcome-learning analytics. The MVP already includes editable job tracking stages, interview/follow-up fields and notes.
 
 ### Models
 - **GPT Astra**: project orchestrator / integration manager.
 - **Fable 5.x**: optional specialist for difficult investigations; not part of the current eight-worker roster.
 - **Opus 5.5**: default implementation worker for bounded feature work.
-- **TypeSafe AI / Jev — deferred**: future product decision maker for which discovered jobs to apply for; evaluates candidate/job fit and returns `APPLY`, `SKIP`, or `REVIEW`.
+- **TypeSafe AI / Jev through OpenRouter**: product decision maker for which discovered jobs to apply for; evaluates candidate/job fit and returns `APPLY`, `SKIP`, or `REVIEW`.
 - Optional local/open-source models for cheap generation and classification.
 
 ---
@@ -243,7 +243,7 @@ class JobPosting:
     fingerprint: str
 ```
 
-### JobMatch — later automated selection
+### JobMatch — automated selection
 
 ```python
 class JobMatch:
@@ -399,9 +399,9 @@ The application packet should answer semantic fields, not raw DOM selectors.
 
 ---
 
-## 8. Jev — deciding which jobs to apply for (deferred)
+## 8. Jev — deciding which jobs to apply for
 
-This section describes the later job-discovery flow. The MVP accepts the user's job choice and does not call Jev or require TypeSafe access.
+This section describes the activated job-discovery flow. Jev uses `POST https://openrouter.ai/api/alpha/decisions` with requested model `typesafe/jev-1.13`; persist the actual returned model. Read OPENROUTER_API_KEY only on the backend from the environment or an explicitly configured ignored env.local file. The supplied-URL apply flow does not require a Jev call.
 
 **Jev owns the job-selection judgment.** The inputs are the normalized job posting, verified candidate experience and skills, compensation and location preferences, career goals, and the job-selection rubric.
 
@@ -527,7 +527,7 @@ The user may retain all browser actions while the assistant reads questions and 
 
 Suggestions about the candidate must be grounded in their supplied facts and preferences. A broad trait such as hardworking does not answer unrelated questions about sociability, risk tolerance, or specific past behavior. Capture missing information instead of treating an unknown answer as a neutral preference. Keep follow-up/assessment completion separate from a job-application submission receipt.
 
-Reusable site commands should use observed UI semantics, explicit arguments, structured errors, and local verification. Do not commit invitation tokens, real assessment questions, answers, or candidate data. The OpenCLI path shares candidate provenance and durable state with the existing executor; it must not introduce a second submission state machine. Discovery and Jev selection remain deferred.
+Reusable site commands should use observed UI semantics, explicit arguments, structured errors, and local verification. Do not commit invitation tokens, real assessment questions, answers, or candidate data. The OpenCLI path shares candidate provenance and durable state with the existing executor; it must not introduce a second submission state machine. Discovery and Jev selection are active through their own bounded worker packages.
 
 ---
 

@@ -1,0 +1,114 @@
+{
+  "_note": "Fictional additions to tests/fixtures/core/candidate_profile.json (Avery Example) for resolver tests. No real data.",
+  "facts": [
+    {
+      "id": "fact.years_total",
+      "key": "years_experience",
+      "value": 9,
+      "source": "user",
+      "verification": {"status": "VERIFIED", "method": "USER_STATED", "verified_at": "2026-09-01T12:00:00Z"},
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.years_python",
+      "key": "years_experience.python",
+      "value": 0,
+      "source": "user",
+      "verification": {"status": "VERIFIED", "method": "USER_STATED", "verified_at": "2026-09-01T12:00:00Z"},
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.years_sql",
+      "key": "years_experience.sql",
+      "value": 5,
+      "source": "resume",
+      "verification": {"status": "UNVERIFIED"},
+      "confidence": 1.0,
+      "evidence": ["resume: 'five years of SQL' (extracted, not yet confirmed)"]
+    }
+  ],
+  "saved_answers": [
+    {
+      "id": "sa.relocate_austin",
+      "scope": "GLOBAL",
+      "semantic_type": "RELOCATION",
+      "question": "Are you willing to relocate to Austin, TX?",
+      "value": false,
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.direct_reports",
+      "scope": "GLOBAL",
+      "semantic_type": null,
+      "question": "How many direct reports do you currently manage?",
+      "value": 0,
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.visa_sponsorship",
+      "scope": "GLOBAL",
+      "semantic_type": "SPONSORSHIP",
+      "question": "Will you now or in the future require visa sponsorship?",
+      "value": false,
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.heard_board",
+      "scope": "GLOBAL",
+      "semantic_type": "REFERRAL_SOURCE",
+      "question": "How did you hear about us?",
+      "value": "Job board",
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.heard_referral",
+      "scope": "GLOBAL",
+      "semantic_type": "REFERRAL_SOURCE",
+      "question": "How did you hear about us?",
+      "value": "Employee referral",
+      "confirmed_at": "2026-09-02T12:00:00Z"
+    },
+    {
+      "id": "sa.drivers_license",
+      "scope": "GLOBAL",
+      "semantic_type": "CUSTOM_BOOLEAN",
+      "question": "Do you have a valid driver's license?",
+      "value": "Yes",
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.accuracy_attestation",
+      "scope": "GLOBAL",
+      "semantic_type": "ATTESTATION",
+      "question": "I agree. I certify that the information in this application is true and complete.",
+      "value": true,
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.background_check",
+      "scope": "GLOBAL",
+      "semantic_type": "CONSENT",
+      "question": "I consent to a background check",
+      "value": false,
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.veteran",
+      "scope": "GLOBAL",
+      "semantic_type": "EEO_VETERAN_STATUS",
+      "question": "Veteran status",
+      "value": "I am not a protected veteran",
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.channels",
+      "scope": "GLOBAL",
+      "semantic_type": "CUSTOM_MULTISELECT",
+      "question": "Which channels have you managed?",
+      "value": ["Paid search", "Paid social"],
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    }
+  ]
+}

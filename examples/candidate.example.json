@@ -1,0 +1,117 @@
+{
+  "id": "default",
+  "identity": {
+    "first_name": "Jordan",
+    "last_name": "Sample",
+    "preferred_name": "Jo",
+    "email": "jordan.sample@example.test",
+    "phone": "+1 555 010 0142",
+    "address": {
+      "street": null,
+      "city": "Portland",
+      "region": "OR",
+      "postal_code": "97201",
+      "country": "United States"
+    },
+    "linkedin_url": "https://www.linkedin.example/in/jordan-sample",
+    "website_url": null,
+    "github_url": null,
+    "verified_at": "2026-09-20T09:00:00Z"
+  },
+  "resume": {
+    "id": "resume_supplied",
+    "path": "resume.pdf",
+    "variant": "supplied",
+    "extracted_text": null
+  },
+  "facts": [
+    {
+      "id": "fact.current_title",
+      "key": "current_title",
+      "value": "Growth Marketing Manager",
+      "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-20T09:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.current_company",
+      "key": "current_company",
+      "value": "Placeholder Analytics Inc",
+      "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-20T09:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.years_growth_marketing",
+      "key": "years_experience.growth_marketing",
+      "value": 5,
+      "source": "resume",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_CONFIRMED",
+        "verified_at": "2026-09-20T09:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": ["resume: '5 years in growth marketing'"]
+    },
+    {
+      "id": "fact.direct_reports",
+      "key": "direct_reports",
+      "value": 0,
+      "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-20T09:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.budget_managed",
+      "key": "annual_budget_managed",
+      "value": 250000,
+      "source": "resume",
+      "verification": {
+        "status": "UNVERIFIED",
+        "method": null,
+        "verified_at": null
+      },
+      "confidence": 0.8,
+      "evidence": ["resume: 'owned a $250k annual budget' (extracted, not yet confirmed)"]
+    }
+  ],
+  "saved_answers": [],
+  "experience": [
+    {
+      "id": "exp.placeholder_analytics",
+      "company": "Placeholder Analytics Inc",
+      "title": "Growth Marketing Manager",
+      "start": "2022-01",
+      "end": null,
+      "current": true,
+      "summary": null,
+      "fact_ids": ["fact.current_title", "fact.current_company"]
+    }
+  ],
+  "education": [
+    {
+      "id": "edu.sample_college",
+      "institution": "Sample College",
+      "degree": "BS",
+      "field_of_study": "Marketing",
+      "graduation": "2019",
+      "fact_ids": []
+    }
+  ]
+}
