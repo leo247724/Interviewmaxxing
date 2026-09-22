@@ -1,0 +1,17 @@
+{
+  "outcome": "ACCEPTED",
+  "signals": [
+    "heading 'Thank you for applying' replaced the form",
+    "url changed to /jobs/mock-4012/confirmation"
+  ],
+  "confirmation_reference": "MOCK-APP-000123",
+  "observed_url": "http://127.0.0.1:0/jobs/mock-4012/confirmation",
+  "validation_errors": [],
+  "evidence": [
+    {"id": "ev_confirm_png", "kind": "SCREENSHOT", "path": "app_fixture/confirmation.png", "description": "confirmation page", "captured_at": "2026-09-22T20:01:00Z"},
+    {"id": "ev_confirm_txt", "kind": "PAGE_TEXT", "path": "app_fixture/confirmation.txt", "description": "visible confirmation text", "captured_at": "2026-09-22T20:01:00Z"}
+  ],
+  "next_state": null,
+  "detail": null,
+  "observed_at": "2026-09-22T20:01:00Z"
+}

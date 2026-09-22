@@ -1,0 +1,64 @@
+{
+  "url": "http://127.0.0.1:0/jobs/mock-4012/apply",
+  "ats_type": "mock",
+  "step": 0,
+  "is_final_step": true,
+  "submit_selector": "#submit-application",
+  "next_selector": null,
+  "page_errors": [],
+  "inspected_at": "2026-09-22T20:00:00Z",
+  "fields": [
+    {"id": "first_name", "label": "First name", "semantic_type": "FIRST_NAME", "control_type": "TEXT", "selector": "#first_name", "required": true, "input_type": "text"},
+    {"id": "last_name", "label": "Last name", "semantic_type": "LAST_NAME", "control_type": "TEXT", "selector": "#last_name", "required": true, "input_type": "text"},
+    {"id": "email", "label": "Email", "semantic_type": "EMAIL", "control_type": "TEXT", "selector": "#email", "required": true, "input_type": "email"},
+    {"id": "phone", "label": "Phone", "semantic_type": "PHONE", "control_type": "TEXT", "selector": "#phone", "required": false, "input_type": "tel"},
+    {"id": "resume", "label": "Resume/CV", "semantic_type": "RESUME", "control_type": "FILE", "selector": "input[name=resume]", "required": true, "accept": [".pdf", ".docx"]},
+    {"id": "linkedin", "label": "LinkedIn profile", "semantic_type": "LINKEDIN", "control_type": "TEXT", "selector": "#linkedin", "required": false, "input_type": "url"},
+    {
+      "id": "work_auth", "label": "Are you legally authorized to work in the United States?", "semantic_type": "WORK_AUTHORIZATION",
+      "control_type": "RADIO", "selector": "fieldset#work_auth", "required": true,
+      "options": [
+        {"value": "1", "label": "Yes", "selector": "#work_auth_yes"},
+        {"value": "0", "label": "No", "selector": "#work_auth_no"}
+      ]
+    },
+    {
+      "id": "sponsorship", "label": "Will you now or in the future require sponsorship?", "semantic_type": "SPONSORSHIP",
+      "control_type": "SELECT", "selector": "#sponsorship", "required": true,
+      "options": [
+        {"value": "", "label": "Select...", "disabled": true},
+        {"value": "yes", "label": "Yes"},
+        {"value": "no", "label": "No"}
+      ]
+    },
+    {
+      "id": "channels", "label": "Which channels have you managed?", "semantic_type": "CUSTOM_MULTISELECT",
+      "control_type": "MULTISELECT", "selector": "#channels", "required": false,
+      "options": [
+        {"value": "search", "label": "Paid search"},
+        {"value": "social", "label": "Paid social"},
+        {"value": "display", "label": "Programmatic display"}
+      ]
+    },
+    {
+      "id": "heard_from", "label": "How did you hear about us?", "semantic_type": "REFERRAL_SOURCE",
+      "control_type": "CHECKBOX_GROUP", "selector": "fieldset#heard_from", "required": false,
+      "options": [
+        {"value": "board", "label": "Job board", "selector": "#heard_board"},
+        {"value": "referral", "label": "Employee referral", "selector": "#heard_referral"}
+      ]
+    },
+    {
+      "id": "gender", "label": "Gender (voluntary)", "semantic_type": "EEO_GENDER",
+      "control_type": "SELECT", "selector": "#eeo_gender", "required": true,
+      "options": [
+        {"value": "f", "label": "Female"},
+        {"value": "m", "label": "Male"},
+        {"value": "x", "label": "Non-binary"},
+        {"value": "decline", "label": "I decline to self-identify"}
+      ]
+    },
+    {"id": "why_us", "label": "Why do you want to work at Mock Co?", "semantic_type": "CUSTOM_LONG_TEXT", "control_type": "TEXTAREA", "selector": "#why_us", "required": true, "max_length": 2000},
+    {"id": "privacy", "label": "I consent to the processing of my data for recruiting purposes", "semantic_type": "CONSENT", "control_type": "CHECKBOX", "selector": "#privacy", "required": true}
+  ]
+}

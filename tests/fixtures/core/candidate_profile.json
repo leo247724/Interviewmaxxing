@@ -1,0 +1,197 @@
+{
+  "id": "cand_avery_example",
+  "identity": {
+    "first_name": "Avery",
+    "last_name": "Example",
+    "preferred_name": null,
+    "email": "avery@example.test",
+    "phone": "+1 555 010 0199",
+    "address": {
+      "street": null,
+      "city": "Springfield",
+      "region": "OR",
+      "postal_code": "97477",
+      "country": "United States"
+    },
+    "linkedin_url": "https://www.linkedin.example/in/avery-example",
+    "website_url": null,
+    "github_url": null,
+    "verified_at": "2026-09-01T12:00:00Z"
+  },
+  "resume": {
+    "id": "resume_supplied",
+    "path": "resume-avery-example.pdf",
+    "filename": "resume-avery-example.pdf",
+    "media_type": "application/pdf",
+    "sha256": "cbda0ba74ea1118125d92ee4b9f9515f8f8f7e5b88e908d276d826682a7d9906",
+    "size_bytes": 648,
+    "variant": "supplied",
+    "extracted_text": "Avery Example - Paid Media Lead - avery@example.test (fictional fixture)"
+  },
+  "facts": [
+    {
+      "id": "fact.current_title",
+      "key": "current_title",
+      "value": "Paid Media Lead",
+      "source": "resume",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_CONFIRMED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": [
+        "resume line 1: 'Paid Media Lead'"
+      ]
+    },
+    {
+      "id": "fact.current_company",
+      "key": "current_company",
+      "value": "Fictional Widgets Co",
+      "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.years_paid_media",
+      "key": "years_experience.paid_media",
+      "value": 7,
+      "source": "user",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_STATED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": []
+    },
+    {
+      "id": "fact.monthly_spend",
+      "key": "monthly_paid_media_spend",
+      "value": 400000,
+      "source": "resume",
+      "verification": {
+        "status": "VERIFIED",
+        "method": "USER_CONFIRMED",
+        "verified_at": "2026-09-01T12:00:00Z"
+      },
+      "confidence": 1.0,
+      "evidence": [
+        "resume: 'managed $400k/month across search and social'"
+      ]
+    },
+    {
+      "id": "fact.team_size",
+      "key": "team_size_managed",
+      "value": 12,
+      "source": "resume",
+      "verification": {
+        "status": "UNVERIFIED",
+        "method": null,
+        "verified_at": null
+      },
+      "confidence": 0.9,
+      "evidence": [
+        "resume: 'led a team of 12' (extracted, not yet confirmed)"
+      ]
+    }
+  ],
+  "saved_answers": [
+    {
+      "id": "sa.work_auth_us",
+      "scope": "GLOBAL",
+      "job_identity_key": null,
+      "job_url": null,
+      "employer": null,
+      "semantic_type": "WORK_AUTHORIZATION",
+      "question": "Are you legally authorized to work in the United States?",
+      "match_phrases": [
+        "authorized to work in the us"
+      ],
+      "value": "Yes",
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.sponsorship",
+      "scope": "GLOBAL",
+      "job_identity_key": null,
+      "job_url": null,
+      "employer": null,
+      "semantic_type": "SPONSORSHIP",
+      "question": "Will you now or in the future require visa sponsorship?",
+      "match_phrases": [],
+      "value": "No",
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.privacy_consent",
+      "scope": "GLOBAL",
+      "job_identity_key": null,
+      "job_url": null,
+      "employer": null,
+      "semantic_type": "CONSENT",
+      "question": "I consent to the processing of my data for recruiting purposes",
+      "match_phrases": [
+        "privacy policy",
+        "data processing"
+      ],
+      "value": true,
+      "confirmed_at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "id": "sa.other_co_salary",
+      "scope": "JOB",
+      "job_identity_key": "ats:mock:other-co:9001",
+      "job_url": null,
+      "employer": "Other Co",
+      "semantic_type": "SALARY_EXPECTATION",
+      "question": "What are your salary expectations for this role at Other Co?",
+      "match_phrases": [],
+      "value": "150000",
+      "confirmed_at": "2026-09-10T12:00:00Z"
+    },
+    {
+      "id": "sa.mock_co_start",
+      "scope": "JOB",
+      "job_identity_key": "ats:mock:mock-co:4012",
+      "job_url": null,
+      "employer": "Mock Co",
+      "semantic_type": "START_DATE",
+      "question": "When could you start at Mock Co?",
+      "match_phrases": [],
+      "value": "2026-11-01",
+      "confirmed_at": "2026-09-10T12:00:00Z"
+    }
+  ],
+  "experience": [
+    {
+      "id": "exp.fictional_widgets",
+      "company": "Fictional Widgets Co",
+      "title": "Paid Media Lead",
+      "start": "2021-03",
+      "end": null,
+      "current": true,
+      "summary": null,
+      "fact_ids": [
+        "fact.current_title",
+        "fact.current_company",
+        "fact.monthly_spend"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "id": "edu.example_state",
+      "institution": "Example State University",
+      "degree": "BA",
+      "field_of_study": "Economics",
+      "graduation": "2017",
+      "fact_ids": []
+    }
+  ]
+}

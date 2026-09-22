@@ -1,0 +1,42 @@
+# Interviewmaxxing uv workspace root (virtual: it is not itself a package).
+#
+# Every directory under packages/* and apps/* that contains a pyproject.toml is a
+# workspace member. Each worker owns its own member directory and pyproject; the
+# root file, uv.lock and shared tool configuration are owned by core-contracts.
+# See CONTRACTS.md for the package map and import paths.
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/*"]
+
+[tool.uv.sources]
+interviewmaxxing-core = { workspace = true }
+interviewmaxxing-cli = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "interviewmaxxing-core",
+    "interviewmaxxing-cli",
+    "pytest>=8.3",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "-ra", "--strict-markers"]
+markers = ["slow: exercises subprocesses or real crashes"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["packages/*/src", "apps/*/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["packages", "apps"]
