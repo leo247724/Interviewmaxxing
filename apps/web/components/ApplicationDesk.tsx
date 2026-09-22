@@ -76,6 +76,9 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     null,
   );
   const failuresRef = useRef(0);
+  // Bumped whenever this page stops following, or starts following something else,
+  // so a restore that resolves afterwards is discarded instead of reviving it.
+  const restoreGeneration = useRef(0);
 
   const noteUnavailable = useCallback((error: ServiceError) => {
     if (error.code === "unavailable") {
@@ -85,6 +88,8 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
   }, []);
 
   const loadCandidate = useCallback(async () => {
+    const generation = ++restoreGeneration.current;
+    const current = () => generation === restoreGeneration.current;
     setConnection("checking");
     try {
       const candidate = await service.getCandidate();
@@ -104,6 +109,11 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
 
       if (service.mode === "live") {
         const outcome = await restoreActiveApplication(service, window.sessionStorage);
+        // A restored or pending application only applies if it is still the one this page follows.
+        const superseded =
+          (outcome.kind === "restored" || outcome.kind === "pending") &&
+          window.sessionStorage.getItem(ACTIVE_ID_KEY) !== outcome.applicationId;
+        if (!current() || superseded) return;
         if (outcome.kind === "restored") {
           setView(outcome.view);
           setRestoreProblem(null);
@@ -123,7 +133,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       setServiceMessage(serviceError.message);
       // Keep following a saved application even when the service can't be reached yet.
       const activeId = service.mode === "live" ? window.sessionStorage.getItem(ACTIVE_ID_KEY) : null;
-      if (activeId) {
+      if (activeId && current()) {
         setRestoreProblem({
           kind: "pending",
           applicationId: activeId,
@@ -135,6 +145,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
   }, [service]);
 
   function stopFollowing() {
+    restoreGeneration.current += 1;
     window.sessionStorage.removeItem(ACTIVE_ID_KEY);
     setRestoreProblem(null);
   }
@@ -171,6 +182,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
 
   const adopt = useCallback(
     (next: ApplicationView) => {
+      restoreGeneration.current += 1;
       setView(next);
       setActionError(null);
       setRestoreProblem(null);
@@ -284,6 +296,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
         setPollNonce((nonce) => nonce + 1);
       },
       startAnother: () => {
+        restoreGeneration.current += 1;
         if (service.mode === "live") window.sessionStorage.removeItem(ACTIVE_ID_KEY);
         setView(null);
         setActionError(null);

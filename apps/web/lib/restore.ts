@@ -5,7 +5,7 @@ export const ACTIVE_ID_KEY = "imx.activeApplicationId";
 
 export type RestoreOutcome =
   | { kind: "none" }
-  | { kind: "restored"; view: ApplicationView }
+  | { kind: "restored"; applicationId: string; view: ApplicationView }
   /** The service definitively has no such application; the saved id was cleared. */
   | { kind: "gone"; applicationId: string }
   /** Status could not be read. The id is kept so a later attempt can restore it. */
@@ -23,11 +23,12 @@ export async function restoreActiveApplication(
   const applicationId = storage.getItem(ACTIVE_ID_KEY);
   if (!applicationId) return { kind: "none" };
   try {
-    return { kind: "restored", view: await service.status(applicationId) };
+    return { kind: "restored", applicationId, view: await service.status(applicationId) };
   } catch (error) {
     const serviceError = asServiceError(error);
     if (serviceError.code === "not_found") {
-      storage.removeItem(ACTIVE_ID_KEY);
+      // Only forget it if nothing newer has been saved while the request was in flight.
+      if (storage.getItem(ACTIVE_ID_KEY) === applicationId) storage.removeItem(ACTIVE_ID_KEY);
       return { kind: "gone", applicationId };
     }
     return { kind: "pending", applicationId, code: serviceError.code, message: serviceError.message };

@@ -12,6 +12,16 @@ function memoryStorage(initial: Record<string, string> = {}) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const view = { id: "app_1", state: "SUBMITTING" } as ApplicationView;
 
 describe("restoreActiveApplication", () => {
@@ -44,7 +54,7 @@ describe("restoreActiveApplication", () => {
     expect(storage.data.get(ACTIVE_ID_KEY)).toBe("app_1");
 
     const second = await restoreActiveApplication(service, storage);
-    expect(second).toEqual({ kind: "restored", view });
+    expect(second).toEqual({ kind: "restored", applicationId: "app_1", view });
     expect(requested).toEqual(["app_1", "app_1"]);
     expect(storage.data.get(ACTIVE_ID_KEY)).toBe("app_1");
   });
@@ -79,5 +89,17 @@ describe("restoreActiveApplication", () => {
     );
     expect(outcome).toEqual({ kind: "gone", applicationId: "app_gone" });
     expect(storage.data.has(ACTIVE_ID_KEY)).toBe(false);
+  });
+
+  it("a late not-found does not clear an id saved while it was in flight", async () => {
+    const storage = memoryStorage({ [ACTIVE_ID_KEY]: "app_old" });
+    const pending = deferred<ApplicationView>();
+    const restoring = restoreActiveApplication({ status: () => pending.promise }, storage);
+
+    storage.data.set(ACTIVE_ID_KEY, "app_new");
+    pending.reject(new ServiceError("not_found", "No such application."));
+
+    expect(await restoring).toEqual({ kind: "gone", applicationId: "app_old" });
+    expect(storage.data.get(ACTIVE_ID_KEY)).toBe("app_new");
   });
 });
