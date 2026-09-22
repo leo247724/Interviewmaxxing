@@ -6,9 +6,14 @@ selectors or visible labels (ARCHITECTURE.md section 7).
 
 Identity. A form step is identified by its ``FormScope`` (normalized URL + step) and
 its ``ApplicationForm.fingerprint``. A question is identified by its scope, its
-``field_id`` and ``ApplicationField.fingerprint`` (normalized label, control type and
-options). A field id reused on another step, or for a changed question, therefore
-never matches an answer given for the original question.
+``field_id`` and ``ApplicationField.fingerprint`` (normalized label, help text,
+placeholder, control type and options). A field id reused on another step, or for a
+changed question, therefore never matches an answer given for the original question.
+
+Wording. ``render_question`` / ``ApplicationField.question_text`` render the same
+label, help text and placeholder as raw readable text. It is the one source for the
+wording carried by ``MissingInput.label``, ``UserInput.question`` and
+``SavedAnswer.question``.
 """
 
 from __future__ import annotations
@@ -27,6 +32,26 @@ from .urls import InvalidApplicationUrl, normalize_application_url
 def normalize_text(value: str) -> str:
     """Case-folded text with collapsed whitespace, for comparing visible labels."""
     return " ".join(value.split()).casefold()
+
+
+QUESTION_PART_SEPARATOR = "\n"
+
+
+def render_question(
+    label: str, help_text: str | None = None, placeholder: str | None = None
+) -> str:
+    """The complete question wording a user sees, as raw readable text.
+
+    Components appear in this fixed order: label, help text, placeholder. Each is
+    trimmed and has internal whitespace runs collapsed to one space; empty
+    components are omitted; the rest are joined with ``QUESTION_PART_SEPARATOR``
+    (a newline). Nothing else is changed: case, punctuation, comparison signs,
+    currency symbols and units (``<``, ``>``, ``$``, ``€``, ``%``) are kept verbatim,
+    and no decoration such as "placeholder:" is added. Comparing with
+    ``normalize_text`` therefore treats the separator as a single space.
+    """
+    parts = (" ".join((part or "").split()) for part in (label, help_text, placeholder))
+    return QUESTION_PART_SEPARATOR.join(part for part in parts if part)
 
 
 def _digest(data: Any) -> str:
@@ -229,6 +254,13 @@ class ApplicationField(Contract):
              "control": self.control_type.value,
              "options": options}
         )
+
+    @property
+    def question_text(self) -> str:
+        """``render_question(label, help_text, placeholder)``: the full wording shown to
+        the user, used for ``MissingInput.label``, ``UserInput.question`` and hence
+        ``SavedAnswer.question``. Covers the same text as ``fingerprint``."""
+        return render_question(self.label, self.help_text, self.placeholder)
 
     def option_values(self) -> list[str]:
         return [o.value for o in self.options or []]
