@@ -471,7 +471,8 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
   ],
   "max_results_per_source": 50,
   "posted_within_days": null,
-  "created_at": "2026-09-22T21:00:00Z"
+  "created_at": "2026-09-22T21:00:00Z",
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID"
 }
 ```
 
@@ -573,7 +574,8 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
   "unknown_compensation": "KEEP",
   "excluded_keywords": [],
   "excluded_companies": [],
-  "notes": null
+  "notes": null,
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID"
 }
 ```
 
@@ -643,3 +645,9 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 ## Change requests
 
 Send the coordinator: the contract/type, the exact field or signature change, why the current contract cannot express it, and which tests/fixtures demonstrate it. Additive optional fields are cheap; renames, removed fields, and state-machine changes require coordinator approval and a `CONTRACT_VERSION` bump.
+
+### 2026-09-22 preference and provenance correction
+
+`JobSearchQuery.location_priority` and `SelectionPreferences.location_priority` use `LocationPriority`: `STRONGLY_PREFER_ONSITE_HYBRID` (default), `BALANCED`, or `PREFER_REMOTE`. The user strongly prefers Austin onsite/hybrid over US-wide remote. Remote remains eligible; USD100000 annual minimum is unchanged. Preserve this field through the frontend/service boundary, include it in Jev evidence/rubric and cache fingerprints, and order eligible matching Austin onsite/hybrid results well above remote. Do not infer Austin eligibility from a missing location or confuse this preference with a mandatory remote exclusion.
+
+Repeated observations of the same source posting retain newly verified employer identity and its evidence. `PipelineEntry.next_action_due` accepts a date or an aware timestamp; date-only input must stay a date. `imported_values` includes all original nonblank cells, especially raw Stage and Status; the board column does not overwrite their imported wording.
