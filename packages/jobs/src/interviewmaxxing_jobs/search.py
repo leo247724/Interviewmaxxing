@@ -1,0 +1,167 @@
+"""Run a JobSearchQuery across sources and store what was observed.
+
+Each source runs in its own OpenCLI session (``imx-jobs-<source>``) and fails
+independently: a sign-in wall or challenge becomes a NEEDS_USER result naming the
+session to resolve it in, and the other sources still run. Nothing here applies,
+messages an employer, or changes an account.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from contextlib import suppress
+from datetime import datetime
+
+from interviewmaxxing_core import (
+    JobSearchQuery,
+    JobSearchRun,
+    SourceSearchResult,
+    SourceSearchState,
+    new_id,
+    utc_now,
+)
+
+from .opencli import DEFAULT_PROFILE, BrowserTransport, TransportError
+from .sources import AccessProblem, SearchContext, SourceAdapter, default_adapters
+from .store import JobStore, ListingConflict
+
+
+def session_name(source: str) -> str:
+    return f"imx-jobs-{source}"
+
+
+class JobSearchService:
+    """``run(query)`` searches every source in ``query.sources`` and persists listings.
+
+    ``detail_limit`` bounds how many job pages are opened per source (the rest are
+    stored from their search cards). ``close_sessions`` releases each owned tab when
+    its source finishes, except a NEEDS_USER source, whose session stays for the user.
+    """
+
+    def __init__(
+        self,
+        store: JobStore,
+        transport: BrowserTransport,
+        *,
+        adapters: Mapping[str, SourceAdapter] | None = None,
+        clock: Callable[[], datetime] = utc_now,
+        profile: str = DEFAULT_PROFILE,
+        detail_limit: int = 10,
+        max_pages_per_leg: int = 3,
+        page_pause_s: float = 1.5,
+        close_sessions: bool = True,
+    ) -> None:
+        self.store = store
+        self.transport = transport
+        self.adapters = dict(adapters) if adapters is not None else default_adapters()
+        self.clock = clock
+        self.profile = profile
+        self.detail_limit = detail_limit
+        self.max_pages_per_leg = max_pages_per_leg
+        self.page_pause_s = page_pause_s
+        self.close_sessions = close_sessions
+
+    def run(
+        self,
+        query: JobSearchQuery,
+        *,
+        detail_limit: int | None = None,
+        run_id: str | None = None,
+        on_source_start: Callable[[str], None] | None = None,
+        on_source: Callable[[SourceSearchResult], None] | None = None,
+    ) -> JobSearchRun:
+        """Search ``query.sources`` one after another (one browser session each, never
+        concurrent actions on a session) and save the run.
+
+        ``run_id`` lets a caller (e.g. the S2 service task id) name the run; it is
+        saved under that id, replacing an earlier run with the same id.
+        ``on_source_start(source)`` is called before a source starts and
+        ``on_source(result)`` with its canonical ``SourceSearchResult`` as soon as it
+        finishes, after its listings are stored. Callbacks run synchronously on this
+        thread; an exception from one propagates and ends the run unsaved."""
+        run_id = run_id or new_id("run")
+        started = self.clock()
+        limit = self.detail_limit if detail_limit is None else detail_limit
+        results: list[SourceSearchResult] = []
+        for source in query.sources:
+            if on_source_start is not None:
+                on_source_start(source)
+            result = self._search_source(query, source, run_id, limit)
+            results.append(result)
+            if on_source is not None:
+                on_source(result)
+        run = JobSearchRun(id=run_id, query=query, results=results, started_at=started,
+                           finished_at=max(self.clock(), started))
+        self.store.save_run(run)
+        return run
+
+    def _search_source(self, query: JobSearchQuery, source: str, run_id: str,
+                       detail_limit: int) -> SourceSearchResult:
+        started = self.clock()
+        session = session_name(source)
+        adapter = self.adapters.get(source)
+        if adapter is None:
+            return SourceSearchResult(
+                query_id=query.id, source=source, state=SourceSearchState.SKIPPED,
+                message=f"no job-search adapter for source {source!r}", started_at=started,
+                finished_at=self.clock())
+        ctx = SearchContext(
+            transport=self.transport, session=session, query=query,
+            limit=query.max_results_per_source, detail_limit=max(0, detail_limit),
+            clock=self.clock, profile=self.profile, max_pages_per_leg=self.max_pages_per_leg,
+            page_pause_s=self.page_pause_s,
+        )
+        keep_session = False
+        try:
+            outcome = adapter.search(ctx)
+            # A wall hit part-way keeps the collected listings (PARTIAL) and the
+            # session, so the user can sign in there and search again.
+            keep_session = (outcome.access is not None
+                            and outcome.access.state is SourceSearchState.NEEDS_USER)
+        except AccessProblem as problem:
+            keep_session = problem.state is SourceSearchState.NEEDS_USER
+            return SourceSearchResult(
+                query_id=query.id, source=source, state=problem.state, message=problem.message,
+                user_action=problem.user_action,
+                session_name=session if keep_session else None,
+                started_at=started, finished_at=max(self.clock(), started))
+        except (TransportError, ValueError, KeyError, TypeError) as exc:
+            return SourceSearchResult(
+                query_id=query.id, source=source, state=SourceSearchState.ERROR,
+                message=f"{source} search failed: {exc}",
+                started_at=started, finished_at=max(self.clock(), started))
+        finally:
+            if self.close_sessions and not keep_session:
+                with suppress(TransportError):
+                    self.transport.close(session)
+
+        excluded = [k.casefold() for k in query.excluded_keywords]
+        stored_ids: list[str] = []
+        dropped = 0
+        conflicts = 0
+        for obs in outcome.observations:
+            title = obs.listing.title.casefold()
+            if any(k in title for k in excluded):
+                dropped += 1
+                continue
+            try:
+                stored = self.store.upsert(obs.listing, raw=obs.raw, run_id=run_id)
+            except ListingConflict:
+                conflicts += 1  # kept aside by the store; the stored listing is unchanged
+                continue
+            if stored.id not in stored_ids:
+                stored_ids.append(stored.id)
+        state = outcome.state
+        notes = [outcome.message]
+        if dropped:
+            notes.append(f"{dropped} titles matched excluded keywords")
+        if conflicts:
+            notes.append(f"{conflicts} observations contradicted stored listings and were kept "
+                         "aside (JobStore.conflicts)")
+            if state is SourceSearchState.OK:
+                state = SourceSearchState.PARTIAL
+        return SourceSearchResult(
+            query_id=query.id, source=source, state=state, listing_ids=stored_ids,
+            pages_visited=outcome.pages_visited, message="; ".join(n for n in notes if n) or None,
+            user_action=outcome.user_action, session_name=session if keep_session else None,
+            started_at=started, finished_at=max(self.clock(), started))

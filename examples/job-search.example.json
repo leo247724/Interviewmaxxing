@@ -1,0 +1,40 @@
+{
+  "title_phrases": [
+    "paid media manager",
+    "senior paid media manager",
+    "performance marketing manager",
+    "growth marketing manager",
+    "demand generation manager",
+    "digital marketing manager",
+    "marketing manager",
+    "marketing director"
+  ],
+  "role_focus": "Performance marketing operator: hands-on paid acquisition, paid media, performance and growth marketing, demand generation, and digital marketing leadership. Judge actual responsibilities and ownership, not an exact job-title match. Semantically similar acquisition, lead and director roles are eligible. Pure data, software or platform engineering and unrelated marketing specialties are outside this focus.",
+  "keywords": [],
+  "excluded_keywords": [],
+  "onsite": [
+    {
+      "location": "Austin, TX",
+      "arrangements": [
+        "ONSITE",
+        "HYBRID"
+      ]
+    }
+  ],
+  "remote": {
+    "eligible_region": "United States"
+  },
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID",
+  "minimum_compensation": {
+    "amount": 100000,
+    "currency": "USD",
+    "period": "YEAR"
+  },
+  "sources": [
+    "linkedin",
+    "builtin",
+    "indeed",
+    "google"
+  ],
+  "max_results_per_source": 50
+}

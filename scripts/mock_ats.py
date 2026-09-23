@@ -31,7 +31,7 @@ import sys
 import tempfile
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import Message
 from email.utils import collapse_rfc2231_value
 from http import HTTPStatus
@@ -51,7 +51,10 @@ SESSION_COOKIE = "bwa_session"
 SIGNIN_EMAIL = "avery.quill@example.test"
 SIGNIN_PASSWORD = "fixture-password-123"
 CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-INTERNAL_FIELDS = frozenset({"resume_upload_id", "captcha_token", "captcha_answer"})
+HONEYPOT_FIELD = "website_hp"
+INTERNAL_FIELDS = frozenset(
+    {"resume_upload_id", "captcha_token", "captcha_answer", HONEYPOT_FIELD}
+)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 US_PHONE_RE = re.compile(r"^\d{10}$")
 US_PHONE_MESSAGE = "Enter a 10-digit US phone number using digits only, for example 3035550142."
@@ -66,6 +69,7 @@ US_PHONE_MESSAGE = "Enter a 10-digit US phone number using digits only, for exam
 class Option:
     value: str
     label: str
+    disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,13 +77,20 @@ class Field:
     name: str
     label: str
     # text, email, tel, url, textarea, select, radio, checkbox,
-    # checkbox_group, multiselect or file
+    # checkbox_group, multiselect, file or custom_combobox (an ARIA widget
+    # backed by a hidden input, deliberately not a native control)
     kind: str
     required: bool = False
     options: tuple[Option, ...] = ()
     hint: str | None = None
+    """Shown under the label and referenced by aria-describedby."""
     autocomplete: str | None = None
     accept: str | None = None
+    terms: str | None = None
+    """Paragraph adjacent to a checkbox, not referenced by aria-describedby."""
+    legend: str | None = None
+    """Wraps a single checkbox in a fieldset with this legend."""
+    disabled: bool = False
 
     @property
     def multi(self) -> bool:
@@ -94,7 +105,11 @@ class Field:
             "label": self.label,
             "kind": self.kind,
             "required": self.required,
-            "options": [{"value": o.value, "label": o.label} for o in self.options],
+            "options": [
+                {"value": o.value, "label": o.label, "disabled": o.disabled}
+                for o in self.options
+            ],
+            "disabled": self.disabled,
         }
 
 
@@ -131,9 +146,9 @@ YEARS_EXPERIENCE = Field(
     "select",
     True,
     _options(
-        ("yrs_0_2", "0–2 years"),
-        ("yrs_3_5", "3–5 years"),
-        ("yrs_6_9", "6–9 years"),
+        ("yrs_0_2", "0 to 2 years"),
+        ("yrs_3_5", "3 to 5 years"),
+        ("yrs_6_9", "6 to 9 years"),
         ("yrs_10_plus", "10 or more years"),
     ),
 )
@@ -184,11 +199,14 @@ NOTICE_PERIOD = Field(
     "What is your notice period?",
     "select",
     True,
-    _options(
-        ("notice_immediate", "Immediately"),
-        ("notice_2w", "2 weeks"),
-        ("notice_1m", "1 month"),
-        ("notice_2m_plus", "2 months or more"),
+    (
+        *_options(
+            ("notice_immediate", "Immediately"),
+            ("notice_2w", "2 weeks"),
+            ("notice_1m", "1 month"),
+            ("notice_2m_plus", "2 months or more"),
+        ),
+        Option("notice_3m_plus", "3 months or more (no longer offered)", disabled=True),
     ),
 )
 SALARY_EXPECTATION = Field(
@@ -213,6 +231,36 @@ ATTEST_PRIVACY = Field(
     "I have read and acknowledge the Brambleway Analytics Applicant Privacy Notice.",
     "checkbox",
     True,
+)
+
+AGREE_DECLARATION = Field(
+    "agree_declaration",
+    "I agree",
+    "checkbox",
+    True,
+    legend="Candidate declaration",
+    terms="I confirm that I have never been dismissed from employment for misconduct.",
+)
+AGREE_RETENTION = Field(
+    "agree_retention",
+    "I agree",
+    "checkbox",
+    True,
+    hint="Brambleway Analytics may keep my application on file for 12 months and "
+    "contact me about other roles.",
+)
+PREFERRED_OFFICE = Field(
+    "preferred_office",
+    "Preferred office",
+    "custom_combobox",
+    True,
+    _options(("office_den", "Denver, CO"), ("office_bou", "Boulder, CO")),
+)
+REFERRAL_CODE = Field(
+    "referral_code",
+    "Employee referral code (referrals are closed)",
+    "text",
+    disabled=True,
 )
 
 CORE_FIELDS = (
@@ -246,6 +294,10 @@ class Job:
     captcha: bool = False
     visible_confirmation: bool = True
     strict_phone: bool = False
+    honeypot: bool = False
+    """Adds a visually hidden anti-spam input; any value is rejected."""
+    generic_thanks: bool = False
+    """Acceptance returns a bare "Thank you!" page with no job or reference."""
 
     @property
     def multistep(self) -> bool:
@@ -271,6 +323,8 @@ class Job:
             "requires_signin": self.requires_signin,
             "captcha": self.captcha,
             "visible_confirmation": self.visible_confirmation,
+            "honeypot": self.honeypot,
+            "generic_thanks": self.generic_thanks,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -379,6 +433,38 @@ JOBS: dict[str, Job] = {
             captcha=True,
         ),
         Job(
+            "agreement",
+            "BWA-DE-109",
+            "Data Engineer",
+            "Data",
+            "Remote (US)",
+            "Two checkboxes labelled only \"I agree\"; their terms are an adjacent "
+            "paragraph inside a legend-titled fieldset, and aria-describedby text.",
+            _single(*CORE_FIELDS, AGREE_DECLARATION, AGREE_RETENTION),
+        ),
+        Job(
+            "custom-control",
+            "BWA-OPS-110",
+            "Operations Analyst",
+            "Operations",
+            "Denver, CO (Hybrid)",
+            "A required custom ARIA combobox (not a native control), a disabled field and "
+            "a visually hidden honeypot input.",
+            _single(*CORE_FIELDS, PREFERRED_OFFICE, REFERRAL_CODE),
+            honeypot=True,
+        ),
+        Job(
+            "vague-confirmation",
+            "BWA-QA-111",
+            "QA Engineer",
+            "Engineering",
+            "Remote (US)",
+            "Accepted and counted, but the response is a bare \"Thank you!\" page that "
+            "names no job and no reference; the status page later shows the receipt.",
+            _single(*CORE_FIELDS),
+            generic_thanks=True,
+        ),
+        Job(
             "uncertain",
             "BWA-SRE-108",
             "Site Reliability Engineer",
@@ -399,7 +485,7 @@ JOBS: dict[str, Job] = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -699,7 +785,7 @@ def parse_multipart(
 
 
 def _required_message(f: Field) -> str:
-    if f.kind in ("select", "radio"):
+    if f.kind in ("select", "radio", "custom_combobox"):
         return "Select an answer."
     if f.kind == "checkbox":
         return "Check this box to continue."
@@ -736,6 +822,8 @@ def validate(
     files: dict[str, Upload | dict[str, Any]] = {}
     errors: dict[str, str] = {}
     for f in fields:
+        if f.disabled:
+            continue  # browsers never submit disabled controls
         if f.kind == "file":
             attached = [u for u in uploads.get(f.name, []) if u.filename]
             if attached:
@@ -751,7 +839,7 @@ def validate(
             continue
 
         raw = form.get(f.name, [])
-        allowed = {o.value for o in f.options}
+        allowed = {o.value for o in f.options if not o.disabled}
         if f.multi:
             chosen = [v for v in raw if v != ""]
             if any(v not in allowed for v in chosen):
@@ -844,7 +932,7 @@ def page(title: str, body: str, head_extra: str = "") -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(title)} – {COMPANY} Careers</title>
+<title>{esc(title)} | {COMPANY} Careers</title>
 <style>{STYLE}</style>
 {head_extra}
 </head>
@@ -894,6 +982,8 @@ def render_field(
     if error:
         aria += ' aria-invalid="true"'
     required = " required" if f.required else ""
+    if f.disabled:
+        required = " disabled"
     marker = (
         ' <span aria-hidden="true">*</span>'
         if f.required
@@ -921,6 +1011,7 @@ def render_field(
         opts = [] if f.multi else ['<option value="">Select an answer</option>']
         for o in f.options:
             selected = " selected" if o.value in posted else ""
+            selected += " disabled" if o.disabled else ""
             opts.append(f'<option value="{esc(o.value)}"{selected}>{esc(o.label)}</option>')
         control = (
             f'<select id="{fid}" name="{f.name}"{multiple}{required}{aria}>'
@@ -958,7 +1049,43 @@ def render_field(
             f'<input type="checkbox" id="{fid}" name="{f.name}" value="yes"'
             f"{checked}{required}{aria}>"
         )
-        return f'<div class="field choice">{control} {label}{hint}{err}</div>'
+        terms = f'<p class="terms">{esc(f.terms)}</p>' if f.terms else ""
+        html_ = f'<div class="field choice">{control} {label}{hint}{err}{terms}</div>'
+        if f.legend:
+            html_ = f'<fieldset class="field"><legend>{esc(f.legend)}</legend>{html_}</fieldset>'
+        return html_
+
+    if f.kind == "custom_combobox":
+        # An ARIA widget backed by a hidden input: not a native form control.
+        selected = next((o for o in f.options if o.value == current), None)
+        items = "".join(
+            f'<li role="option" id="{fid}-opt-{i}" data-value="{esc(o.value)}" '
+            f'aria-selected="{"true" if selected is o else "false"}">{esc(o.label)}</li>'
+            for i, o in enumerate(f.options)
+        )
+        invalid = ' aria-invalid="true"' if error else ""
+        invalid += ' aria-required="true"' if f.required else ""
+        return (
+            f'<div class="field"><span class="label" id="{fid}-label">{esc(f.label)}{marker}</span>'
+            f"{hint}{err}"
+            f'<div id="{fid}" class="combo" role="combobox" tabindex="0" '
+            f'aria-labelledby="{fid}-label" aria-haspopup="listbox" aria-expanded="false" '
+            f'aria-controls="{fid}-list"{invalid}>'
+            f"{esc(selected.label) if selected else 'Choose an option'}</div>"
+            f'<ul id="{fid}-list" role="listbox" aria-labelledby="{fid}-label" hidden>{items}</ul>'
+            f'<input type="hidden" name="{f.name}" value="{esc(current)}">'
+            "<script>(function(){"
+            f"var box=document.getElementById('{fid}'),list=document.getElementById('{fid}-list');"
+            "var input=box.parentNode.querySelector('input[type=hidden]');"
+            "box.addEventListener('click',function(){list.hidden=!list.hidden;"
+            "box.setAttribute('aria-expanded',String(!list.hidden));});"
+            "list.addEventListener('click',function(e){var li=e.target.closest('[role=option]');"
+            "if(!li)return;input.value=li.dataset.value;box.textContent=li.textContent;"
+            "list.querySelectorAll('[role=option]').forEach(function(o){"
+            "o.setAttribute('aria-selected',String(o===li));});"
+            "list.hidden=true;box.setAttribute('aria-expanded','false');});"
+            "})();</script></div>"
+        )
 
     if f.kind == "file":
         current_file = ""
@@ -1091,7 +1218,7 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], app: "MockATS"):
+    def __init__(self, address: tuple[str, int], app: MockATS):
         self.app = app
         super().__init__(address, Handler)
 
@@ -1106,7 +1233,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "BramblewayMockATS/1.0"
 
     @property
-    def app(self) -> "MockATS":
+    def app(self) -> MockATS:
         return self.server.app
 
     @property
@@ -1177,7 +1304,7 @@ class Handler(BaseHTTPRequestHandler):
             HTTPStatus.SEE_OTHER,
             b"",
             "text/plain; charset=utf-8",
-            (("Location", location),) + headers,
+            (("Location", location), *headers),
         )
 
     # request helpers
@@ -1315,6 +1442,8 @@ class Handler(BaseHTTPRequestHandler):
                 captcha_error = "The characters did not match. Try the new image."
             if captcha_error:
                 errors["captcha_answer"] = captcha_error
+        if job.honeypot and (form.get(HONEYPOT_FIELD) or [""])[0].strip():
+            errors[HONEYPOT_FIELD] = "Your submission was flagged as automated."
         if errors:
             self.store.add_rejection(job, errors)
             self._render_single(
@@ -1323,6 +1452,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         record = self.store.add_submission(job, values, _extra_fields(job, form), files_meta)
+        if job.generic_thanks:
+            # Accepted and counted; the page proves nothing about which application.
+            body = "<h1>Thank you!</h1><p>We appreciate your interest.</p>"
+            self._send_html(HTTPStatus.OK, page("Thank you", body))
+            return
         if job.visible_confirmation:
             self._redirect(f"/applications/{record['submission_id']}")
             return
@@ -1359,6 +1493,15 @@ class Handler(BaseHTTPRequestHandler):
         )
         if job.captcha:
             fields_html += render_captcha(self.store.new_captcha(), captcha_error)
+        if job.honeypot:
+            # Classic visually hidden anti-spam trap; people and correct runtimes leave it blank.
+            fields_html += (
+                '<div aria-hidden="true" style="position:absolute;left:-10000px;top:auto;'
+                'width:1px;height:1px;overflow:hidden">'
+                f'<label for="f-{HONEYPOT_FIELD}">Leave this field blank</label>'
+                f'<input type="text" id="f-{HONEYPOT_FIELD}" name="{HONEYPOT_FIELD}" '
+                'tabindex="-1" autocomplete="off"></div>'
+            )
         body = (
             _job_heading(job)
             + render_error_summary(entries)
@@ -1631,7 +1774,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         token = self.store.new_session(email.lower())
-        cookie = f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax"
+        cookie = f"{SESSION_COOKIE}={token}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"
         self._redirect(next_path, (("Set-Cookie", cookie),))
 
     def get_captcha_svg(self, token: str) -> None:
@@ -1729,7 +1872,7 @@ class MockATS:
     def serve_forever(self) -> None:
         self.httpd.serve_forever(poll_interval=0.1)
 
-    def start(self) -> "MockATS":
+    def start(self) -> MockATS:
         self._thread = threading.Thread(target=self.serve_forever, name="mock-ats", daemon=True)
         self._thread.start()
         return self
@@ -1741,7 +1884,7 @@ class MockATS:
             self._thread = None
         self.httpd.server_close()
 
-    def __enter__(self) -> "MockATS":
+    def __enter__(self) -> MockATS:
         return self.start()
 
     def __exit__(self, *exc: object) -> None:

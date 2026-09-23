@@ -1,0 +1,93 @@
+{
+  "_note": "Fictional payloads in the shape returned by js/builtin_search.js and js/builtin_detail.js (layout observed 2026-09-22).",
+  "search": {
+    "page": {
+      "url": "https://builtin.com/jobs/hybrid/office?search=marketing+manager&city=Austin&state=Texas&country=USA&allLocations=true",
+      "title": "Marketing Manager Jobs in Austin | Built In",
+      "hidden": true,
+      "signals": {"challenge": false, "password_field": false, "denied": false}
+    },
+    "cards": [
+      {
+        "id": "9000001",
+        "title": "Growth Marketing Manager",
+        "href": "/job/growth-marketing-manager/9000001",
+        "company": "Example Analytics",
+        "posted": "5 Days Ago",
+        "arrangement": "In-Office or Remote",
+        "location": "Austin, TX, USA",
+        "salary": "106K-167K Annually",
+        "level": "Senior level"
+      },
+      {
+        "id": "9000002",
+        "title": "Marketing Director",
+        "href": "/job/marketing-director/9000002",
+        "company": "Fictional Widgets Co",
+        "posted": "4 Hours Ago",
+        "arrangement": "Hybrid",
+        "location": "Austin, TX, USA",
+        "salary": null,
+        "level": "Expert/Leader"
+      }
+    ],
+    "page_links": [
+      "/jobs/hybrid/office?search=marketing%20manager&city=Austin&state=Texas&country=USA&allLocations=true"
+    ]
+  },
+  "details": {
+    "9000001": {
+      "page": {
+        "url": "https://builtin.com/job/growth-marketing-manager/9000001",
+        "title": "Growth Marketing Manager - Example Analytics | Built In",
+        "hidden": true,
+        "signals": {"challenge": false, "password_field": false, "denied": false}
+      },
+      "posting": {
+        "@context": "https://schema.org",
+        "@type": "JobPosting",
+        "title": "Growth Marketing Manager",
+        "description": "<strong>About Example Analytics</strong><br>A fictional analytics company.<ul><li>Own lifecycle campaigns</li><li>Report on pipeline &amp; revenue</li></ul>",
+        "directApply": false,
+        "jobLocationType": "TELECOMMUTE",
+        "identifier": {"@type": "PropertyValue", "name": "Example Analytics", "value": "9000001"},
+        "baseSalary": {
+          "@type": "MonetaryAmount",
+          "currency": "USD",
+          "value": {"@type": "QuantitativeValue", "minValue": 106200, "maxValue": 166850, "unitText": "YEAR"}
+        },
+        "datePosted": "2026-09-17",
+        "employmentType": "FULL_TIME",
+        "applicantLocationRequirements": {"@type": "Country", "name": "USA"},
+        "hiringOrganization": {"@type": "Organization", "name": "Example Analytics"},
+        "jobLocation": {
+          "@type": "Place",
+          "address": {"@type": "PostalAddress", "addressCountry": "USA", "addressLocality": "Austin", "addressRegion": "Texas"}
+        },
+        "validThrough": "2099-10-17T02:17:07+00:00"
+      },
+      "h1": "Growth Marketing Manager",
+      "apply_href": "https://builtin.com/job/growth-marketing-manager/9000001?handler=ApplyRedirect",
+      "closed": false
+    },
+    "9000002": {
+      "page": {
+        "url": "https://builtin.com/job/marketing-director/9000002",
+        "title": "Marketing Director - Fictional Widgets Co | Built In",
+        "hidden": true,
+        "signals": {"challenge": false, "password_field": false, "denied": false}
+      },
+      "posting": {
+        "@type": "JobPosting",
+        "title": "Marketing Director",
+        "description": "<p>Direct fictional marketing.</p>",
+        "hiringOrganization": {"@type": "Organization", "name": "Fictional Widgets Co"},
+        "datePosted": "2026-01-02",
+        "validThrough": "2026-02-01T00:00:00+00:00"
+      },
+      "h1": "Marketing Director",
+      "apply_href": "https://builtin.com/job/marketing-director/9000002?handler=ApplyRedirect",
+      "closed": false
+    }
+  }
+}

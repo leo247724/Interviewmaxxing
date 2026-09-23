@@ -1,0 +1,32 @@
+[project]
+name = "interviewmaxxing-service"
+version = "0.1.0"
+description = "Loopback-only HTTP presentation service connecting the Interviewmaxxing frontend to the local store, candidate profile and application runner."
+requires-python = ">=3.12"
+dependencies = [
+    "interviewmaxxing-core==0.1.0",
+    "interviewmaxxing-candidate==0.1.0",
+    "interviewmaxxing-cli==0.1.0",
+    "interviewmaxxing-pipeline==0.1.0",
+    "interviewmaxxing-jobs==0.1.0",
+    "interviewmaxxing-selection==0.1.0",
+    "pydantic>=2.8,<3",
+]
+
+[project.scripts]
+interviewmaxxing-service = "interviewmaxxing_service.__main__:main"
+
+[tool.uv.sources]
+interviewmaxxing-core = { workspace = true }
+interviewmaxxing-candidate = { workspace = true }
+interviewmaxxing-cli = { workspace = true }
+interviewmaxxing-pipeline = { workspace = true }
+interviewmaxxing-jobs = { workspace = true }
+interviewmaxxing-selection = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interviewmaxxing_service"]

@@ -323,9 +323,10 @@ class AnswerReuse(StrEnum):
 class UserInput(Contract):
     """The user's answer to one question on one form step, stored for resume.
 
-    Identity is (form scope, ``field_id``, ``field_fingerprint``). An input applies
-    only to a form whose step has the same scope and whose field with that id asks
-    the same question (``matches``). Build with ``UserInput.answering(missing, ...)``
+    Identity within its application is (form step, ``field_id``,
+    ``field_fingerprint``): an input applies only to a form on the same step whose
+    field with that id asks the same question (``matches``). ``form_url`` is recorded
+    but not compared, because step URLs can carry per-session draft ids. Build with ``UserInput.answering(missing, ...)``
     or ``UserInput.for_field(form, field_id, ...)``.
     """
 
@@ -348,10 +349,23 @@ class UserInput(Contract):
     def scope(self) -> FormScope:
         return FormScope.of(self.form_url, self.form_step)
 
+    @property
+    def question_key(self) -> tuple[int, str, str]:
+        """``(form_step, field_id, field_fingerprint)``: the question this answers,
+        within its application."""
+        return (self.form_step, self.field_id, self.field_fingerprint)
+
     def matches(self, form: ApplicationForm) -> bool:
+        """True if ``form`` asks this exact question: the same step index, a field with
+        this id, and the same question fingerprint (wording and options).
+
+        The step's URL is recorded (``form_url``) but not compared: multistep and
+        session-based forms put draft or session ids in step URLs, so the same
+        question on the same step has a new URL after a restart. User inputs belong
+        to one application, so they never apply to another application's form."""
         field = form.find(self.field_id)
         return (
-            self.scope == form.scope
+            self.form_step == form.step
             and field is not None
             and field.fingerprint == self.field_fingerprint
         )

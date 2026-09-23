@@ -511,7 +511,7 @@ def test_v1_database_is_migrated_and_unscoped_inputs_are_ignored(store_path, clo
     with ApplicationStore.open(store_path, clock=clock) as s:
         assert s.list_user_inputs("app_old") == []
     raw = sqlite3.connect(store_path)
-    assert raw.execute("SELECT value FROM meta").fetchone() == ("2",)
+    assert raw.execute("SELECT value FROM meta").fetchone() == ("3",)
     columns = {r[1] for r in raw.execute("PRAGMA table_info(user_inputs)")}
     assert {"form_scope", "field_fingerprint"} <= columns
     raw.close()
@@ -654,3 +654,70 @@ def test_failed_operation_rolls_back_completely(store, mock_identity):
         store.bind_job_identity(ca, mock_identity)
     assert store.list_events(a.id) == events_before
     assert store.record_request(CAND, URL).job.id == a.job_id
+
+
+def test_answers_survive_a_new_draft_url_for_the_same_step(store, multistep_forms):
+    """I1: multistep forms put a per-session draft id in step URLs. After a restart the
+    same question on the same step must still receive the user's saved answer."""
+    step0, step1 = multistep_forms
+    app = store.record_request(CAND, URL).application
+    claim = store.claim(app.id, "run")
+    first_session = step1.model_copy(update={"url": step1.url + "/dft_000001/step/2"})
+    years = UserInput.for_field(first_session, "question_0", TextValue(text="7"))
+    store.save_user_inputs(claim, [years])
+
+    restarted = step1.model_copy(update={"url": step1.url + "/dft_000002/step/2"})
+    assert restarted.scope != first_session.scope
+    assert store.get_user_inputs(app.id, restarted) == [years]
+    # A different step, or the same id asking something else, still gets nothing.
+    assert store.get_user_inputs(app.id, step0) == []
+    changed = restarted.model_copy(update={"fields": [restarted.field("question_0").model_copy(
+        update={"label": "How many years of paid social experience do you have?"})]})
+    assert store.get_user_inputs(app.id, changed) == []
+
+
+def test_a_new_database_is_private_and_existing_files_keep_their_mode(tmp_path):
+    """I1R (S3 report): a new state database was created with the umask (0644).
+    The store creates its own file 0600 and never chmods an existing one."""
+    import stat
+
+    path = tmp_path / "state" / "imx.sqlite3"
+    with ApplicationStore.open(path) as s:
+        s.record_request(CAND, URL)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        wal = path.with_name(path.name + "-wal")
+        assert wal.exists() and stat.S_IMODE(wal.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    with ApplicationStore.open(path) as s:  # reopening changes nothing
+        assert len(s.list_applications()) == 1
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    shared = tmp_path / "shared.sqlite3"
+    with ApplicationStore.open(shared):
+        pass
+    shared.chmod(0o644)  # the user's own choice for this file
+    with ApplicationStore.open(shared) as s:
+        s.record_request(CAND, URL)
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o644
+
+
+def test_resume_pin_is_first_writer_wins_and_immutable(store, store_path, fictional_candidate):
+    """I1: an application keeps the resume it started with, whatever the profile says later."""
+    app = store.record_request(CAND, URL).application
+    resume_a = fictional_candidate.resume
+    resume_b = resume_a.model_copy(update={"id": "resume_b", "sha256": "b" * 64,
+                                           "filename": "resume-b.pdf"})
+    assert store.pinned_resume(app.id) is None
+    assert store.pin_resume(app.id, resume_a) == resume_a
+    assert store.pin_resume(app.id, resume_b) == resume_a  # later pins never replace it
+    assert store.pinned_resume(app.id) == resume_a
+    assert _events(store, app.id).count("document.resume_pinned") == 1
+    other = store.record_request(CAND, URL_ALIAS).application
+    assert store.pin_resume(other.id, resume_b) == resume_b  # per application
+    raw = sqlite3.connect(store_path)
+    with pytest.raises(sqlite3.IntegrityError, match="final"):
+        raw.execute("UPDATE application_documents SET body = '{}'")
+    raw.close()
+    claim = store.claim(app.id, "w1")
+    with pytest.raises(ValueError, match="reserved"):
+        store.append_event(claim, "document.resume_pinned", {})
