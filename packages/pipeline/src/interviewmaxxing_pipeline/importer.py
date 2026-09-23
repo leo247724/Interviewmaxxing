@@ -25,6 +25,11 @@ cards are keyed by (candidate, source, import key), so rows from two different f
 never overwrite each other. The source id is, in order: the ``source_id`` argument;
 ``source.sourceId`` in a JSON export; an opaque hash of the export's declared workbook
 path, sheet and table; an opaque hash of the resolved file path (``load_import``).
+A declared workbook path counts only when it is absolute, or relative and resolved
+against the folder of the export file actually loaded: two exports in different
+folders that both declare ``Pipeline.numbers`` are different sources. Bytes with only
+a relative declared path (``parse_import`` without a file) need an explicit
+``source_id`` or a declared ``sourceId``.
 None of these is a content digest, so editing the workbook keeps its identity, and
 two files with the same name in different folders stay distinct. Full paths are
 never stored. Without any of them the document gets an issue asking for a
@@ -42,6 +47,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 from dataclasses import dataclass, replace
 from datetime import date
@@ -134,7 +140,8 @@ def parse_import(
         raise ImportFileError(
             "source_id must be 1-128 characters of letters, digits and . _ : -")
     if fmt == "json":
-        document = _parse_json(text, name=name, digest=digest)
+        base_dir = Path(_file_identity).parent if _file_identity is not None else None
+        document = _parse_json(text, name=name, digest=digest, base_dir=base_dir)
     else:
         document = _parse_csv(text, name=name, digest=digest)
     return _with_source_id(document, explicit=source_id, file_identity=_file_identity)
@@ -198,7 +205,7 @@ def _reject_constant(token: str) -> Any:
     raise ValueError(f"non-finite number {token} is not allowed")
 
 
-def _parse_json(text: str, *, name: str, digest: str) -> ImportDocument:
+def _parse_json(text: str, *, name: str, digest: str, base_dir: Path | None) -> ImportDocument:
     source = SourceInfo(name=name, format="json", document_sha256=digest)
     try:
         doc = json.loads(text, object_pairs_hook=_reject_duplicates,
@@ -217,7 +224,7 @@ def _parse_json(text: str, *, name: str, digest: str) -> ImportDocument:
     if version != SUPPORTED_SCHEMA_VERSION or isinstance(version, bool):
         issues.append(RowIssue(row=None, column="schemaVersion",
                                message=f"expected schemaVersion {SUPPORTED_SCHEMA_VERSION}"))
-    source = _json_source(doc.get("source"), source, issues)
+    source = _json_source(doc.get("source"), source, issues, base_dir)
     records = doc.get("records")
     if not isinstance(records, list):
         issues.append(RowIssue(row=None, column="records", message="records must be a list"))
@@ -268,7 +275,20 @@ def _parse_json(text: str, *, name: str, digest: str) -> ImportDocument:
     return _finish(source, rows, issues, 0)
 
 
-def _json_source(raw: Any, source: SourceInfo, issues: list[RowIssue]) -> SourceInfo:
+def _workbook_location(declared: str, base_dir: Path | None) -> str | None:
+    """Where the declared workbook really is: an absolute (or ``~``) path as given, a
+    relative one only against the loaded export's folder; None when unknowable."""
+    path = Path(declared).expanduser()
+    if path.is_absolute():
+        return os.path.normpath(path)
+    if base_dir is None:
+        return None
+    return os.path.normpath(base_dir / path)
+
+
+def _json_source(
+    raw: Any, source: SourceInfo, issues: list[RowIssue], base_dir: Path | None
+) -> SourceInfo:
     if raw is None:
         return source
     if not isinstance(raw, dict):
@@ -298,9 +318,11 @@ def _json_source(raw: Any, source: SourceInfo, issues: list[RowIssue]) -> Source
             issues.append(RowIssue(row=None, column="source.sourceId", message=(
                 "must be 1-128 characters of letters, digits and . _ : -")))
     elif isinstance(path, str) and path.strip():
-        update["source_id"] = derive_source_id(
-            "workbook", path.strip(), str(raw.get("sheet") or ""), str(raw.get("table") or ""))
-        update["source_id_origin"] = "workbook-path"
+        location = _workbook_location(path.strip(), base_dir)
+        if location is not None:
+            update["source_id"] = derive_source_id(
+                "workbook", location, str(raw.get("sheet") or ""), str(raw.get("table") or ""))
+            update["source_id_origin"] = "workbook-path"
     return source.model_copy(update=update)
 
 

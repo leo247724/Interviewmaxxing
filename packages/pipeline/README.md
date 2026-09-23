@@ -180,6 +180,13 @@ also ignored when its clause is a question or hedged ("pending", "possible",
 - "Not rejected; awaiting decision" is Decision.
 - "Rejected?" is not Closed.
 
+Status is more current than Stage. When Status negates or hedges an outcome that
+Stage asserts, the Stage wording is not used at all, and the card goes to review
+with the reason "Status negates or questions what Stage says". Examples: Stage
+"Offer" with Status "No offer yet"; Stage "Applied" with "Never applied"; Stage
+"Rejected after panel" with "Rejection unlikely". The raw wording is kept either
+way.
+
 If nothing matches, the card goes to the first lane, and the suggestion has
 `rule=None` and a "review the lane" reason. The raw stage and status wording stay
 visible and editable in `tracking`. Their imported values stay in
@@ -197,6 +204,12 @@ the first of these that exists:
 2. `source.sourceId` in a JSON export.
 3. An opaque hash of the export's declared workbook `path`, sheet and table. Editing
    the workbook keeps this identity; a different folder is a different source.
+   - An absolute (or `~`) path is used as given.
+   - A relative path is resolved against the folder of the export file actually
+     loaded, so `A/export.json` and `B/export.json` that both declare
+     `Pipeline.numbers` are different sources.
+   - Bytes with only a relative path (`parse_import` without a file) have no derived
+     identity. They need `source_id` or a declared `sourceId`.
 4. For `load_import`, an opaque hash of the resolved file path.
 
 None of these is a content digest, and full paths are never stored. Uploaded bytes

@@ -367,3 +367,108 @@ def test_schema_1_database_is_migrated_preserving_original_rows(tmp_path, clock)
         assert len(reopened.source_versions(CAND, "pipe_legacy")) == 1
         # Migrated cards keep their id; newly imported cards use the scoped id.
         assert reopened.get_item(CAND, "pipe_legacy").id != imported_item_id(CAND, legacy, "k1")
+
+
+# --- P1R2: relative workbook paths and Status/Stage contradictions -------------------------
+
+
+def _write_export(folder, records, *, declared_path="Pipeline.numbers"):
+    folder.mkdir(parents=True, exist_ok=True)
+    file = folder / "export.json"
+    file.write_text(json.dumps({"schemaVersion": 1, "source": {
+        "path": declared_path, "sheet": "Pipeline", "table": "Table 1"}, "records": records}))
+    return file
+
+
+def test_relative_workbook_paths_in_different_folders_are_different_sources(pipeline, tmp_path):
+    a = _write_export(tmp_path / "A", [_record(locationCommute="Austin, TX")])
+    b = _write_export(tmp_path / "B", [_record(locationCommute="New York, NY")])
+    doc_a, doc_b = load_import(a), load_import(b)
+    assert doc_a.source.source_id_origin == doc_b.source.source_id_origin == "workbook-path"
+    assert doc_a.rows[0].import_key == doc_b.rows[0].import_key  # same Company/Role
+    assert doc_a.source.source_id != doc_b.source.source_id
+    pipeline.apply_import(CAND, doc_a)
+    assert pipeline.apply_import(CAND, doc_b).counts() == {
+        "create": 1, "update": 0, "unchanged": 0}
+    assert sorted(i.tracking.location_commute for i in pipeline.list_items(CAND)) == [
+        "Austin, TX", "New York, NY"]
+
+
+def test_relative_workbook_path_edited_in_place_round_trips(pipeline, tmp_path):
+    folder = tmp_path / "A"
+    file = _write_export(folder, [_record(nextAction="Wait")])
+    first = load_import(file)
+    pipeline.apply_import(CAND, first)
+    _write_export(folder, [_record(nextAction="Call back")])  # the same export, edited
+    second = load_import(file)
+    assert second.source.source_id == first.source.source_id
+    assert second.source.document_sha256 != first.source.document_sha256
+    assert pipeline.apply_import(CAND, second).counts() == {
+        "create": 0, "update": 1, "unchanged": 0}
+    [item] = pipeline.list_items(CAND)
+    assert item.tracking.next_action == "Call back"
+    assert item.provenance.initial.next_action == "Wait"
+    # The same relative workbook reached through another export location is not.
+    assert load_import(_write_export(tmp_path / "C", [_record()])).source.source_id \
+        != first.source.source_id
+
+
+def test_bytes_with_only_a_relative_workbook_path_need_a_source_id(pipeline):
+    raw = _export([_record()], path="Pipeline.numbers")
+    doc = parse_import(raw, name="export.json")
+    assert doc.source.source_id is None
+    assert any("no source identity" in i.message for i in doc.issues)
+    with pytest.raises(ImportRejected):
+        pipeline.apply_import(CAND, doc)
+    assert parse_import(raw, name="export.json", source_id="my-workbook").ok
+    declared = parse_import(_export([_record()], path="Pipeline.numbers", sourceId="wb-1"),
+                            name="export.json")
+    assert (declared.source.source_id, declared.source.source_id_origin) == ("wb-1", "declared")
+    # Absolute and ~ paths are trusted as the workbook's location.
+    assert parse_import(_export([_record()], path="/fictional/a/Pipeline.numbers"),
+                        name="e.json").source.source_id_origin == "workbook-path"
+
+
+@pytest.mark.parametrize(
+    ("stage", "status"),
+    [
+        ("Offer", "No offer yet"),
+        ("Offer extended", "Offer not received"),
+        ("Offer", "Offer?"),
+        ("Applied", "Never applied"),
+        ("Applied", "Application submitted? unclear"),
+        ("Rejected", "Not rejected"),
+        ("Closed", "Not closed yet"),
+        ("Rejected after panel", "Rejection unlikely"),   # no fallback to "panel"
+        ("Interview done, applied", "Never applied"),     # independent of rule order
+    ],
+)
+def test_status_negation_blocks_the_stage_outcome(stage, status):
+    suggestion = suggest_lane(stage, status)
+    assert (suggestion.lane, suggestion.rule) == ("saved", None)
+    assert "review" in suggestion.reason and "Status" in suggestion.reason
+
+
+@pytest.mark.parametrize(
+    ("stage", "status", "lane"),
+    [
+        ("Offer", "Awaiting paperwork", "offer"),          # Status silent: Stage applies
+        ("Applied", None, "applied"),
+        ("Offer", "No offer yet; final interview done", "interviewing"),
+        ("Applied", "Application not submitted", "saved"),  # Status states not-applied
+        ("Rejected", "Not rejected; awaiting decision", "decision"),
+    ],
+)
+def test_stage_fallback_still_applies_when_status_does_not_contradict(stage, status, lane):
+    assert suggest_lane(stage, status).lane == lane
+
+
+def test_contradicted_rows_keep_their_wording_and_go_to_review(pipeline):
+    receipt = pipeline.apply_import(CAND, parse_import(_export([_record(
+        stage="Offer", status="No offer yet")]), name="e.json"))
+    [plan] = receipt.rows
+    assert (plan.lane, plan.lane_rule) == ("saved", None)
+    item = pipeline.get_item(CAND, plan.item_id)
+    assert (item.tracking.stage, item.tracking.status) == ("Offer", "No offer yet")
+    assert item.provenance.initial.stage == "Offer"
+    assert pipeline.entry(CAND, plan.item_id).imported_values["Stage"] == "Offer"
