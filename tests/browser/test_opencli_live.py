@@ -1,7 +1,7 @@
 """Opt-in live smoke: the OpenCLI driver in the user's connected Chrome profile.
 
 Runs only with ``IMX_OPENCLI_LIVE=1``. It uses one owned background tab in session
-``imx-application`` (``IMX_OPENCLI_SESSION``) on profile ``IMX_OPENCLI_PROFILE``
+``imx-application-<random suffix>`` (prefix: ``IMX_OPENCLI_SESSION``) on profile ``IMX_OPENCLI_PROFILE``
 (default ``jgd7jms9``), and only localhost servers this test starts itself: the
 fictional mock ATS and a tiny fictional form server. It never binds or touches other
 tabs; ``IMX_OPENCLI_PROTECTED_TABS`` (comma-separated) adds tab ids it must refuse.

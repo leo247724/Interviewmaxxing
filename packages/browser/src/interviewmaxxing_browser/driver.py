@@ -10,6 +10,8 @@ fill or whether something was submitted.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -24,6 +26,12 @@ class DriverError(RuntimeError):
 
 class NotActionable(DriverError):
     """The element could not be operated, so nothing was done to the page."""
+
+
+class PageContextLost(DriverError):
+    """The document was replaced (navigation, origin change, context destroyed) while
+    operating a control. Nothing further may be written until the page is inspected
+    again; the runtime aborts the rest of the fill."""
 
 
 @runtime_checkable
@@ -65,6 +73,24 @@ class PageDriver(Protocol):
 
     async def bring_to_front(self) -> None: ...
 
+
+_CONTEXT_LOST = re.compile(
+    r"execution context was destroyed|frame was detached|navigation|target closed|"
+    r"page closed|context was destroyed",
+    re.IGNORECASE,
+)
+
+
+
+# Read-only SHA-256 of the first file attached to a control (null when the page cannot
+# hash, e.g. no crypto.subtle in an insecure context).
+_FILE_DIGEST = (
+    "async (sel) => { const el = document.querySelector(sel); if (!el || !el.files || !el.files.length) "
+    "return null; if (!(globalThis.crypto && globalThis.crypto.subtle)) return null; const buf = await el.files[0].arrayBuffer(); "
+    "const d = await crypto.subtle.digest('SHA-256', buf); "
+    "return {origin: String(performance.timeOrigin), url: location.href, sha256: Array.from(new Uint8Array(d))"
+    ".map((b) => b.toString(16).padStart(2, '0')).join('')}; }"
+)
 
 class PlaywrightDriver:
     """``PageDriver`` over one Playwright ``Page``."""
@@ -125,26 +151,51 @@ class PlaywrightDriver:
         return self._last_status
 
     async def evaluate(self, expression: str, arg: Any = None) -> Any:
-        return await self.page.evaluate(expression, arg)
+        try:
+            return await self.page.evaluate(expression, arg)
+        except PlaywrightError as exc:
+            if _CONTEXT_LOST.search(str(exc)):
+                raise PageContextLost(f"page context unavailable: {exc}") from exc
+            raise DriverError(f"page read failed: {exc}") from exc
+
+    def _doc_mark(self) -> tuple[int, int]:
+        return (self._navigations, self._loads)
+
+    def _guard(self, before: tuple[int, int], what: str, exc: Exception | None = None) -> None:
+        """Raise ``PageContextLost`` when the document changed during ``what``."""
+        lost = before != self._doc_mark() or (
+            exc is not None and _CONTEXT_LOST.search(str(exc)) is not None
+        )
+        if lost:
+            raise PageContextLost(f"the page navigated while {what}; re-inspect before continuing")
 
     async def fill(self, selector: str, text: str) -> None:
+        before = self._doc_mark()
         try:
             await self.page.locator(selector).fill(text, timeout=self._timeout_ms)
         except PlaywrightError as exc:
+            self._guard(before, f"typing into {selector}", exc)
             raise NotActionable(f"could not type into {selector}: {exc}") from exc
+        self._guard(before, f"typing into {selector}")
 
     async def select_values(self, selector: str, values: list[str]) -> None:
+        before = self._doc_mark()
         try:
             await self.page.locator(selector).select_option(value=values, timeout=self._timeout_ms)
         except PlaywrightError as exc:
+            self._guard(before, f"selecting in {selector}", exc)
             raise NotActionable(f"could not select {values} in {selector}: {exc}") from exc
+        self._guard(before, f"selecting in {selector}")
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None:
+        before = self._doc_mark()
         locator = self.page.locator(selector)
         try:
             await locator.set_checked(checked, timeout=self._timeout_ms)
+            self._guard(before, f"setting {selector}")
             return
         except PlaywrightError as exc:
+            self._guard(before, f"setting {selector}", exc)
             if label_selector is None:
                 raise NotActionable(f"could not set {selector}: {exc}") from exc
         # Custom-styled inputs are often hidden behind their label: click the label.
@@ -152,13 +203,23 @@ class PlaywrightDriver:
             if await locator.is_checked() != checked:
                 await self.page.locator(label_selector).click(timeout=self._timeout_ms)
         except PlaywrightError as exc:
+            self._guard(before, f"setting {selector}", exc)
             raise NotActionable(f"could not set {selector} via its label: {exc}") from exc
+        self._guard(before, f"setting {selector}")
 
     async def set_files(self, selector: str, path: Path) -> None:
+        pinned = hashlib.sha256(path.read_bytes()).hexdigest()
+        before = self._doc_mark()
         try:
             await self.page.locator(selector).set_input_files(str(path), timeout=self._timeout_ms)
         except PlaywrightError as exc:
+            self._guard(before, f"attaching a file to {selector}", exc)
             raise NotActionable(f"could not attach a file to {selector}: {exc}") from exc
+        self._guard(before, f"attaching a file to {selector}")
+        attached = await self.evaluate(_FILE_DIGEST, selector)
+        self._guard(before, f"verifying the file attached to {selector}")
+        if not isinstance(attached, dict) or attached.get("sha256") != pinned:
+            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
 
     async def click(self, selector: str, *, trial: bool = False) -> None:
         if not trial:
