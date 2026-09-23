@@ -244,8 +244,8 @@ def _detail(exc: BaseException) -> str:
 
 
 def _fail_retryable(store: ApplicationStore, claim: Claim, app: Application, message: str) -> None:
-    """Record FAILED_RETRYABLE (through INSPECTING when leaving NEEDS_INPUT)."""
-    if app.state is S.NEEDS_INPUT:
+    """Record the current failure, re-entering INSPECTING when retrying a stopped run."""
+    if app.state in (S.NEEDS_INPUT, S.FAILED_RETRYABLE):
         store.transition(claim, S.INSPECTING)
     if store.get_application(app.id).state is not S.FAILED_RETRYABLE:
         store.transition(claim, S.FAILED_RETRYABLE, failure_reason=message)
@@ -432,11 +432,6 @@ class LocalApplicationRunner:
     # --- the run --------------------------------------------------------------------------
 
     async def _run(self, store: ApplicationStore, app_id: str, url: str) -> ApplyOutcome:
-        app = store.get_application(app_id)
-        try:
-            candidate = self.candidates.load(app.candidate_id)
-        except (CandidateNotFound, CandidateProfileInvalid) as exc:
-            return _outcome(store, app_id, f"Candidate profile unavailable: {exc}")
         try:
             with browser_profile_lock(self.paths.browser_dir):
                 try:
@@ -447,6 +442,17 @@ class LocalApplicationRunner:
                     app = store.get_application(app_id)
                     if app.state in SUBMISSION_BLOCKING_STATES or app.state in TERMINAL_STATES:
                         return _outcome(store, app_id, _STATE_MESSAGES.get(app.state, ""))
+                    try:
+                        candidate = self.candidates.load(app.candidate_id)
+                    except (CandidateNotFound, CandidateProfileInvalid) as exc:
+                        # Stored failures are also shown by the HTTP service; loader
+                        # errors can contain private absolute profile/resume paths.
+                        detail = ("the profile could not be found" if isinstance(exc, CandidateNotFound)
+                                  else "the profile or its resume could not be read or validated")
+                        message = (f"Candidate profile unavailable: {detail}. "
+                                   "Restore a valid profile.json and its resume, then resume.")
+                        _fail_retryable(store, claim, app, message)
+                        return _outcome(store, app_id, message)
                     pinned = store.pin_resume(app_id, candidate.resume)
                     if not pinned.verify():
                         return self._pinned_resume_missing(store, claim, app, pinned)

@@ -18,6 +18,7 @@ from datetime import timedelta
 import pytest
 
 from interviewmaxxing_browser import AmbiguousAction
+from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_cli.runner import (
     REJECTION_EVENT,
     LocalApplicationRunner,
@@ -320,24 +321,38 @@ def test_an_ambiguous_next_or_submit_control_is_never_clicked(isolated_imx_home,
 # --- contention ---------------------------------------------------------------------------------
 
 
-def test_a_held_browser_profile_refuses_a_second_run(isolated_imx_home, fictional_candidate):
+@pytest.mark.parametrize("profile_available", [False, True])
+def test_a_held_browser_profile_refuses_a_second_run(
+    isolated_imx_home, fictional_candidate, profile_available
+):
     script = Script()
+    runner = _runner(isolated_imx_home, fictional_candidate, script)
+    if not profile_available:
+        runner.candidates = LocalCandidateStore.from_paths(isolated_imx_home)
     with browser_profile_lock(isolated_imx_home.browser_dir):
-        outcome = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script)
-                              .apply(URL, candidate_id="c1"))
+        outcome = asyncio.run(runner.apply(URL, candidate_id="c1"))
     assert "another run is using the browser profile" in outcome.message
     assert outcome.state is S.REQUESTED and script.starts == 0
 
 
-def test_a_claimed_application_is_not_run_twice(isolated_imx_home, fictional_candidate):
+@pytest.mark.parametrize("profile_available", [False, True])
+def test_a_claimed_application_is_not_run_twice(
+    isolated_imx_home, fictional_candidate, profile_available
+):
     isolated_imx_home.ensure()
     with _store(isolated_imx_home) as store:
         app = store.record_request("c1", URL).application
         store.claim(app.id, "someone-else", ttl=timedelta(minutes=5))
     script = Script()
-    outcome = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script)
-                          .resume(app.id))
+    runner = _runner(isolated_imx_home, fictional_candidate, script)
+    if not profile_available:
+        runner.candidates = LocalCandidateStore.from_paths(isolated_imx_home)
+    outcome = asyncio.run(runner.resume(app.id))
     assert "Another run is working" in outcome.message and script.starts == 0
+    assert outcome.state is S.REQUESTED
+    with _store(isolated_imx_home) as store:
+        assert store.get_application(app.id).failure_reason is None
+        assert store.get_application(app.id).claim_owner == "someone-else"
 
 
 # --- missing input and user action --------------------------------------------------------------
@@ -841,6 +856,81 @@ def test_a_validation_message_on_a_fresh_open_is_not_a_rejection(isolated_imx_ho
 
 
 # --- browser start failure; interrupted submit guidance (I1R) ------------------------------------
+
+
+@pytest.mark.parametrize("profile_problem", ["removed", "corrupt"])
+@pytest.mark.parametrize("initial_state", [S.REQUESTED, S.NEEDS_INPUT, S.FAILED_RETRYABLE])
+def test_profile_failure_after_admission_is_durable_and_retryable(
+    isolated_imx_home, fictional_candidate, profile_problem, initial_state
+):
+    paths = isolated_imx_home
+    profile = fictional_candidate.model_copy(update={"id": "c1"})
+    profile_path = paths.profile_dir / "c1" / "profile.json"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text(profile.model_dump_json())
+    candidates = LocalCandidateStore.from_paths(paths)
+    assert candidates.load("c1").id == "c1"  # valid when the request is admitted
+    with _store(paths) as store:
+        app = store.record_request("c1", URL).application
+        store.pin_resume(app.id, profile.resume)
+        if initial_state is not S.REQUESTED:
+            claim = store.claim(app.id, "admission")
+            if initial_state is S.NEEDS_INPUT:
+                store.transition(claim, initial_state, metadata={"reason": "answer needed"})
+            else:
+                store.transition(claim, initial_state, failure_reason="Previous browser failure")
+            store.release(claim)
+    if profile_problem == "removed":
+        profile_path.unlink()
+    else:
+        profile_path.write_text("{not valid JSON")
+
+    script = Script()
+    runner = LocalApplicationRunner(paths=paths, interaction=NoninteractiveInteraction(),
+                                    candidates=candidates, browser_factory=ScriptedFactory(script))
+    result = asyncio.run(runner.resume(app.id))
+    assert result.state is S.FAILED_RETRYABLE
+    assert "Candidate profile unavailable" in result.message
+    assert "profile.json" in result.message and str(profile_path) not in result.message
+    assert script.starts == 0
+    with _store(paths) as store:
+        saved = store.get_application(app.id)
+        assert saved.state is S.FAILED_RETRYABLE and saved.failure_reason == result.message
+        assert saved.claim_owner is None
+        assert store.pinned_resume(app.id) == profile.resume
+        assert store.list_attempts(app.id) == [] and store.get_receipt(app.id) is None
+        failures = [e for e in store.list_events(app.id) if e.event == "application.failed_retryable"]
+        assert failures and failures[-1].metadata["failure_reason"] == result.message
+
+
+@pytest.mark.parametrize("blocked_state", [S.SUBMITTED, S.SUBMITTING, S.SUBMISSION_UNKNOWN])
+def test_missing_profile_does_not_replace_submission_state(isolated_imx_home, blocked_state):
+    paths = isolated_imx_home
+    with _store(paths) as store:
+        app = store.record_request("c1", URL).application
+        claim = store.claim(app.id, "original-run")
+        store.bind_job_identity(claim, IDENTITY)
+        for state in (S.INSPECTING, S.PACKET_READY, S.FILLING):
+            store.transition(claim, state)
+        attempt = store.begin_submission(claim)
+        if blocked_state is not S.SUBMITTING:
+            observation = ACCEPTED if blocked_state is S.SUBMITTED else SubmissionObservation(
+                outcome=SubmissionOutcome.UNKNOWN, signals=["No confirmation"])
+            store.record_submission_outcome(claim, attempt.id, observation)
+            store.release(claim)
+        receipt = store.get_receipt(app.id)
+        failure_reason = store.get_application(app.id).failure_reason
+        events = store.list_events(app.id)
+    script = Script()
+    runner = LocalApplicationRunner(paths=paths, interaction=NoninteractiveInteraction(),
+                                    browser_factory=ScriptedFactory(script))
+    result = asyncio.run(runner.resume(app.id))
+    assert result.state is blocked_state and script.starts == 0
+    with _store(paths) as store:
+        assert store.get_application(app.id).failure_reason == failure_reason
+        assert store.get_receipt(app.id) == receipt
+        assert store.list_events(app.id) == events
+        assert len(store.list_attempts(app.id)) == 1
 
 
 class Boom:
