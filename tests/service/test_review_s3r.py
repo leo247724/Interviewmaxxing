@@ -127,6 +127,34 @@ def test_missing_profile_currentness_keeps_the_explicit_candidate(shared_home: A
     assert not decisions.is_current(record.selection, x, changed, None)
 
 
+def test_real_selection_batch_avoids_per_listing_history(
+    shared_home: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _paths, _repo, decisions = shared_home
+    x = posting("batched-real", location="Austin, TX", arrangement=WorkArrangement.HYBRID,
+                observed=datetime.now(UTC))
+    record = decisions.decide(x, SelectionPreferences(), None, candidate_id="batch-candidate",
+                              application_lookup=lambda _: None)
+    calls: list[tuple[list[str], str]] = []
+    real_batch = sel_pkg.SelectionStore.latest_many
+
+    def batch(store: Any, ids: Any, *, candidate_id: str) -> Any:
+        values = list(ids)
+        calls.append((values, candidate_id))
+        return real_batch(store, values, candidate_id=candidate_id)
+
+    def no_single_read(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("per-listing selection read")
+
+    monkeypatch.setattr(sel_pkg.SelectionStore, "latest_many", batch)
+    monkeypatch.setattr(sel_pkg.SelectionStore, "latest", no_single_read)
+    monkeypatch.setattr(sel_pkg.SelectionStore, "history", no_single_read)
+    found = decisions.latest_for([x.id, x.id, "missing"], candidate_id="batch-candidate")
+    assert {key: value.selection.id for key, value in found.items()} == {x.id: record.selection.id}
+    assert calls == [([x.id, "missing"], "batch-candidate")]
+    assert decisions.latest_for([x.id], candidate_id="other-candidate") == {}
+
+
 # --- 2. decision task lifecycle -----------------------------------------------------------
 
 
