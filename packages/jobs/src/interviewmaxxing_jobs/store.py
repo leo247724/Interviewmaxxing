@@ -20,7 +20,7 @@ import json
 import os
 import sqlite3
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS listing_aliases (
     alias_id TEXT PRIMARY KEY,
     listing_id TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS listing_aliases_listing ON listing_aliases(listing_id);
 CREATE TABLE IF NOT EXISTS observations (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     listing_id TEXT NOT NULL,
@@ -244,6 +245,38 @@ class JobStore:
         """A listing by id; ids replaced by a merge resolve to the surviving listing."""
         with self._lock:
             return self._load(self._conn, self._resolve(self._conn, listing_id))
+
+    def listing_aliases(self, listing_ids: Iterable[str]) -> dict[str, list[str]]:
+        """Canonical IDs mapped to themselves and their accepted historical IDs.
+
+        Inputs may be canonical IDs or aliases; missing IDs are omitted. Aliases
+        come only from persisted successful merges, never inferred provenance.
+        Reads are indexed and batched to stay below SQLite's parameter limit.
+        """
+        requested = list(dict.fromkeys(listing_ids))
+        canonical: dict[str, list[str]] = {}
+        batch_size = 400
+        with self._lock:
+            # Successful merges keep alias targets flattened to the canonical ID.
+            for offset in range(0, len(requested), batch_size):
+                batch = requested[offset:offset + batch_size]
+                rows = self._conn.execute(
+                    f"SELECT id FROM listings WHERE id IN ({_marks(batch)}) "
+                    "UNION SELECT a.listing_id FROM listing_aliases a "
+                    "JOIN listings l ON l.id = a.listing_id "
+                    f"WHERE a.alias_id IN ({_marks(batch)})", [*batch, *batch]).fetchall()
+                for (listing_id,) in rows:
+                    canonical[listing_id] = [listing_id]
+            targets = list(canonical)
+            for offset in range(0, len(targets), batch_size):
+                batch = targets[offset:offset + batch_size]
+                rows = self._conn.execute(
+                    "SELECT listing_id, alias_id FROM listing_aliases "
+                    f"WHERE listing_id IN ({_marks(batch)}) ORDER BY alias_id", batch).fetchall()
+                for listing_id, alias_id in rows:
+                    if alias_id != listing_id:
+                        canonical[listing_id].append(alias_id)
+        return canonical
 
     def list_listings(self, *, source: str | None = None, status: ListingStatus | None = None,
                       ids: Sequence[str] | None = None, limit: int | None = None,
