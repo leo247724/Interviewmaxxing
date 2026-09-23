@@ -132,6 +132,7 @@ def test_linked_application_is_the_only_submission_state(harness: Harness) -> No
     assert view["application"] == {
         "applicationId": app.id, "state": ApplicationState.REQUESTED.value,
         "submittedAt": None, "confirmationReference": None,
+        "confirmationMethod": None, "confirmationAuthority": None,
     }
 
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -60,7 +60,7 @@ from .discovery_models import (
     PipelineProvenanceView,
     PipelineUpdateInput,
 )
-from .views import SAFE_ID, iso
+from .views import SAFE_ID, confirmation_of, iso
 
 PREVIEW_TTL_S = 30 * 60
 MAX_PREVIEWS = 8
@@ -68,7 +68,8 @@ _NAME_TO_KEY = {name: key for _header, key, name in REFERENCE_FIELDS}
 _KEY_TO_HEADER = {key: header for header, key, _name in REFERENCE_FIELDS}
 _HEADER_TO_KEY = {header: key for header, key, _name in REFERENCE_FIELDS}
 
-SelectionLookup = Callable[[str], LinkedSelectionView | None]
+SelectionLookup = Callable[[Sequence[str]], Mapping[str, LinkedSelectionView]]
+"""Batched, candidate-scoped: selection id -> link, only for this candidate's decisions."""
 
 
 @dataclass
@@ -144,11 +145,14 @@ class PipelineApi:
             return None
         receipt = apps.get_receipt(app.id)
         submitted = receipt.submitted_at if receipt else app.submitted_at
+        method, authority = confirmation_of(receipt) if receipt else (None, None)
         return LinkedApplicationView(
             application_id=app.id,
             state=app.state.value,
             submitted_at=iso(submitted) if submitted else None,
             confirmation_reference=receipt.confirmation_reference if receipt else None,
+            confirmation_method=method,
+            confirmation_authority=authority,
         )
 
     def _history(self, changes: list[StageChange], labels: Mapping[str, str]) -> list[PipelineHistoryItem]:
@@ -211,6 +215,7 @@ class PipelineApi:
         *,
         labels: Mapping[str, str] | None = None,
         receipts: Mapping[str, str] | None = None,
+        selections: Mapping[str, LinkedSelectionView] | None = None,
     ) -> PipelineEntryView:
         cid = self.candidate_id
         if labels is None:
@@ -218,10 +223,9 @@ class PipelineApi:
         if receipts is None:
             receipts = {r.source.document_sha256: r.id for r in store.list_imports(cid)}
         origin = "import" if item.provenance else ("jobs" if item.listing_id else "manual")
-        selection = (
-            self.selection_lookup(item.selection_id)
-            if item.selection_id and self.selection_lookup else None
-        )
+        if selections is None:
+            selections = self._selections([item])
+        selection = selections.get(item.selection_id) if item.selection_id else None
         return PipelineEntryView(
             id=item.id,
             lane=item.lane,
@@ -237,6 +241,12 @@ class PipelineApi:
             created_at=iso(item.created_at),
             updated_at=iso(item.updated_at),
         )
+
+    def _selections(self, items: Sequence[PipelineItem]) -> Mapping[str, LinkedSelectionView]:
+        ids = [i.selection_id for i in items if i.selection_id]
+        if not ids or self.selection_lookup is None:
+            return {}
+        return self.selection_lookup(ids)
 
     @contextmanager
     def _stores(self) -> Iterator[tuple[PipelineStore, ApplicationStore]]:
@@ -260,9 +270,12 @@ class PipelineApi:
             lanes = store.lanes(cid).lanes
             labels = {lane.id: lane.label for lane in lanes}
             receipts = {r.source.document_sha256: r.id for r in store.list_imports(cid)}
+            items = store.list_items(cid)
+            selections = self._selections(items)
             entries = [
-                self.entry_view(store, apps, item, labels=labels, receipts=receipts)
-                for item in store.list_items(cid)
+                self.entry_view(store, apps, item, labels=labels, receipts=receipts,
+                                selections=selections)
+                for item in items
             ]
         return PipelineBoardView(
             lanes=[PipelineLaneView(id=lane.id, label=lane.label) for lane in lanes],

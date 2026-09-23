@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -59,6 +59,7 @@ from . import errors
 from .discovery_models import (
     CompensationFloorView,
     CompensationView,
+    DecisionTaskView,
     LinkedSelectionView,
     ListingSourceView,
     ListingsView,
@@ -80,6 +81,9 @@ from .views import SAFE_ID, iso
 log = logging.getLogger("interviewmaxxing.service.jobs")
 
 MAX_ACTIVE_DECISIONS = 10
+_TASK_ERRORS = {
+    "INTERRUPTED": "The service stopped before this decision finished. Ask again.",
+}
 DECISION_WAIT_S = 20.0
 LISTING_LIMIT = 500
 SOURCE_LABELS = {"linkedin": "LinkedIn Jobs", "builtin": "Built In", "indeed": "Indeed",
@@ -94,7 +98,12 @@ class ListingRepository(Protocol):
 
     def get_listing(self, listing_id: str) -> JobListing | None: ...
 
-    def list_listings(self, *, limit: int | None = None) -> list[JobListing]: ...
+    def list_listings(
+        self, *, limit: int | None = None, rank_for: SelectionPreferences | None = None
+    ) -> list[JobListing]:
+        """Newest first; with ``rank_for``, ordered by its location priority (open
+        before closed, then location tier) *before* ``limit`` is applied (J1)."""
+        ...
 
 
 class SearchBackend(Protocol):
@@ -137,9 +146,18 @@ class DecisionBackend(Protocol):
         application_lookup: ApplicationLookup,
     ) -> DecisionRecord: ...
 
-    def latest(self, listing_id: str) -> DecisionRecord | None: ...
+    def latest_for(
+        self, listing_ids: Sequence[str], *, candidate_id: str
+    ) -> dict[str, DecisionRecord]:
+        """The latest decision per listing made *for this candidate*, in one pass. A
+        decision recorded for another candidate is never returned."""
+        ...
 
-    def get(self, selection_id: str) -> DecisionRecord | None: ...
+    def get_many(
+        self, selection_ids: Sequence[str], *, candidate_id: str
+    ) -> dict[str, DecisionRecord]:
+        """Decisions by id, only those that belong to this candidate."""
+        ...
 
     def is_current(
         self,
@@ -306,6 +324,21 @@ def _compensation(listing: JobListing) -> CompensationView | None:
     )
 
 
+def decision_task_view(task: Task) -> DecisionTaskView:
+    error = task.error if task.state in ("FAILED", "INTERRUPTED") else None
+    if task.state == "INTERRUPTED":
+        error = _TASK_ERRORS["INTERRUPTED"]
+    result = task.result or {}
+    return DecisionTaskView(
+        id=task.id,
+        state=task.state,
+        error=error or ("The decision could not be made." if task.state == "FAILED" else None),
+        result_id=result.get("selection_id") if task.state == "DONE" else None,
+        requested_at=iso(task.created_at),
+        updated_at=iso(task.updated_at),
+    )
+
+
 def selection_view(record: DecisionRecord, *, stale: bool) -> SelectionView:
     s = record.selection
     model = s.model_decision
@@ -360,6 +393,7 @@ class JobsApi:
         self._decision_pool = ThreadPoolExecutor(1, thread_name_prefix="imx-decide")
         self._lock = threading.Lock()
         self._done: dict[str, threading.Event] = {}
+        self.listing_limit = LISTING_LIMIT
 
     def shutdown(self) -> None:
         self._search_pool.shutdown(wait=False, cancel_futures=True)
@@ -475,9 +509,15 @@ class JobsApi:
 
     # --- listings -------------------------------------------------------------------------
 
-    def _application_lookup(self, apps: ApplicationStore) -> ApplicationLookup:
+    def _application_lookup(
+        self, apps: ApplicationStore, items: Mapping[str, Any] | None = None
+    ) -> ApplicationLookup:
+        """``items`` is the candidate's pipeline cards by listing id, loaded once per
+        request; it is loaded here only when not given."""
+        cards = self.pipeline.items_by_listing() if items is None else items
+
         def lookup(listing: JobListing) -> str | None:
-            item = self.pipeline.item_for_listing(listing.id)
+            item = cards.get(listing.id)
             if item is not None and item.application_id:
                 return item.application_id
             for url in (listing.application_url, listing.posting_url):
@@ -497,16 +537,16 @@ class JobsApi:
         *,
         prefs: SelectionPreferences,
         profile: CandidateProfile | None,
-        items: dict[str, Any],
+        items: Mapping[str, Any],
         lookup: ApplicationLookup,
         rank: Rank | None,
+        record: DecisionRecord | None,
+        task: Task | None,
     ) -> ListingView:
         selection = None
-        if self.decisions is not None:
-            record = self.decisions.latest(listing.id)
-            if record is not None:
-                stale = not self.decisions.is_current(record.selection, listing, prefs, profile)
-                selection = selection_view(record, stale=stale)
+        if self.decisions is not None and record is not None:
+            stale = not self.decisions.is_current(record.selection, listing, prefs, profile)
+            selection = selection_view(record, stale=stale)
         item = items.get(listing.id)
         return ListingView(
             id=listing.id,
@@ -523,6 +563,7 @@ class JobsApi:
             observed_at=iso(listing.observed_at),
             provenance=[
                 ListingSourceView(source=p.source, source_url=p.source_url,
+                                  posting_url=p.posting_url,
                                   application_url=p.application_url,
                                   observed_at=iso(p.observed_at))
                 for p in listing.provenance
@@ -530,6 +571,8 @@ class JobsApi:
             selection=selection,
             pipeline_entry_id=item.id if item is not None else None,
             application_id=lookup(listing),
+            posting_url=listing.posting_url,
+            decision_task=decision_task_view(task) if task is not None else None,
             location_tier=rank.location if rank else None,
             priority_tier=rank.tier if rank else None,
             rank_reason=rank.reason if rank else None,
@@ -556,21 +599,32 @@ class JobsApi:
         prefs, _ = self.load_preferences()
         profile = self.profile_loader()
         items = self.pipeline.items_by_listing()
-        listings = repo.list_listings(limit=LISTING_LIMIT)
+        # Austin-first (the saved location priority) is applied before the limit, so
+        # newer remote listings cannot crowd older target-city ones out.
+        listings = repo.list_listings(limit=self.listing_limit, rank_for=prefs)
         ranks = {x.id: self._rank(x, prefs) for x in listings}
         listings.sort(key=lambda x: self._sort_key(x, ranks[x.id], prefs))
+        ids = [x.id for x in listings]
+        records = self._records(ids)
+        tasks = self.state.latest_by_subject(self.candidate_id, "decision", ids)
         apps = ApplicationStore.open(self.state_db)
         try:
-            lookup = self._application_lookup(apps)
+            lookup = self._application_lookup(apps, items)
             views = [
                 self._listing_view(x, prefs=prefs, profile=profile, items=items, lookup=lookup,
-                                   rank=ranks[x.id])
+                                   rank=ranks[x.id], record=records.get(x.id),
+                                   task=tasks.get(x.id))
                 for x in listings
             ]
         finally:
             apps.close()
         last = self.state.latest(self.candidate_id, "search")
         return ListingsView(listings=views, last_run=search_run_view(last) if last else None)
+
+    def _records(self, listing_ids: Sequence[str]) -> dict[str, DecisionRecord]:
+        if self.decisions is None or not listing_ids:
+            return {}
+        return self.decisions.latest_for(listing_ids, candidate_id=self.candidate_id)
 
     def _listing(self, listing_id: str) -> JobListing:
         if not SAFE_ID.match(listing_id):
@@ -583,12 +637,14 @@ class JobsApi:
     def listing(self, listing_id: str) -> ListingView:
         listing = self._listing(listing_id)
         prefs, _ = self.load_preferences()
+        items = self.pipeline.items_by_listing()
         apps = ApplicationStore.open(self.state_db)
         try:
             return self._listing_view(
                 listing, prefs=prefs, profile=self.profile_loader(),
-                items=self.pipeline.items_by_listing(), lookup=self._application_lookup(apps),
-                rank=self._rank(listing, prefs),
+                items=items, lookup=self._application_lookup(apps, items),
+                rank=self._rank(listing, prefs), record=self._records([listing.id]).get(listing.id),
+                task=self.state.latest(self.candidate_id, "decision", listing.id),
             )
         finally:
             apps.close()
@@ -618,11 +674,6 @@ class JobsApi:
             if created:
                 self._decision_pool.submit(self._run_decision, task.id, listing.id, prefs, done)
         finished = done.wait(DECISION_WAIT_S)
-        latest = self.state.get(task.id)
-        if latest is not None and latest.state == "FAILED":
-            raise errors.ApiError(
-                502, "unavailable", "The decision could not be made. Nothing was recorded; try again."
-            )
         return self.listing(listing.id), finished
 
     def _run_decision(
@@ -642,26 +693,35 @@ class JobsApi:
                 )
             finally:
                 apps.close()
+            if record.selection.candidate_id != self.candidate_id:
+                raise PermissionError("decision belongs to another candidate")
             self.state.update(task_id, state="DONE", result={"selection_id": record.selection.id})
         except Exception as exc:
             log.warning("decision failed: %s", type(exc).__name__)
-            self.state.update(task_id, state="FAILED", error=type(exc).__name__)
+            message = (
+                "The listing is no longer saved." if isinstance(exc, LookupError)
+                else f"The decision could not be made ({type(exc).__name__}). Nothing was "
+                "recorded; ask again."
+            )
+            self.state.update(task_id, state="FAILED", error=message)
         finally:
             done.set()
             with self._lock:
                 self._done.pop(task_id, None)
 
-    def linked_selection(self, selection_id: str) -> LinkedSelectionView | None:
-        if self.decisions is None:
-            return None
-        record = self.decisions.get(selection_id)
-        if record is None:
-            return None
-        s = record.selection
-        return LinkedSelectionView(
-            selection_id=s.id, effective_choice=s.effective_choice.value,
-            decided_at=iso(s.decided_at),
-        )
+    def linked_selections(self, selection_ids: Sequence[str]) -> dict[str, LinkedSelectionView]:
+        """Pipeline card links, looked up in one pass and only for this candidate."""
+        if self.decisions is None or not selection_ids:
+            return {}
+        found = self.decisions.get_many(selection_ids, candidate_id=self.candidate_id)
+        return {
+            sid: LinkedSelectionView(
+                selection_id=r.selection.id, effective_choice=r.selection.effective_choice.value,
+                decided_at=iso(r.selection.decided_at),
+            )
+            for sid, r in found.items()
+            if r.selection.candidate_id == self.candidate_id
+        }
 
     # --- tracking --------------------------------------------------------------------------
 
@@ -674,7 +734,7 @@ class JobsApi:
             None if listing.work_arrangement is WorkArrangement.UNKNOWN
             else listing.work_arrangement.value.capitalize()
         )
-        record = self.decisions.latest(listing.id) if self.decisions else None
+        record = self._records([listing.id]).get(listing.id)
         tracking = TrackingFields(
             company=listing.company,
             role=listing.title,

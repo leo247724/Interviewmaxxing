@@ -75,7 +75,9 @@ class FakeListings:
     def get_listing(self, listing_id: str) -> JobListing | None:
         return self.items.get(listing_id)
 
-    def list_listings(self, *, limit: int | None = None) -> list[JobListing]:
+    def list_listings(self, *, limit: int | None = None,
+                      rank_for: SelectionPreferences | None = None) -> list[JobListing]:
+        self.rank_for = rank_for
         return list(self.items.values())[:limit]
 
 
@@ -147,13 +149,17 @@ class FakeDecisions:
         self.records.setdefault(listing.id, []).append(record)
         return record
 
-    def latest(self, listing_id: str) -> DecisionRecord | None:
-        found = self.records.get(listing_id)
-        return found[-1] if found else None
+    def latest_for(self, listing_ids: Any, *, candidate_id: str) -> dict[str, DecisionRecord]:
+        out = {}
+        for lid in listing_ids:
+            mine = [r for r in self.records.get(lid, []) if r.selection.candidate_id == candidate_id]
+            if mine:
+                out[lid] = mine[-1]
+        return out
 
-    def get(self, selection_id: str) -> DecisionRecord | None:
-        return next((r for rs in self.records.values() for r in rs
-                     if r.selection.id == selection_id), None)
+    def get_many(self, selection_ids: Any, *, candidate_id: str) -> dict[str, DecisionRecord]:
+        return {r.selection.id: r for rs in self.records.values() for r in rs
+                if r.selection.id in selection_ids and r.selection.candidate_id == candidate_id}
 
     def is_current(self, selection: JobSelection, listing: JobListing,
                    preferences: SelectionPreferences, profile: Any) -> bool:

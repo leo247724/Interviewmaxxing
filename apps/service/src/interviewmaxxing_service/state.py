@@ -209,6 +209,25 @@ class ServiceState:
             row = self._conn.execute(sql, args).fetchone()
         return self._task(row) if row else None
 
+    def latest_by_subject(
+        self, candidate_id: str, kind: TaskKind, subjects: list[str]
+    ) -> dict[str, Task]:
+        """The most recent task per subject (for example per listing), in one query."""
+        wanted = list(dict.fromkeys(subjects))
+        out: dict[str, Task] = {}
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            with self._lock:
+                rows = self._conn.execute(
+                    f"SELECT * FROM tasks WHERE candidate_id = ? AND kind = ? AND subject IN ({marks})"
+                    " ORDER BY created_at, rowid",
+                    (candidate_id, kind, *chunk),
+                ).fetchall()
+            for row in rows:
+                out[row["subject"]] = self._task(row)
+        return out
+
     def update(
         self,
         task_id: str,
@@ -245,7 +264,7 @@ class ServiceState:
             ).fetchall()]
             c.execute(
                 "UPDATE tasks SET state = 'INTERRUPTED', updated_at = ?,"
-                " error = COALESCE(error, 'the service stopped before this finished')"
+                " error = COALESCE(error, 'The service stopped before this finished.')"
                 " WHERE state IN ('QUEUED', 'RUNNING')",
                 (_now(),),
             )

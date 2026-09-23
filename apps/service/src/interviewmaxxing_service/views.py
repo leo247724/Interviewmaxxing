@@ -51,6 +51,8 @@ from .models import (
     ApplicationEventView,
     ApplicationView,
     AttestationView,
+    ConfirmationAuthority,
+    ConfirmationMethod,
     EventTone,
     EvidenceView,
     FailureView,
@@ -404,6 +406,16 @@ def evidence_view(public_base: str, application_id: str, evidence: EvidenceRef) 
     )
 
 
+def confirmation_of(receipt: Receipt) -> tuple[ConfirmationMethod, ConfirmationAuthority]:
+    """How and by whom acceptance was established. ``user`` exactly for
+    ``USER_CONFIRMED``, whatever site artifacts the receipt also lists."""
+    if receipt.reconciliation_method is None:
+        return "SUBMISSION_OBSERVED", "site"
+    method: ConfirmationMethod = receipt.reconciliation_method.value
+    by_user = receipt.reconciliation_method is ReconciliationMethod.USER_CONFIRMED
+    return method, "user" if by_user else "site"
+
+
 def _receipt_view(public_base: str, receipt: Receipt) -> SubmissionReceiptView:
     by_user = receipt.reconciliation_method is ReconciliationMethod.USER_CONFIRMED
     items = [evidence_view(public_base, receipt.application_id, e) for e in receipt.evidence]
@@ -418,18 +430,14 @@ def _receipt_view(public_base: str, receipt: Receipt) -> SubmissionReceiptView:
                 source="user" if by_user else "site",
             )
         )
-    method = (
-        receipt.reconciliation_method.value
-        if receipt.reconciliation_method is not None
-        else "SUBMISSION_OBSERVED"
-    )
+    method, authority = confirmation_of(receipt)
     return SubmissionReceiptView(
         receipt_id=f"rcpt_{receipt.attempt_id}",
         submitted_at=iso(receipt.submitted_at),
         confirmation_reference=receipt.confirmation_reference,
         evidence=items,
         confirmation_method=method,
-        confirmation_authority="user" if by_user else "site",
+        confirmation_authority=authority,
     )
 
 

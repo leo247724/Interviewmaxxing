@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
-from .models import Body, View
+from .models import Body, ConfirmationAuthority, ConfirmationMethod, View
 
 Choice = Literal["APPLY", "SKIP", "REVIEW"]
 Period = Literal["YEAR", "MONTH", "WEEK", "DAY", "HOUR"]
@@ -65,6 +65,12 @@ class LinkedApplicationView(View):
     state: str
     submitted_at: str | None
     confirmation_reference: str | None
+    confirmation_method: ConfirmationMethod | None
+    """Additive: same strings as ``SubmissionReceiptView.confirmationMethod``; null
+    without a receipt."""
+    confirmation_authority: ConfirmationAuthority | None
+    """Additive: ``user`` exactly when the method is ``USER_CONFIRMED``; null without a
+    receipt."""
 
 
 class LinkedSelectionView(View):
@@ -261,8 +267,29 @@ class CompensationView(View):
 class ListingSourceView(View):
     source: str
     source_url: str
+    """Where the observation was made; may be a shared search page. Never a link to
+    apply or navigate to the job."""
+    posting_url: str | None
+    """Additive: this posting's own page on the source (canonical ``posting_url``)."""
     application_url: str | None
     observed_at: str
+
+
+DecisionTaskState = Literal["QUEUED", "RUNNING", "DONE", "FAILED", "INTERRUPTED"]
+
+
+class DecisionTaskView(View):
+    """The latest explicit decision request for this listing (service task record)."""
+
+    id: str
+    state: DecisionTaskState
+    error: str | None
+    """Plain-language reason for FAILED or INTERRUPTED; null otherwise."""
+    result_id: str | None
+    """For DONE: the ``SelectionView.id`` it produced (may equal an earlier id when the
+    decision cache answered). Null otherwise."""
+    requested_at: str
+    updated_at: str
 
 
 class PolicyHoldView(View):
@@ -310,6 +337,11 @@ class ListingView(View):
     selection: SelectionView | None
     pipeline_entry_id: str | None
     application_id: str | None
+    posting_url: str | None
+    """Additive: the listing's own posting page (canonical ``posting_url``). Navigate or
+    apply with ``applicationUrl`` first, then this; never with a shared ``sourceUrl``."""
+    decision_task: DecisionTaskView | None
+    """Additive: the latest decision request's lifecycle; null if none was asked."""
     location_tier: LocationTier | None
     """How the stated location relates to the targets (frontend ``LocationTier``, from J2
     ``check_location``); null when the selection package is not installed."""

@@ -1,15 +1,18 @@
-# interviewmaxxing-service (S1 + S2 + S3)
+# interviewmaxxing-service (S1 + S2 + S3 + S3R)
 
 Loopback-only HTTP service between the frontend's same-origin gateway (`apps/web`, F2) and the local executor. It maps canonical store state to the frontend's presentation models (`apps/web/lib/service/types.ts`) and hands all execution to the I1 runner. It is not a second executor or state machine. The canonical `ApplicationStore` is the only state authority.
 
 Owner: queue-runtime. Package `interviewmaxxing-service`, import `interviewmaxxing_service`, script `interviewmaxxing-service`. Standard library HTTP only; no hosted platform, queue or extra dependency.
 
-**Status: S3 checkpoint.** Real package integration is complete, and nothing in the route layer is simulated.
+**S3R contract (for F3, published first).** The DTO changes below are final for this checkpoint:
+[decisionTask](#decision-task-s3r), [health](#application-mode), [linked receipt](#linked-application-s3r) and [postingUrl](#posting-urls-s3r).
+
+**Status: S3R checkpoint.** Real package integration is complete, and nothing in the route layer is simulated.
 - **Applications (S1):** the real C2P `LocalCandidateStore`, the real I1 `create_runner` and headless Chromium against the separately running localhost mock ATS (`tests/service/test_acceptance.py`). The service pins the selected resume to each application before any run.
 - **Pipeline (S2):** the real P1R `PipelineStore`.
 - **Jobs and selection (S2):** the real J1 `JobStore`/`JobSearchService` and J2 `SelectionService`, with fixture source adapters and a fixture Jev transport in tests.
 - **Test-only by default:** the service refuses to drive the browser at non-loopback sites (see [Application mode](#application-mode)).
-- **Still to do:** frontend-driven end-to-end acceptance (F2/F3). The browser correction C4R2 is still held; the acceptance suite also passed with it installed.
+- **Still to do:** frontend-driven end-to-end acceptance (F2/F3) and the final core, browser and package corrections (I1R, C4R3/O1R, J1R, J2R). See [Integration needs](#integration-needs) for the exact coverage of this checkpoint.
 
 `integration.py` is the only module that names the C2P, J1, J2 and I1 APIs. See [Integration needs](#integration-needs).
 
@@ -202,6 +205,7 @@ These implement the routes proposed in `apps/web/README.md` (dashboard `816afa1`
 
 - `ListingView.priorityTier` (+) takes `"PREFERRED" | "EQUAL" | "SECONDARY" | "UNRANKED"`, from J2 `location_tier` under `locationPriority`. `ListingView.rankReason` (+) is a string. All three are `null` when the selection package is not installed.
 - **Listing order:**
+  0. The saved location priority is applied by J1 (`list_listings(rank_for=preferences)`) *before* the 500-listing limit, so newer remote listings cannot crowd older Austin onsite/hybrid ones out.
   1. Closed listings last.
   2. Then priority tier. With the default priority, Austin onsite/hybrid is `PREFERRED` and eligible US-wide remote is `SECONDARY`, so remote roles are still listed, never excluded.
   3. Then stated pay against the floor: meets, unknown, below. Unknown pay is not demoted below pay that misses the floor.
@@ -226,7 +230,9 @@ These implement the routes proposed in `apps/web/README.md` (dashboard `816afa1`
   - Searches run one at a time, on their own worker, independent of the application browser. Repeating an identical query while it runs returns the same run. A different query while one runs gets `409`.
 - **Decisions.**
   - Decisions run on their own single worker, with at most 10 queued. Concurrent requests for the same listing and preferences join one decision; the provider is called once.
-  - The call waits up to 20 s for the decision (the gateway allows 30 s). `202` means it is still running; poll `GET /jobs/{id}`.
+  - The call waits up to 20 s for the decision (the gateway allows 30 s). `202` means it is still running; poll `GET /jobs/{id}` and read `decisionTask` (below).
+  - A failed decision no longer answers `502`: the response is `200` with `decisionTask.state: "FAILED"` and a plain `error`. Nothing is recorded as a selection.
+  - Decisions are strictly per candidate. A decision recorded for another candidate is never shown, linked to a pipeline card or reused from J2's cache, even when the listing and inputs are identical.
   - `selection.unresolved` lists facts J2 could not establish: pay, location or remote eligibility, missing profile, and insufficient evidence.
   - A missing key, or a provider failure, is recorded as J2's `PROVIDER_ERROR` hold (for example `NOT_CONFIGURED`), never an APPLY.
   - Jev receives only J2's minimal `CandidateEvidence.from_profile` projection of the complete candidate profile, or nothing, which is held as `MISSING_PROFILE`.
@@ -240,6 +246,44 @@ These implement the routes proposed in `apps/web/README.md` (dashboard `816afa1`
   - the current selection id.
 
   Tracking, deciding and searching never create an application. Applying still goes through `POST /applications`, with its duplicate check.
+
+### Decision task (S3R)
+
+`ListingView.decisionTask` (+) is the latest explicit decision request for this listing and candidate, from the service's durable task record (`$IMX_HOME/state/service.sqlite3`). It is `null` when no decision was ever requested. It uses the service's existing task vocabulary:
+
+```ts
+interface DecisionTaskView {
+  id: string;                       // "dec_<hex>", stable before the request returns
+  state: "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "INTERRUPTED";
+  error: string | null;             // plain language, only for FAILED and INTERRUPTED
+  resultId: string | null;          // DONE only: the SelectionView.id it produced
+  requestedAt: string;              // ISO-8601 UTC
+  updatedAt: string;
+}
+```
+
+- **Polling.** Poll `GET /jobs/{listingId}` (or read `GET /jobs`) until `state` is `DONE`, `FAILED` or `INTERRUPTED`. `DONE` means the decision finished, even when `resultId` equals an earlier `selection.id` (J2's cache answered); stop polling then.
+- **Coalescing.** A repeated request while one is `QUEUED`/`RUNNING` returns the same `id`.
+- **Restart.** A service restart marks unfinished tasks `INTERRUPTED` with `error: "The service stopped before this decision finished. Ask again."`.
+- **Failure.** `FAILED` keeps `selection` unchanged (the previous decision, if any, or `null`).
+
+### Linked application (S3R)
+
+`PipelineEntryView.application` (`LinkedApplicationView`) carries two additive fields, with exactly the receipt DTO's strings:
+
+```ts
+confirmationMethod: "SUBMISSION_OBSERVED" | "SITE_CONFIRMATION" | "ATS_CANDIDATE_PORTAL" | "CONFIRMATION_EMAIL" | "USER_CONFIRMED" | null;
+confirmationAuthority: "site" | "user" | null;   // null when there is no receipt
+```
+
+`"user"` exactly for `USER_CONFIRMED`, even when the receipt lists older site artifacts. A user's report that nothing arrived never unlocks an uncertain application: its linked `state` stays `SUBMISSION_UNKNOWN` with no method or authority.
+
+### Posting URLs (S3R)
+
+- `ListingSourceView.postingUrl` (+) is the canonical `posting_url`: this posting's own page on that source, or `null`.
+- `ListingView.postingUrl` (+) is the listing's own `posting_url`, or `null`.
+- `sourceUrl` stays observation provenance and may be a shared search page. It is never a navigation or application link.
+- The link order for navigating or applying is `applicationUrl`, then `postingUrl`, else none. Tracking a listing sets the card's `applicationUrl` the same way; with neither, the card's `applicationUrl` is `null` and the UI must ask for it.
 
 ## Public Python API
 
@@ -280,20 +324,34 @@ C2P decides the stored file name (a safe ASCII name) and media type, checks the 
 
 ## Integration needs
 
-All packages are merged into this branch at these checkpoints, and are used directly:
+Merged into this branch and used directly (committed checkpoints only):
 
 | Package | Checkpoint | Used through |
 | --- | --- | --- |
-| I1 runner | `d43ce6b` | `create_runner(paths, *, headless, interaction)`; `ApplicationStore.pin_resume`/`pinned_resume`. `RunnerBusy` is handled inside the runner (returned as its outcome message). The service also serializes runs itself. |
+| I1 runner | `d43ce6b` | `create_runner(paths, *, headless, interaction)`; `ApplicationStore.pin_resume`/`pinned_resume`. The service also serializes runs itself. |
 | C2P/C2P2 candidate | root `caae823` | `candidate_setup`, `store_resume`, `get_resume`, `upsert_profile`, `save_answer`, `load` |
-| J1 jobs | `44caab8` | `JobStore`, `JobSearchService(...).run(single-source query, detail_limit=)`, `OpenCliTransport`, `default_db_path` |
-| J2 selection | `53201dd` | `SelectionService`, `SelectionStore`, `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier`, `location_priority_reason` |
-| P1R pipeline | `d6ce9e4` | `PipelineStore` (incl. `source_versions`), `parse_import(..., source_id=)`, `TrackingFields`, `REFERENCE_FIELDS` |
-| Browser | root (C4) | via I1; acceptance also passed with the held C4R2 `00e0362` |
+| J1 jobs | J1S `1d8f2ee` | `JobStore.get_listing`, `list_listings(limit=, rank_for=)`, `JobSearchService(...).run(single-source query, detail_limit=)`, `OpenCliTransport`, `default_db_path` |
+| J2 selection | J2S `0f58421` (sends `role_focus`) | `SelectionService.select(..., use_cache=)`, `.is_current`, `SelectionStore.latest/history/get`, `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier`, `location_priority_reason` |
+| P1R2 pipeline | `e5c14c7` | `PipelineStore` (incl. `source_versions`), `parse_import(..., source_id=)`, `TrackingFields`, `REFERENCE_FIELDS` |
+| Browser | root (C4) | via I1 |
 
-Remaining seam requests:
+**Checkpoint coverage.** The S3R service tests and the real HTTP → I1 → headless Chromium → mock ATS acceptance ran on exactly these commits. They did **not** cover:
 
-- **J2 → role focus.** J2 `53201dd` predates root `caae823`, so its Jev evidence (`jev_preferences_view`) does not yet send `preferences.role_focus`. The fingerprint and cache already change with it. J2 should add it to the preferences view and rubric.
+- the final core runner corrections (I1R);
+- the browser corrections C4R3 and O1R;
+- the in-progress J1R (region matching in `rank_for`) and J2R (candidate-scoped store APIs).
+
+Final MVP end-to-end acceptance still needs those, plus the dashboard-driven run.
+
+**Adapter dependencies on in-progress corrections:**
+
+- **J2R candidate scoping.** Committed J2 (`0f58421`) `SelectionStore.latest/get/history/find_cached` take no candidate. The service adapter therefore:
+  - filters `history(listing_id)` by `selection.candidate_id` for listing views, which parses that listing's full history once per request;
+  - checks the candidate on every `get`;
+  - re-runs `select(..., use_cache=False)` when J2's evidence-keyed cache returns another candidate's decision, and refuses the result if it still belongs to another candidate.
+
+  When J2R publishes `latest(listing_id, *, candidate_id)` / `get(selection_id, *, candidate_id)`, the adapter uses them automatically (it detects a `candidate_id` parameter) and still verifies the candidate. A batched `latest_many(candidate_id, listing_ids)` would remove the remaining per-listing query; it is requested, not required.
+- **J1R region matching.** Pre-limit ranking is J1's `rank_for`. The service's own finer ordering (J2 tier, pay, recency) is applied only within the returned 500.
 - **J1 (optional).** `run(query, *, run_id=None, on_source=callback)`. With it, one J1 run could carry the service task id instead of the service running J1 once per source.
 
 **Dependencies.** `pyproject.toml` pins `interviewmaxxing-core`, `-candidate`, `-pipeline`, `-jobs`, `-selection` and `-cli` at `==0.1.0` (workspace sources). J1/J2 are still imported lazily in `integration.py`, so the route layer has no hard import on them. The root lock is core/coordinator-owned and must include this member.
@@ -317,6 +375,13 @@ uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/ser
 - `test_candidate_integration`: the real C2P store.
 - `test_pipeline_routes`: the real P1 store, including CSV import preview, commit and reimport.
 - `test_jobs_routes`: the jobs/selection orchestration over protocol fakes that produce canonical D0 records.
+- `test_review_s3r`: the S3R corrections:
+  - candidate isolation, with real J2 and a fictional transport, including the cross-candidate cache case;
+  - the decision task (running and coalesced, in-process failure, cache hit with the same result id, restart interruption);
+  - Austin ranked before the listing limit (real J1);
+  - linked receipt authority, including a user report that does not unlock;
+  - `postingUrl`, and that track never uses a search page;
+  - one pipeline and one decision lookup per listing page.
 - `test_package_integration`: the real J1 store and search service with fixture source adapters, and the real J2 selection service with a fixture Jev transport.
 - `test_acceptance` (marked `slow`): HTTP → real I1 runner → headless Chromium → `scripts/mock_ats.py` in its own process, with a fictional profile in a temporary `IMX_HOME`. It covers:
   - receipt, server-side acceptance count, uploaded file digest and a repeat request;

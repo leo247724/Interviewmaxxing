@@ -56,9 +56,9 @@ def build_app(
     service.recover()
     jobs_ref: dict[str, Any] = {}
 
-    def selection_lookup(selection_id: str) -> Any:
+    def selection_lookup(selection_ids: Any) -> Any:
         jobs = jobs_ref.get("jobs")
-        return jobs.linked_selection(selection_id) if jobs is not None else None
+        return jobs.linked_selections(selection_ids) if jobs is not None else {}
 
     def listing_exists(listing_id: str) -> bool | None:
         return None if listings is None else listings.get_listing(listing_id) is not None

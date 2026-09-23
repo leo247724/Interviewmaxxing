@@ -8,7 +8,8 @@ do not need them.
 from __future__ import annotations
 
 import importlib
-from collections.abc import Mapping
+import inspect
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -195,8 +196,10 @@ class LocalJobsBackend:
         listing: JobListing | None = self.store.get_listing(listing_id)
         return listing
 
-    def list_listings(self, *, limit: int | None = None) -> list[JobListing]:
-        listings: list[JobListing] = self.store.list_listings(limit=limit)
+    def list_listings(
+        self, *, limit: int | None = None, rank_for: SelectionPreferences | None = None
+    ) -> list[JobListing]:
+        listings: list[JobListing] = self.store.list_listings(limit=limit, rank_for=rank_for)
         return listings
 
     def search_source(self, query: JobSearchQuery, source: str) -> SourceSearchResult:
@@ -291,26 +294,58 @@ class LocalSelectionBackend:
                 store, candidate_id=candidate_id, lookup=application_lookup,
                 client=self._client(),
             )
-            outcome = service.select(listing, preferences, self._evidence(profile))
+            evidence = self._evidence(profile)
+            outcome = service.select(listing, preferences, evidence)
+            if outcome.selection.candidate_id != candidate_id:
+                # J2's cache is keyed by evidence, not candidate: never accept another
+                # candidate's decision because the listing and inputs match.
+                outcome = service.select(listing, preferences, evidence, use_cache=False)
         finally:
             store.close()
+        if outcome.selection.candidate_id != candidate_id:
+            raise PermissionError("the decision was recorded for another candidate")
         return self._record(outcome)
 
-    def latest(self, listing_id: str) -> DecisionRecord | None:
+    def latest_for(
+        self, listing_ids: Sequence[str], *, candidate_id: str
+    ) -> dict[str, DecisionRecord]:
+        """One store connection for the whole request. Uses J2's candidate-scoped
+        ``latest(listing_id, candidate_id=)`` when the installed J2 has it (J2R); with
+        the current J2 it filters that listing's history by candidate."""
         store = self._store()
+        scoped = "candidate_id" in inspect.signature(store.latest).parameters
+        out: dict[str, DecisionRecord] = {}
         try:
-            outcome = store.latest(listing_id)
+            for listing_id in dict.fromkeys(listing_ids):
+                if scoped:
+                    outcome = store.latest(listing_id, candidate_id=candidate_id)
+                else:
+                    outcome = next(
+                        (o for o in reversed(store.history(listing_id))
+                         if o.selection.candidate_id == candidate_id),
+                        None,
+                    )
+                if outcome is not None and outcome.selection.candidate_id == candidate_id:
+                    out[listing_id] = self._record(outcome)
         finally:
             store.close()
-        return self._record(outcome) if outcome else None
+        return out
 
-    def get(self, selection_id: str) -> DecisionRecord | None:
+    def get_many(
+        self, selection_ids: Sequence[str], *, candidate_id: str
+    ) -> dict[str, DecisionRecord]:
         store = self._store()
+        scoped = "candidate_id" in inspect.signature(store.get).parameters
+        out: dict[str, DecisionRecord] = {}
         try:
-            outcome = store.get(selection_id)
+            for selection_id in dict.fromkeys(selection_ids):
+                outcome = (store.get(selection_id, candidate_id=candidate_id) if scoped
+                           else store.get(selection_id))
+                if outcome is not None and outcome.selection.candidate_id == candidate_id:
+                    out[selection_id] = self._record(outcome)
         finally:
             store.close()
-        return self._record(outcome) if outcome else None
+        return out
 
     def is_current(
         self,
