@@ -61,12 +61,35 @@ class JobSearchService:
         self.page_pause_s = page_pause_s
         self.close_sessions = close_sessions
 
-    def run(self, query: JobSearchQuery, *, detail_limit: int | None = None) -> JobSearchRun:
-        run_id = new_id("run")
+    def run(
+        self,
+        query: JobSearchQuery,
+        *,
+        detail_limit: int | None = None,
+        run_id: str | None = None,
+        on_source_start: Callable[[str], None] | None = None,
+        on_source: Callable[[SourceSearchResult], None] | None = None,
+    ) -> JobSearchRun:
+        """Search ``query.sources`` one after another (one browser session each, never
+        concurrent actions on a session) and save the run.
+
+        ``run_id`` lets a caller (e.g. the S2 service task id) name the run; it is
+        saved under that id, replacing an earlier run with the same id.
+        ``on_source_start(source)`` is called before a source starts and
+        ``on_source(result)`` with its canonical ``SourceSearchResult`` as soon as it
+        finishes, after its listings are stored. Callbacks run synchronously on this
+        thread; an exception from one propagates and ends the run unsaved."""
+        run_id = run_id or new_id("run")
         started = self.clock()
-        results = [self._search_source(query, source, run_id,
-                                       self.detail_limit if detail_limit is None else detail_limit)
-                   for source in query.sources]
+        limit = self.detail_limit if detail_limit is None else detail_limit
+        results: list[SourceSearchResult] = []
+        for source in query.sources:
+            if on_source_start is not None:
+                on_source_start(source)
+            result = self._search_source(query, source, run_id, limit)
+            results.append(result)
+            if on_source is not None:
+                on_source(result)
         run = JobSearchRun(id=run_id, query=query, results=results, started_at=started,
                            finished_at=max(self.clock(), started))
         self.store.save_run(run)

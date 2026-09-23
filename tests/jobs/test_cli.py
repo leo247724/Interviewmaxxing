@@ -14,7 +14,9 @@ EXAMPLE = Path(__file__).parent.parent.parent / "examples" / "job-search.example
 
 def test_example_query_is_the_users_default_search() -> None:
     query = build_query(parser().parse_args(["search", "--query-file", str(EXAMPLE)]))
-    assert query.title_phrases == ["marketing manager", "marketing director"]
+    assert query.title_phrases[:2] == ["paid media manager", "senior paid media manager"]
+    assert query.title_phrases[-2:] == ["marketing manager", "marketing director"]
+    assert query.role_focus.startswith("Performance marketing operator")
     assert [t.location for t in query.onsite] == ["Austin, TX"]
     assert query.remote is not None and query.remote.eligible_region == "United States"
     assert query.location_priority is LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
@@ -26,7 +28,9 @@ def test_example_query_is_the_users_default_search() -> None:
 def test_cli_edits_keywords_location_and_priority() -> None:
     query = build_query(parser().parse_args([
         "smoke", "--title", "brand manager", "--keyword", "B2B", "--onsite", "Round Rock, TX",
-        "--no-remote", "--sources", "indeed,builtin", "--location-priority", "BALANCED"]))
+        "--no-remote", "--sources", "indeed,builtin", "--location-priority", "BALANCED",
+        "--role-focus", "Fictional brand focus."]))
+    assert query.role_focus == "Fictional brand focus."
     assert query.title_phrases == ["brand manager"] and query.keywords == ["B2B"]
     assert query.remote is None and query.sources == ["indeed", "builtin"]
     assert query.max_results_per_source == 2

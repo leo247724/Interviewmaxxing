@@ -68,6 +68,8 @@ def build_query(args: argparse.Namespace) -> JobSearchQuery:
         base["posted_within_days"] = args.posted_within_days
     if args.location_priority:
         base["location_priority"] = args.location_priority
+    if args.role_focus:
+        base["role_focus"] = args.role_focus
     return JobSearchQuery.model_validate(base)
 
 
@@ -103,6 +105,8 @@ def run_summary(run: JobSearchRun) -> dict[str, Any]:
         "run_id": run.id,
         "query_id": run.query.id,
         "location_priority": run.query.location_priority.value,
+        "title_seeds": run.query.title_phrases,
+        "role_focus": run.query.role_focus,
         "sources": [
             {"source": r.source, "state": r.state.value, "listings": r.result_count,
              "pages_visited": r.pages_visited, "message": r.message,
@@ -172,7 +176,9 @@ def cmd_runs(args: argparse.Namespace) -> int:
 
 def _search_options(p: argparse.ArgumentParser, *, limit: int | None, details: int) -> None:
     p.add_argument("--query-file", help="JSON JobSearchQuery (see examples/job-search.example.json)")
-    p.add_argument("--title", action="append", help="title phrase (repeatable)")
+    p.add_argument("--title", action="append",
+                   help="title seed (repeatable); seeds guide search, they are not a title filter")
+    p.add_argument("--role-focus", help="semantic description of the roles wanted")
     p.add_argument("--keyword", action="append", help="extra keyword (repeatable)")
     p.add_argument("--exclude", action="append", help="excluded title keyword (repeatable)")
     p.add_argument("--onsite", action="append", help='onsite/hybrid location, e.g. "Austin, TX"')
