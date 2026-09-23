@@ -236,3 +236,30 @@ def test_conflict_evidence_follows_a_later_canonical_merge(tmp_path: Path) -> No
     assert s.get_listing(google.id) == direct
     assert len(s.conflicts(direct.id)) == 1
     assert s.conflicts(google.id)[0]["raw"] == {"rejected": True}
+
+
+def test_listing_aliases_returns_only_accepted_historical_ids(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    google = s.upsert(listing(source="google", sid="doc1", key=KEY))
+    canonical = s.upsert(listing(key=KEY))
+    indeed_input = listing(source="indeed", sid="aaaaaaaaaaaaaaaa", key=KEY)
+    assert s.upsert(indeed_input).id == canonical.id
+    # A different LinkedIn posting sharing a disputed employer key is separate.
+    unrelated = s.upsert(listing(sid="different", key=KEY))
+    with pytest.raises(ListingConflict):
+        s.upsert(listing(source="google", sid="doc1", key=OTHER_KEY))
+    expected = {canonical.id: [canonical.id, *sorted([google.id, indeed_input.id])]}
+    assert s.listing_aliases([canonical.id]) == expected
+    assert s.listing_aliases(iter([google.id, indeed_input.id, canonical.id, google.id, "missing"])) == expected
+    assert s.listing_aliases([unrelated.id]) == {unrelated.id: [unrelated.id]}
+    assert s.listing_aliases([]) == {}
+    assert s.listing_aliases(["missing"]) == {}
+    assert len(s.list_listings()) == 2
+
+
+def test_listing_aliases_batches_large_requests(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    google = s.upsert(listing(source="google", sid="doc1", key=KEY))
+    canonical = s.upsert(listing(key=KEY))
+    requested = [f"missing-{i}" for i in range(1201)] + [google.id, canonical.id]
+    assert s.listing_aliases(requested) == {canonical.id: [canonical.id, google.id]}

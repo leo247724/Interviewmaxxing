@@ -138,7 +138,11 @@ _SCHEMA_UNITS = {
 
 
 def compensation_from_schema(base_salary: object, raw_text: str | None = None) -> Compensation | None:
-    """schema.org ``baseSalary`` (MonetaryAmount) with explicit currency and unit."""
+    """schema.org pay with explicit currency/unit, subject to visible qualifiers.
+
+    Estimate labels and conflicting explicit currencies in the visible salary
+    text make the combined evidence noncomparable; schema cannot override them.
+    """
     if not isinstance(base_salary, dict):
         return None
     currency = base_salary.get("currency")
@@ -156,6 +160,11 @@ def compensation_from_schema(base_salary: object, raw_text: str | None = None) -
     if low is not None and high is not None and low > high:
         return None
     text = clean(raw_text) or _schema_text(low, high, currency, period)
+    if raw_text:
+        visible_pay = pay_segment(raw_text) or raw_text
+        explicit = explicit_currencies(visible_pay)
+        if _ESTIMATE.search(visible_pay) or (explicit and explicit != {currency.upper()}):
+            return Compensation(raw_text=text)
     return Compensation(raw_text=text, minimum=low, maximum=high, currency=currency, period=period)
 
 
