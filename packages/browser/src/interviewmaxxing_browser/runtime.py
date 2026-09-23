@@ -630,11 +630,16 @@ class GenericApplicationBrowser:
         candidates: list[tuple[str, str]] = []  # (statement, record text)
         records = application_records(snapshot)
         if records is None:
+            # One record, or records whose boundaries could not be established: the
+            # whole page must then be unambiguous. A not-submitted status anywhere, or
+            # several different job ids, means statuses and identities may belong to
+            # different applications, so nothing is tied.
             page = f"{snapshot.title}\n{snapshot.body_text}"
             statement = affirmative_acceptance(snapshot.title) or affirmative_acceptance(
                 snapshot.body_text[:3000]
             )
-            if statement:
+            ambiguous = NOT_SUBMITTED_STATUS.search(page) or len({i.lower() for i in job_ids(page)}) > 1
+            if statement and not ambiguous:
                 candidates.append((statement, page))
         else:
             for record in records:

@@ -366,14 +366,10 @@
   let groupCount = 0;
   for (const parent of [document.body, ...document.body.querySelectorAll("*")]) {
     if (members.length >= 600) break;
-    const byKey = new Map();
-    for (const child of parent.children) {
-      if (!recordish(child) || !visible(child)) continue;
-      const key = child.tagName + "|" + (child.getAttribute("role") || "");
-      if (!byKey.has(key)) byKey.set(key, []);
-      byKey.get(key).push(child);
-    }
-    for (const group of byKey.values()) {
+    // All record-like children of one parent form one group whatever their tags:
+    // a <div> card next to an <article> card is still two sibling records.
+    const group = Array.from(parent.children).filter((c) => recordish(c) && visible(c));
+    {
       if (group.length < 2) continue;
       const g = groupCount++;
       for (const el of group) {

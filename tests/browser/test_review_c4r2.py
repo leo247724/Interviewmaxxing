@@ -227,3 +227,65 @@ def test_2_statement_questions_are_explicit_and_factual_controls_are_not(
     (post,) = site.posts()
     assert post["data_uses"] == ["talent_pool"] and post["arrangements"] == ["remote"]
     assert post["signature"] == [name] and post["full_name"] == [name]
+
+
+# --- C4R3: record boundaries that are mixed, nested or absent -----------------------------
+
+MIXED_TAGS = """<h1>My applications</h1>
+<div><h2>Widget Engineer</h2><p>Job ID ABC-123</p><p>Draft</p></div>
+<article><h2>Graphic Designer</h2><p>Application submitted.</p><p>Reference: APP-9876</p></article>"""
+
+MIXED_NESTED = """<h1>My applications</h1>
+<div><h2>Widget Engineer</h2><p>Job ID ABC-123</p><ul><li>Status: Draft</li></ul></div>
+<article><h2>Graphic Designer</h2><ul><li>Application submitted</li><li>Reference: APP-9876</li></ul></article>"""
+
+NO_WRAPPERS = """<h1>My applications</h1>
+<h2>Widget Engineer</h2><p>Job ID ABC-123</p><p>Draft</p>
+<h2>Graphic Designer</h2><p>Application submitted.</p><p>Reference: APP-9876</p>"""
+
+UNKNOWN_STATUS = """<h1>My applications</h1>
+<div><h2>Widget Engineer</h2><p>Job ID ABC-123</p><p>Status: Queued for screening</p></div>
+<section><h2>Graphic Designer</h2><p>Application submitted.</p><p>Reference: APP-9876</p></section>"""
+
+TWO_IDS_FLAT = """<h1>Application submitted</h1>
+<p>Job ID ABC-123</p><p>Job ID XYZ-999</p><p>Reference: APP-9876</p>"""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(MIXED_TAGS, id="div-next-to-article"),
+        pytest.param(MIXED_NESTED, id="mixed-tags-with-nested-lists"),
+        pytest.param(NO_WRAPPERS, id="no-record-wrappers-at-all"),
+        pytest.param(UNKNOWN_STATUS, id="target-has-unrecognized-status"),
+        pytest.param(TWO_IDS_FLAT, id="two-job-ids-without-boundaries"),
+    ],
+)
+def test_3_unestablished_or_mixed_boundaries_never_mix_records(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, body: str
+) -> None:
+    observation = _reconcile(kit, server, options, body)
+    assert observation.outcome is SubmissionOutcome.UNKNOWN, observation.signals
+
+
+@pytest.mark.parametrize(
+    ("body", "reference"),
+    [
+        pytest.param("""<h1>My applications</h1>
+<div><h2>Graphic Designer</h2><p>Draft</p></div>
+<article><h2>Widget Engineer</h2><p>Job ID ABC-123</p><p>Application submitted.</p><p>Reference: APP-3333</p></article>""",
+                     "APP-3333", id="target-in-article-beside-div"),
+        pytest.param("""<h1>My applications</h1>
+<section><h2>Graphic Designer</h2><ul><li>Status: Draft</li></ul></section>
+<div><h2>Widget Engineer (Job ID ABC-123)</h2><ul><li>Application submitted</li><li>Reference: APP-4444</li></ul></div>""",
+                     "APP-4444", id="target-in-div-with-nested-list"),
+        pytest.param("<h1>Application submitted</h1><p>Widget Engineer · Job ID ABC-123</p><p>Reference: APP-5555</p>",
+                     "APP-5555", id="single-record-page-still-confirms"),
+    ],
+)
+def test_3_target_record_still_confirms_across_mixed_tags(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, body: str, reference: str
+) -> None:
+    observation = _reconcile(kit, server, options, body)
+    assert observation.outcome is SubmissionOutcome.ACCEPTED, observation.signals
+    assert observation.confirmation_reference == reference
