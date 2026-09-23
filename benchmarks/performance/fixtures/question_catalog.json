@@ -1,0 +1,383 @@
+{
+ "consent_wordings": [
+  "I certify that all application information is accurate.",
+  "I consent to the processing of my application data for recruiting purposes.",
+  "I agree to the candidate privacy notice and confirm my answers are truthful.",
+  "By submitting, I certify that I have never been dismissed for cause."
+ ],
+ "note": "Fictional per-ATS question sets used to model human input. Wording is invented.",
+ "questions": {
+  "ashby": [
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "full_name",
+    "required": true,
+    "semantic_type": "FULL_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "email",
+    "required": true,
+    "semantic_type": "EMAIL",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "resume",
+    "required": true,
+    "semantic_type": "RESUME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "location",
+    "required": true,
+    "semantic_type": "LOCATION",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "salary_expectation",
+    "required": true,
+    "semantic_type": "SALARY_EXPECTATION",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "attestation",
+    "required": true,
+    "semantic_type": "ATTESTATION",
+    "tenant_specific": true
+   }
+  ],
+  "generic": [
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "full_name",
+    "required": true,
+    "semantic_type": "FULL_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "email",
+    "required": true,
+    "semantic_type": "EMAIL",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "resume",
+    "required": true,
+    "semantic_type": "RESUME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": false,
+    "key": "cover_letter",
+    "required": false,
+    "semantic_type": "COVER_LETTER",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": false,
+    "key": "custom_text",
+    "required": true,
+    "semantic_type": "CUSTOM_TEXT",
+    "tenant_specific": true
+   }
+  ],
+  "greenhouse": [
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "first_name",
+    "required": true,
+    "semantic_type": "FIRST_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "last_name",
+    "required": true,
+    "semantic_type": "LAST_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "email",
+    "required": true,
+    "semantic_type": "EMAIL",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "phone",
+    "required": true,
+    "semantic_type": "PHONE",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "resume",
+    "required": true,
+    "semantic_type": "RESUME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "linkedin",
+    "required": false,
+    "semantic_type": "LINKEDIN",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "work_authorization",
+    "required": true,
+    "semantic_type": "WORK_AUTHORIZATION",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "sponsorship",
+    "required": true,
+    "semantic_type": "SPONSORSHIP",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "eeo_gender",
+    "required": false,
+    "semantic_type": "EEO_GENDER",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "eeo_veteran",
+    "required": false,
+    "semantic_type": "EEO_VETERAN",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": false,
+    "key": "why_us",
+    "required": true,
+    "semantic_type": "CUSTOM_LONG_TEXT",
+    "tenant_specific": true
+   }
+  ],
+  "lever": [
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "full_name",
+    "required": true,
+    "semantic_type": "FULL_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "email",
+    "required": true,
+    "semantic_type": "EMAIL",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "phone",
+    "required": true,
+    "semantic_type": "PHONE",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "current_company",
+    "required": false,
+    "semantic_type": "CURRENT_COMPANY",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "resume",
+    "required": true,
+    "semantic_type": "RESUME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "work_authorization",
+    "required": true,
+    "semantic_type": "WORK_AUTHORIZATION",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "consent",
+    "required": true,
+    "semantic_type": "CONSENT",
+    "tenant_specific": true
+   }
+  ],
+  "smartrecruiters": [
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "first_name",
+    "required": true,
+    "semantic_type": "FIRST_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "last_name",
+    "required": true,
+    "semantic_type": "LAST_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "email",
+    "required": true,
+    "semantic_type": "EMAIL",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "resume",
+    "required": true,
+    "semantic_type": "RESUME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "consent",
+    "required": true,
+    "semantic_type": "CONSENT",
+    "tenant_specific": true
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "years_experience",
+    "required": true,
+    "semantic_type": "YEARS_EXPERIENCE",
+    "tenant_specific": false
+   }
+  ],
+  "workday": [
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "sign_in",
+    "required": true,
+    "semantic_type": "USER_ACTION",
+    "tenant_specific": true
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "first_name",
+    "required": true,
+    "semantic_type": "FIRST_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "last_name",
+    "required": true,
+    "semantic_type": "LAST_NAME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "email",
+    "required": true,
+    "semantic_type": "EMAIL",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": true,
+    "explicit": false,
+    "key": "resume",
+    "required": true,
+    "semantic_type": "RESUME",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "work_authorization",
+    "required": true,
+    "semantic_type": "WORK_AUTHORIZATION",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "sponsorship",
+    "required": true,
+    "semantic_type": "SPONSORSHIP",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "eeo_race",
+    "required": false,
+    "semantic_type": "EEO_RACE",
+    "tenant_specific": false
+   },
+   {
+    "deterministic": false,
+    "explicit": true,
+    "key": "attestation",
+    "required": true,
+    "semantic_type": "ATTESTATION",
+    "tenant_specific": true
+   },
+   {
+    "deterministic": false,
+    "explicit": false,
+    "key": "custom_select",
+    "required": true,
+    "semantic_type": "CUSTOM_SELECT",
+    "tenant_specific": true
+   }
+  ]
+ }
+}

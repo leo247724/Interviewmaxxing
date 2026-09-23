@@ -1,0 +1,37 @@
+{
+ "candidate_id": "cand_fictional",
+ "education": [
+  {
+   "degree": "BBA",
+   "field_of_study": "Marketing",
+   "graduation": "2016"
+  }
+ ],
+ "experience": [
+  {
+   "current": true,
+   "end": null,
+   "start": "2021",
+   "title": "Senior Paid Media Manager"
+  },
+  {
+   "current": false,
+   "end": "2021",
+   "start": "2018",
+   "title": "Performance Marketing Manager"
+  }
+ ],
+ "verified_facts": {
+  "annual_paid_budget_owned": "USD 4M across search, social and programmatic",
+  "channels": [
+   "Google Ads",
+   "Meta",
+   "TikTok",
+   "programmatic"
+  ],
+  "current_title": "Senior Paid Media Manager",
+  "measurement": "incrementality testing, MMM inputs, multi-touch attribution",
+  "team": "led 3 channel specialists and 2 agencies",
+  "years_experience.paid_media": 8
+ }
+}

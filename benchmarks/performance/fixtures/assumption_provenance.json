@@ -1,0 +1,264 @@
+[
+  {
+    "default": 0.35,
+    "field": "p_dedupe",
+    "label": "modeled",
+    "note": "share of observations that repeat a known listing; measure from JobStore.observations"
+  },
+  {
+    "default": 0.55,
+    "field": "p_cheap_pass",
+    "label": "modeled",
+    "note": "share surviving closed/pay/location/excluded-term gates"
+  },
+  {
+    "default": 0.8,
+    "field": "p_enrich_needed",
+    "label": "modeled",
+    "note": "0.80 is a modeled bound: 40 detail attempts/200 cards do not establish 40 FULL descriptions"
+  },
+  {
+    "default": 0.25,
+    "field": "p_apply_given_enriched",
+    "label": "modeled",
+    "note": "needs the candidate-labeled fixture set; guess"
+  },
+  {
+    "default": 0.3,
+    "field": "p_needs_input",
+    "label": "modeled",
+    "note": "first submission per tenant stopping in NEEDS_INPUT at least once; guess"
+  },
+  {
+    "default": 0.05,
+    "field": "p_unknown",
+    "label": "modeled",
+    "note": "submits ending SUBMISSION_UNKNOWN; guess"
+  },
+  {
+    "default": 0.1,
+    "field": "p_retryable_failure",
+    "label": "modeled",
+    "note": "runs ending FAILED_RETRYABLE before submit; guess"
+  },
+  {
+    "default": 0.3,
+    "field": "p_multistep",
+    "label": "modeled",
+    "note": "share of multi-step (e.g. Workday) forms; guess"
+  },
+  {
+    "default": 0.7,
+    "field": "p_global_reuse",
+    "label": "modeled",
+    "note": "user chooses GLOBAL reuse for an answer; guess"
+  },
+  {
+    "default": 0.5,
+    "field": "t_jev_call_s",
+    "label": "modeled",
+    "note": "fictional per-attempt lognormal median; fixed sigma .35; no live latency or configurable p95"
+  },
+  {
+    "default": 0.05,
+    "field": "t_packet_s",
+    "label": "modeled",
+    "note": "FactualPacketResolver is CPU-bound; sub-50 ms guess"
+  },
+  {
+    "default": 90.0,
+    "field": "t_submit_s",
+    "label": "modeled",
+    "note": "single-page application incl. Chromium launch (session.py:76-110); unmeasured"
+  },
+  {
+    "default": 240.0,
+    "field": "t_submit_multistep_s",
+    "label": "modeled",
+    "note": "multi-step form; unmeasured; RunLimits.max_steps=12"
+  },
+  {
+    "default": 45.0,
+    "field": "t_resume_after_input_s",
+    "label": "modeled",
+    "note": "re-inspect and continue after NEEDS_INPUT; unmeasured"
+  },
+  {
+    "default": 45.0,
+    "field": "t_reconcile_s",
+    "label": "modeled",
+    "note": "browser recheck; unmeasured"
+  },
+  {
+    "default": 5.0,
+    "field": "t_human_block_min",
+    "label": "modeled",
+    "note": "Astra relay: 5 min per human block"
+  },
+  {
+    "default": 120.0,
+    "field": "tenant_spacing_s",
+    "label": "modeled",
+    "note": "courtesy spacing between submissions to one ATS tenant"
+  },
+  {
+    "default": 30.0,
+    "field": "search_interval_min",
+    "label": "modeled",
+    "note": "how often a full search run starts"
+  },
+  {
+    "default": 8.0,
+    "field": "human_hours_per_day",
+    "label": "modeled",
+    "note": "when the user answers questions"
+  },
+  {
+    "default": 1,
+    "field": "browser_slots",
+    "label": "observed",
+    "note": "exactly 1 today: profile flock (runner.py:132-148) + Dispatcher (executor.py:96-143)"
+  },
+  {
+    "default": 1,
+    "field": "jev_inflight",
+    "label": "observed",
+    "note": "1 today: single-thread decision pool (jobs_api.py:360)"
+  },
+  {
+    "default": 1,
+    "field": "chrome_cmd_parallel",
+    "label": "observed",
+    "note": "1 today: sources sequential (search.py:86-92); one action per session until proven"
+  },
+  {
+    "default": 120,
+    "field": "enrich_pages_per_source_per_hour",
+    "label": "modeled",
+    "note": "per-source page budget for the proposed enrich lane"
+  },
+  {
+    "default": 0.7,
+    "field": "utilization_target",
+    "label": "modeled",
+    "note": "Astra relay: 70% utilization for lane sizing"
+  },
+  {
+    "default": 0.042,
+    "field": "jev_usd_per_million_input_tokens",
+    "label": "observed",
+    "note": "openrouter.ai/typesafe/jev-1.13/api: $0.042 / $0 per 1M"
+  },
+  {
+    "default": 0.0,
+    "field": "jev_usd_per_million_output_tokens",
+    "label": "observed",
+    "note": "output free (same page)"
+  },
+  {
+    "default": 32000,
+    "field": "jev_context_tokens",
+    "label": "observed",
+    "note": "32K context on the model page; tutorial: 32k for state plus the longest question"
+  },
+  {
+    "default": 4.0,
+    "field": "chars_per_token",
+    "label": "modeled",
+    "note": "byte/4 estimate; provider usage is the truth"
+  },
+  {
+    "default": 0.02,
+    "field": "p_transient_provider_failure",
+    "label": "modeled",
+    "note": "timeouts/5xx share; guess"
+  },
+  {
+    "default": 3,
+    "field": "jev_max_attempts",
+    "label": "observed",
+    "note": "JevClient.max_attempts default 3 (jev.py:281)"
+  },
+  {
+    "default": 0.8,
+    "field": "apply_confidence",
+    "label": "observed",
+    "note": "SelectionPolicy.apply_confidence 0.8 (rubric.py:33)"
+  },
+  {
+    "default": 0.8,
+    "field": "skip_confidence",
+    "label": "observed",
+    "note": "SelectionPolicy.skip_confidence 0.8 (rubric.py:34)"
+  },
+  {
+    "default": 12000,
+    "field": "max_description_chars",
+    "label": "observed",
+    "note": "MAX_DESCRIPTION_CHARS (evidence.py:31)"
+  },
+  {
+    "default": 6089,
+    "field": "focused_questions_bytes",
+    "label": "observed",
+    "note": "json bytes of FOCUSED_QUESTIONS at 0f58421"
+  },
+  {
+    "default": 1931,
+    "field": "final_question_bytes",
+    "label": "observed",
+    "note": "json bytes of FINAL_QUESTION at 0f58421"
+  },
+  {
+    "default": 899,
+    "field": "preferences_view_bytes",
+    "label": "observed",
+    "note": "json bytes of jev_preferences_view(SelectionPreferences()) at 0f58421"
+  },
+  {
+    "default": 50,
+    "field": "max_results_per_source",
+    "label": "observed",
+    "note": "JobSearchQuery.max_results_per_source default 50 (discovery.py:181)"
+  },
+  {
+    "default": [
+      "linkedin",
+      "builtin",
+      "indeed",
+      "google"
+    ],
+    "field": "sources",
+    "label": "observed",
+    "note": "legs/page sizes/detail limits from the J1 adapters; timings modeled"
+  },
+  {
+    "default": [
+      1000,
+      5000,
+      10000
+    ],
+    "field": "tiers",
+    "label": "modeled",
+    "note": "the user's targets"
+  },
+  {
+    "default": [
+      24.0,
+      8.0
+    ],
+    "field": "day_windows_h",
+    "label": "modeled",
+    "note": "Astra relay: 24 h and 8 h windows"
+  },
+  {
+    "default": [
+      30.0,
+      60.0,
+      120.0
+    ],
+    "field": "browser_service_options_s",
+    "label": "modeled",
+    "note": "Astra relay: 30/60/120 s hypothetical submission times"
+  }
+]

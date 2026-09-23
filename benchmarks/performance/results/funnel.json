@@ -1,0 +1,339 @@
+{
+  "jev_tokens_per_listing_estimate": {
+    "compact_final_tokens": 1282,
+    "final_call_tokens": 2282,
+    "focused_call_tokens": 3097,
+    "single_request_tokens": 3580,
+    "two_call_tokens": 5380
+  },
+  "metadata": {
+    "argv": [
+      "/Users/leo/.superset/worktrees/Interviewmaxxing/build/performance-runtime/benchmarks/performance/imx_perf/__main__.py",
+      "all",
+      "--seed",
+      "42",
+      "--population",
+      "2000"
+    ],
+    "generated_at": "2026-09-22T20:00:57-0500",
+    "harness_sha256": "19415044afe7a637e7efe183252dfa34b2fb2fd9d27e5727bb2d8392f67a86dd",
+    "load_average_1_5_15": [
+      5.51025390625,
+      4.25732421875,
+      4.115234375
+    ],
+    "machine": "arm64",
+    "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+    "python": "3.14.2",
+    "repo_head": "457d8ca"
+  },
+  "notes": [
+    "All tier rows are requirements derived from the assumptions, not achievable throughput.",
+    "Market supply of new qualified postings per day is external and unmeasured.",
+    "Browser timings are modeled; no Chromium was launched by this harness.",
+    "Jev token counts are byte/4 estimates; the provider's usage field is the truth."
+  ],
+  "run_plan": {
+    "detail_pages": 40,
+    "full_description_listings": 20,
+    "max_observations": 200,
+    "page_ops": 86,
+    "per_source": [
+      {
+        "card_completeness": "NONE",
+        "detail_completeness": "NONE",
+        "detail_pages": 10,
+        "full_description_listings": 0,
+        "max_listings": 50,
+        "search_pages": 8,
+        "seconds": 128.0,
+        "source": "linkedin"
+      },
+      {
+        "card_completeness": "NONE",
+        "detail_completeness": "FULL",
+        "detail_pages": 10,
+        "full_description_listings": 10,
+        "max_listings": 50,
+        "search_pages": 16,
+        "seconds": 130.0,
+        "source": "builtin"
+      },
+      {
+        "card_completeness": "NONE",
+        "detail_completeness": "FULL",
+        "detail_pages": 10,
+        "full_description_listings": 10,
+        "max_listings": 50,
+        "search_pages": 16,
+        "seconds": 130.0,
+        "source": "indeed"
+      },
+      {
+        "card_completeness": "PARTIAL",
+        "detail_completeness": "PARTIAL",
+        "detail_pages": 10,
+        "full_description_listings": 0,
+        "max_listings": 50,
+        "search_pages": 6,
+        "seconds": 76.0,
+        "source": "google"
+      }
+    ],
+    "run_minutes": 7.7,
+    "run_seconds": 464.0,
+    "runs_per_day_one_chrome_at_util": 130.3,
+    "search_pages": 46
+  },
+  "tiers": [
+    {
+      "apply_listings_needed_per_day": 1176,
+      "assumed_direct_acceptance_yield": 0.85,
+      "avg_browser_sessions_little": 1.84,
+      "browser_hours_per_day": 50.0,
+      "discovery_chrome_hours_per_day": 10.6,
+      "discovery_page_ops_per_day": 6792,
+      "enrich_page_loads_per_day": 3765,
+      "enriched_listings_per_day": 4706,
+      "human_hours_per_day": 29.4,
+      "jev_calls_per_day_two_call": 9412,
+      "jev_input_tokens_per_day_two_call": 25317647,
+      "jev_usd_per_day_two_call": 1.06,
+      "lanes": [
+        {
+          "completion_budget_s": 86.4,
+          "lanes_at_util": 0.58,
+          "lanes_ceiling": 1,
+          "per_minute": 0.694,
+          "service_s": 30.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 86.4,
+          "lanes_at_util": 1.17,
+          "lanes_ceiling": 2,
+          "per_minute": 0.694,
+          "service_s": 60.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 86.4,
+          "lanes_at_util": 2.33,
+          "lanes_ceiling": 3,
+          "per_minute": 0.694,
+          "service_s": 120.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 28.8,
+          "lanes_at_util": 1.75,
+          "lanes_ceiling": 2,
+          "per_minute": 2.083,
+          "service_s": 30.0,
+          "window_h": 8.0
+        },
+        {
+          "completion_budget_s": 28.8,
+          "lanes_at_util": 3.5,
+          "lanes_ceiling": 4,
+          "per_minute": 2.083,
+          "service_s": 60.0,
+          "window_h": 8.0
+        },
+        {
+          "completion_budget_s": 28.8,
+          "lanes_at_util": 7.0,
+          "lanes_ceiling": 8,
+          "per_minute": 2.083,
+          "service_s": 120.0,
+          "window_h": 8.0
+        }
+      ],
+      "observations_per_day": 13163,
+      "reconciliation_browser_hours": 1.47,
+      "resume_browser_hours": 4.41,
+      "search_pages_per_day": 3028,
+      "search_runs_per_day": 65.8,
+      "single_selector_capacity_per_day_at_util": {
+        "0.5s_per_select": 120960,
+        "1.0s_per_select": 60480,
+        "2.0s_per_select": 30240
+      },
+      "submission_attempts_per_day": 1176,
+      "submission_browser_hours": 44.12,
+      "tier_v5_per_day": 1000,
+      "total_browser_lanes_at_util_by_window": {
+        "24.0": 3,
+        "8.0": 9
+      },
+      "unique_listings_per_day": 8556,
+      "utilization_target": 0.7
+    },
+    {
+      "apply_listings_needed_per_day": 5882,
+      "assumed_direct_acceptance_yield": 0.85,
+      "avg_browser_sessions_little": 9.19,
+      "browser_hours_per_day": 250.0,
+      "discovery_chrome_hours_per_day": 53.2,
+      "discovery_page_ops_per_day": 33961,
+      "enrich_page_loads_per_day": 18824,
+      "enriched_listings_per_day": 23529,
+      "human_hours_per_day": 147.1,
+      "jev_calls_per_day_two_call": 47059,
+      "jev_input_tokens_per_day_two_call": 126588235,
+      "jev_usd_per_day_two_call": 5.32,
+      "lanes": [
+        {
+          "completion_budget_s": 17.28,
+          "lanes_at_util": 2.92,
+          "lanes_ceiling": 3,
+          "per_minute": 3.472,
+          "service_s": 30.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 17.28,
+          "lanes_at_util": 5.84,
+          "lanes_ceiling": 6,
+          "per_minute": 3.472,
+          "service_s": 60.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 17.28,
+          "lanes_at_util": 11.67,
+          "lanes_ceiling": 12,
+          "per_minute": 3.472,
+          "service_s": 120.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 5.76,
+          "lanes_at_util": 8.75,
+          "lanes_ceiling": 9,
+          "per_minute": 10.417,
+          "service_s": 30.0,
+          "window_h": 8.0
+        },
+        {
+          "completion_budget_s": 5.76,
+          "lanes_at_util": 17.51,
+          "lanes_ceiling": 18,
+          "per_minute": 10.417,
+          "service_s": 60.0,
+          "window_h": 8.0
+        },
+        {
+          "completion_budget_s": 5.76,
+          "lanes_at_util": 35.01,
+          "lanes_ceiling": 36,
+          "per_minute": 10.417,
+          "service_s": 120.0,
+          "window_h": 8.0
+        }
+      ],
+      "observations_per_day": 65817,
+      "reconciliation_browser_hours": 7.35,
+      "resume_browser_hours": 22.06,
+      "search_pages_per_day": 15138,
+      "search_runs_per_day": 329.1,
+      "single_selector_capacity_per_day_at_util": {
+        "0.5s_per_select": 120960,
+        "1.0s_per_select": 60480,
+        "2.0s_per_select": 30240
+      },
+      "submission_attempts_per_day": 5882,
+      "submission_browser_hours": 220.59,
+      "tier_v5_per_day": 5000,
+      "total_browser_lanes_at_util_by_window": {
+        "24.0": 15,
+        "8.0": 45
+      },
+      "unique_listings_per_day": 42781,
+      "utilization_target": 0.7
+    },
+    {
+      "apply_listings_needed_per_day": 11765,
+      "assumed_direct_acceptance_yield": 0.85,
+      "avg_browser_sessions_little": 18.38,
+      "browser_hours_per_day": 500.0,
+      "discovery_chrome_hours_per_day": 106.3,
+      "discovery_page_ops_per_day": 67923,
+      "enrich_page_loads_per_day": 37647,
+      "enriched_listings_per_day": 47059,
+      "human_hours_per_day": 294.1,
+      "jev_calls_per_day_two_call": 94118,
+      "jev_input_tokens_per_day_two_call": 253176471,
+      "jev_usd_per_day_two_call": 10.63,
+      "lanes": [
+        {
+          "completion_budget_s": 8.64,
+          "lanes_at_util": 5.84,
+          "lanes_ceiling": 6,
+          "per_minute": 6.944,
+          "service_s": 30.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 8.64,
+          "lanes_at_util": 11.67,
+          "lanes_ceiling": 12,
+          "per_minute": 6.944,
+          "service_s": 60.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 8.64,
+          "lanes_at_util": 23.34,
+          "lanes_ceiling": 24,
+          "per_minute": 6.944,
+          "service_s": 120.0,
+          "window_h": 24.0
+        },
+        {
+          "completion_budget_s": 2.88,
+          "lanes_at_util": 17.51,
+          "lanes_ceiling": 18,
+          "per_minute": 20.833,
+          "service_s": 30.0,
+          "window_h": 8.0
+        },
+        {
+          "completion_budget_s": 2.88,
+          "lanes_at_util": 35.01,
+          "lanes_ceiling": 36,
+          "per_minute": 20.833,
+          "service_s": 60.0,
+          "window_h": 8.0
+        },
+        {
+          "completion_budget_s": 2.88,
+          "lanes_at_util": 70.03,
+          "lanes_ceiling": 71,
+          "per_minute": 20.833,
+          "service_s": 120.0,
+          "window_h": 8.0
+        }
+      ],
+      "observations_per_day": 131633,
+      "reconciliation_browser_hours": 14.71,
+      "resume_browser_hours": 44.12,
+      "search_pages_per_day": 30276,
+      "search_runs_per_day": 658.2,
+      "single_selector_capacity_per_day_at_util": {
+        "0.5s_per_select": 120960,
+        "1.0s_per_select": 60480,
+        "2.0s_per_select": 30240
+      },
+      "submission_attempts_per_day": 11765,
+      "submission_browser_hours": 441.18,
+      "tier_v5_per_day": 10000,
+      "total_browser_lanes_at_util_by_window": {
+        "24.0": 30,
+        "8.0": 90
+      },
+      "unique_listings_per_day": 85561,
+      "utilization_target": 0.7
+    }
+  ]
+}
