@@ -1,0 +1,29 @@
+{
+  "target_titles": [
+    "marketing manager",
+    "marketing director"
+  ],
+  "onsite": [
+    {
+      "location": "Austin, TX",
+      "arrangements": [
+        "ONSITE",
+        "HYBRID"
+      ],
+      "radius_miles": null
+    }
+  ],
+  "remote": {
+    "eligible_region": "United States"
+  },
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID",
+  "minimum_compensation": {
+    "amount": 100000,
+    "currency": "USD",
+    "period": "YEAR"
+  },
+  "unknown_compensation": "KEEP",
+  "excluded_keywords": [],
+  "excluded_companies": [],
+  "notes": null
+}

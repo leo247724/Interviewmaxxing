@@ -1,0 +1,131 @@
+"""Jev job selection: an auditable APPLY/SKIP/REVIEW decision per discovered listing.
+
+Inputs and the persisted decision are core D0 contracts (``JobListing``,
+``SelectionPreferences``, ``JobSelection``). Jev (TypeSafe) is called through
+OpenRouter's Decisions API (``POST /api/alpha/decisions``), never a chat endpoint.
+Code enforces pay comparison, explicit hard constraints, duplicates and holds; Jev
+judges fit. Nothing here opens a browser or submits an application.
+"""
+
+from .credentials import (
+    ENV_FILE_VARIABLE,
+    OPENROUTER_KEY_NAME,
+    ApiKey,
+    CredentialError,
+    load_api_key,
+    read_key_from_env_file,
+)
+from .decision import SelectionOutcome
+from .evidence import (
+    MAX_DESCRIPTION_CHARS,
+    CandidateEvidence,
+    jev_listing_view,
+    jev_preferences_view,
+    job_evidence,
+)
+from .jev import (
+    DECISIONS_URL,
+    DEFAULT_MODEL,
+    ChoiceAnswer,
+    ChoiceQuestion,
+    DecisionRequest,
+    DecisionResponse,
+    DecisionResult,
+    DecisionUsage,
+    HttpResponse,
+    JevClient,
+    JevProviderError,
+    NoulAnswer,
+    NoulQuestion,
+    ProviderFailure,
+    ProviderFailureKind,
+    Transport,
+    urllib_transport,
+)
+from .policy import (
+    HARD_CONSTRAINTS,
+    HOLD_CODES,
+    SKIP_BLOCKING,
+    CompensationStatus,
+    Hold,
+    HoldReason,
+    LocationStatus,
+    LocationTier,
+    check_compensation,
+    check_location,
+    detect_instruction_injection,
+    effective_decision,
+    location_priority_reason,
+    location_tier,
+)
+from .ranking import rank_key, rank_outcomes, ranking_reason
+from .rubric import (
+    FINAL_QUESTION,
+    FOCUSED_QUESTIONS,
+    RUBRIC_VERSION,
+    Assessment,
+    SelectionPolicy,
+)
+from .service import ApplicationLookup, SelectionService, evidence_hashes, to_contract_error
+from .storage import DecisionAudit, SelectionStore, default_store_path
+
+__all__ = [
+    "DECISIONS_URL",
+    "DEFAULT_MODEL",
+    "ENV_FILE_VARIABLE",
+    "FINAL_QUESTION",
+    "FOCUSED_QUESTIONS",
+    "HARD_CONSTRAINTS",
+    "HOLD_CODES",
+    "MAX_DESCRIPTION_CHARS",
+    "OPENROUTER_KEY_NAME",
+    "RUBRIC_VERSION",
+    "SKIP_BLOCKING",
+    "ApiKey",
+    "ApplicationLookup",
+    "Assessment",
+    "CandidateEvidence",
+    "ChoiceAnswer",
+    "ChoiceQuestion",
+    "CompensationStatus",
+    "CredentialError",
+    "DecisionAudit",
+    "DecisionRequest",
+    "DecisionResponse",
+    "DecisionResult",
+    "DecisionUsage",
+    "Hold",
+    "HoldReason",
+    "HttpResponse",
+    "JevClient",
+    "JevProviderError",
+    "LocationStatus",
+    "LocationTier",
+    "NoulAnswer",
+    "NoulQuestion",
+    "ProviderFailure",
+    "ProviderFailureKind",
+    "SelectionOutcome",
+    "SelectionPolicy",
+    "SelectionService",
+    "SelectionStore",
+    "Transport",
+    "check_compensation",
+    "check_location",
+    "default_store_path",
+    "detect_instruction_injection",
+    "effective_decision",
+    "evidence_hashes",
+    "jev_listing_view",
+    "jev_preferences_view",
+    "job_evidence",
+    "load_api_key",
+    "location_priority_reason",
+    "location_tier",
+    "rank_key",
+    "rank_outcomes",
+    "ranking_reason",
+    "read_key_from_env_file",
+    "to_contract_error",
+    "urllib_transport",
+]
