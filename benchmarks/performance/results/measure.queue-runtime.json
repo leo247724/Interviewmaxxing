@@ -1,0 +1,247 @@
+{
+  "application_store": {
+    "begin_submission": {
+      "max_ms": 0.363,
+      "mean_ms": 0.115,
+      "median_ms": 0.106,
+      "n": 100,
+      "p95_ms": 0.133
+    },
+    "claim": {
+      "max_ms": 0.084,
+      "mean_ms": 0.038,
+      "median_ms": 0.036,
+      "n": 100,
+      "p95_ms": 0.048
+    },
+    "get_receipt": {
+      "max_ms": 0.063,
+      "mean_ms": 0.005,
+      "median_ms": 0.004,
+      "n": 100,
+      "p95_ms": 0.005
+    },
+    "list_applications": {
+      "max_ms": 0.582,
+      "mean_ms": 0.416,
+      "median_ms": 0.408,
+      "n": 20,
+      "p95_ms": 0.432
+    },
+    "note": "synchronous=FULL, WAL, BEGIN IMMEDIATE per operation (store.py:283,307)",
+    "per_application_store_path_median_ms": 0.647,
+    "record_request": {
+      "max_ms": 0.561,
+      "mean_ms": 0.175,
+      "median_ms": 0.164,
+      "n": 100,
+      "p95_ms": 0.244
+    },
+    "record_submission_outcome_accepted": {
+      "max_ms": 0.492,
+      "mean_ms": 0.129,
+      "median_ms": 0.116,
+      "n": 100,
+      "p95_ms": 0.177
+    },
+    "release": {
+      "max_ms": 0.03,
+      "mean_ms": 0.004,
+      "median_ms": 0.003,
+      "n": 100,
+      "p95_ms": 0.005
+    },
+    "repeat_record_request_existing": {
+      "max_ms": 0.24,
+      "mean_ms": 0.093,
+      "median_ms": 0.087,
+      "n": 100,
+      "p95_ms": 0.115
+    },
+    "transition_x3": {
+      "max_ms": 0.523,
+      "mean_ms": 0.237,
+      "median_ms": 0.222,
+      "n": 100,
+      "p95_ms": 0.273
+    }
+  },
+  "environment": {
+    "executable": "/Users/leo/.superset/worktrees/Interviewmaxxing/build/queue-runtime/.venv-task/bin/python",
+    "package_sources": {
+      "interviewmaxxing_core": {
+        "checkout_head": "05c87b6",
+        "module": "/Users/leo/.superset/worktrees/Interviewmaxxing/build/queue-runtime/packages/core/src/interviewmaxxing_core/__init__.py"
+      },
+      "interviewmaxxing_jobs": {
+        "checkout_head": "05c87b6",
+        "module": "/Users/leo/.superset/worktrees/Interviewmaxxing/build/queue-runtime/packages/jobs/src/interviewmaxxing_jobs/__init__.py"
+      },
+      "interviewmaxxing_selection": {
+        "checkout_head": "05c87b6",
+        "module": "/Users/leo/.superset/worktrees/Interviewmaxxing/build/queue-runtime/packages/selection/src/interviewmaxxing_selection/__init__.py"
+      }
+    },
+    "packages": {
+      "interviewmaxxing_candidate": true,
+      "interviewmaxxing_core": true,
+      "interviewmaxxing_generation": true,
+      "interviewmaxxing_jobs": true,
+      "interviewmaxxing_selection": true,
+      "pydantic": true
+    },
+    "python": "3.12.13"
+  },
+  "job_store": {
+    "listings_1000": {
+      "get_listing": {
+        "max_ms": 0.1,
+        "mean_ms": 0.013,
+        "median_ms": 0.012,
+        "n": 200,
+        "p95_ms": 0.014
+      },
+      "list_limit_50": {
+        "max_ms": 15.833,
+        "mean_ms": 11.47,
+        "median_ms": 10.472,
+        "n": 5,
+        "p95_ms": 11.338
+      },
+      "list_limit_50_ranked": {
+        "max_ms": 55.19,
+        "mean_ms": 50.296,
+        "median_ms": 49.258,
+        "n": 5,
+        "p95_ms": 49.404
+      },
+      "stored_after_dedupe": 990,
+      "upsert_per_listing_ms": 0.079,
+      "upsert_total_s": 0.079,
+      "upserts_per_s": 12640.1
+    },
+    "listings_5000": {
+      "get_listing": {
+        "max_ms": 0.122,
+        "mean_ms": 0.012,
+        "median_ms": 0.011,
+        "n": 200,
+        "p95_ms": 0.012
+      },
+      "list_limit_50": {
+        "max_ms": 76.935,
+        "mean_ms": 68.912,
+        "median_ms": 65.159,
+        "n": 5,
+        "p95_ms": 74.211
+      },
+      "list_limit_50_ranked": {
+        "max_ms": 271.466,
+        "mean_ms": 264.122,
+        "median_ms": 268.37,
+        "n": 5,
+        "p95_ms": 270.989
+      },
+      "stored_after_dedupe": 4961,
+      "upsert_per_listing_ms": 0.088,
+      "upsert_total_s": 0.441,
+      "upserts_per_s": 11348.2
+    },
+    "model_validate_json": {
+      "max_ms": 0.036,
+      "mean_ms": 0.007,
+      "median_ms": 0.007,
+      "n": 500,
+      "p95_ms": 0.008
+    },
+    "note": "list_listings decodes every stored row before applying limit (store.py:182-204); Astra measured medians 14/81/159 ms at 1k/5k/10k in the service read path",
+    "snapshot_hash_listing": {
+      "max_ms": 0.051,
+      "mean_ms": 0.014,
+      "median_ms": 0.014,
+      "n": 500,
+      "p95_ms": 0.015
+    }
+  },
+  "metadata": {
+    "argv": [
+      "/Users/leo/.superset/worktrees/Interviewmaxxing/build/performance-runtime/benchmarks/performance/imx_perf/__main__.py",
+      "measure",
+      "--tag",
+      "queue-runtime"
+    ],
+    "generated_at": "2026-09-22T20:01:25-0500",
+    "harness_sha256": "19415044afe7a637e7efe183252dfa34b2fb2fd9d27e5727bb2d8392f67a86dd",
+    "load_average_1_5_15": [
+      5.06884765625,
+      4.25146484375,
+      4.1162109375
+    ],
+    "machine": "arm64",
+    "platform": "macOS-15.7.4-arm64-arm-64bit",
+    "python": "3.12.13",
+    "repo_head": "457d8ca"
+  },
+  "selection": {
+    "calls_for_mixed_full_evidence_path": 84,
+    "calls_for_repeated_inputs": 0,
+    "full_evidence_note": "60 full-description inputs; some hard/code gates use no calls. This timing is a mixed local path, not provider latency.",
+    "is_current": {
+      "max_ms": 0.145,
+      "mean_ms": 0.047,
+      "median_ms": 0.046,
+      "n": 100,
+      "p95_ms": 0.05
+    },
+    "request_bytes": {
+      "est_tokens_two_call_at_4_chars": 5416,
+      "est_usd_per_listing_two_call": 0.000227,
+      "final_median": 9361,
+      "focused_median": 12302,
+      "two_call_total_median": 21663
+    },
+    "rubric_version": "jev-selection-rubric/2026-09-22.6",
+    "select_hard_constraint_no_call": {
+      "max_ms": 1.438,
+      "mean_ms": 0.839,
+      "median_ms": 0.88,
+      "n": 60,
+      "p95_ms": 1.381
+    },
+    "select_mixed_full_evidence_fake_transport": {
+      "max_ms": 2.083,
+      "mean_ms": 1.425,
+      "median_ms": 1.426,
+      "n": 60,
+      "p95_ms": 1.807
+    },
+    "select_repeat_cache_or_code_gate": {
+      "max_ms": 1.638,
+      "mean_ms": 0.801,
+      "median_ms": 0.712,
+      "n": 60,
+      "p95_ms": 1.281
+    },
+    "store_latest_history_1": {
+      "max_ms": 0.015,
+      "mean_ms": 0.01,
+      "median_ms": 0.01,
+      "n": 50,
+      "p95_ms": 0.01
+    },
+    "store_latest_history_20": {
+      "max_ms": 0.026,
+      "mean_ms": 0.011,
+      "median_ms": 0.01,
+      "n": 50,
+      "p95_ms": 0.014
+    },
+    "store_latest_history_5": {
+      "max_ms": 0.016,
+      "mean_ms": 0.011,
+      "median_ms": 0.01,
+      "n": 50,
+      "p95_ms": 0.012
+    }
+  }
+}

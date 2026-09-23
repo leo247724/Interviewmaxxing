@@ -1,0 +1,145 @@
+{
+  "metadata": {
+    "argv": [
+      "/Users/leo/.superset/worktrees/Interviewmaxxing/build/performance-runtime/benchmarks/performance/imx_perf/__main__.py",
+      "all",
+      "--seed",
+      "42",
+      "--population",
+      "2000"
+    ],
+    "generated_at": "2026-09-22T20:01:21-0500",
+    "harness_sha256": "19415044afe7a637e7efe183252dfa34b2fb2fd9d27e5727bb2d8392f67a86dd",
+    "load_average_1_5_15": [
+      5.0751953125,
+      4.2392578125,
+      4.111328125
+    ],
+    "machine": "arm64",
+    "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+    "python": "3.14.2",
+    "repo_head": "457d8ca"
+  },
+  "variants": {
+    "default_heartbeat": {
+      "config": {
+        "heartbeat": true,
+        "items": 40,
+        "lease_ttl_s": 0.15,
+        "max_wall_s": 20.0,
+        "p_kill_per_step": 0.08,
+        "seed": 42,
+        "slots": 1,
+        "step_ms": 4.0,
+        "steps_per_item": 4,
+        "tenants": 6,
+        "workers": 4
+      },
+      "double_effects": 0,
+      "effects": 36,
+      "failures": [],
+      "heartbeat_lost": 0,
+      "kills": 11,
+      "lane_violations": 0,
+      "live_leases_at_end": 0,
+      "max_observed_active": {
+        "ats_tenant:tenant-0.example": 1,
+        "ats_tenant:tenant-1.example": 1,
+        "ats_tenant:tenant-2.example": 1,
+        "ats_tenant:tenant-3.example": 1,
+        "ats_tenant:tenant-4.example": 1,
+        "ats_tenant:tenant-5.example": 1,
+        "browser_profile:slot-0": 1
+      },
+      "passed": true,
+      "reclaims": 5,
+      "reconcile_routes": 6,
+      "reconciled_without_effect": 4,
+      "states": {
+        "DONE": 40
+      },
+      "takeovers": 0,
+      "wall_s": 2.596
+    },
+    "long_steps_heartbeat": {
+      "config": {
+        "heartbeat": true,
+        "items": 40,
+        "lease_ttl_s": 0.15,
+        "max_wall_s": 20.0,
+        "p_kill_per_step": 0.05,
+        "seed": 42,
+        "slots": 1,
+        "step_ms": 60.0,
+        "steps_per_item": 4,
+        "tenants": 6,
+        "workers": 4
+      },
+      "double_effects": 0,
+      "effects": 36,
+      "failures": [],
+      "heartbeat_lost": 0,
+      "kills": 8,
+      "lane_violations": 0,
+      "live_leases_at_end": 0,
+      "max_observed_active": {
+        "ats_tenant:tenant-0.example": 1,
+        "ats_tenant:tenant-1.example": 1,
+        "ats_tenant:tenant-2.example": 1,
+        "ats_tenant:tenant-3.example": 1,
+        "ats_tenant:tenant-4.example": 1,
+        "ats_tenant:tenant-5.example": 1,
+        "browser_profile:slot-0": 1
+      },
+      "passed": true,
+      "reclaims": 4,
+      "reconcile_routes": 4,
+      "reconciled_without_effect": 4,
+      "states": {
+        "DONE": 40
+      },
+      "takeovers": 0,
+      "wall_s": 11.918
+    },
+    "long_steps_no_heartbeat": {
+      "config": {
+        "heartbeat": false,
+        "items": 40,
+        "lease_ttl_s": 0.15,
+        "max_wall_s": 20.0,
+        "p_kill_per_step": 0.05,
+        "seed": 42,
+        "slots": 1,
+        "step_ms": 60.0,
+        "steps_per_item": 4,
+        "tenants": 6,
+        "workers": 4
+      },
+      "double_effects": 0,
+      "effects": 1,
+      "failures": [],
+      "heartbeat_lost": 0,
+      "kills": 8,
+      "lane_violations": 0,
+      "live_leases_at_end": 0,
+      "max_observed_active": {
+        "ats_tenant:tenant-0.example": 1,
+        "ats_tenant:tenant-1.example": 1,
+        "ats_tenant:tenant-2.example": 1,
+        "ats_tenant:tenant-3.example": 1,
+        "ats_tenant:tenant-4.example": 1,
+        "ats_tenant:tenant-5.example": 1,
+        "browser_profile:slot-0": 1
+      },
+      "passed": true,
+      "reclaims": 25,
+      "reconcile_routes": 40,
+      "reconciled_without_effect": 39,
+      "states": {
+        "DONE": 40
+      },
+      "takeovers": 57,
+      "wall_s": 9.843
+    }
+  }
+}

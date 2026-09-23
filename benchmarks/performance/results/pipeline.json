@@ -1,0 +1,1049 @@
+{
+  "metadata": {
+    "argv": [
+      "/Users/leo/.superset/worktrees/Interviewmaxxing/build/performance-runtime/benchmarks/performance/imx_perf/__main__.py",
+      "all",
+      "--seed",
+      "42",
+      "--population",
+      "2000"
+    ],
+    "generated_at": "2026-09-22T20:01:22-0500",
+    "harness_sha256": "19415044afe7a637e7efe183252dfa34b2fb2fd9d27e5727bb2d8392f67a86dd",
+    "load_average_1_5_15": [
+      5.06884765625,
+      4.25146484375,
+      4.1162109375
+    ],
+    "machine": "arm64",
+    "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+    "python": "3.14.2",
+    "repo_head": "457d8ca"
+  },
+  "results": [
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 0.0,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 0,
+        "chrome": 3,
+        "human": 0,
+        "jev": 6
+      },
+      "modeled_acceptance_yield": 0.0,
+      "per_day": {
+        "V1_observations": 10208,
+        "V2_unique_listings": 50,
+        "V3_effective_apply": 0,
+        "V5_submitted_site_observed": 0,
+        "applications_started": 0,
+        "dedupe_hits": 10158,
+        "deferred_no_text": 0,
+        "enrich_page_loads": 0,
+        "enriched_full": 0,
+        "failed_retryable": 0,
+        "gated_out_by_code": 17,
+        "human_hours": 0.0,
+        "jev_attempted_calls": 68,
+        "jev_calls": 66,
+        "jev_input_tokens_est": 114274,
+        "jev_listings": 33,
+        "jev_usd_est": 0.0048,
+        "needs_input_stops": 0,
+        "questions_asked": 0,
+        "questions_reused": 0,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 32,
+        "search_pages": 1826,
+        "skip": 18,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": false,
+        "jev_inflight": null,
+        "label": "today: supply 50, 1 browser, sequential Jev, no enrich lane",
+        "seed": 42,
+        "strategy": "baseline_two_call",
+        "supply_new_per_day": 50
+      },
+      "screens": null,
+      "stage_latency": {
+        "semantic_fit": {
+          "n": 33,
+          "p50_s": 2.2,
+          "p95_s": 5.9
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.0,
+        "chrome": 0.224,
+        "human_window": 0.0,
+        "jev": 0.0
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 0.049,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 0,
+        "chrome": 15,
+        "human": 0,
+        "jev": 0
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 8880,
+        "V2_unique_listings": 50,
+        "V3_effective_apply": 1,
+        "V5_submitted_site_observed": 1,
+        "applications_started": 1,
+        "dedupe_hits": 8830,
+        "deferred_no_text": 18,
+        "enrich_page_loads": 52,
+        "enriched_full": 22,
+        "failed_retryable": 0,
+        "gated_out_by_code": 11,
+        "human_hours": 0.12,
+        "jev_attempted_calls": 44,
+        "jev_calls": 42,
+        "jev_input_tokens_est": 111228,
+        "jev_listings": 21,
+        "jev_usd_est": 0.0047,
+        "needs_input_stops": 1,
+        "questions_asked": 2,
+        "questions_reused": 0,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 35,
+        "search_pages": 1914,
+        "skip": 14,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": null,
+        "label": "phase1-3: supply 50, 1 browser, enrich lane, gate before Jev",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 50
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 1,
+          "p50_s": 52.4,
+          "p95_s": 52.4
+        },
+        "enrich": {
+          "n": 39,
+          "p50_s": 36.0,
+          "p95_s": 124.4
+        },
+        "human_input": {
+          "n": 1,
+          "p50_s": 32633.7,
+          "p95_s": 32633.7
+        },
+        "semantic_fit": {
+          "n": 21,
+          "p50_s": 1.1,
+          "p95_s": 1.9
+        },
+        "submission": {
+          "n": 1,
+          "p50_s": 32690.4,
+          "p95_s": 32690.4
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.002,
+        "chrome": 0.121,
+        "human_window": 0.016,
+        "jev": 0.0
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 0.0,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 0,
+        "chrome": 14,
+        "human": 0,
+        "jev": 0
+      },
+      "modeled_acceptance_yield": 0.0,
+      "per_day": {
+        "V1_observations": 8976,
+        "V2_unique_listings": 50,
+        "V3_effective_apply": 0,
+        "V5_submitted_site_observed": 0,
+        "applications_started": 0,
+        "dedupe_hits": 8926,
+        "deferred_no_text": 16,
+        "enrich_page_loads": 43,
+        "enriched_full": 19,
+        "failed_retryable": 0,
+        "gated_out_by_code": 16,
+        "human_hours": 0.0,
+        "jev_attempted_calls": 38,
+        "jev_calls": 36,
+        "jev_input_tokens_est": 96131,
+        "jev_listings": 18,
+        "jev_usd_est": 0.004,
+        "needs_input_stops": 0,
+        "questions_asked": 0,
+        "questions_reused": 0,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 32,
+        "search_pages": 1946,
+        "skip": 18,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": 4,
+        "chrome_cmd_parallel": 2,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": 4,
+        "label": "EXPERIMENTAL simulated phase4: supply 50, 4 browser slots, jev 4, chrome 2",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 50
+      },
+      "screens": null,
+      "stage_latency": {
+        "enrich": {
+          "n": 34,
+          "p50_s": 22.3,
+          "p95_s": 43.8
+        },
+        "semantic_fit": {
+          "n": 18,
+          "p50_s": 1.1,
+          "p95_s": 1.6
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.0,
+        "chrome": 0.061,
+        "human_window": 0.0,
+        "jev": 0.0
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 0.0,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 0,
+        "chrome": 3,
+        "human": 0,
+        "jev": 11
+      },
+      "modeled_acceptance_yield": 0.0,
+      "per_day": {
+        "V1_observations": 10324,
+        "V2_unique_listings": 200,
+        "V3_effective_apply": 0,
+        "V5_submitted_site_observed": 0,
+        "applications_started": 0,
+        "dedupe_hits": 10124,
+        "deferred_no_text": 0,
+        "enrich_page_loads": 0,
+        "enriched_full": 0,
+        "failed_retryable": 0,
+        "gated_out_by_code": 64,
+        "human_hours": 0.0,
+        "jev_attempted_calls": 275,
+        "jev_calls": 272,
+        "jev_input_tokens_est": 474741,
+        "jev_listings": 136,
+        "jev_usd_est": 0.0199,
+        "needs_input_stops": 0,
+        "questions_asked": 0,
+        "questions_reused": 0,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 120,
+        "search_pages": 1858,
+        "skip": 80,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": false,
+        "jev_inflight": null,
+        "label": "today: supply 200, 1 browser, sequential Jev, no enrich lane",
+        "seed": 42,
+        "strategy": "baseline_two_call",
+        "supply_new_per_day": 200
+      },
+      "screens": null,
+      "stage_latency": {
+        "semantic_fit": {
+          "n": 136,
+          "p50_s": 1.9,
+          "p95_s": 9.1
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.0,
+        "chrome": 0.227,
+        "human_window": 0.0,
+        "jev": 0.002
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 0.312,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 1,
+        "chrome": 18,
+        "human": 3,
+        "jev": 0
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 8901,
+        "V2_unique_listings": 200,
+        "V3_effective_apply": 4,
+        "V5_submitted_site_observed": 4,
+        "applications_started": 4,
+        "dedupe_hits": 8701,
+        "deferred_no_text": 61,
+        "enrich_page_loads": 182,
+        "enriched_full": 94,
+        "failed_retryable": 0,
+        "gated_out_by_code": 55,
+        "human_hours": 0.42,
+        "jev_attempted_calls": 171,
+        "jev_calls": 168,
+        "jev_input_tokens_est": 432816,
+        "jev_listings": 84,
+        "jev_usd_est": 0.0182,
+        "needs_input_stops": 4,
+        "questions_asked": 6,
+        "questions_reused": 0,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 123,
+        "search_pages": 1921,
+        "skip": 73,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": null,
+        "label": "phase1-3: supply 200, 1 browser, enrich lane, gate before Jev",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 200
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 4,
+          "p50_s": 52.4,
+          "p95_s": 52.4
+        },
+        "enrich": {
+          "n": 145,
+          "p50_s": 24.7,
+          "p95_s": 117.4
+        },
+        "human_input": {
+          "n": 4,
+          "p50_s": 32199.0,
+          "p95_s": 32199.0
+        },
+        "semantic_fit": {
+          "n": 84,
+          "p50_s": 1.0,
+          "p95_s": 1.5
+        },
+        "submission": {
+          "n": 4,
+          "p50_s": 32413.7,
+          "p95_s": 32413.7
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.013,
+        "chrome": 0.129,
+        "human_window": 0.052,
+        "jev": 0.001
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "human_window",
+      "browser_service_hours": 0.508,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 0,
+        "chrome": 14,
+        "human": 4,
+        "jev": 0
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 8976,
+        "V2_unique_listings": 200,
+        "V3_effective_apply": 5,
+        "V5_submitted_site_observed": 5,
+        "applications_started": 5,
+        "dedupe_hits": 8776,
+        "deferred_no_text": 57,
+        "enrich_page_loads": 170,
+        "enriched_full": 90,
+        "failed_retryable": 0,
+        "gated_out_by_code": 59,
+        "human_hours": 0.79,
+        "jev_attempted_calls": 171,
+        "jev_calls": 168,
+        "jev_input_tokens_est": 432922,
+        "jev_listings": 84,
+        "jev_usd_est": 0.0182,
+        "needs_input_stops": 5,
+        "questions_asked": 14,
+        "questions_reused": 0,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 117,
+        "search_pages": 1946,
+        "skip": 78,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": 4,
+        "chrome_cmd_parallel": 2,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": 4,
+        "label": "EXPERIMENTAL simulated phase4: supply 200, 4 browser slots, jev 4, chrome 2",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 200
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 5,
+          "p50_s": 10.2,
+          "p95_s": 14.7
+        },
+        "enrich": {
+          "n": 141,
+          "p50_s": 14.1,
+          "p95_s": 52.6
+        },
+        "human_input": {
+          "n": 5,
+          "p50_s": 32912.2,
+          "p95_s": 33112.1
+        },
+        "semantic_fit": {
+          "n": 84,
+          "p50_s": 1.0,
+          "p95_s": 1.5
+        },
+        "submission": {
+          "n": 5,
+          "p50_s": 33065.3,
+          "p95_s": 33302.1
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.005,
+        "chrome": 0.065,
+        "human_window": 0.099,
+        "jev": 0.0
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 0.519,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 2,
+        "chrome": 3,
+        "human": 4,
+        "jev": 13
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 10324,
+        "V2_unique_listings": 1000,
+        "V3_effective_apply": 5,
+        "V5_submitted_site_observed": 5,
+        "applications_started": 5,
+        "dedupe_hits": 9324,
+        "deferred_no_text": 0,
+        "enrich_page_loads": 0,
+        "enriched_full": 0,
+        "failed_retryable": 1,
+        "gated_out_by_code": 276,
+        "human_hours": 0.67,
+        "jev_attempted_calls": 1474,
+        "jev_calls": 1448,
+        "jev_input_tokens_est": 2566134,
+        "jev_listings": 724,
+        "jev_usd_est": 0.1078,
+        "needs_input_stops": 5,
+        "questions_asked": 11,
+        "questions_reused": 1,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 628,
+        "search_pages": 1858,
+        "skip": 367,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": false,
+        "jev_inflight": null,
+        "label": "today: supply 1000, 1 browser, sequential Jev, no enrich lane",
+        "seed": 42,
+        "strategy": "baseline_two_call",
+        "supply_new_per_day": 1000
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 5,
+          "p50_s": 1.0,
+          "p95_s": 1.0
+        },
+        "human_input": {
+          "n": 5,
+          "p50_s": 24621.8,
+          "p95_s": 25317.8
+        },
+        "semantic_fit": {
+          "n": 724,
+          "p50_s": 1.8,
+          "p95_s": 8.5
+        },
+        "submission": {
+          "n": 5,
+          "p50_s": 25911.6,
+          "p95_s": 26060.0
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.022,
+        "chrome": 0.226,
+        "human_window": 0.083,
+        "jev": 0.009
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "human_window",
+      "browser_service_hours": 4.022,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 4,
+        "chrome": 18,
+        "human": 38,
+        "jev": 1
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 8832,
+        "V2_unique_listings": 1000,
+        "V3_effective_apply": 39,
+        "V5_submitted_site_observed": 34,
+        "applications_started": 39,
+        "dedupe_hits": 7832,
+        "deferred_no_text": 238,
+        "enrich_page_loads": 877,
+        "enriched_full": 515,
+        "failed_retryable": 3,
+        "gated_out_by_code": 281,
+        "human_hours": 6.0,
+        "jev_attempted_calls": 976,
+        "jev_calls": 962,
+        "jev_input_tokens_est": 2470713,
+        "jev_listings": 481,
+        "jev_usd_est": 0.1038,
+        "needs_input_stops": 40,
+        "questions_asked": 104,
+        "questions_reused": 8,
+        "reconcile_checks": 5,
+        "reconciled_to_submitted": 5,
+        "review": 573,
+        "search_pages": 1910,
+        "skip": 388,
+        "submission_unknown": 5
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": null,
+        "label": "phase1-3: supply 1000, 1 browser, enrich lane, gate before Jev",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 1000
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 39,
+          "p50_s": 20.5,
+          "p95_s": 104.9
+        },
+        "enrich": {
+          "n": 719,
+          "p50_s": 20.1,
+          "p95_s": 120.1
+        },
+        "human_input": {
+          "n": 40,
+          "p50_s": 34660.6,
+          "p95_s": 41876.8
+        },
+        "reconciliation": {
+          "n": 5,
+          "p50_s": 35818.3,
+          "p95_s": 36786.0
+        },
+        "semantic_fit": {
+          "n": 481,
+          "p50_s": 1.1,
+          "p95_s": 1.7
+        },
+        "submission": {
+          "n": 34,
+          "p50_s": 35101.4,
+          "p95_s": 42276.5
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.168,
+        "chrome": 0.175,
+        "human_window": 0.75,
+        "jev": 0.006
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "human_window",
+      "browser_service_hours": 3.954,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 3,
+        "chrome": 14,
+        "human": 37,
+        "jev": 0
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 8976,
+        "V2_unique_listings": 1000,
+        "V3_effective_apply": 38,
+        "V5_submitted_site_observed": 37,
+        "applications_started": 38,
+        "dedupe_hits": 7976,
+        "deferred_no_text": 233,
+        "enrich_page_loads": 859,
+        "enriched_full": 513,
+        "failed_retryable": 4,
+        "gated_out_by_code": 284,
+        "human_hours": 6.21,
+        "jev_attempted_calls": 980,
+        "jev_calls": 966,
+        "jev_input_tokens_est": 2480883,
+        "jev_listings": 483,
+        "jev_usd_est": 0.1042,
+        "needs_input_stops": 38,
+        "questions_asked": 111,
+        "questions_reused": 11,
+        "reconcile_checks": 2,
+        "reconciled_to_submitted": 1,
+        "review": 565,
+        "search_pages": 1946,
+        "skip": 397,
+        "submission_unknown": 1
+      },
+      "scenario": {
+        "browser_slots": 4,
+        "chrome_cmd_parallel": 2,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": 4,
+        "label": "EXPERIMENTAL simulated phase4: supply 1000, 4 browser slots, jev 4, chrome 2",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 1000
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 38,
+          "p50_s": 11.2,
+          "p95_s": 76.2
+        },
+        "enrich": {
+          "n": 716,
+          "p50_s": 11.6,
+          "p95_s": 58.1
+        },
+        "human_input": {
+          "n": 38,
+          "p50_s": 34831.8,
+          "p95_s": 51348.5
+        },
+        "reconciliation": {
+          "n": 1,
+          "p50_s": 38615.4,
+          "p95_s": 38615.4
+        },
+        "semantic_fit": {
+          "n": 483,
+          "p50_s": 1.0,
+          "p95_s": 1.7
+        },
+        "submission": {
+          "n": 37,
+          "p50_s": 35884.7,
+          "p95_s": 51678.6
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.041,
+        "chrome": 0.087,
+        "human_window": 0.776,
+        "jev": 0.002
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "chrome",
+      "browser_service_hours": 1.414,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 2,
+        "chrome": 3,
+        "human": 9,
+        "jev": 14
+      },
+      "modeled_acceptance_yield": 1.0,
+      "per_day": {
+        "V1_observations": 10324,
+        "V2_unique_listings": 5000,
+        "V3_effective_apply": 14,
+        "V5_submitted_site_observed": 14,
+        "applications_started": 14,
+        "dedupe_hits": 5324,
+        "deferred_no_text": 0,
+        "enrich_page_loads": 0,
+        "enriched_full": 0,
+        "failed_retryable": 3,
+        "gated_out_by_code": 1487,
+        "human_hours": 1.54,
+        "jev_attempted_calls": 7160,
+        "jev_calls": 7026,
+        "jev_input_tokens_est": 12579905,
+        "jev_listings": 3513,
+        "jev_usd_est": 0.5284,
+        "needs_input_stops": 13,
+        "questions_asked": 24,
+        "questions_reused": 9,
+        "reconcile_checks": 0,
+        "reconciled_to_submitted": 0,
+        "review": 3043,
+        "search_pages": 1858,
+        "skip": 1943,
+        "submission_unknown": 0
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": false,
+        "jev_inflight": null,
+        "label": "today: supply 5000, 1 browser, sequential Jev, no enrich lane",
+        "seed": 42,
+        "strategy": "baseline_two_call",
+        "supply_new_per_day": 5000
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 14,
+          "p50_s": 1.0,
+          "p95_s": 1.9
+        },
+        "human_input": {
+          "n": 13,
+          "p50_s": 20747.7,
+          "p95_s": 25317.8
+        },
+        "semantic_fit": {
+          "n": 3513,
+          "p50_s": 1.7,
+          "p95_s": 7.6
+        },
+        "submission": {
+          "n": 14,
+          "p50_s": 20895.5,
+          "p95_s": 25853.3
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 0,
+      "utilization": {
+        "browser_slots": 0.059,
+        "chrome": 0.229,
+        "human_window": 0.193,
+        "jev": 0.045
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "human_window",
+      "browser_service_hours": 12.67,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 7,
+        "chrome": 18,
+        "human": 66,
+        "jev": 1
+      },
+      "modeled_acceptance_yield": 0.7101,
+      "per_day": {
+        "V1_observations": 8400,
+        "V2_unique_listings": 5000,
+        "V3_effective_apply": 169,
+        "V5_submitted_site_observed": 118,
+        "applications_started": 169,
+        "dedupe_hits": 3400,
+        "deferred_no_text": 1182,
+        "enrich_page_loads": 4246,
+        "enriched_full": 2447,
+        "failed_retryable": 13,
+        "gated_out_by_code": 1516,
+        "human_hours": 8.0,
+        "jev_attempted_calls": 4690,
+        "jev_calls": 4604,
+        "jev_input_tokens_est": 11864071,
+        "jev_listings": 2302,
+        "jev_usd_est": 0.4983,
+        "needs_input_stops": 102,
+        "questions_asked": 138,
+        "questions_reused": 199,
+        "reconcile_checks": 2,
+        "reconciled_to_submitted": 2,
+        "review": 2773,
+        "search_pages": 1820,
+        "skip": 2058,
+        "submission_unknown": 2
+      },
+      "scenario": {
+        "browser_slots": null,
+        "chrome_cmd_parallel": null,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": null,
+        "label": "phase1-3: supply 5000, 1 browser, enrich lane, gate before Jev",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 5000
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 169,
+          "p50_s": 19.4,
+          "p95_s": 124.1
+        },
+        "enrich": {
+          "n": 3484,
+          "p50_s": 19.6,
+          "p95_s": 123.2
+        },
+        "human_input": {
+          "n": 54,
+          "p50_s": 35933.6,
+          "p95_s": 37450.4
+        },
+        "reconciliation": {
+          "n": 2,
+          "p50_s": 35410.3,
+          "p95_s": 1795.0
+        },
+        "semantic_fit": {
+          "n": 2302,
+          "p50_s": 1.0,
+          "p95_s": 1.7
+        },
+        "submission": {
+          "n": 118,
+          "p50_s": 1536.4,
+          "p95_s": 38123.9
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 49,
+      "utilization": {
+        "browser_slots": 0.528,
+        "chrome": 0.389,
+        "human_window": 1.0,
+        "jev": 0.029
+      }
+    },
+    {
+      "active_horizon_hours": 24.0,
+      "binding_resource": "human_window",
+      "browser_service_hours": 13.045,
+      "evidence_label": "MODELED: fictional service demand, no observed site acceptance",
+      "interviews": null,
+      "max_queue": {
+        "browser_slots": 3,
+        "chrome": 14,
+        "human": 71,
+        "jev": 0
+      },
+      "modeled_acceptance_yield": 0.7063,
+      "per_day": {
+        "V1_observations": 8826,
+        "V2_unique_listings": 5000,
+        "V3_effective_apply": 160,
+        "V5_submitted_site_observed": 106,
+        "applications_started": 160,
+        "dedupe_hits": 3826,
+        "deferred_no_text": 1082,
+        "enrich_page_loads": 4265,
+        "enriched_full": 2548,
+        "failed_retryable": 21,
+        "gated_out_by_code": 1504,
+        "human_hours": 8.0,
+        "jev_attempted_calls": 4916,
+        "jev_calls": 4828,
+        "jev_input_tokens_est": 12435869,
+        "jev_listings": 2414,
+        "jev_usd_est": 0.5223,
+        "needs_input_stops": 94,
+        "questions_asked": 139,
+        "questions_reused": 228,
+        "reconcile_checks": 13,
+        "reconciled_to_submitted": 7,
+        "review": 2768,
+        "search_pages": 1918,
+        "skip": 2072,
+        "submission_unknown": 8
+      },
+      "scenario": {
+        "browser_slots": 4,
+        "chrome_cmd_parallel": 2,
+        "days": 1.0,
+        "enrich_lane": true,
+        "jev_inflight": 4,
+        "label": "EXPERIMENTAL simulated phase4: supply 5000, 4 browser slots, jev 4, chrome 2",
+        "seed": 42,
+        "strategy": "gate_then_two_call",
+        "supply_new_per_day": 5000
+      },
+      "screens": null,
+      "stage_latency": {
+        "discover_to_apply": {
+          "n": 160,
+          "p50_s": 10.7,
+          "p95_s": 67.5
+        },
+        "enrich": {
+          "n": 3496,
+          "p50_s": 10.9,
+          "p95_s": 60.4
+        },
+        "human_input": {
+          "n": 52,
+          "p50_s": 37372.2,
+          "p95_s": 39391.2
+        },
+        "reconciliation": {
+          "n": 7,
+          "p50_s": 33516.7,
+          "p95_s": 40344.0
+        },
+        "semantic_fit": {
+          "n": 2414,
+          "p50_s": 1.0,
+          "p95_s": 1.7
+        },
+        "submission": {
+          "n": 106,
+          "p50_s": 727.4,
+          "p95_s": 39092.6
+        }
+      },
+      "supply_left_at_end": 0,
+      "unresolved_at_horizon": 47,
+      "utilization": {
+        "browser_slots": 0.136,
+        "chrome": 0.196,
+        "human_window": 1.0,
+        "jev": 0.008
+      }
+    }
+  ],
+  "wall_s": 0.77
+}
