@@ -17,6 +17,11 @@ A keyword only counts when its own clause states it. Clauses are split at ``; , 
 * for the outcome lanes (Applied, Offer, Closed), the clause is uncertain: a question
   ("Rejected?") or a hedge such as "pending", "possible", "maybe", "expected",
   "hoping", "if" or "unless".
+
+Status is more current than Stage. When Status negates or hedges an outcome that
+Stage asserts, the Stage wording is contradicted and not used at all: Stage "Offer"
+with Status "No offer yet", or Stage "Rejected after panel" with Status "Rejection
+unlikely", are left for review instead of being placed from Stage.
 """
 
 from __future__ import annotations
@@ -139,15 +144,33 @@ def _stated(clause: str, match: re.Match[str], *, outcome: bool, question: bool)
     return not (outcome and (question or _HEDGE.search(clause)))
 
 
+def _asserts_any(clauses: list[tuple[str, bool]], lanes: set[str]) -> bool:
+    """True when some clause states (not negates or hedges) one of ``lanes``."""
+    for rule, pattern in _RULES:
+        lane = "saved" if rule == "saved-not-applied" else rule
+        if lane not in lanes:
+            continue
+        for clause, question in clauses:
+            match = pattern.search(clause)
+            if match is not None and (rule in _NEGATION_IS_THE_RULE or _stated(
+                    clause, match, outcome=lane in _OUTCOME_LANES, question=question)):
+                return True
+    return False
+
+
 def suggest_lane(
     stage: str | None, status: str | None, lanes: BoardLanes = DEFAULT_BOARD_LANES
 ) -> LaneSuggestion:
     """Initial lane for a row from its Stage and Status wording only."""
     available = set(lanes.ids())
+    denied: set[str] = set()  # lanes the Status wording mentions but negates or hedges
     for column, text in (("status", status), ("stage", stage)):
         if not text:
             continue
         clauses = _clauses(text.casefold())
+        if column == "stage" and _asserts_any(clauses, denied):
+            return LaneSuggestion(lane=lanes.lanes[0].id, rule=None, reason=(
+                "Status negates or questions what Stage says; review the lane"))
         for rule, pattern in _RULES:
             lane = "saved" if rule == "saved-not-applied" else rule
             if lane not in available:
@@ -158,6 +181,8 @@ def suggest_lane(
                     continue
                 if rule not in _NEGATION_IS_THE_RULE and not _stated(
                         clause, match, outcome=lane in _OUTCOME_LANES, question=question):
+                    if column == "status":
+                        denied.add(lane)
                     continue
                 return LaneSuggestion(lane=lane, rule=f"{column}:{lane}",
                                       reason=f"{column.capitalize()} wording suggests {lane}")
