@@ -374,6 +374,7 @@ class PresentationService:
                 # original pin, whatever the profile says later.
                 store.pin_resume(app.id, selected)
             if link is not None and self.application_links is not None:
+                self.application_links.pin_identity(link, app.id, store)
                 self.application_links.bind(link, app.id, store)
             if dispatch:
                 self.dispatcher.submit(

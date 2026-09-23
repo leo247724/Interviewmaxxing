@@ -620,6 +620,16 @@ class _Run:
         return await self._form_step(page, page.form)
 
     def _bind_identity(self, page: PageInspection) -> None:
+        expected = self.store.expected_job_identity(self.app_id)
+        if expected is not None:
+            if page.job_identity is None:
+                raise self._stop(S.FAILED_RETRYABLE, "Could not verify that the application page "
+                                 "belongs to the selected job. Open its specific application page "
+                                 "and resume; nothing was submitted.")
+            if page.job_identity.identity_key != expected:
+                raise self._stop(S.FAILED_RETRYABLE, "The application page identifies a different "
+                                 "job from the one selected. Check the selected job's application "
+                                 "link and resume; nothing was submitted.")
         if page.job_identity is None:
             return
         try:
@@ -630,6 +640,18 @@ class _Run:
             raise _Stop(_outcome(self.store, self.app_id,
                                  f"This job already has application {result.duplicate_of}; "
                                  "not applying twice."))
+
+    async def _verify_expected_page(self) -> None:
+        """Recheck a pinned selection after waits/fills, immediately before acting.
+        An earlier step's identity cannot authorize a different page after navigation."""
+        if self.store.expected_job_identity(self.app_id) is None:
+            return
+        page = await self._fenced(self.browser.inspect())
+        self._renew()
+        if page.kind is not PageKind.APPLICATION_FORM or page.form is None:
+            raise self._stop(S.FAILED_RETRYABLE, "The selected job's application form is no longer "
+                             "visible. Open its application page and resume; nothing was submitted.")
+        self._bind_identity(page)
 
     async def _user_action(self, page: PageInspection, needs: list[MissingInput]) -> PageInspection:
         message = "; ".join(n.prompt for n in needs) or (page.message or "Action needed in the browser")
@@ -780,6 +802,7 @@ class _Run:
         return True
 
     async def _act(self, form: ApplicationForm, packet: ApplicationPacket) -> PageInspection:
+        await self._verify_expected_page()
         self._to(S.PACKET_READY)
         self._to(S.FILLING)
         self.acted_steps.add(form.step)
@@ -798,6 +821,7 @@ class _Run:
             return await self.browser.inspect()
         if form.is_final_step is True:
             return await self._submit(packet)
+        await self._verify_expected_page()
         try:
             nav = await self.browser.advance()
         except (SubmissionRefused, AmbiguousAction) as exc:
@@ -807,9 +831,14 @@ class _Run:
         return nav.inspection
 
     async def _submit(self, packet: ApplicationPacket) -> PageInspection:
+        has_expected_job = self.store.expected_job_identity(self.app_id) is not None
+        if has_expected_job:
+            await self.interaction.progress("Submitting the application")
+            await self._verify_expected_page()
         attempt = self.store.begin_submission(self.claim, packet_id=packet.id)
         try:
-            await self.interaction.progress("Submitting the application")
+            if not has_expected_job:
+                await self.interaction.progress("Submitting the application")
             await self.browser.submit()
             observation = await self.browser.confirm()
         except BaseException as exc:

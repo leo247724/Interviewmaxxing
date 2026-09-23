@@ -511,7 +511,7 @@ def test_v1_database_is_migrated_and_unscoped_inputs_are_ignored(store_path, clo
     with ApplicationStore.open(store_path, clock=clock) as s:
         assert s.list_user_inputs("app_old") == []
     raw = sqlite3.connect(store_path)
-    assert raw.execute("SELECT value FROM meta").fetchone() == ("3",)
+    assert raw.execute("SELECT value FROM meta").fetchone() == ("4",)
     columns = {r[1] for r in raw.execute("PRAGMA table_info(user_inputs)")}
     assert {"form_scope", "field_fingerprint"} <= columns
     raw.close()
@@ -721,3 +721,71 @@ def test_resume_pin_is_first_writer_wins_and_immutable(store, store_path, fictio
     claim = store.claim(app.id, "w1")
     with pytest.raises(ValueError, match="reserved"):
         store.append_event(claim, "document.resume_pinned", {})
+
+
+def test_expected_identity_pin_is_durable_immutable_and_not_observed(store, store_path):
+    app = store.record_request(CAND, URL).application
+    key = "ats:mock:fictional:b"
+    assert store.expected_job_identity(app.id) is None
+    assert store.pin_expected_job_identity(app.id, key.upper()) == key
+    assert store.pin_expected_job_identity(app.id, key) == key
+    with pytest.raises(IdentityConflict):
+        store.pin_expected_job_identity(app.id, "ats:mock:fictional:a")
+    assert store.get_job(app.job_id).identity_key is None
+    assert _events(store, app.id).count("application.expected_job_identity_pinned") == 1
+    assert "job.identity_bound" not in _events(store, app.id)
+    with ApplicationStore.open(store_path) as restarted:
+        assert restarted.expected_job_identity(app.id) == key
+    raw = sqlite3.connect(store_path)
+    for sql in ("UPDATE application_expected_job_identities SET identity_key = 'other'",
+                "DELETE FROM application_expected_job_identities"):
+        with pytest.raises(sqlite3.IntegrityError, match="final"):
+            raw.execute(sql)
+        raw.rollback()
+    raw.close()
+
+
+def test_expected_identity_pin_rejects_running_and_submitting_apps(store):
+    app = store.record_request(CAND, URL).application
+    claim = _to_filling(store, app.id)
+    with pytest.raises(ClaimUnavailable):
+        store.pin_expected_job_identity(app.id, "ats:mock:fictional:b")
+    store.begin_submission(claim)
+    store.release(claim)
+    with pytest.raises(SubmissionBlocked):
+        store.pin_expected_job_identity(app.id, "ats:mock:fictional:b")
+    assert store.expected_job_identity(app.id) is None
+
+
+def test_expected_identity_must_match_observed_identity_in_both_orders(store, mock_identity):
+    app = store.record_request(CAND, URL).application
+    key = mock_identity.identity_key
+    store.pin_expected_job_identity(app.id, key)
+    claim = store.claim(app.id, "browser")
+    conflicting = mock_identity.model_copy(update={"external_job_id": "other-job"})
+    with pytest.raises(IdentityConflict):
+        store.bind_job_identity(claim, conflicting)
+    assert store.get_job(app.job_id).identity_key is None
+    store.bind_job_identity(claim, mock_identity)
+    store.release(claim)
+    assert store.get_job(app.job_id).identity_key == key
+    other = store.record_request(CAND, URL_ALIAS).application
+    claim = store.claim(other.id, "browser")
+    store.bind_job_identity(claim, conflicting)
+    store.release(claim)
+    with pytest.raises(IdentityConflict):
+        store.pin_expected_job_identity(other.id, key)
+
+
+def test_v3_database_gains_expected_identity_pin_without_changing_history(store, store_path):
+    app = store.record_request(CAND, URL).application
+    events = store.list_events(app.id)
+    raw = sqlite3.connect(store_path)
+    raw.executescript("DROP TABLE application_expected_job_identities;"
+                      "UPDATE meta SET value = '3' WHERE key = 'schema_version';")
+    raw.close()
+    with ApplicationStore.open(store_path) as restarted:
+        assert restarted.get_application(app.id) == app
+        assert restarted.list_events(app.id) == events
+        assert restarted.expected_job_identity(app.id) is None
+        assert restarted.pin_expected_job_identity(app.id, "ats:mock:fictional:b")
