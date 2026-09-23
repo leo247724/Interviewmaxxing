@@ -1,0 +1,117 @@
+{
+  "_note": "Fictional payloads in the shape returned by js/google_search.js and js/google_detail.js (Google Jobs udm=8 view observed 2026-09-22). Titles contain '&amp;' because Google's result text is double-escaped.",
+  "search": {
+    "page": {
+      "url": "https://www.google.com/search?q=marketing+manager+jobs+in+Austin%2C+TX&udm=8&jbr=sep:0",
+      "title": "marketing manager jobs in Austin, TX - Google Search",
+      "hidden": true,
+      "signals": {
+        "challenge": false,
+        "password_field": false,
+        "denied": false
+      }
+    },
+    "items": [
+      {
+        "index": 0,
+        "doc_id": "RmljdGlvbmFsRG9jMDAx==",
+        "share_url": "https://www.google.com/search?ibp=htl;jobs&q=x&htidocid=RmljdGlvbmFsRG9jMDAx%3D%3D&shmd=zzz",
+        "lines": [
+          "Marketing Manager",
+          "Fictional Widgets Co",
+          "Austin, TX • via LinkedIn",
+          "2 days ago",
+          "Full-time",
+          "Health insurance"
+        ]
+      },
+      {
+        "index": 1,
+        "doc_id": "RmljdGlvbmFsRG9jMDAy==",
+        "share_url": "https://www.google.com/search?ibp=htl;jobs&q=x&htidocid=RmljdGlvbmFsRG9jMDAy%3D%3D",
+        "lines": [
+          "Brand &amp; Content Marketing Manager",
+          "Fictional Widgets Co",
+          "Anywhere • via Example Jobs Board",
+          "20 hours ago",
+          "121K–194K a year",
+          "Work from home",
+          "Full-time"
+        ]
+      }
+    ]
+  },
+  "details": {
+    "0": {
+      "page": {
+        "url": "https://www.google.com/search?q=marketing+manager+jobs+in+Austin%2C+TX&udm=8#sv=abc",
+        "title": "marketing manager jobs in Austin, TX - Google Search",
+        "hidden": true,
+        "signals": {
+          "challenge": false,
+          "password_field": false,
+          "denied": false
+        }
+      },
+      "active": {
+        "encoded_docid": "QWN0aXZlRG9jMDAx==",
+        "heading": "Marketing Manager",
+        "text": "Fictional Widgets Co\nMarketing Manager\nFictional Widgets Co · Austin, TX · via LinkedIn\n2 days ago\nFull-time\nApply on LinkedIn\nApply directly on Indeed\nApply on Example Jobs Board\nApply on Fictional Widgets Careers\nJob highlights\nIdentified by Google from the original job post\nJob description\nLead fictional marketing programs.\nOwn the widget launch calendar.\nShow full description\nReport this listing",
+        "apply_links": [
+          {
+            "text": "Apply on LinkedIn",
+            "href": "https://www.linkedin.com/jobs/view/marketing-manager-at-fictional-widgets-4000000001?utm_campaign=google_jobs_apply&utm_source=google_jobs_apply&utm_medium=organic"
+          },
+          {
+            "text": "Apply directly on Indeed",
+            "href": "https://www.indeed.com/viewjob?jk=a1b2c3d4e5f60718&utm_campaign=google_jobs_apply&utm_source=google_jobs_apply&utm_medium=organic"
+          },
+          {
+            "text": "Apply on Example Jobs Board",
+            "href": "https://jobs.example-board.test/view/123?utm_source=google_jobs_apply"
+          },
+          {
+            "text": "Apply on Fictional Widgets Careers",
+            "href": "https://boards.greenhouse.io/fictionalwidgets/jobs/7001?gh_src=google_jobs"
+          }
+        ]
+      }
+    },
+    "1": {
+      "page": {
+        "url": "https://www.google.com/search?q=marketing+manager+jobs+in+Austin%2C+TX&udm=8#sv=def",
+        "title": "marketing manager jobs in Austin, TX - Google Search",
+        "hidden": true,
+        "signals": {
+          "challenge": false,
+          "password_field": false,
+          "denied": false
+        }
+      },
+      "active": {
+        "encoded_docid": "QWN0aXZlRG9jMDAy==",
+        "heading": "Brand & Content Marketing Manager",
+        "text": "Fictional Widgets Co\nBrand & Content Marketing Manager\nApply on Example Jobs Board\nJob description\nA fictional remote brand role.\nReport this listing",
+        "apply_links": [
+          {
+            "text": "Apply on Example Jobs Board",
+            "href": "https://jobs.example-board.test/view/456"
+          }
+        ]
+      }
+    }
+  },
+  "sorry": {
+    "page": {
+      "url": "https://www.google.com/sorry/index?continue=https://www.google.com/search",
+      "title": "https://www.google.com/search",
+      "hidden": true,
+      "signals": {
+        "challenge": true,
+        "password_field": false,
+        "denied": false
+      }
+    },
+    "items": []
+  }
+}

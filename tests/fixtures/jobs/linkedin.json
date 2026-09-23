@@ -1,0 +1,139 @@
+{
+  "_note": "Fictional payloads in the shape returned by js/linkedin_search.js and js/linkedin_detail.js (layout observed 2026-09-22). No real companies, jobs or people.",
+  "search": {
+    "page": {
+      "url": "https://www.linkedin.com/jobs/search/?keywords=marketing+manager&location=Austin%2C+TX&f_WT=1%2C3",
+      "title": "marketing manager Jobs in Austin, TX | LinkedIn",
+      "hidden": true,
+      "signals": {
+        "challenge": false,
+        "password_field": false,
+        "denied": false
+      }
+    },
+    "cards": [
+      {
+        "id": "4000000001",
+        "rendered": true,
+        "title": "Marketing Manager",
+        "title_label": "Marketing Manager with verification",
+        "company": "Fictional Widgets Co",
+        "caption": "Austin, TX (Hybrid)",
+        "metadata": "$110K/yr - $130K/yr · 3 benefits",
+        "footer": [
+          "Promoted"
+        ],
+        "href": "/jobs/view/4000000001/?eBP=abc&trk=flagship3_search_srp_jobs"
+      },
+      {
+        "id": "4000000002",
+        "rendered": true,
+        "title": "Director of Marketing",
+        "title_label": "Director of Marketing",
+        "company": "Example Analytics",
+        "caption": "United States (Remote)",
+        "metadata": "401(k) benefit",
+        "footer": [
+          "Applied"
+        ],
+        "href": "/jobs/view/4000000002/"
+      },
+      {
+        "id": "4000000003",
+        "rendered": false,
+        "title": "",
+        "title_label": null,
+        "company": "",
+        "caption": "",
+        "metadata": "",
+        "footer": [],
+        "href": null
+      }
+    ],
+    "results_text": "3 results",
+    "page_state": "Page 1 of 1",
+    "has_next": false,
+    "no_results": false
+  },
+  "details": {
+    "4000000001": {
+      "page": {
+        "url": "https://www.linkedin.com/jobs/view/4000000001/",
+        "title": "Marketing Manager | Fictional Widgets Co | LinkedIn",
+        "hidden": true,
+        "signals": {
+          "challenge": false,
+          "password_field": false,
+          "denied": false
+        }
+      },
+      "document_title": "Marketing Manager | Fictional Widgets Co | LinkedIn",
+      "top_lines": [
+        "Fictional Widgets Co",
+        "Marketing Manager",
+        "Austin, TX · 2 days ago · 31 people clicked apply",
+        "Promoted by hirer · Responses managed off LinkedIn",
+        "$110K/yr - $130K/yr",
+        "Hybrid",
+        "Full-time",
+        "Apply",
+        "Save",
+        "Looking for talent?"
+      ],
+      "description": null,
+      "apply_links": [
+        {
+          "text": "Apply",
+          "label": "Apply on company website",
+          "href": "https://www.linkedin.com/safety/go/?url=https%3A%2F%2Fboards%2Egreenhouse%2Eio%2Ffictionalwidgets%2Fjobs%2F7001%3Fgh_src%3Dlinkedin&urlhash=abcd"
+        }
+      ],
+      "easy_apply": false,
+      "closed": false,
+      "unavailable": false
+    },
+    "4000000003": {
+      "page": {
+        "url": "https://www.linkedin.com/jobs/view/4000000003/",
+        "title": "Senior Marketing Manager | Sample Coffee Roasters | LinkedIn",
+        "hidden": false,
+        "signals": {
+          "challenge": false,
+          "password_field": false,
+          "denied": false
+        }
+      },
+      "document_title": "Senior Marketing Manager | Sample Coffee Roasters | LinkedIn",
+      "top_lines": [
+        "Sample Coffee Roasters",
+        "Senior Marketing Manager",
+        "Round Rock, TX · 3 weeks ago · Over 100 applicants",
+        "On-site",
+        "Full-time",
+        "No longer accepting applications"
+      ],
+      "description": "About the role\nLead fictional campaigns for a sample roaster.\n… more",
+      "apply_links": [],
+      "easy_apply": false,
+      "closed": true,
+      "unavailable": false
+    }
+  },
+  "login_wall": {
+    "page": {
+      "url": "https://www.linkedin.com/authwall?trk=gf&sessionRedirect=https%3A%2F%2Fwww.linkedin.com%2Fjobs%2F",
+      "title": "Sign Up | LinkedIn",
+      "hidden": true,
+      "signals": {
+        "challenge": false,
+        "password_field": true,
+        "denied": false
+      }
+    },
+    "cards": [],
+    "results_text": "",
+    "page_state": "",
+    "has_next": false,
+    "no_results": false
+  }
+}

@@ -1,0 +1,19 @@
+[project]
+name = "interviewmaxxing-jobs"
+version = "0.1.0"
+description = "Job discovery through the user's live OpenCLI browser, with local listing storage and dedupe."
+requires-python = ">=3.12"
+dependencies = ["interviewmaxxing-core", "pydantic>=2.8,<3"]
+
+[project.scripts]
+interviewmaxxing-jobs = "interviewmaxxing_jobs.cli:main"
+
+[tool.uv.sources]
+interviewmaxxing-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interviewmaxxing_jobs"]
