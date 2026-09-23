@@ -24,8 +24,9 @@ import statistics
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import Assumptions
 from .fixtures import CANDIDATE_EVIDENCE, Population, generate
@@ -80,6 +81,8 @@ def environment() -> dict[str, Any]:
 def measure_store(tmp: Path, n: int = 100) -> dict[str, Any]:
     from interviewmaxxing_core import (
         ApplicationState as S,
+    )
+    from interviewmaxxing_core import (
         ApplicationStore,
         SubmissionObservation,
         SubmissionOutcome,
@@ -148,8 +151,9 @@ def measure_store(tmp: Path, n: int = 100) -> dict[str, Any]:
 
 
 def measure_jobs(tmp: Path, a: Assumptions, sizes: tuple[int, ...] = (1000, 5000)) -> dict[str, Any]:
-    from interviewmaxxing_core import JobListing, SelectionPreferences, snapshot_hash
     from interviewmaxxing_jobs import JobStore
+
+    from interviewmaxxing_core import JobListing, SelectionPreferences, snapshot_hash
 
     out: dict[str, Any] = {}
     pop = Population(a, seed=42)
@@ -173,9 +177,9 @@ def measure_jobs(tmp: Path, a: Assumptions, sizes: tuple[int, ...] = (1000, 5000
         }
         stored = int(store._conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0])
         entry["stored_after_dedupe"] = stored
-        entry["list_limit_50"] = _timeit(lambda: store.list_listings(limit=50), 5)
-        entry["list_limit_50_ranked"] = _timeit(lambda: store.list_listings(limit=50, rank_for=prefs), 5)
-        entry["get_listing"] = _timeit(lambda: store.get_listing(listings[0].id), 200)
+        entry["list_limit_50"] = _timeit(lambda store=store: store.list_listings(limit=50), 5)
+        entry["list_limit_50_ranked"] = _timeit(lambda store=store: store.list_listings(limit=50, rank_for=prefs), 5)
+        entry["get_listing"] = _timeit(lambda store=store, listing_id=listings[0].id: store.get_listing(listing_id), 200)
         out[f"listings_{size}"] = entry
         store.close()
     out["note"] = ("list_listings decodes every stored row before applying limit (store.py:182-204);"
@@ -214,10 +218,15 @@ class _Bot:
 
 
 def measure_selection(tmp: Path, a: Assumptions, n: int = 60) -> dict[str, Any]:
-    from interviewmaxxing_core import JobListing, SelectionPreferences
     from interviewmaxxing_selection import (
-        ApiKey, CandidateEvidence, JevClient, SelectionService, SelectionStore,
+        ApiKey,
+        CandidateEvidence,
+        JevClient,
+        SelectionService,
+        SelectionStore,
     )
+
+    from interviewmaxxing_core import JobListing, SelectionPreferences
     try:
         from interviewmaxxing_selection.rubric import RUBRIC_VERSION
     except Exception:  # pragma: no cover

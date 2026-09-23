@@ -13,8 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass, field
-from typing import Any, Iterator
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
 
 from .config import Assumptions
 
@@ -487,6 +488,15 @@ def candidate_evidence() -> dict[str, Any]:
 
 
 __all__ = [
-    "CANDIDATE_EVIDENCE", "BASE_QUESTIONS", "Fixture", "Population", "Question", "Truth",
-    "candidate_evidence", "fixture_json", "generate", "listing_id_for", "question_catalog_json",
+    "BASE_QUESTIONS",
+    "CANDIDATE_EVIDENCE",
+    "Fixture",
+    "Population",
+    "Question",
+    "Truth",
+    "candidate_evidence",
+    "fixture_json",
+    "generate",
+    "listing_id_for",
+    "question_catalog_json",
 ]

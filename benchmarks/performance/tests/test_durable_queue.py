@@ -58,7 +58,7 @@ class DurableQueueTests(unittest.TestCase):
 
     def test_renew_extends_and_effect_is_once(self) -> None:
         self.q.enqueue("apply", "app_1")
-        item, lease = self.q.claim_next("w1", ttl_s=5)  # type: ignore[misc]
+        _item, lease = self.q.claim_next("w1", ttl_s=5)  # type: ignore[misc]
         self.clock.t += 4
         lease = self.q.renew(lease, ttl_s=5)
         self.clock.t += 4

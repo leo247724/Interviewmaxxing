@@ -13,10 +13,10 @@ employer throughput.
 from __future__ import annotations
 
 import heapq
-import math
 import random
+from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Any, Generator
+from typing import Any
 
 from .config import Assumptions
 from .fixtures import BASE_QUESTIONS, Fixture, Population
@@ -29,7 +29,7 @@ Proc = Generator[tuple, Any, None]
 
 
 class Resource:
-    def __init__(self, env: "Env", name: str, capacity: int) -> None:
+    def __init__(self, env: Env, name: str, capacity: int) -> None:
         self.env = env
         self.name = name
         self.capacity = capacity

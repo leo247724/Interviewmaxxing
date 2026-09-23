@@ -146,7 +146,7 @@ class Assumptions:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
 
     @classmethod
-    def from_json(cls, text: str) -> "Assumptions":
+    def from_json(cls, text: str) -> Assumptions:
         data = json.loads(text)
         sources = [SourceProfile(**s) for s in data.pop("sources", [])] or default_sources()
         known = {f.name for f in fields(cls)}
@@ -156,7 +156,7 @@ class Assumptions:
         return cls(sources=sources, **data)
 
     @classmethod
-    def load(cls, path: Path | None) -> "Assumptions":
+    def load(cls, path: Path | None) -> Assumptions:
         if path is None:
             return cls()
         return cls.from_json(Path(path).read_text("utf-8"))

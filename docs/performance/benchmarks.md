@@ -71,3 +71,20 @@ The twelve pipeline scenarios report observations, unique listings, APPLY, attem
 Pipeline limitations: generated source populations and detail success are approximations, not a faithful replay of J1; scenario scheduling changes fixture/random-number order, so differences between lane counts are not causal estimates; tenant spacing conservatively occupies the modeled browser; latency percentiles include queueing only for completed stages and omit censored in-flight work. Human answer reuse is fictional and not production authorization logic. Four-lane rows are explicitly experimental sensitivity runs. Screens and interviews are null. No site acceptance was observed.
 
 Artifacts: [architecture.md](architecture.md), [harness README](../../benchmarks/performance/README.md), [funnel](../../benchmarks/performance/results/funnel.md), [selection](../../benchmarks/performance/results/selection.md), [queue](../../benchmarks/performance/results/chaos.md), [pipeline](../../benchmarks/performance/results/pipeline.md).
+
+## Root lint integration check
+
+The benchmark scope passes the integration checkout's existing Ruff configuration:
+
+```sh
+/Users/leo/.superset/worktrees/Interviewmaxxing/caramel-ketch/.venv/bin/ruff check benchmarks/performance --config /Users/leo/.superset/worktrees/Interviewmaxxing/caramel-ketch/pyproject.toml
+```
+
+Only imports/type syntax, equivalent list/round expressions and explicit bindings for
+immediately invoked measurement callbacks changed. All 29 tests pass. Rerunning
+`funnel`, `selection` and `pipeline` with `--seed 42 --population 2000` produced identical
+non-metadata output (excluding pipeline wall time), including all 12 pipeline scenarios.
+Their JSON metadata now records harness SHA-256
+`334645a88d5578e0fe869ce5b0f086903eac8778470b2e8b436a31bcbef5f6e6`.
+Earlier queue/local-package timing receipts retain their original measured snapshots;
+no environment, dependency, lint configuration or production package changed.
