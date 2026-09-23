@@ -18,17 +18,18 @@ One ``DurableQueue`` per thread (SQLite connection affinity), like ``Application
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any
 
 READY, RUNNING, DONE, FAILED, DEAD = "READY", "RUNNING", "DONE", "FAILED", "DEAD"
 ACTIVE = (READY, RUNNING)
@@ -610,7 +611,7 @@ class Heartbeat:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self.lost = False
 
-    def __enter__(self) -> "Heartbeat":
+    def __enter__(self) -> Heartbeat:
         self._thread.start()
         return self
 

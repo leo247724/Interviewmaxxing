@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .config import Assumptions
@@ -115,7 +115,7 @@ STRONG = {"role_match": "match", "seniority_match": "at_target_level",
           "qualification_match": "meets", "location_eligibility": "eligible"}
 
 
-def assessment_holds(assessments: dict[str, "Answer"], final: str) -> list[str]:
+def assessment_holds(assessments: dict[str, Answer], final: str) -> list[str]:
     holds = []
     for name in INSUFFICIENT:
         if assessments[name].choice == "insufficient_evidence":
@@ -370,7 +370,7 @@ def decide(fx: Fixture, strategy: str, a: Assumptions, judge: StubJudge, provide
             raise ValueError(strategy)
     except _ProviderDown:
         # JevProviderError path: REVIEW with a PROVIDER_ERROR hold, never cached (service.py:288-307).
-        return Decision(fx.id, strategy, REVIEW, None, holds + ["PROVIDER_ERROR"], calls, attempts,
+        return Decision(fx.id, strategy, REVIEW, None, [*holds, "PROVIDER_ERROR"], calls, attempts,
                         input_bytes, latency, skipped_reason="provider_error", tier=tier)
 
     holds = holds + assessment_holds(assessments, final.choice)
@@ -405,7 +405,7 @@ def _p95(values: list[float]) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))]
+    return ordered[min(len(ordered) - 1, round(0.95 * (len(ordered) - 1)))]
 
 
 def run_strategies(fixtures: list[Fixture], a: Assumptions, seed: int = 7) -> dict[str, Any]:

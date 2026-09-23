@@ -23,7 +23,10 @@ from typing import Any
 from . import chaos, funnel, measure, pipeline_sim, selection_sim
 from .config import Assumptions, provenance_table
 from .fixtures import (
-    candidate_evidence, fixture_json, generate, question_catalog_json,
+    candidate_evidence,
+    fixture_json,
+    generate,
+    question_catalog_json,
 )
 from .report import md_table, run_metadata, write_json
 
