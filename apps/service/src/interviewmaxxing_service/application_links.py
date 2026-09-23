@@ -74,11 +74,21 @@ class ApplicationLinks:
         if item_url and requested != item_url and not (item_url in known and requested in known):
             raise errors.invalid("The application URL doesn't match this pipeline entry.",
                                  {"applicationUrl": "Use this entry's saved application URL."})
-        if item and item.application_id:
-            existing = apps.find_application(self.pipeline.candidate_id, link.url)
-            if existing is None or existing.id != item.application_id:
-                raise errors.conflict("This entry already links to another application.",
-                                      {"pipelineEntryId": "The existing application link was kept."})
+        existing = apps.find_application(self.pipeline.candidate_id, link.url)
+        if listing is not None and existing is not None:
+            job = apps.get_job(existing.job_id)
+            expected = {source.employer_job_key.strip().lower() for source in listing.provenance
+                        if source.employer_job_key}
+            if job.identity_key and expected and expected != {job.identity_key.strip().lower()}:
+                field = "listingId" if link.listing_id is not None else "pipelineEntryId"
+                raise errors.conflict(
+                    "This URL already belongs to an application for a different observed job.",
+                    {field: "The saved job identity conflicts with the existing application. "
+                            "No application was linked or started."},
+                )
+        if item and item.application_id and (existing is None or existing.id != item.application_id):
+            raise errors.conflict("This entry already links to another application.",
+                                  {"pipelineEntryId": "The existing application link was kept."})
         return item
 
     def prepare(self, body: StartApplicationInput, apps: ApplicationStore) -> ApplicationLink | None:

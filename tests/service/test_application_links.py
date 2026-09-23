@@ -8,7 +8,15 @@ from typing import Any
 
 import pytest
 
-from interviewmaxxing_core import ApplicationState, LocalPaths, WorkArrangement
+from interviewmaxxing_core import (
+    ApplicationState,
+    IdentityEvidenceKind,
+    JobIdentityObservation,
+    LocalPaths,
+    SubmissionObservation,
+    SubmissionOutcome,
+    WorkArrangement,
+)
 from interviewmaxxing_pipeline import NewPipelineItem, PipelineStore, PipelineUpdate, TrackingFields
 
 from .conftest import SITE_URL, FakeCandidates, FictionalSite, Harness, serve
@@ -138,3 +146,50 @@ def test_existing_other_application_link_is_never_overwritten(links: Any) -> Non
     assert h.runs == []
     [entry] = h.client.get("/pipeline").json["entries"]
     assert entry["application"]["applicationId"] == other_id
+
+
+@pytest.mark.parametrize("via_card", [False, True])
+def test_shared_apply_url_cannot_link_another_known_jobs_receipt(links: Any, via_card: bool) -> None:
+    h, repo, resume_id = links
+    first = next(iter(repo.items.values()))
+    first = first.model_copy(update={"provenance": [
+        source.model_copy(update={"employer_job_key": "ats:mock:fictional:job-b"})
+        for source in first.provenance
+    ]})
+    repo.items[first.id] = first
+    with h.store() as store:
+        app = store.record_request("default", SITE_URL).application
+        claim = store.claim(app.id, "fictional-test")
+        store.transition(claim, ApplicationState.INSPECTING)
+        store.bind_job_identity(claim, JobIdentityObservation(
+            ats_type="mock", ats_tenant="fictional", external_job_id="job-a",
+            title="Different observed job", evidence_kind=IdentityEvidenceKind.ATS_JOB_ID_ON_PAGE,
+            evidence="Job A ID on fictional form",
+        ))
+        store.transition(claim, ApplicationState.PACKET_READY)
+        store.transition(claim, ApplicationState.FILLING)
+        attempt = store.begin_submission(claim)
+        store.record_submission_outcome(claim, attempt.id, SubmissionObservation(
+            outcome=SubmissionOutcome.ACCEPTED, signals=["Job A received"],
+            confirmation_reference="A-RECEIPT",
+        ))
+        store.release(claim)
+    handoff = {"pipelineEntryId": card(h, listingId=first.id)} if via_card else {"listingId": first.id}
+    rejected = h.client.post("/applications", body(h, resume_id, **handoff))
+    assert rejected.status == 409, rejected.json
+    assert next(iter(handoff)) in rejected.json["error"]["fieldErrors"]
+    assert all(entry["application"] is None for entry in h.client.get("/pipeline").json["entries"])
+    assert h.runs == []
+    with h.store() as store:
+        assert store.get_application(app.id).state is ApplicationState.SUBMITTED
+        assert store.get_receipt(app.id).confirmation_reference == "A-RECEIPT"
+    # Matching explicit identity can reuse the canonical submitted application.
+    repo.items[first.id] = first.model_copy(update={"provenance": [
+        source.model_copy(update={"employer_job_key": "ats:mock:fictional:job-a"})
+        for source in first.provenance
+    ]})
+    accepted = h.client.post("/applications", body(h, resume_id, **handoff))
+    assert accepted.status == 200 and accepted.json["id"] == app.id
+    [entry] = h.client.get("/pipeline").json["entries"]
+    assert entry["application"]["confirmationReference"] == "A-RECEIPT"
+    assert h.runs == []
