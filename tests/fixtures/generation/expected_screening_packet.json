@@ -1,0 +1,208 @@
+{
+  "answers": {
+    "full_name": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "Avery Example"
+    },
+    "country": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": [
+        "USA",
+        "United States of America"
+      ]
+    },
+    "state": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": [
+        "OR",
+        "Oregon"
+      ]
+    },
+    "location": {
+      "source": "PROFILE_IDENTITY",
+      "refs": [],
+      "value": "Springfield, OR, United States"
+    },
+    "current_title": {
+      "source": "CANDIDATE_FACT",
+      "refs": [
+        "fact.current_title"
+      ],
+      "value": "Paid Media Lead"
+    },
+    "current_company": {
+      "source": "CANDIDATE_FACT",
+      "refs": [
+        "fact.current_company"
+      ],
+      "value": "Fictional Widgets Co"
+    },
+    "role": {
+      "source": "GENERATED_FROM_FACTS",
+      "refs": [
+        "fact.current_title",
+        "fact.current_company"
+      ],
+      "value": "Paid Media Lead at Fictional Widgets Co"
+    },
+    "years_total": {
+      "source": "CANDIDATE_FACT",
+      "refs": [
+        "fact.years_total"
+      ],
+      "value": [
+        "c",
+        "6-10 years"
+      ]
+    },
+    "years_python": {
+      "source": "CANDIDATE_FACT",
+      "refs": [
+        "fact.years_python"
+      ],
+      "value": "0"
+    },
+    "direct_reports": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.direct_reports"
+      ],
+      "value": "0"
+    },
+    "relocate": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.relocate_austin"
+      ],
+      "value": [
+        "0",
+        "No"
+      ]
+    },
+    "start_date": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.mock_co_start"
+      ],
+      "value": "2026-11-01"
+    },
+    "sponsorship": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.sponsorship",
+        "sa.visa_sponsorship"
+      ],
+      "value": [
+        "n",
+        "No"
+      ]
+    },
+    "accuracy": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.accuracy_attestation"
+      ],
+      "value": true
+    },
+    "veteran": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.veteran"
+      ],
+      "value": [
+        "npv",
+        "I am not a protected veteran"
+      ]
+    },
+    "channels": {
+      "source": "SAVED_ANSWER",
+      "refs": [
+        "sa.channels"
+      ],
+      "value": [
+        [
+          "search",
+          "Paid search"
+        ],
+        [
+          "social",
+          "Paid social"
+        ]
+      ]
+    }
+  },
+  "missing": {
+    "short_title": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "years_sql": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "years_search": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "years_b2b": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "relocate_denver": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "salary": {
+      "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "candidates": []
+    },
+    "work_auth_ca": {
+      "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "candidates": []
+    },
+    "heard_from": {
+      "reason": "AMBIGUOUS",
+      "candidates": [
+        [
+          "board",
+          "Job board"
+        ],
+        [
+          "referral",
+          "Employee referral"
+        ]
+      ]
+    },
+    "license": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "dismissal": {
+      "reason": "UNCOVERED_ATTESTATION",
+      "candidates": []
+    },
+    "background": {
+      "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "candidates": []
+    },
+    "race": {
+      "reason": "EXPLICIT_ANSWER_REQUIRED",
+      "candidates": []
+    },
+    "why": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    },
+    "portfolio": {
+      "reason": "UNSUPPORTED_CONTROL",
+      "candidates": []
+    },
+    "resume_docx": {
+      "reason": "NO_ANSWER",
+      "candidates": []
+    }
+  }
+}

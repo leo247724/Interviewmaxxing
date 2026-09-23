@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="520" viewBox="0 0 880 520" font-family="Helvetica, Arial, sans-serif">
+  <title>Fictional confirmation page (preview fixture)</title>
+  <rect width="880" height="520" fill="#ffffff"/>
+  <rect width="880" height="44" fill="#eceff3"/>
+  <circle cx="22" cy="22" r="6" fill="#d0d4da"/><circle cx="42" cy="22" r="6" fill="#d0d4da"/><circle cx="62" cy="22" r="6" fill="#d0d4da"/>
+  <rect x="90" y="11" width="620" height="22" rx="11" fill="#ffffff"/>
+  <text x="106" y="27" font-size="12" fill="#5b6470" font-family="Menlo, monospace">jobs.example.test/northwind/applications/confirmation</text>
+  <rect y="44" width="880" height="64" fill="#0f3d5e"/>
+  <text x="40" y="84" font-size="20" font-weight="700" fill="#ffffff">Northwind Cartography · Careers</text>
+  <circle cx="440" cy="190" r="34" fill="#e3f1e8"/>
+  <path d="M424 190 l11 11 l22 -24" stroke="#1d7a45" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="440" y="265" font-size="28" font-weight="700" fill="#1b1f24" text-anchor="middle">Application submitted</text>
+  <text x="440" y="302" font-size="16" fill="#3b434d" text-anchor="middle">Thank you for applying to Northwind Cartography.</text>
+  <text x="440" y="328" font-size="16" fill="#3b434d" text-anchor="middle">Your application reference is</text>
+  <rect x="330" y="344" width="220" height="38" rx="4" fill="#f2f4f7"/>
+  <text x="440" y="369" font-size="18" font-weight="700" fill="#1b1f24" text-anchor="middle" font-family="Menlo, monospace">NWC-24-0922-7731</text>
+  <text x="440" y="420" font-size="14" fill="#5b6470" text-anchor="middle">We'll be in touch if your background fits the role.</text>
+  <text x="860" y="508" font-size="11" fill="#9aa2ad" text-anchor="end">Fictional preview fixture · not a real employer</text>
+</svg>

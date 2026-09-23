@@ -8,8 +8,10 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "interviewmaxxing-candidate",
     "interviewmaxxing-cli",
     "interviewmaxxing-core",
+    "interviewmaxxing-generation",
 ]
 
 [manifest.dependency-groups]
@@ -113,6 +115,21 @@ wheels = [
 ]
 
 [[package]]
+name = "interviewmaxxing-candidate"
+version = "0.1.0"
+source = { editable = "packages/candidate" }
+dependencies = [
+    { name = "interviewmaxxing-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "interviewmaxxing-core", editable = "packages/core" },
+    { name = "pydantic", specifier = ">=2.8,<3" },
+]
+
+[[package]]
 name = "interviewmaxxing-cli"
 version = "0.1.0"
 source = { editable = "apps/cli" }
@@ -133,6 +150,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.8,<3" }]
+
+[[package]]
+name = "interviewmaxxing-generation"
+version = "0.1.0"
+source = { editable = "packages/generation" }
+dependencies = [
+    { name = "interviewmaxxing-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "interviewmaxxing-core", editable = "packages/core" }]
 
 [[package]]
 name = "librt"

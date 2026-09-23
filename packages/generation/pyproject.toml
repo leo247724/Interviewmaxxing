@@ -1,0 +1,16 @@
+[project]
+name = "interviewmaxxing-generation"
+version = "0.1.0"
+description = "Deterministic application-packet resolver: factual form answers with provenance and scoped missing inputs."
+requires-python = ">=3.12"
+dependencies = ["interviewmaxxing-core"]
+
+[tool.uv.sources]
+interviewmaxxing-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interviewmaxxing_generation"]

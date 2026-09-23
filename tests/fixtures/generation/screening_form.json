@@ -1,0 +1,137 @@
+{
+  "url": "http://127.0.0.1:0/jobs/mock-4012/apply?utm_source=fixture",
+  "ats_type": "mock",
+  "step": 1,
+  "is_final_step": true,
+  "submit_selector": "#submit",
+  "next_selector": null,
+  "page_errors": [],
+  "inspected_at": "2026-09-22T20:30:00Z",
+  "fields": [
+    {"id": "full_name", "label": "Full name *", "semantic_type": "FULL_NAME", "control_type": "TEXT", "selector": "#full_name", "required": true},
+    {
+      "id": "country", "label": "Country", "semantic_type": "COUNTRY", "control_type": "SELECT", "selector": "#country", "required": true,
+      "options": [
+        {"value": "", "label": "Select...", "disabled": true},
+        {"value": "CA", "label": "Canada"},
+        {"value": "USA", "label": "United States of America"}
+      ]
+    },
+    {
+      "id": "state", "label": "State", "semantic_type": "STATE", "control_type": "SELECT", "selector": "#state", "required": true,
+      "options": [
+        {"value": "", "label": "Select..."},
+        {"value": "OR", "label": "Oregon"},
+        {"value": "WA", "label": "Washington"}
+      ]
+    },
+    {"id": "location", "label": "Location", "semantic_type": "LOCATION", "control_type": "TEXT", "selector": "#location", "required": false},
+    {"id": "website", "label": "Website", "semantic_type": "WEBSITE", "control_type": "TEXT", "selector": "#website", "required": false, "input_type": "url"},
+    {"id": "current_title", "label": "Current title", "semantic_type": "CURRENT_TITLE", "control_type": "TEXT", "selector": "#current_title", "required": true},
+    {"id": "current_company", "label": "Current company", "semantic_type": "CURRENT_COMPANY", "control_type": "TEXT", "selector": "#current_company", "required": false},
+    {"id": "short_title", "label": "Job title (short form)", "semantic_type": "CURRENT_TITLE", "control_type": "TEXT", "selector": "#short_title", "required": true, "max_length": 5},
+    {"id": "role", "label": "What is your current role?", "semantic_type": "CUSTOM_TEXT", "control_type": "TEXT", "selector": "#role", "required": true},
+    {
+      "id": "years_total", "label": "Years of professional experience", "semantic_type": "YEARS_EXPERIENCE", "control_type": "SELECT", "selector": "#years_total", "required": true,
+      "options": [
+        {"value": "", "label": "Select...", "disabled": true},
+        {"value": "a", "label": "0-2 years"},
+        {"value": "b", "label": "3-5 years"},
+        {"value": "c", "label": "6-10 years"},
+        {"value": "d", "label": "10+ years"}
+      ]
+    },
+    {"id": "years_python", "label": "How many years of Python experience do you have?", "semantic_type": "YEARS_EXPERIENCE", "control_type": "TEXT", "selector": "#years_python", "required": true, "input_type": "number", "placeholder": "e.g. 3"},
+    {"id": "years_sql", "label": "Years of experience with SQL", "semantic_type": "YEARS_EXPERIENCE", "control_type": "TEXT", "selector": "#years_sql", "required": true, "input_type": "number"},
+    {"id": "years_search", "label": "How many years of paid search experience do you have?", "semantic_type": "YEARS_EXPERIENCE", "control_type": "TEXT", "selector": "#years_search", "required": true, "input_type": "number"},
+    {"id": "years_b2b", "label": "Years of experience", "help_text": "Count only B2B SaaS roles.", "semantic_type": "YEARS_EXPERIENCE", "control_type": "TEXT", "selector": "#years_b2b", "required": true, "input_type": "number"},
+    {"id": "direct_reports", "label": "How many direct reports do you currently manage?", "semantic_type": "CUSTOM_TEXT", "control_type": "TEXT", "selector": "#direct_reports", "required": true, "input_type": "number"},
+    {
+      "id": "relocate", "label": "Are you willing to relocate to Austin, TX?", "semantic_type": "RELOCATION", "control_type": "RADIO", "selector": "fieldset#relocate", "required": true,
+      "options": [
+        {"value": "1", "label": "Yes", "selector": "#relocate_yes"},
+        {"value": "0", "label": "No", "selector": "#relocate_no"}
+      ]
+    },
+    {
+      "id": "relocate_denver", "label": "Are you willing to relocate to Denver, CO?", "semantic_type": "RELOCATION", "control_type": "RADIO", "selector": "fieldset#relocate_denver", "required": true,
+      "options": [
+        {"value": "1", "label": "Yes", "selector": "#relocate_denver_yes"},
+        {"value": "0", "label": "No", "selector": "#relocate_denver_no"}
+      ]
+    },
+    {"id": "start_date", "label": "When could you start at Mock Co?", "semantic_type": "START_DATE", "control_type": "TEXT", "selector": "#start_date", "required": true, "input_type": "date"},
+    {"id": "salary", "label": "What are your salary expectations for this role at Other Co?", "semantic_type": "SALARY_EXPECTATION", "control_type": "TEXT", "selector": "#salary", "required": true},
+    {
+      "id": "sponsorship", "label": "Will you now or in the future require visa sponsorship?", "semantic_type": "SPONSORSHIP", "control_type": "RADIO", "selector": "fieldset#sponsorship", "required": true,
+      "options": [
+        {"value": "y", "label": "Yes", "selector": "#sponsorship_y"},
+        {"value": "n", "label": "No", "selector": "#sponsorship_n"}
+      ]
+    },
+    {
+      "id": "work_auth_ca", "label": "Are you legally authorized to work in Canada?", "semantic_type": "WORK_AUTHORIZATION", "control_type": "RADIO", "selector": "fieldset#work_auth_ca", "required": true,
+      "options": [
+        {"value": "y", "label": "Yes", "selector": "#work_auth_ca_y"},
+        {"value": "n", "label": "No", "selector": "#work_auth_ca_n"}
+      ]
+    },
+    {
+      "id": "heard_from", "label": "How did you hear about us?", "semantic_type": "REFERRAL_SOURCE", "control_type": "SELECT", "selector": "#heard_from", "required": true,
+      "options": [
+        {"value": "board", "label": "Job board"},
+        {"value": "referral", "label": "Employee referral"},
+        {"value": "other", "label": "Other"}
+      ]
+    },
+    {
+      "id": "license", "label": "Do you have a valid driver's license?", "semantic_type": "CUSTOM_BOOLEAN", "control_type": "RADIO", "selector": "fieldset#license", "required": true,
+      "options": [
+        {"value": "full", "label": "Yes, a full license", "selector": "#license_full"},
+        {"value": "none", "label": "No", "selector": "#license_none"}
+      ]
+    },
+    {"id": "accuracy", "label": "I agree", "help_text": "I certify that the information in this application is true and complete.", "semantic_type": "ATTESTATION", "control_type": "CHECKBOX", "selector": "#accuracy", "required": true},
+    {"id": "dismissal", "label": "I agree", "help_text": "I certify that I have never been dismissed from employment.", "semantic_type": "ATTESTATION", "control_type": "CHECKBOX", "selector": "#dismissal", "required": true},
+    {"id": "background", "label": "I consent to a background check", "semantic_type": "CONSENT", "control_type": "CHECKBOX", "selector": "#background", "required": true},
+    {
+      "id": "veteran", "label": "Veteran status", "semantic_type": "EEO_VETERAN_STATUS", "control_type": "SELECT", "selector": "#veteran", "required": false,
+      "options": [
+        {"value": "", "label": "Select...", "disabled": true},
+        {"value": "pv", "label": "I identify as a protected veteran"},
+        {"value": "npv", "label": "I am not a protected veteran"},
+        {"value": "decline", "label": "I decline to answer"}
+      ]
+    },
+    {
+      "id": "gender", "label": "Gender", "semantic_type": "EEO_GENDER", "control_type": "SELECT", "selector": "#gender", "required": false,
+      "options": [
+        {"value": "f", "label": "Female"},
+        {"value": "m", "label": "Male"},
+        {"value": "decline", "label": "I decline to self-identify"}
+      ]
+    },
+    {
+      "id": "race", "label": "Race/Ethnicity", "semantic_type": "EEO_RACE_ETHNICITY", "control_type": "SELECT", "selector": "#race", "required": true,
+      "options": [
+        {"value": "a", "label": "Asian"},
+        {"value": "w", "label": "White"},
+        {"value": "decline", "label": "I decline to self-identify"}
+      ]
+    },
+    {"id": "why", "label": "Why are you interested in this role?", "semantic_type": "CUSTOM_LONG_TEXT", "control_type": "TEXTAREA", "selector": "#why", "required": true, "max_length": 1500},
+    {"id": "achievement", "label": "Describe a campaign you are proud of", "semantic_type": "CUSTOM_LONG_TEXT", "control_type": "TEXTAREA", "selector": "#achievement", "required": false},
+    {
+      "id": "channels", "label": "Which channels have you managed?", "semantic_type": "CUSTOM_MULTISELECT", "control_type": "CHECKBOX_GROUP", "selector": "fieldset#channels", "required": false,
+      "options": [
+        {"value": "search", "label": "Paid search", "selector": "#ch_search"},
+        {"value": "social", "label": "Paid social", "selector": "#ch_social"},
+        {"value": "display", "label": "Programmatic display", "selector": "#ch_display"}
+      ]
+    },
+    {"id": "portfolio", "label": "Portfolio samples", "semantic_type": "UNKNOWN", "control_type": "UNSUPPORTED", "selector": "#portfolio-widget", "required": true},
+    {"id": "scheduler", "label": "Pick an interview slot", "semantic_type": "UNKNOWN", "control_type": "UNSUPPORTED", "selector": "#scheduler", "required": false},
+    {"id": "cover_letter", "label": "Cover letter", "semantic_type": "COVER_LETTER", "control_type": "FILE", "selector": "input[name=cover]", "required": false, "accept": [".pdf"]},
+    {"id": "resume_docx", "label": "Resume (Word format)", "semantic_type": "RESUME", "control_type": "FILE", "selector": "input[name=resume]", "required": true, "accept": [".docx"]}
+  ]
+}
