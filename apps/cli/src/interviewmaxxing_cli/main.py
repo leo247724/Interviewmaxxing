@@ -148,6 +148,10 @@ def _next_steps(outcome: ApplyOutcome) -> list[str]:
         return steps
     if state is S.SUBMISSION_UNKNOWN:
         return [f"{PROG} reconcile {app}   (re-checks the site; never resubmits)"]
+    if state is S.SUBMITTING:
+        return [f"{PROG} status {app}   (a submit is in progress; it is never repeated)",
+                f"{PROG} reconcile {app}   (once that run is gone and its lease has lapsed: "
+                "re-checks the site, never resubmits)"]
     if state in (S.FAILED_RETRYABLE, S.REQUESTED, S.INSPECTING, S.PACKET_READY, S.FILLING):
         return [f"{PROG} resume {app}"]
     if state is S.SUBMITTED:
@@ -206,10 +210,18 @@ def _exit_code(outcome: ApplyOutcome, *, already: bool = False) -> int:
 
 def _interaction(args: argparse.Namespace) -> UserInteraction:
     if getattr(args, "interactive", False):
-        if not sys.stdin.isatty():
-            raise SystemExit("--interactive needs a terminal; use `answer` and `resume` instead")
         return TerminalInteraction(reuse=AnswerReuse(args.reuse.upper()))
     return NoninteractiveInteraction(allow_browser_action=getattr(args, "act", False))
+
+
+def _check_run_options(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Usage errors for run flags that cannot work together (exit 2, before any
+    state is touched)."""
+    if getattr(args, "act", False) and getattr(args, "headless", False):
+        parser.error("--act means you will act in the browser window, which --headless hides; "
+                     "drop --headless (or drop --act to stop as NEEDS_INPUT instead)")
+    if getattr(args, "interactive", False) and not sys.stdin.isatty():
+        parser.error("--interactive needs a terminal; use `answer` and `resume` instead")
 
 
 def _runner(args: argparse.Namespace) -> LocalApplicationRunner:
@@ -327,8 +339,14 @@ def cmd_answer(args: argparse.Namespace) -> int:
     with store:
         app = store.get_application(args.application_id)
         questions = [m for m in pending_inputs(store, app.id) if m.field_id is not None]
-        if app.state is not S.NEEDS_INPUT or not questions:
+        if app.state is not S.NEEDS_INPUT:
             print(f"{app.id} is {app.state.value} and is not waiting for answers.",
+                  file=sys.stderr)
+            return EXIT_BLOCKED
+        if not questions:
+            print(f"{app.id} is NEEDS_INPUT but no typed answers are recorded for it (it waits "
+                  f"for an action in the browser, or the site's last response still has to be "
+                  f"re-inspected). Run `{PROG} resume {app.id}`; questions are recorded there.",
                   file=sys.stderr)
             return EXIT_BLOCKED
         by_field = {m.field_id: m for m in questions}
@@ -496,7 +514,8 @@ def cmd_paths(args: argparse.Namespace) -> int:
 
 def _run_options(p: argparse.ArgumentParser, *, interactive: bool = True) -> None:
     p.add_argument("--headless", action="store_true",
-                   help="hide the browser window (sign-in and CAPTCHA then stop as NEEDS_INPUT)")
+                   help="hide the browser window (sign-in, CAPTCHA and custom controls then stop "
+                        "as NEEDS_INPUT; cannot be combined with --act)")
     p.add_argument("--json", action="store_true", help="print the outcome as JSON")
     if interactive:
         p.add_argument("--interactive", action="store_true",
@@ -592,6 +611,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _check_run_options(parser, args)
     try:
         code: int = args.func(args)
     except StoreError as exc:

@@ -148,6 +148,17 @@ def test_site_rejection_asks_for_a_corrected_answer(cli: Cli, ats: MockServer, p
     assert server["accepted_count"] == 0 and server["rejected_count"] == 1
     status = cli("status", app_id, "--json").json()
     assert [a["outcome"] for a in status["attempts"]] == ["NOT_SUBMITTED"]
+    assert _events(cli, app_id).count("validation.rejected") == 1  # the rejection epoch
+
+    # A correction the site rejects again (new process, new epoch) is asked again,
+    # not silently resubmitted with the same value or suppressed as "already answered".
+    assert cli("answer", app_id, "--set", "phone=555").code == EXIT_OK
+    resumed = cli("resume", app_id, "--headless", "--json")
+    assert resumed.code == EXIT_INCOMPLETE and resumed.json()["state"] == "NEEDS_INPUT", resumed.stdout
+    [phone] = resumed.json()["missing_inputs"]
+    assert phone["field_id"] == "phone" and "rejected" in phone["prompt"]
+    assert ats.submissions("validation")["rejected_count"] == 2
+    assert _events(cli, app_id).count("validation.rejected") == 2
 
     assert cli("answer", app_id, "--set", "phone=3035550142").code == EXIT_OK
     resumed = cli("resume", app_id, "--headless", "--json")
@@ -155,6 +166,18 @@ def test_site_rejection_asks_for_a_corrected_answer(cli: Cli, ats: MockServer, p
     server = ats.submissions("validation")
     assert server["accepted_count"] == 1
     assert server["submissions"][0]["fields"]["phone"] == "3035550142"
+    status = cli("status", app_id, "--json").json()
+    assert [a["outcome"] for a in status["attempts"]] == ["NOT_SUBMITTED", "NOT_SUBMITTED", "ACCEPTED"]
+
+
+def test_local_state_is_created_private(cli: Cli, ats: MockServer, profile, home):
+    import stat
+
+    _apply(cli, ats.url("standard"))
+    state_db = home / "state" / "imx.sqlite3"
+    assert stat.S_IMODE(state_db.stat().st_mode) == 0o600
+    assert stat.S_IMODE(state_db.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE((home / "browser").stat().st_mode) == 0o700
 
 
 def test_uncertain_submission_is_never_retried_and_reconciles_from_the_site(
@@ -222,6 +245,9 @@ def test_sign_in_and_captcha_stop_for_the_user(cli: Cli, ats: MockServer, profil
     assert (item["reason"], item["label"], item["field_id"]) == ("USER_ACTION", label, None)
     assert f"resume {outcome['application_id']} --act" in cli("status", outcome["application_id"]).stdout
     assert ats.submissions(job)["accepted_count"] == 0
+    # Acting needs a visible window: --act with --headless is refused before anything runs.
+    refused = cli("resume", outcome["application_id"], "--headless", "--act")
+    assert refused.code == EXIT_USAGE and "--headless" in refused.stderr
 
 
 def test_custom_controls_are_left_to_the_user(cli: Cli, ats: MockServer, profile):

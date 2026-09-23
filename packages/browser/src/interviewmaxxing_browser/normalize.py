@@ -37,13 +37,13 @@ from interviewmaxxing_core import (
 
 from .semantics import classify
 from .signals import (
-    ACCEPTANCE,
     ALREADY_APPLIED,
     APPLY_LINK,
     CAPTCHA_TEXT,
     ERROR_HEADING,
     JOB_CLOSED,
     ButtonIntent,
+    affirmative_acceptance,
     button_intent,
     job_ids,
 )
@@ -536,8 +536,6 @@ def build_page(
     captcha = _captcha_state(snapshot, captcha_controls, bool(fields))
     identity = extract_job_identity(snapshot)
     alerts = [r.text for r in snapshot.regions if r.role == "alert"]
-    headline = " ".join([snapshot.title, *(h.text for h in snapshot.headings),
-                         *(r.text for r in snapshot.regions)])
     h1 = next((h.text for h in snapshot.headings if h.level == 1), None)
     form: ApplicationForm | None = None
     message: str | None = None
@@ -565,7 +563,11 @@ def build_page(
     elif ALREADY_APPLIED.search(snapshot.body_text):
         kind = PageKind.ALREADY_APPLIED
         message = "The site says an application already exists."
-    elif ACCEPTANCE.search(headline) or ACCEPTANCE.search(snapshot.body_text[:3000]):
+    elif any(
+        affirmative_acceptance(t)
+        for t in (snapshot.title, *(h.text for h in snapshot.headings),
+                  *(r.text for r in snapshot.regions), snapshot.body_text[:3000])
+    ):
         kind = PageKind.CONFIRMATION
     elif JOB_CLOSED.search(snapshot.body_text):
         kind = PageKind.JOB_CLOSED

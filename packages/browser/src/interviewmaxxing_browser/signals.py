@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from typing import Any
 
 
 def _rx(pattern: str) -> re.Pattern[str]:
@@ -16,12 +17,70 @@ def _rx(pattern: str) -> re.Pattern[str]:
 
 
 ACCEPTANCE = _rx(
-    r"application (?:has been |was |is )?(?:successfully )?(?:submitted|received|complete)|"
+    r"\b(?:application (?:has been |was |is )?(?:successfully )?(?:submitted|received|complete)|"
     r"thank(?:s| you) for (?:applying|your application|submitting)|"
     r"we(?:'ve| have) received your application|"
-    r"your application (?:has been|was|is) (?:submitted|received|complete)|"
-    r"successfully applied|you(?:'ve| have) (?:successfully )?applied"
+    r"your application (?:has been|was|is) (?:successfully )?(?:submitted|received|complete)|"
+    r"successfully applied|you(?:'ve| have) (?:successfully )?applied)\b"
 )
+"""Acceptance *wording*. Use :func:`affirmative_acceptance`, which also rejects
+negated, conditional, instructional and questioning uses of the same words."""
+
+# Words before the phrase (in the same clause) that negate it or make it
+# conditional, future or an instruction: "No application received", "If your
+# application was submitted", "Once your application is received", "Click submit to
+# have your application received".
+_NEGATING_PREFIX = _rx(
+    r"\b(?:no|not|never|none|nothing|cannot|unable|failed|without|if|unless|until|once|"
+    r"when|whether|before|after|click|press|please|to have|will|would|should|must|may|"
+    r"might|could)\b|n't\b"
+)
+# What directly follows the phrase: "Application submitted: no", "... not yet".
+_NEGATING_SUFFIX = _rx(
+    r"^\W*(?:not\b|no\b|none\b|never\b|pending|failed|false|incomplete|unconfirmed|"
+    r"unknown|n/?a\b)"
+)
+_CLAUSE = re.compile(r"[^.!?;\n]+[.!?;]?")
+
+
+def affirmative_acceptance(text: str) -> str | None:
+    """The first affirmative acceptance statement in ``text`` ("Application
+    submitted"), or None. Statements that are negated, conditional, future,
+    instructional or questions do not count."""
+    clauses: list[str] = _CLAUSE.findall(text)
+    for clause in clauses:
+        stripped = clause.strip()
+        if not stripped or stripped.endswith("?"):
+            continue
+        for match in ACCEPTANCE.finditer(stripped):
+            before, after = stripped[: match.start()], stripped[match.end() :]
+            if _NEGATING_PREFIX.search(before) or _NEGATING_SUFFIX.search(after):
+                continue
+            return stripped
+    return None
+
+
+APPLICATION_STATUS = _rx(
+    r"\b(?:draft|submitted|received|in review|under review|reviewing|not submitted|incomplete|"
+    r"rejected|declined|withdrawn|applied|pending|processing|interview(?:ing)?|offer(?:ed)?|"
+    r"hired|in progress|started)\b"
+)
+"""Words that describe an application's state in a status list or portal."""
+
+NOT_SUBMITTED_STATUS = _rx(
+    r"\bdraft\b|not (?:yet )?submitted|unsubmitted|\bincomplete\b|\bwithdrawn\b|"
+    r"\bcancel+ed\b|\bin progress\b|\bstarted\b"
+)
+"""A record showing one of these cannot also prove that the application was submitted."""
+
+
+UNCERTAIN = _rx(
+    r"cannot confirm|can't confirm|could not confirm|couldn't confirm|unable to confirm|"
+    r"not sure whether|whether (?:or not )?your application|may (?:not )?have been|"
+    r"timed? ?out|try again later|server error|something went wrong|temporarily unavailable|"
+    r"bad gateway|service unavailable|network error|connection (?:was )?(?:lost|reset|closed)"
+)
+"""Wording that says the outcome itself is unknown (transport or server trouble)."""
 ALREADY_APPLIED = _rx(
     r"you(?:'ve| have)? already applied|already submitted an application|"
     r"you already have an application|application (?:for this (?:job|role|position) )?already exists"
@@ -111,3 +170,29 @@ def button_intent(text: str, *, submits_form: bool) -> ButtonIntent:
     if _OTHER.search(text):
         return ButtonIntent.OTHER
     return ButtonIntent.AMBIGUOUS if submits_form else ButtonIntent.OTHER
+
+
+def _record_like(text: str) -> bool:
+    return bool(APPLICATION_STATUS.search(text) or ACCEPTANCE.search(text) or job_ids(text))
+
+
+def application_records(snapshot: Any) -> list[str] | None:
+    """The texts of the outermost application records on the page, or None when the
+    page is a single record (no repeated group has two or more members that carry an
+    application status or job identity)."""
+    members = snapshot.record_members
+    counts: dict[int, int] = {}
+    for member in members:
+        if _record_like(member.text):
+            counts[member.group] = counts.get(member.group, 0) + 1
+    qualifying = {group for group, n in counts.items() if n >= 2}
+    if not qualifying:
+        return None
+    records: list[str] = []
+    for member in members:
+        if member.group not in qualifying:
+            continue
+        if any(members[a].group in qualifying for a in member.ancestors):
+            continue  # judged as part of its enclosing record
+        records.append(member.text)
+    return records
