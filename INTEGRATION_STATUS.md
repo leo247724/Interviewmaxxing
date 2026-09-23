@@ -1,44 +1,74 @@
 # Interviewmaxxing integration status
 
-Build the complete local backend and frontend: supplied-URL applications, OpenCLI job discovery, Jev selection through funded OpenRouter, and the pipeline tracker. Continue through integrated testing. Personal applications remain off while final candidate JSON is pending. The user additionally permits synthetic application tests, with none of their personal information; hosted tests should use designated test/demo flows. No production deployment, remote push, outreach or bulk application run is part of this build.
+The local MVP is integrated and verified in `caramel-ketch`, branch `j-workspace`, on September 22, 2026. Verified code head: `53f3560c3857e79e21b4e84eaa2363440d7cb230`. All implementation and review gates for this milestone passed. The eight implementation worktrees and the additional performance worktree are retained for future work.
 
-## Confirmed product criteria
+## Running locally
 
-- Performance marketing operator fit by actual responsibilities, including paid acquisition, paid media, performance/growth marketing, demand generation and digital marketing leadership. Titles are representative search seeds, never an exact-title allowlist. Similar acquisition/lead/director roles qualify semantically.
-- Seed titles: Paid Media Manager, Senior Paid Media Manager, Performance Marketing Manager, Growth Marketing Manager, Demand Generation Manager, Digital Marketing Manager, plus the original marketing manager/director. Pure data-platform engineering is outside the focus.
-- Strongly prefer Austin onsite/hybrid over eligible nationwide US remote. Remote remains eligible and is never restricted to Texas. Minimum annual compensation USD100000; missing/noncomparable pay stays unknown.
-- The tracker retains all23 fields and8 private records from the supplied Numbers workbook, with original source provenance and separately editable board lanes. Imports never manufacture application receipts.
-- User supplied the résumé. Its private profile was imported with35 literal source-backed USER_STATED claims,6 experience records,1 education and the original PDF bytes. It is provisional for live applications until the user's final JSON arrives; no screening/consent answers were invented.
-- The8 private tracker records and all23 fields have been imported and roundtrip checked. Reimport previews8unchanged/0duplicates. TogetherWork's completed assessments were recorded in editable tracking, preserving the original workbook/source snapshot.
-- Email/Google Calendar/Cal tracking and document tailoring/cover letters are next-stage design/prototypes in separate bounded workers. Gmail and Cal.com are provisional pending clarification; no accounts are connected by this work.
+- Dashboard: [Pipeline](http://127.0.0.1:4317/pipeline), [Jobs](http://127.0.0.1:4317/jobs), [Desk](http://127.0.0.1:4317/).
+- Service: `http://127.0.0.1:8765`; health reports all modules available, executor idle, `TEST_ONLY`.
+- Main runtime home: `/Users/leo/.interviewmaxxing`, candidate `default`. The actual eight imported tracker records are visible. Personal application count is zero.
+- Search preferences: semantic performance-marketing operator fit; strongly prefer Austin onsite/hybrid; US-wide remote included; USD100000/year floor. The local saved preference holds unknown/noncomparable pay for review. Library default `KEEP` remains configurable.
+- Start/restart commands are in [README.md](README.md). Both the service and frontend bind loopback and use the exact frontend origin. The ignored `env.local` is loaded only by the service for Jev.
 
-## Coordinator and integrated work
+## Delivered behavior
 
-Coordinator directory `/Users/leo/.superset/worktrees/Interviewmaxxing/caramel-ketch`, branch `j-workspace`; original upstream baseline9afc591. Latest semantic contract checkpoint `caae823`. Private runtime home `/Users/leo/.interviewmaxxing`, candidate id `default`; private profile/resume stay outside Git. Root `env.local` is ignored and never printed or sent to the frontend.
+OpenCLI discovery reads LinkedIn, Built In, Indeed and Google. Listing identity, source evidence, partial results and access problems remain explicit. Jev makes auditable semantic decisions through OpenRouter with candidate-scoped evidence/cache, confidence holds and deterministic constraint checks. Search and decisions do not submit applications.
 
-Reviewed and integrated: C1R3 core contracts/store; C2R candidate loading; C2P/C2P1/C2P2 through9eb9f72; C3R factual generation through9d6a142; F1R2 frontend through8f0da8a; D0 identity fixes and location preference throughac4d626 plus timestamp precision5e994ed. Root6e02c71 excludes Node apps/web from Python workspace and locks reviewed candidate/generation packages.
+The pipeline preserves all 23 reference fields, original imports, edits, lane history and optimistic revisions. Reimport is idempotent. A selected listing/card can hand off to the application desk, whose canonical application ID and receipt authority appear on the tracker.
 
-Coordinator checks: combined core/candidate/generation487 tests passed before latest candidate/semantic additions; latest54 discovery tests and144 candidate tests pass, scopedruff and strictcoremypy pass. D0 identity/enrichment/location/date fixes received independent approval. C2P2 independent144-test review and targeted corruption/concurrency probes approved. Supplied PDF digest matches stored copy; candidate reload and complete setup verified. Whole-product verification remains pending below.
+The desk uses the Python runner and its single authoritative SQLite application store. It pins the selected resume and any proven selected-job identity before execution, checks fresh identity before actions, asks for missing facts or browser interaction, and records durable outcomes. Ambiguous submission stays locked for reconciliation. User reports remain distinct from site confirmation; an unreceived report does not permit a blind second submission. Startup ownership, aliases, repeated requests and restart recovery are covered.
 
-## Worker board
+## Final coordinator verification
 
-All worktrees are under `/Users/leo/.superset/worktrees/Interviewmaxxing/build/<name>`. Claude hit its5-hour session limit on Sep22, resetting9:30pm America/Chicago. All Claude commands exited; the parent verified no active Claude process in these trees. Per the user, native Astra High workers now own implementation, Astra Max owns frontend, and Astra Max reviewers run in parallel. Old Superset terminals may show idle; do not start a second writer there. After9:30pm, any return to Opus requires a clean ownership handoff at a task boundary.
+| Check | Result |
+| --- | --- |
+| `uv sync --locked --all-packages` | PASS |
+| `uv run --no-sync ruff check .` | PASS |
+| `uv run --no-sync mypy` | PASS, 96 source files |
+| `uv run --no-sync pytest tests e2e -q` | 1585 passed, 7 opt-in skipped, 131.34 seconds |
+| Frontend `npm ci`, typecheck, production build | PASS |
+| Frontend `npm test` | 87 passed |
+| Frontend `npm run test:e2e` | 111 passed, 1 existing mobile keyboard skip, 43.6 seconds |
+| `npx playwright test --config=playwright.live.config.ts` on final root | 5 passed, 15.0 seconds |
+| Offline performance prototype unittest suite | 29 passed |
 
-| Worker | Current package/checkpoint | Status and dependency |
+The final frontend-to-service-to-runner-to-Chromium tests used a newly created fictional home and a separate localhost marketing ATS. All three fictional applications had exactly one server-side acceptance. Checks covered matching expected job identity, receipt linkage/authority, exact uploaded bytes, a second resume, missing answers across reload, duplicate requests, uncertain submission and site reconciliation, Jev task/cache persistence, preferences, tracker edits and all-column import/reimport. Source adapters and Jev transport are fixtures in this suite; application execution is real.
+
+The seven backend opt-ins are five OpenCLI host checks, one job-source smoke, and the private reference-workbook test. These capabilities were checked separately in their authorized live/private runs. The bounded source and provider checks below are distinct from the offline automated suite.
+
+The ignored local receipt is `.imx/mvp-verification.private.json`; frontend traces/screenshots are under `apps/web/output`. Temporary acceptance services on 4382/4383 and 4392/4393, their ATS processes and task-owned inspection browsers were closed. Main services 4317/8765 remain running.
+
+## Accepted worktree checkpoints
+
+| Worktree | Final package/checkpoint | Review |
 | --- | --- | --- |
-| core-contracts | I1R1408302 + B3fix72a10ea | `/root/core_astra_high`;331core+14CLIChromium tests; B3 independently approved. Final browser integration remains |
-| candidate-brain | C2P2 9eb9f72 approved/merged; X1design | `/root/integrations_astra_high`; docs/integrations only, official API research and source-attributed sync design |
-| application-packets | P1R2 e5c14c7 approved/merged; W1prototype | `/root/writing_astra_high`; factual document bundles/cover letters, generation scope only, no live model or automatic pin |
-| browser-ats | C4R3 dee76b7 held; O1R/C4R4 corrections | `/root/browser_astra_high`; unique owned sessions, actual resume digest, abort on document loss, ambiguous record isolation |
-| job-ingestion | J1R0a02462 | `/root/jobs_astra_high`;204tests+1live skip, lint/types pass; Astra Max review in progress |
-| jev-selection | J2Racdd2e3 | `/root/selection_astra_high`;365tests/lint/types pass, candidate-scoped batch API; Astra Max review in progress |
-| queue-runtime | S3R24f80d7, adapters5115dae, new acceptancecb5cf3f | `/root/service_astra_high`; final dependency integration, actual HTTP/CLI/Chromium/ATS acceptance; runtime Max review |
-| dashboard | Astra UI4955b23 plus review corrections | `/root/frontend_astra_max`;86unit/101browser+1skip atcheckpoint, production screenshots; final actual-service flow and3scoped recovery fixes |
-| performance-runtime | Fable design457d8ca + unfinished harness | `/root/performance_astra_high`; finish fictional benchmarks and incorporate `/root/performance_astra_max` review; no real throughput claim |
+| core-contracts | `f38d0d1` runner/store, expected identity and resume pinning | Core regressions; final runtime and Chromium gates approved |
+| candidate-brain | Candidate `9eb9f72`; integration design `c64d15e` | Candidate review approved; X1 documentation reviewed |
+| application-packets | Pipeline `e5c14c7`; writing prototype `dbd8a09` | Pipeline review approved; generation tests passed |
+| browser-ats | `c3a3c41` including OpenCLI fix `0e4273a` | Independent confirmation and OpenCLI reviews approved |
+| job-ingestion | `ab8f22d` | Astra Max approved; bounded Austin and remote source smokes passed |
+| jev-selection | `d933069` | Astra Max approved; bounded final live Jev smoke passed |
+| queue-runtime | `069db47`, reviewed code `bd45264` | 41 runtime checks and 5 real Chromium probes approved |
+| dashboard | `568d354`, reviewed UI `dce1362` | 17 independent UI checks approved; final real acceptance passed |
+| performance-runtime | `06ce7c9`, design/prototype approved at `63acbc7` | Astra Max approved; root import-order integration at `6cac84a` |
 
-Live read-only reviews: `/root/review_runtime_max`, `/root/review_discovery_max`, `/root/verify_frontend`, `/root/review_core_contracts`, `/root/review_browser`. Review feedback goes directly to each sole writer; acceptance is tied to exact commits.
+Claude reached its session limit during implementation. Per the user, Astra High completed implementation and Astra Max handled frontend and parallel reviews. Completed work does not need to restart at the reported 9:30pm Claude reset. Any future switch must happen at a task boundary with one owner per file. Native agent messages do not automatically restart completed agents; use a follow-up task when assigning new work.
 
-## Control mapping
+## Bounded live evidence
+
+J1 at `ab8f22d`: each of the four sources returned three listings in the Austin smoke and three in the separate US-remote smoke, within one search page and one detail attempt per source/leg. Source/job identity checks passed; PARTIAL reflected the cap. No access walls were observed in those samples. A Google result with Austin residency restrictions remained unresolved for nationwide eligibility. Some descriptions and eligibility details remained incomplete. Receipt: `build/job-ingestion/.imx/source-smoke/summary.md` relative to the worktree parent.
+
+J2 at `d933069`: exactly six real HTTP requests, all 200, returned `typesafe/jev-1.13-20260917`. The fictional Austin Acquisition Director was APPLY; Data Platform Engineer was SKIP; a suitable US-remote role was held because the model's APPLY confidence was 0.77, below 0.80. Texas-only remote and estimated pay were local REVIEW holds with zero calls; the pay case explicitly used the review preference. Selection latency was 0.57-0.63 seconds; reported total cost USD0.00053046. Receipt: `build/jev-selection/artifacts/jev-final-acceptance-20260922/receipt.json`. This small sample does not establish population quality or calibration.
+
+## Private inputs and remaining boundaries
+
+The supplied Numbers workbook remains unchanged. Eight records and all 23 fields were imported, with zero duplicates on reimport. TogetherWork's completed assessments are reflected in editable tracking while the original source snapshot is preserved. The supplied resume remains an immutable private artifact with source-backed profile facts; the final candidate JSON is still pending. No personal application was created or submitted during testing.
+
+The completed milestone is local and uses accessible native HTML forms. There are no dedicated production ATS adapters or verified employer-site acceptance results. TEST_ONLY admission checks the supplied URL; it is not full redirect-egress isolation. Actual OpenCLI upload is denied by the host and requires manual attachment of the exact file followed by digest verification; the main application runner uses Playwright.
+
+Email, Google Calendar and Cal integration are [design only](docs/integrations/README.md), with Gmail and Cal.com provisional. [Document generation](docs/documents/README.md) is an offline, source-bound prototype; live prose generation and PDF/DOCX tailoring are future work. The [performance design/harness](docs/performance/benchmarks.md) is not a production scheduler. Thousands/day remains modeled demand, not demonstrated throughput; the default 1000/day scenario requires 50 browser-hours and 29.4 human-hours. No bulk run, outreach, deployment or remote push occurred.
+
+## Historical Superset control mapping
 
 | Worker | Workspace ID | Terminal ID | Opus session |
 | --- | --- | --- | --- |
@@ -52,9 +82,3 @@ Live read-only reviews: `/root/review_runtime_max`, `/root/review_discovery_max`
 | jev-selection |82112dc8-f635-439f-a61d-c9c33f6636e3|24ff5b4d-723a-4719-a46f-1654df2bdabf|8d49cec1-0ca1-4d5f-99d6-3aa21e74e66c|
 
 The table retains historical CLI session mappings for later inspection. Fable I1R session is f563693b-534d-4fd7-a0ab-e14f7284b14a; limited W1/X1 sessions are fcf8b42e-8ac3-458c-a62a-9942be9eb55d and a0f5426e-da19-48f6-a1b9-a994d7afb5ec. Performance workspace907410ce-6121-4926-9782-c7a543cee411, terminal1e690689-5186-4901-855f-d49ad5546f12, prior Fable session3ea3d203-b4e1-4907-934f-766045c72ea7. All are currently inactive. Keep terminals/worktrees available, and verify a shell prompt plus sole ownership before a later CLI handoff.
-
-## Remaining completion gates
-
-Resolve browser and frontend findings, accept J1/J2 reviews, merge final packages, update the union Python lock and run integrated checks. Prove actual frontend->service->runner->Chromium->localhost ATS, exact uploaded bytes/onePOST, missing-input restart, duplicate prevention, uncertainty/reconciliation and resumeA/B pinning. Verify OpenCLI in an owned localhost session if supported; its file-upload host restriction must remain explicit. Test job/preferences/selection/pipeline routes, semantic fit and Austin/US-remote ranking, source login/partial states and responsive UI. The private8-row import is already complete. No real employer acceptance or thousands/day capacity is claimed.
-
-Detailed current correction/seam brief: [.handoff/current-integration.md](.handoff/current-integration.md). Original scoped tasks: [.handoff/mvp-build-tasks.md](.handoff/mvp-build-tasks.md), [.handoff/local-service-integration.md](.handoff/local-service-integration.md), [.handoff/job-browser-selection.md](.handoff/job-browser-selection.md), [.handoff/pipeline-and-frontend.md](.handoff/pipeline-and-frontend.md).

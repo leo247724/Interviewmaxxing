@@ -1,62 +1,35 @@
-# Current integration brief — 2026-09-22 evening
+# Local MVP handoff — September 22, 2026
 
-## Objective and authorization
+The requested local backend/frontend MVP is integrated and tested. Verified code head is `53f3560c3857e79e21b4e84eaa2363440d7cb230`; subsequent final-receipt edits are documentation only. See [INTEGRATION_STATUS.md](../INTEGRATION_STATUS.md) for exact package checkpoints, acceptance results, limits and historical Superset IDs.
 
-Continue until the local backend/frontend MVP is integrated and tested: supplied-URL applications; OpenCLI discovery; Jev semantic selection through funded OpenRouter; pipeline tracker; truthful receipts and recovery. No personal applications while final candidate JSON is pending. User additionally permits synthetic hosted application tests, with none of their personal name/contact/resume/data. Use fictional temp homes/localhost ATS and designated hosted test/demo flows. No bulk applications, outreach, push or deployment. User wants all eight worktrees engaged in implementation/review/debugging.
+## Running and verified
 
-Performance marketing operator fit is semantic, not literal title matching. Seeds include paid media, performance/growth, demand generation, digital marketing managers; related acquisition/lead/director roles qualify by responsibilities. Pure Data Platform Engineer does not. Strong Austin onsite/hybrid preference above eligible US-wide remote; Texas-only remote is not equivalent. USD100000 annual minimum; missing/estimated/foreign-currency/conflicting pay stays unresolved.
+Coordinator: `/Users/leo/.superset/worktrees/Interviewmaxxing/caramel-ketch`, branch `j-workspace`. Main dashboard is `http://127.0.0.1:4317/pipeline`, service `http://127.0.0.1:8765`. Both remain running; temporary test servers/browsers were closed. Service health reports all modules available, idle, TEST_ONLY. Restart instructions are in root README.
 
-User's newer extensions: email, Google Calendar and Cal tracking, tailored resumes and cover-letter writing agent. Optional question Gmail/GoogleCalendar/Cal.com versus AppleCalendar is unanswered; Gmail and Cal.com remain provisional. X1 design and W1 offline prototype are complete and merged; no actual integrations or live writer exist yet.
+Root checks: locked Python install, Ruff, mypy (96 files), 1585 backend/e2e tests passed with 7 opt-in skips; frontend npm ci/typecheck/build, 87 unit tests, 111 browser tests with 1 known mobile keyboard skip; 5 actual frontend-to-service-to-runner-to-Chromium-to-localhost ATS flows passed; 29 offline performance prototype tests passed. All 3 fictional marketing applications had exactly 1 ATS acceptance. Site receipts, selected-job identity, resume hashes, missing-input reload, duplicate prevention, uncertain outcomes, task/cache persistence and pipeline import/edit/reimport were verified.
 
-## Models and ownership
+Independent final approvals: runtime/service 41 checks at `bd45264`; actual Chromium 5 probes; UI 17 checks at `dce1362`. Final package heads: core `f38d0d1`, browser `c3a3c41`, jobs `ab8f22d`, selection `d933069`, pipeline `e5c14c7`, service `069db47`, frontend `568d354`, writing `dbd8a09`, integration design `c64d15e`, performance `06ce7c9`. Parent union-only benchmark import sorting is `6cac84a`; numerical behavior unchanged.
 
-Claude5-hour limit reached; provider says reset9:30pm America/Chicago. Parent verified every CLI process exited and no active Claude process in build trees. User explicitly requests Astra High implementation and Astra xhigh/max real-time reviewers until reset. Do not restart old CLI writers while native owners are active; any return to Opus must be a task-boundary ownership handoff. Dashboard retains explicitly requested Astra Max. Earlier Fable5.2 was corrected by user to5.1; completed Fable5.1 work is retained.
+Private final receipt: `.imx/mvp-verification.private.json`. Frontend evidence: `apps/web/output`. Worker source/provider receipts are ignored in `build/job-ingestion/.imx/source-smoke` and `build/jev-selection/artifacts/jev-final-acceptance-20260922` under the worktree parent.
 
-All worktrees: /Users/leo/.superset/worktrees/Interviewmaxxing/build/<name>.
+## User preferences and private data
 
-| Worktree | Native owner | Current work |
-| --- | --- | --- |
-| core-contracts | /root/core_astra_high | I1R1408302 + B3fix72a10ea approved. New prerequisite failure after admitted request must persist observable failure rather than REQUESTED forever. |
-| candidate-brain | /root/integrations_astra_high | X1c64d15e design complete/merged; docs only, no account access. |
-| application-packets | /root/writing_astra_high | W1dbd8a09 complete/merged; generation API plus fictional demo, no resolver/pin changes. P1R2e5c14c7 previously approved/merged. |
-| browser-ats | /root/browser_astra_high | O1R0e4273aa approved; C4R4 stronger record-local confirmation scopes and explicit read-only confirmation-link follow-up still running. |
-| job-ingestion | /root/jobs_astra_high | J1R0a02462 under Max review; J1R2 schema-first pay qualifiers + public alias resolution helper follow-up active. |
-| jev-selection | /root/selection_astra_high | J2Racdd2e3 under Max review; J2R2 compound eligibility, geography prefixes/Canada, legacy migration race and privacy normalization follow-up active. |
-| queue-runtime | /root/service_astra_high | S3R24f80d7 plus adapters and final dependency merges. Ownership fix7ba338d approved. Application-to-pipeline link and canonical alias joins in progress. |
-| dashboard | /root/frontend_astra_max | UI4955b23, recovery fixes1042ce7. Actual UI→service→Chromium→ATS proof works; final pipeline linking and dependency rerun remain. |
-| performance-runtime | /root/performance_astra_high | Finish Fable457d8ca design/untracked harness; incorporate .handoff/astra-performance-review.md; simulated metrics only. |
+Performance-marketing operator fit is semantic: paid acquisition/media, performance/growth, demand generation, digital marketing and related lead/director responsibilities. Pure data/platform engineering is outside the focus. Strong Austin onsite/hybrid priority over US-wide remote; Texas-only remote is not equivalent. USD100000/year minimum. Main local preferences now explicitly hold unknown/noncomparable pay for review; library default KEEP remains configurable.
 
-Max reviewers /root/review_runtime_max and /root/review_discovery_max are active. /root/verify_frontend verifies1042ce7 scoped fixes. /root/review_candidate_setup approved O1R0e4273aa. /root/review_core_contracts approved72a10ea. /root/review_browser helddee76b7 and needs followup on finalC4R4. /root/performance_astra_max is completed/available for finalharnessreview. IMPORTANT: send_message does NOT wake completed agents; use followup_task for a new corrective turn.
+Default home `/Users/leo/.interviewmaxxing` has 8 imported tracker records/all 23 fields and the provisional resume-derived profile. Personal application count is verified 0 after all tests. The supplied Numbers/PDF files remain unchanged; imported source snapshots and immutable resume are retained. Final candidate JSON/contact/consent details remain pending for personal applications. No personal data was used in synthetic applications.
 
-## Exact open findings
+Numbers import receipt: `.imx/pipeline-import-receipt.private.json`; resume import: `.imx/resume-review/import-receipt.private.json`. TogetherWork assessments are completed in editable tracking, with original source preserved. Root `env.local` is ignored, server-only; never print its contents.
 
-1. C4R3dee76b7 still falsely accepted flat portal: targetWidgetEngineer/ABC-123/action required followed by otherGraphicDesigner/accepted/APP9876. Whole body cannot join unrelated identity/status. C4R4 uses explicit heading-section/leaf-local scopes, no whole-page fallback. Two genuine status-lookup fixtures need following their same-origin View confirmation link to dedicated receipt; preserve strict proof and bounded GET hops.
-2. I1 candidate profile removed/corrupt after request admission: _run returns outcome.message without state/exception, service drops message and UI polls REQUESTED forever. Core owner fixing durable retryable prerequisite failure under claim without mutating submitted/uncertain authority. Service reviewer has actual runner+HTTP repro.
-3. Service canonical job id can change after proven source merge. Old alias resolves inJ1 but pipeline/decisionTask joins use newID, lose links and allow duplicatecard. Service andJ1 owners coordinating batch canonical alias resolution.
-4. UI application handoff knows pipelineEntryId/listingId but start never sends/persists link; actual accepted app leaves pipeline.application null. Service implementing optional validated IDs on POST/applications with synchronous idempotentlink beforedispatch; preserve URL-onlyflow, reject mismatches/overwrite and avoid dispatch onlinkfailure. Frontend coordinating exact DTO directly.
-5. J1 schema-first Indeed/BuiltIn pay still bypasses raw Est./CAD contradictions. Owner fixes adapter-level cases, not just parser.
-6. J2 compound broadUS plus excludingTX/Texasonly must not override restrictions; AustinONCanada falsely matchedTX; incomplete geography prefixes hardSKIP; legacy migration checkscolumns beforeBEGINIMMEDIATE races; identifier separator/whitespace projection variants leak. All assigned J2R2, reviewer bounded to these and positive controls.
+## Boundaries and future work
 
-## Verified checkpoints and test evidence
+Live discovery succeeded in bounded Austin and separate remote smokes across all 4 sources (3 listings/source/leg, 1 page plus 1 detail). Gaps remained explicit; no source access wall in these samples. Final tiny fictional Jev smoke made 6 HTTP 200 requests, returned `typesafe/jev-1.13-20260917`, 0.57-0.63 seconds/selection, USD0.00053046 total. Austin acquisition APPLY, engineering SKIP, remote low-confidence REVIEW; Texas-only/estimated-pay cases held without calls. These are limited observations, not broad quality/capacity evidence.
 
-- Root integrated C1/C2/C3, D0 semantics and date/identity corrections, candidate9eb9f72, pipelinee5c14c7, original frontendF1R2, W1dbd8a09 and X1c64d15e. Root architecture/board updated. Backend/fullAstraUI not merged yet; final union lock pending.
-- Core72a10ea:331core +14installedCLI/realChromium/localATS tests; independent8B3cases approved. Claimheartbeat across599s/300sTTL and resume pinning implemented1408302.
-- O1R0e4273aa:192browser tests +5liveOpenCLIownedlocalhostchecks worker; independent192+fake/headlessprobes approved. Exact digest/protectedtabs/contextloss verified. Actual OpenCLI upload returns Not allowed; manual exact-file attachment required. No workaround. Main service runner uses Playwright.
-- J1R0a02462:204tests/1optin skip, lint/types; review corrections pending.
-- J2Racdd2e3:365selection+corediscoverytests, lint/types; review corrections pending. Required candidate_id on store latest/history/get/audit/latest_many; service adapter integrated.
-- S3R24f80d7:1125tests/2optinskips before finaldeps. Later baseline1198tests/7skips;97service+CLI tests. Startup OS lifetime lock7ba338d independently14tests approved. Do not repeatfullsuite untilfinaldeps.
-- UI4955b23:86unit/101browser+1existingmobilekeyboard skip, production build/screenshots.1042ce7 fixes fresh-session durabledecision polling, livehealth retry, conflict+503 cachedboard messaging;14contractchecks pass. ExactS3R tasksuccess enum DONE, with FAILED/INTERRUPTED terminal; postingUrl isjoblink/sourceUrl provenance; receiptmethod/authority explicit.
-- Actual frontend→realservice→Chromium→localhostATS: accepted_count1, site receipt/digest/duplicateguard, unknown/recheck/report/confirmed flows pass; linkedpipeline card failure assigned above. Tests use fictional home only.
-- W1 parent144generation tests pass aftermerge. X1 docs/sourcecitations reviewed; provisionalproviders, noimplementation.
+TEST_ONLY checks initial application URL admission, not every redirect. Main runner uses Playwright; native accessible HTML forms are supported without dedicated employer adapters. OpenCLI host upload returns Not allowed; manual exact-file attachment plus digest verification is required. No real employer acceptance, personal application, bulk run, outreach, push or deployment occurred.
 
-## Private data already imported (never use for tests)
+Email/Google Calendar/Cal remains a design; Gmail/Cal.com assumptions are unanswered. W1 is an offline source-bound writing prototype, without live prose or PDF/DOCX export. P0 is a reviewed offline queue/benchmark prototype, not production concurrency. 1000/day remains modeled demand of 50 browser-hours plus 29.4 human-hours. Measure large-backlog claim/heartbeat latency before queue integration; keep production two-stage Jev decisions until a held-out quality comparison supports a change.
 
-Actual default IMX_HOME /Users/leo/.interviewmaxxing holds provisional profile default, supplied immutable resume and35 source-backed USER_STATED facts,6roles,1education, no invented screening/consent. Original /Users/leo/Desktop/Leo-Obrien-Resume.pdf digest be26ccaa3563b6e175832e41793c3f8df55972b6c22e70cc6303cc8db7709f81, artifact resume_9b6d954623564324a28708db36f20d1c. Parent private receipt .imx/resume-review/import-receipt.private.json. Final user JSON still pending.
+## Ownership on future continuation
 
-Numbers source /Users/leo/Desktop/Leo’s job-search pipeline.numbers unchanged, digest1516c04b97108bb6be6e9784c69e84932d27b397a3a412fef7e47b4f6c452268. Pipeline DB default state/pipeline.sqlite3 contains8rows/all23fields, importpimp_d36906f84e784b4fa00a05455346b29b, reimport8unchanged/0duplicates. TogetherWork moved tofollow-up with all3assessmentscomplete, awaitingrecruiter, originalsnapshotunchanged. Receipt .imx/pipeline-import-receipt.private.json. No applications created by imports.
+Eight implementation trees plus performance are retained under `/Users/leo/.superset/worktrees/Interviewmaxxing/build/`. Native Astra High workers completed the Claude-limit takeover; Astra Max frontend/review gates passed. No unfinished MVP worker task remains. Do not restart Claude merely because its reported 9:30pm reset arrived. Assign a new bounded package at a clean ownership boundary; one writer per file. Use native followup_task to wake completed agents, since send_message alone does not do so. Historical CLI IDs are in INTEGRATION_STATUS; verify the shell/session and no active writer before reuse.
 
-Root ignored env.local contains OpenRouter key; never print. Jevendpoint /api/alpha/decisions, requestedtypesafe/jev-1.13 actualtypesafe/jev-1.13-20260917 verified with smallfictionalcalls earlier. No newpaidcalls inrecentreviews. OpenCLI1.8.6/profilejgd7jms9; protectuserassessmenttabAC26FE33F87E79B3F43D0CB7EF428BA1 and all unrelatedtabs. Root .venv Python3.12; Playwright locked1.62.0 cachedbrowser. Worker .venv-taskisolated. Fullprojectgraphnotindexed, rgfallback used.
-
-## Next coordinator actions
-
-Receive correctedJ1/J2/core/browser commits and exactreviews, keepservice/frontendhandoffs flowing. Merge finalbackendbranch and UI into root only aftergates; regenerateuv.lock for allPythonmembers, run scripts/verify.sh plus realservice/UIacceptance onfinalunion. Keeporiginalmain/unbornprojectuntouched; no push. Provide operational localdashboard aftertesting with TEST_ONLY and truthfulimportedtracker; checkports beforestarting. ValidateP0harness throughAstraMax andintegratedocsoncecorrected. Do not claimrealemployersubmission, liveATSexport, connectedmail/calendar or thousands/daycapacity.
+Original `/Users/leo/.superset/projects/Interviewmaxxing` has unborn main and must not be repaired or overwritten as part of this work. No push occurred. The next user-directed work can supply the candidate JSON, enable a specifically chosen live application, or advance the documented integrations/writing/scale design.
