@@ -3,8 +3,9 @@
 Layout, under ``LocalPaths.profile_dir`` (``$IMX_HOME/profile``)::
 
     <candidate_id>/
-        profile.json    CandidateProfile JSON, written by the user
+        profile.json    CandidateProfile JSON, written by the user or upsert_profile
         answers.json    JSON array of SavedAnswer, written by save_answer
+        resumes/        uploads from store_resume (see ``resumes``)
         <resume file>   optional; resume.path may point anywhere
 
 The candidate id is the directory name. It is never derived from profile content,
@@ -16,21 +17,25 @@ from __future__ import annotations
 import fcntl
 import os
 import re
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Self
 
 from pydantic import ValidationError
 
 from interviewmaxxing_core import (
+    CandidateIdentity,
     CandidateNotFound,
     CandidateProfile,
     CandidateProfileInvalid,
     LocalPaths,
+    ResumeArtifact,
     SavedAnswer,
     sha256_file,
+    utc_now,
 )
 
 from .answers import (
@@ -41,6 +46,20 @@ from .answers import (
     value_key,
 )
 from .files import describe_validation_error, read_json, write_json_private
+from .resumes import (
+    DEFAULT_MAX_RESUME_BYTES,
+    RESUMES_DIRNAME,
+    UPLOAD_ID,
+    DamagedResume,
+    ResumeNotFound,
+    ResumeOrigin,
+    StoredResume,
+    check_resume_content,
+    read_upload,
+    safe_resume_filename,
+    scan_uploads,
+    write_upload,
+)
 
 PROFILE_FILENAME = "profile.json"
 ANSWERS_FILENAME = "answers.json"
@@ -103,18 +122,55 @@ class CandidateLoadReport:
         return notes
 
 
+@dataclass(frozen=True)
+class CandidateSetup:
+    """What the setup UI shows. It is not a ``CandidateProfile``: before the user has
+    supplied contact details and selected a resume, ``identity`` and
+    ``selected_resume_id`` are ``None`` and nothing is invented to fill them."""
+
+    candidate_id: str
+    identity: CandidateIdentity | None
+    """Contact details from ``profile.json``, if present and valid."""
+    resumes: tuple[StoredResume, ...]
+    """``list_resumes``: uploads oldest first, then an imported profile's own resume."""
+    selected_resume_id: str | None
+    """The resume ``profile.json`` references, if any."""
+    complete: bool
+    """True when ``load`` succeeds, i.e. the profile can be used to apply."""
+    problem: str | None
+    """The ``CandidateProfileInvalid`` message when the profile exists but cannot load."""
+    damaged_resumes: tuple[DamagedResume, ...] = ()
+    """Uploads left out of ``resumes`` because their file or metadata is damaged."""
+
+
 class LocalCandidateStore:
     """Reads candidate profiles and persists saved answers under ``profile_dir``.
 
-    Implements ``CandidateLoader`` and ``SavedAnswerWriter``. A relative
-    ``profile_dir`` is resolved against the working directory at construction."""
+    Implements ``CandidateLoader`` and ``SavedAnswerWriter``, and the setup
+    operations ``store_resume``/``list_resumes``/``get_resume``/``upsert_profile``/
+    ``candidate_setup``. A relative ``profile_dir`` is resolved against the working
+    directory at construction."""
 
-    def __init__(self, profile_dir: Path | str) -> None:
+    def __init__(
+        self,
+        profile_dir: Path | str,
+        *,
+        max_resume_bytes: int = DEFAULT_MAX_RESUME_BYTES,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
         self.profile_dir = Path(profile_dir).expanduser().resolve()
+        self.max_resume_bytes = max_resume_bytes
+        self._clock = clock
 
     @classmethod
-    def from_paths(cls, paths: LocalPaths) -> Self:
-        return cls(paths.profile_dir)
+    def from_paths(
+        cls,
+        paths: LocalPaths,
+        *,
+        max_resume_bytes: int = DEFAULT_MAX_RESUME_BYTES,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> Self:
+        return cls(paths.profile_dir, max_resume_bytes=max_resume_bytes, clock=clock)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
@@ -137,6 +193,9 @@ class LocalCandidateStore:
     def answers_path(self, candidate_id: str) -> Path:
         return self.candidate_dir(candidate_id) / ANSWERS_FILENAME
 
+    def resumes_dir(self, candidate_id: str) -> Path:
+        return self.candidate_dir(candidate_id) / RESUMES_DIRNAME
+
     def exists(self, candidate_id: str) -> bool:
         try:
             return self.profile_path(candidate_id).is_file()
@@ -158,13 +217,18 @@ class LocalCandidateStore:
         """Like ``load``, with sources, superseded answers and conflicts."""
         profile_path = self._existing_profile_path(candidate_id)
         raw = self._read_profile_object(profile_path, candidate_id)
+        return self._report_from_raw(candidate_id, profile_path, raw)
 
+    def _report_from_raw(
+        self, candidate_id: str, profile_path: Path, raw: dict[str, Any]
+    ) -> CandidateLoadReport:
         resume_raw = raw.get("resume")
         if not isinstance(resume_raw, dict):
             raise CandidateProfileInvalid(
                 f'{profile_path}: "resume" is required: an object with at least "id" and '
                 f'"path" (the resume file, absolute or relative to {profile_path.parent})'
             )
+        self._private_upload_for(candidate_id, profile_path, resume_raw)
         resume, resume_path, computed = _resolve_resume(profile_path, resume_raw)
 
         try:
@@ -251,7 +315,219 @@ class LocalCandidateStore:
             ]
             write_json_private(answers_path, [a.model_dump(mode="json") for a in [*kept, answer]])
 
+    # --- setup: resumes and contact profile ------------------------------------------
+
+    def store_resume(
+        self,
+        candidate_id: str,
+        *,
+        filename: str,
+        content: bytes,
+        media_type: str | None = None,
+    ) -> StoredResume:
+        """Store an uploaded resume under a new generated id; no profile is needed.
+
+        ``filename`` is reduced to a safe name with an accepted extension
+        (``RESUME_UPLOAD_TYPES``). ``media_type`` may be omitted or
+        ``application/octet-stream``; otherwise it must match the extension. The
+        content must be non-empty, at most ``max_resume_bytes``, and look like its
+        type. Raises ``ResumeRejected`` (nothing stored) or ``CandidateNotFound``
+        for an invalid candidate id. The bytes are stored unchanged and never read
+        for facts."""
+        directory = self.candidate_dir(candidate_id)
+        safe_name = safe_resume_filename(filename)
+        stored_type = check_resume_content(
+            safe_name, content, media_type, max_bytes=self.max_resume_bytes
+        )
+        self.profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.mkdir(exist_ok=True, mode=0o700)
+        return write_upload(
+            directory / RESUMES_DIRNAME,
+            filename=safe_name,
+            content=content,
+            media_type=stored_type,
+            uploaded_at=self._clock(),
+        )
+
+    def list_resumes(self, candidate_id: str) -> list[StoredResume]:
+        """Usable uploaded resumes (oldest first), then the resume an existing
+        ``profile.json`` references if it is not an upload and its file checks out
+        (origin PROFILE). Damaged uploads are skipped individually (see
+        ``candidate_setup().damaged_resumes``). Arbitrary files are never copied or
+        listed."""
+        return self._scan_resumes(candidate_id)[0]
+
+    def _scan_resumes(self, candidate_id: str) -> tuple[list[StoredResume], list[DamagedResume]]:
+        resumes, damaged = scan_uploads(self.resumes_dir(candidate_id))
+        profile_resume = self._profile_resume(candidate_id)
+        if profile_resume is not None and profile_resume.id not in {r.id for r in resumes}:
+            resumes.append(profile_resume)
+        return resumes, damaged
+
+    def get_resume(self, candidate_id: str, resume_id: str) -> StoredResume:
+        """One resume from ``list_resumes``. Strict: raises ``ResumeNotFound`` for an
+        unknown id (or an upload without metadata) and ``CandidateProfileInvalid`` for
+        a damaged upload."""
+        uploads = self.resumes_dir(candidate_id)
+        if UPLOAD_ID.fullmatch(resume_id) and os.path.lexists(uploads / resume_id):
+            # A private upload is only ever served with its metadata and digest intact;
+            # it never falls back to the profile's copy of the reference.
+            return read_upload(uploads, resume_id)
+        profile_resume = self._profile_resume(candidate_id)
+        if profile_resume is not None and profile_resume.id == resume_id:
+            return profile_resume
+        raise ResumeNotFound(f"candidate {candidate_id!r} has no resume {resume_id!r}")
+
+    def upsert_profile(
+        self, candidate_id: str, *, identity: CandidateIdentity, resume_id: str
+    ) -> CandidateProfile:
+        """Create or update ``profile.json`` with contact details and a selected resume.
+
+        ``identity`` is stored as given, including its ``verified_at`` (the time the
+        user confirmed these details). ``resume_id`` must be one of ``list_resumes``:
+        an upload (referenced as ``resumes/<id>/<file>``), or the profile's current
+        resume, which is then left exactly as it is. Every other key of an existing
+        ``profile.json`` (facts, experience, education, embedded saved answers) is
+        kept verbatim; ``answers.json`` is not touched. A new profile starts with no
+        facts, answers, experience or education. The result is validated like
+        ``load`` before anything is written, under the candidate lock. Returns the
+        loaded profile. Raises ``ResumeNotFound``, ``CandidateProfileInvalid`` (e.g.
+        an existing profile that cannot be parsed or validated; nothing is written)
+        or ``CandidateNotFound`` for an invalid id."""
+        if not isinstance(identity, CandidateIdentity):
+            raise TypeError(f"expected CandidateIdentity, got {type(identity).__name__}")
+        directory = self.candidate_dir(candidate_id)
+        profile_path = directory / PROFILE_FILENAME
+        self.profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.mkdir(exist_ok=True, mode=0o700)
+        with _exclusive_lock(directory / _LOCK_FILENAME):
+            if profile_path.exists():
+                raw = self._read_profile_object(
+                    self._existing_profile_path(candidate_id), candidate_id
+                )
+            else:
+                raw = {
+                    "id": candidate_id,
+                    "identity": None,
+                    "resume": None,
+                    "facts": [],
+                    "saved_answers": [],
+                    "experience": [],
+                    "education": [],
+                }
+            current = raw.get("resume")
+            keep_current = isinstance(current, dict) and current.get("id") == resume_id
+            updated = {**raw, "identity": identity.model_dump(mode="json")}
+            if not keep_current:
+                updated["resume"] = _upload_reference(
+                    self.get_resume(candidate_id, resume_id), directory
+                )
+            report = self._report_from_raw(candidate_id, profile_path, updated)
+            write_json_private(profile_path, updated)
+        return report.profile
+
+    def candidate_setup(self, candidate_id: str) -> CandidateSetup:
+        """Contact details, resumes and completeness for the setup UI. Works before
+        any profile exists (nothing is invented) and for imported profiles.
+
+        The resumes and the profile are read as one snapshot under a shared candidate
+        lock, so a concurrent ``upsert_profile`` (exclusive lock) happens entirely
+        before or after it: a selected upload is always among ``resumes`` unless it
+        is damaged. Damaged uploads are reported in ``damaged_resumes`` without
+        hiding the usable ones."""
+        directory = self.candidate_dir(candidate_id)
+        if not directory.is_dir():
+            return CandidateSetup(candidate_id, None, (), None, False, None)
+        with _candidate_lock(directory / _LOCK_FILENAME, shared=True):
+            listed, damaged_list = self._scan_resumes(candidate_id)
+            resumes, damaged = tuple(listed), tuple(damaged_list)
+            if not self.profile_path(candidate_id).exists():
+                return CandidateSetup(candidate_id, None, resumes, None, False, None, damaged)
+            try:
+                profile = self.load(candidate_id)
+            except CandidateProfileInvalid as exc:
+                identity, selected = self._partial_profile(candidate_id)
+                return CandidateSetup(
+                    candidate_id, identity, resumes, selected, False, str(exc), damaged
+                )
+        return CandidateSetup(
+            candidate_id, profile.identity, resumes, profile.resume.id, True, None, damaged
+        )
+
     # --- internals -----------------------------------------------------------------
+
+    def _profile_resume(self, candidate_id: str) -> StoredResume | None:
+        """The existing profile's resume if it resolves and checks out."""
+        try:
+            profile_path = self._existing_profile_path(candidate_id)
+            raw = self._read_profile_object(profile_path, candidate_id)
+            resume_raw = raw.get("resume")
+            if not isinstance(resume_raw, dict):
+                return None
+            upload = self._private_upload_for(candidate_id, profile_path, resume_raw)
+            resume, _, _ = _resolve_resume(profile_path, resume_raw)
+            if upload is not None:
+                return upload
+            artifact = ResumeArtifact.model_validate(resume)
+        except (CandidateNotFound, CandidateProfileInvalid, ValidationError):
+            return None
+        return StoredResume(artifact=artifact, origin=ResumeOrigin.PROFILE, uploaded_at=None)
+
+    def _private_upload_for(
+        self, candidate_id: str, profile_path: Path, resume_raw: dict[str, Any]
+    ) -> StoredResume | None:
+        """The intact upload a profile resume entry refers to, or ``None`` for an
+        external (imported or hand-placed) resume.
+
+        An entry is a private upload when its id has the generated upload form and
+        its path lies in this candidate's ``resumes/`` directory or an upload
+        directory with that id exists. Such an entry must pass the full upload
+        check (metadata, digest, readable file) and point at the upload's own file;
+        otherwise ``CandidateProfileInvalid`` is raised. It is never accepted on
+        the strength of the profile's copy of the reference alone."""
+        resume_id = resume_raw.get("id")
+        if not isinstance(resume_id, str) or not UPLOAD_ID.fullmatch(resume_id):
+            return None
+        uploads = self.resumes_dir(candidate_id)
+        path_value = resume_raw.get("path")
+        target: Path | None = None
+        if isinstance(path_value, str) and path_value.strip():
+            given = Path(path_value).expanduser()
+            target = (given if given.is_absolute() else profile_path.parent / given).resolve()
+        if not (
+            (target is not None and target.is_relative_to(uploads))
+            or os.path.lexists(uploads / resume_id)
+        ):
+            return None
+        try:
+            upload = read_upload(uploads, resume_id)
+        except ResumeNotFound:
+            raise CandidateProfileInvalid(
+                f"{profile_path}: the selected uploaded resume {resume_id} has no metadata "
+                f"in {uploads / resume_id}; upload the resume again and select it"
+            ) from None
+        if target is not None and Path(upload.artifact.path) != target:
+            raise CandidateProfileInvalid(
+                f"{profile_path}: resume {resume_id} does not point at its uploaded file "
+                f"{upload.artifact.path}"
+            )
+        return upload
+
+    def _partial_profile(self, candidate_id: str) -> tuple[CandidateIdentity | None, str | None]:
+        """Identity and resume id of a profile that does not fully load."""
+        try:
+            raw = self._read_profile_object(self.profile_path(candidate_id), candidate_id)
+        except CandidateProfileInvalid:
+            return None, None
+        try:
+            identity: CandidateIdentity | None = CandidateIdentity.model_validate(
+                raw.get("identity")
+            )
+        except ValidationError:
+            identity = None
+        resume = raw.get("resume")
+        selected = resume.get("id") if isinstance(resume, dict) else None
+        return identity, selected if isinstance(selected, str) else None
 
     def _existing_profile_path(self, candidate_id: str) -> Path:
         path = self.profile_path(candidate_id)
@@ -298,17 +574,23 @@ def _resolve_resume(
     where = f"resume.path {path_value!r}" + (
         "" if given.is_absolute() else f" (relative to {base})"
     )
-    if not resolved.exists():
+    try:
+        if not resolved.exists():
+            raise CandidateProfileInvalid(
+                f"{profile_path}: resume file not found: {resolved} from {where}"
+            )
+        if not resolved.is_file():
+            raise CandidateProfileInvalid(
+                f"{profile_path}: resume is not a regular file: {resolved}"
+            )
+        size = resolved.stat().st_size
+        if size == 0:
+            raise CandidateProfileInvalid(f"{profile_path}: resume file is empty: {resolved}")
+        digest = sha256_file(resolved)
+    except OSError as exc:
         raise CandidateProfileInvalid(
-            f"{profile_path}: resume file not found: {resolved} from {where}"
-        )
-    if not resolved.is_file():
-        raise CandidateProfileInvalid(f"{profile_path}: resume is not a regular file: {resolved}")
-    size = resolved.stat().st_size
-    if size == 0:
-        raise CandidateProfileInvalid(f"{profile_path}: resume file is empty: {resolved}")
-
-    digest = sha256_file(resolved)
+            f"{profile_path}: cannot read resume file {resolved} ({exc.strerror or exc})"
+        ) from None
     declared = resume_raw.get("sha256")
     if isinstance(declared, str) and declared != digest:
         raise CandidateProfileInvalid(
@@ -338,6 +620,22 @@ def _resolve_resume(
     return resume, resolved, "sha256" not in resume_raw
 
 
+def _upload_reference(resume: StoredResume, candidate_dir: Path) -> dict[str, Any]:
+    """``profile.json`` resume entry for an upload, relative to the candidate dir."""
+    artifact = resume.artifact
+    relative = Path(artifact.path).relative_to(candidate_dir)
+    return {
+        "id": artifact.id,
+        "path": relative.as_posix(),
+        "filename": artifact.filename,
+        "media_type": artifact.media_type,
+        "sha256": artifact.sha256,
+        "size_bytes": artifact.size_bytes,
+        "variant": "supplied",
+        "extracted_text": None,
+    }
+
+
 def _read_answers(path: Path) -> list[SavedAnswer]:
     if not path.exists():
         return []
@@ -361,11 +659,16 @@ def _read_answers(path: Path) -> list[SavedAnswer]:
     return answers
 
 
+def _exclusive_lock(path: Path) -> AbstractContextManager[None]:
+    return _candidate_lock(path, shared=False)
+
+
 @contextmanager
-def _exclusive_lock(path: Path) -> Iterator[None]:
+def _candidate_lock(path: Path, *, shared: bool) -> Iterator[None]:
+    """Per-candidate ``flock``: writers exclusive, snapshot readers shared."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
