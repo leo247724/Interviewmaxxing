@@ -1,4 +1,4 @@
-# interviewmaxxing-service (S1 + S2 + S3 + S3R)
+# interviewmaxxing-service (final backend integration)
 
 Loopback-only HTTP service between the frontend's same-origin gateway (`apps/web`, F2) and the local executor. It maps canonical store state to the frontend's presentation models (`apps/web/lib/service/types.ts`) and hands all execution to the I1 runner. It is not a second executor or state machine. The canonical `ApplicationStore` is the only state authority.
 
@@ -7,12 +7,12 @@ Owner: queue-runtime. Package `interviewmaxxing-service`, import `interviewmaxxi
 **S3R contract (for F3, published first).** The DTO changes below are final for this checkpoint:
 [decisionTask](#decision-task-s3r), [health](#application-mode), [linked receipt](#linked-application-s3r) and [postingUrl](#posting-urls-s3r).
 
-**Status: S3R checkpoint.** Real package integration is complete, and nothing in the route layer is simulated.
+**Status: integrated backend checkpoint.** Real package integration is complete, and nothing in the route layer is simulated. See `INTEGRATION-RECEIPT.md` for exact dependency commits and validation.
 - **Applications (S1):** the real C2P `LocalCandidateStore`, the real I1 `create_runner` and headless Chromium against the separately running localhost mock ATS (`tests/service/test_acceptance.py`). The service pins the selected resume to each application before any run.
 - **Pipeline (S2):** the real P1R `PipelineStore`.
 - **Jobs and selection (S2):** the real J1 `JobStore`/`JobSearchService` and J2 `SelectionService`, with fixture source adapters and a fixture Jev transport in tests.
 - **Test-only by default:** the service refuses to drive the browser at non-loopback sites (see [Application mode](#application-mode)).
-- **Still to do:** frontend-driven end-to-end acceptance (F2/F3) and the final core, browser and package corrections (I1R, C4R3/O1R, J1R, J2R). See [Integration needs](#integration-needs) for the exact coverage of this checkpoint.
+- **Separate acceptance:** the frontend owner verifies dashboard-driven flows in its own isolated checkout. This backend receipt does not claim that UI verification or the final coordinator-owned workspace lock validation.
 
 `integration.py` is the only module that names the C2P, J1, J2 and I1 APIs. See [Integration needs](#integration-needs).
 
@@ -57,6 +57,8 @@ IMX_BACKEND_URL=http://127.0.0.1:8765 IMX_WEB_ORIGIN=http://127.0.0.1:4317 \
 | `IMX_JOBS_DB` | `$IMX_HOME/jobs/jobs.sqlite3` | J1 listing store |
 
 The service's own state (saved preferences and background tasks) is `$IMX_HOME/state/service.sqlite3` (mode `0600`). The pipeline is P1's `$IMX_HOME/state/pipeline.sqlite3`, and selection is J2's store.
+
+Before recovery, the service acquires an exclusive OS lock at `$IMX_HOME/state/service.lock` (or beside an overridden state DB). A second service sharing that state location, even for another candidate, exits without recovering live tasks. The lock remains held until background search/decision workers finish and the application dispatcher stops. The lock file stays in place; process death releases the OS lock, so stale files do not prevent restart.
 
 On start the service marks submissions interrupted by an earlier process as `SUBMISSION_UNKNOWN` (`recover_interrupted_submissions`). Stop it with Ctrl-C or SIGTERM. A run still in progress is cancelled. The executor loop keeps running until the cancelled run's `finally` blocks finish (bounded), so the runner can await browser cleanup and release its claim. Only then does the loop stop. An interrupted submit stays durable `SUBMITTING`/`SUBMISSION_UNKNOWN` through the store's claim lease, so it is never retried.
 
@@ -147,10 +149,21 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
 - Invalid, missing, foreign or mismatched IDs/URLs return `422` with
   `fieldErrors.pipelineEntryId`, `listingId` or `applicationUrl`, before recording or
   dispatching. An entry already linked to a different application returns `409` and
-  keeps that link.
+  keeps that link. A known ATS job identity on an existing canonical application
+  must also agree with the listing’s proven employer-job keys; a shared application
+  URL cannot transfer a different job’s receipt (`409`).
 - A listing-only handoff tracks the listing once. After recording the canonical
-  application and pinning the resume, the service writes the pipeline link before
-  browser dispatch. Repeats keep the same application and card.
+  application and pinning the resume, the service durably pins any single proven
+  ATS employer-job key from the listing, then writes the pipeline link before
+  browser dispatch. The expected identity is immutable, survives restart/resume,
+  and does not itself bind an observed canonical job. Repeats keep the same
+  application, expectation and card; conflicting expectations return `409`.
+- When an expected identity is pinned, the runner checks observed identity before
+  filling, advancing or submitting. Missing or conflicting evidence stops with a
+  durable retryable failure. Direct URL applications without a known expectation
+  retain their existing behavior. Protected existing applications without a pin
+  can link only when their already-observed identity matches; no late expectation
+  is added after submission may have begun.
 - If linking fails, no browser run starts. The recorded/pinned request remains safe
   to retry; the same handoff completes the missing link idempotently. A concurrent
   entry edit returns `409` and asks for a reload. Unexpected storage failure returns
@@ -361,31 +374,28 @@ Merged into this branch and used directly (committed checkpoints only):
 
 | Package | Checkpoint | Used through |
 | --- | --- | --- |
-| I1 runner | `d43ce6b` | `create_runner(paths, *, headless, interaction)`; `ApplicationStore.pin_resume`/`pinned_resume`. The service also serializes runs itself. |
+| I1 runner | `f38d0d1` (includes `90ec571`, `1408302`, `72a10ea`) | `create_runner(paths, *, headless, interaction)`; `ApplicationStore.pin_resume`/`pinned_resume` and `pin_expected_job_identity`/`expected_job_identity`. The service also serializes runs itself. |
 | C2P/C2P2 candidate | root `caae823` | `candidate_setup`, `store_resume`, `get_resume`, `upsert_profile`, `save_answer`, `load` |
-| J1 jobs | J1S `1d8f2ee` | `JobStore.get_listing`, `list_listings(limit=, rank_for=)`, `JobSearchService(...).run(single-source query, detail_limit=)`, `OpenCliTransport`, `default_db_path` |
-| J2 selection | J2S `0f58421` (sends `role_focus`) | `SelectionService.select(..., use_cache=)`, `.is_current`, `SelectionStore.latest/history/get`, `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier`, `location_priority_reason` |
+| J1 jobs | J1R2 `ab8f22d` (includes `0a02462`) | `JobStore.get_listing`, `listing_aliases`, `list_listings(limit=, rank_for=)`, `JobSearchService(...).run(single-source query, detail_limit=)`, `OpenCliTransport`, `default_db_path` |
+| J2 selection | J2R2 `d933069` (includes `acdd2e3`) | `SelectionService.select(..., use_cache=)`, `.is_current`, `SelectionStore.latest_many/get` (candidate-scoped), `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier`, `location_priority_reason` |
 | P1R2 pipeline | `e5c14c7` | `PipelineStore` (incl. `source_versions`), `parse_import(..., source_id=)`, `TrackingFields`, `REFERENCE_FIELDS` |
-| Browser | root (C4) | via I1 |
+| Browser | `c3a3c41` (includes O1R `0e4273a` and C4R4) | via I1; owned contexts and local confirmation scopes |
 
-**Checkpoint coverage.** The S3R service tests and the real HTTP → I1 → headless Chromium → mock ATS acceptance ran on exactly these commits. They did **not** cover:
+**Checkpoint coverage.** Service and installed-CLI acceptance use the committed
+packages above against a separately running localhost mock ATS with fictional
+profiles and temporary homes. It covers canonical receipts, selected resume pins,
+uncertain submission locks and rechecks, repeated validation corrections across
+restart, and pipeline links before dispatch. Service regression tests cover native
+candidate-scoped decision batches, accepted listing aliases, durable task lifecycle,
+exclusive startup ownership, and failed-link recovery. No live job source or paid
+Jev transport is used by this backend acceptance.
 
-- the final core runner corrections (I1R);
-- the browser corrections C4R3 and O1R;
-- the in-progress J1R (region matching in `rank_for`) and J2R (candidate-scoped store APIs).
-
-Final MVP end-to-end acceptance still needs those, plus the dashboard-driven run.
-
-**Adapter dependencies on in-progress corrections:**
-
-- **J2R candidate scoping.** Committed J2 (`0f58421`) `SelectionStore.latest/get/history/find_cached` take no candidate. The service adapter therefore:
-  - filters `history(listing_id)` by `selection.candidate_id` for listing views, which parses that listing's full history once per request;
-  - checks the candidate on every `get`;
-  - re-runs `select(..., use_cache=False)` when J2's evidence-keyed cache returns another candidate's decision, and refuses the result if it still belongs to another candidate.
-
-  When J2R publishes `latest(listing_id, *, candidate_id)` / `get(selection_id, *, candidate_id)`, the adapter uses them automatically (it detects a `candidate_id` parameter) and still verifies the candidate. A batched `latest_many(candidate_id, listing_ids)` would remove the remaining per-listing query; it is requested, not required.
-- **J1R region matching.** Pre-limit ranking is J1's `rank_for`. The service's own finer ordering (J2 tier, pay, recency) is applied only within the returned 500.
-- **J1 (optional).** `run(query, *, run_id=None, on_source=callback)`. With it, one J1 run could carry the service task id instead of the service running J1 once per source.
+**Adapter compatibility.** J2's candidate-scoped `latest_many` is preferred, with
+candidate ownership checked again before presentation. Legacy checkpoint fallbacks
+remain for scoped latest reads and candidate-filtered history. Currentness uses the
+verified selection's candidate context, including when no profile exists. J1's
+persisted alias API supplies historical IDs for card/decision/task joins. Ranking
+still occurs before the listing limit.
 
 **Dependencies.** `pyproject.toml` pins `interviewmaxxing-core`, `-candidate`, `-pipeline`, `-jobs`, `-selection` and `-cli` at `==0.1.0` (workspace sources). J1/J2 are still imported lazily in `integration.py`, so the route layer has no hard import on them. The root lock is core/coordinator-owned and must include this member.
 
@@ -416,11 +426,17 @@ uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/ser
   - `postingUrl`, and that track never uses a search page;
   - one pipeline and one decision lookup per listing page.
 - `test_package_integration`: the real J1 store and search service with fixture source adapters, and the real J2 selection service with a fixture Jev transport.
+- `test_ownership`: duplicate same/different-candidate startup, live task coalescing, actual duplicate CLI refusal and OS-lock release on process death.
+- `test_expected_identity`: real-runner handoff expectation before dispatch, missing/wrong initial observations, restart persistence, immutable expectations, matching identity and pre-submit identity changes.
+- `test_application_links`: owned ID and URL validation, link-before-dispatch, listing-only tracking, refusal to overwrite a different application, and retry after failed link persistence.
+- `test_listing_aliases`: real J1 canonical merges preserve cards, decisions and pollable queued tasks, including handoff to the original card.
 - `test_acceptance` (marked `slow`): HTTP → real I1 runner → headless Chromium → `scripts/mock_ats.py` in its own process, with a fictional profile in a temporary `IMX_HOME`. It covers:
   - receipt, server-side acceptance count, uploaded file digest and a repeat request;
   - A/B resume pins across a profile change and a restart, with missing answers answered after the restart;
-  - an uncertain submission that stays locked, an inconclusive recheck, and a site reveal reconciled.
+  - an uncertain submission that stays locked, an inconclusive recheck, and a site reveal reconciled;
+  - site-confirmed and uncertain canonical state on the linked pipeline card;
+  - two rejected phone values followed by a corrected answer after service restart, with exactly one accepted submission.
 
 Playwright must be the root-locked `1.62.0`, which matches the cached browsers.
 
-Everything is fictional and local. No live source is browsed, no Jev credit is spent, and nothing is submitted.
+Everything is fictional and local. No live source is browsed, no Jev credit is spent, and no real application is submitted.
