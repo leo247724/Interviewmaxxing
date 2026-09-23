@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -66,7 +67,7 @@ from interviewmaxxing_core import (
     utc_now,
 )
 
-from .driver import DriverError, NotActionable, PageDriver
+from .driver import DriverError, NotActionable, PageContextLost, PageDriver
 from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page
 from .signals import (
@@ -225,6 +226,10 @@ class GenericApplicationBrowser:
         self._last: PageModel | None = None
         self._identity: JobIdentityObservation | None = None
         self._filled: tuple[str, str] | None = None  # (scope key, form fingerprint)
+        self._context_lost = False
+        """The document was replaced mid-fill; fresh inspection and refill are required."""
+        self._inspected_after_loss = False
+        self._fill_document: str | None = None
         self._pending: _PendingSubmit | None = None
         self._accepted = False
 
@@ -272,6 +277,8 @@ class GenericApplicationBrowser:
 
     async def inspect(self) -> PageInspection:
         model = await self._model()
+        if self._context_lost:
+            self._inspected_after_loss = True
         label = self._evidence_label(model.inspection.kind)
         if label:
             model = await self._model(evidence=label)
@@ -287,6 +294,8 @@ class GenericApplicationBrowser:
         form submission) from a job posting to the application form."""
         self._steps_advanced = 0
         self._filled = None
+        self._context_lost = False
+        self._fill_document = None
         await self.driver.goto(url)
         model = await self._model()
         posting_identity = model.inspection.job_identity
@@ -323,6 +332,8 @@ class GenericApplicationBrowser:
     # --- fill -----------------------------------------------------------------------
 
     async def fill(self, form: ApplicationForm, packet: ApplicationPacket) -> FillResult:
+        if self._context_lost and not self._inspected_after_loss:
+            raise ValueError("the page changed while filling; inspect it again first")
         problems = packet.problems_against(form)
         if problems:
             raise ValueError("packet does not fit this form: " + "; ".join(problems))
@@ -332,22 +343,55 @@ class GenericApplicationBrowser:
             raise ValueError(
                 "the page no longer shows the inspected form step; re-inspect and resolve again"
             )
+        self._fill_document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
         errors_before = set(current.page_errors)
         results: list[FieldFillResult] = []
+        lost: PageContextLost | None = None
         for app_field in form.fields:
             binding = model.bindings[app_field.id]
             answer = packet.answer_for(app_field.id)
-            if answer is None:
-                results.append(await self._leave_unanswered(app_field, binding))
+            if lost is not None:
+                if answer is not None:
+                    results.append(FieldFillResult(
+                        field_id=app_field.id, status=FieldFillStatus.FAILED,
+                        detail="not attempted: the page changed while filling an earlier field"))
                 continue
             try:
-                results.append(await self._apply(app_field, binding, answer.value))
-            except DriverError as exc:  # includes unsupported driver capabilities
+                await self._assert_fill_context()
+                if answer is None:
+                    results.append(await self._leave_unanswered(app_field, binding))
+                else:
+                    results.append(await self._apply(app_field, binding, answer.value))
+                await self._assert_fill_context()
+            except PageContextLost as exc:
+                # The document is gone: nothing further may be written to whatever
+                # replaced it. Every remaining answer is reported, not attempted.
+                lost = exc
+                self._context_lost = True
+                self._inspected_after_loss = False
                 results.append(FieldFillResult(
                     field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
+            except DriverError as exc:  # per-field, page still the same: keep going
+                results.append(FieldFillResult(
+                    field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
+        if lost is not None:
+            self._filled = None
+            self._context_lost = True
+            evidence: list[EvidenceRef] = []
+            with contextlib.suppress(DriverError):
+                evidence = await self._evidence.capture(
+                    self.driver, f"context-lost-step-{form.step}",
+                    description="page after the document was replaced mid-fill")
+            return FillResult(
+                form_step=form.step, fields=results, evidence=evidence,
+                page_errors=[f"{lost}; the step must be inspected and resolved again"],
+            )
+        self._context_lost = False
+        self._inspected_after_loss = False
         # The packet authorized exactly the inspected questions; that stays the authority.
         self._filled = (form.scope.key, form.fingerprint)
         after = await self._model(evidence=f"filled-step-{form.step}")
+        await self._assert_fill_context()
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
         if after.form is None or after.form.fingerprint != form.fingerprint:
             results.extend(await self._contain_changed_questions(form, after))
@@ -361,6 +405,34 @@ class GenericApplicationBrowser:
             page_errors=new_errors,
             evidence=after.inspection.evidence,
         )
+
+    async def _assert_fill_context(self) -> None:
+        if self._fill_document is None:
+            return
+        try:
+            current = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
+        except DriverError as exc:
+            self._context_lost = True
+            self._inspected_after_loss = False
+            raise PageContextLost("cannot verify the filling document; re-inspect before continuing") from exc
+        if current != self._fill_document:
+            self._context_lost = True
+            self._inspected_after_loss = False
+            raise PageContextLost("the page changed while filling; re-inspect before continuing")
+
+    async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
+        await self._assert_fill_context()
+        try:
+            await operation()
+        except PageContextLost:
+            self._context_lost = True
+            self._inspected_after_loss = False
+            raise
+        except DriverError:
+            # A per-field failure is recoverable only while the same document remains.
+            await self._assert_fill_context()
+            raise
+        await self._assert_fill_context()
 
     async def _contain_changed_questions(
         self, approved: ApplicationForm, after: PageModel
@@ -381,8 +453,8 @@ class GenericApplicationBrowser:
                 and new.semantic_type in (SemanticType.CONSENT, SemanticType.ATTESTATION)
                 and binding.checked_values
             ):
-                await self.driver.set_checked(binding.selector, False,
-                                              label_selector=binding.label_selectors.get(""))
+                await self._write(partial(self.driver.set_checked,
+                    binding.selector, False, label_selector=binding.label_selectors.get("")))
                 detail += "; cleared its pre-checked box"
             results.append(FieldFillResult(field_id=new.id, status=FieldFillStatus.FAILED,
                                            detail=detail))
@@ -398,8 +470,8 @@ class GenericApplicationBrowser:
             and binding.checked_values
         ):
             # A pre-checked consent or attestation is not the user's answer.
-            await self.driver.set_checked(binding.selector, False,
-                                          label_selector=binding.label_selectors.get(""))
+            await self._write(lambda: self.driver.set_checked(
+                binding.selector, False, label_selector=binding.label_selectors.get("")))
             return FieldFillResult(field_id=app_field.id, status=FieldFillStatus.SKIPPED,
                                    detail="cleared a pre-checked box the user has not agreed to")
         return FieldFillResult(field_id=app_field.id, status=FieldFillStatus.SKIPPED)
@@ -419,34 +491,35 @@ class GenericApplicationBrowser:
 
         ctype = app_field.control_type
         if isinstance(value, TextValue) and ctype in (ControlType.TEXT, ControlType.TEXTAREA):
-            await self.driver.fill(binding.selector, value.text)
+            await self._write(lambda: self.driver.fill(binding.selector, value.text))
             got = (await self._read(binding.selector)).get("value")
             text = value.text.replace("\r\n", "\n")
             return result(isinstance(got, str) and got.replace("\r\n", "\n") == text, got)
         if isinstance(value, ChoiceValue) and ctype is ControlType.SELECT:
-            await self.driver.select_values(binding.selector, [value.value])
+            await self._write(lambda: self.driver.select_values(binding.selector, [value.value]))
             got = (await self._read(binding.selector)).get("values")
             return result(got == [value.value], got)
         if isinstance(value, MultiChoiceValue) and ctype is ControlType.MULTISELECT:
             wanted = [c.value for c in value.choices]
-            await self.driver.select_values(binding.selector, wanted)
+            await self._write(lambda: self.driver.select_values(binding.selector, wanted))
             got = (await self._read(binding.selector)).get("values")
             return result(isinstance(got, list) and set(got) == set(wanted), got)
         if isinstance(value, ChoiceValue) and ctype is ControlType.RADIO:
-            await self.driver.set_checked(binding.option_selectors[value.value], True,
-                                          label_selector=binding.label_selectors.get(value.value))
+            await self._write(lambda: self.driver.set_checked(
+                binding.option_selectors[value.value], True,
+                label_selector=binding.label_selectors.get(value.value)))
             return await self._verify_group(fid, binding, {value.value})
         if isinstance(value, MultiChoiceValue) and ctype is ControlType.CHECKBOX_GROUP:
             wanted_set = {c.value for c in value.choices}
             for option_value, selector in binding.option_selectors.items():
                 want = option_value in wanted_set
                 if (option_value in binding.checked_values) != want:
-                    await self.driver.set_checked(
-                        selector, want, label_selector=binding.label_selectors.get(option_value))
+                    await self._write(partial(self.driver.set_checked,
+                        selector, want, label_selector=binding.label_selectors.get(option_value)))
             return await self._verify_group(fid, binding, wanted_set)
         if isinstance(value, BooleanValue) and ctype is ControlType.CHECKBOX:
-            await self.driver.set_checked(binding.selector, value.checked,
-                                          label_selector=binding.label_selectors.get(""))
+            await self._write(lambda: self.driver.set_checked(
+                binding.selector, value.checked, label_selector=binding.label_selectors.get("")))
             got = (await self._read(binding.selector)).get("checked")
             return result(got is value.checked, got)
         if isinstance(value, FileValue) and ctype is ControlType.FILE:
@@ -454,7 +527,10 @@ class GenericApplicationBrowser:
             if not artifact.verify():
                 return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
                                        detail=f"{artifact.filename} is missing or changed since it was verified")
-            await self.driver.set_files(binding.selector, Path(artifact.path))
+            await self._write(lambda: self.driver.set_files(binding.selector, Path(artifact.path)))
+            if not artifact.verify():
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
+                                       detail="the pinned file changed while attaching it")
             got = (await self._read(binding.selector)).get("files")
             expected = [{"name": artifact.filename, "size": artifact.size_bytes}]
             return result(got == expected, got)
@@ -493,6 +569,8 @@ class GenericApplicationBrowser:
             )
         if form.is_final_step is None or not form.next_selector:
             raise AmbiguousAction("the step has no unambiguous next-step control")
+        if self._context_lost:
+            raise ValueError("the page changed while filling; inspect and resolve it again first")
         if self._changed_since_fill(form):
             raise ValueError("questions on this step changed after filling; re-inspect and resolve")
         invalid = await self.driver.evaluate(
@@ -502,6 +580,7 @@ class GenericApplicationBrowser:
             # The browser itself would block the step; clicking would change nothing.
             return NavigationResult(advanced=False, inspection=model.inspection,
                                     validation_errors=list(invalid))
+        await self._assert_fill_context()
         await self.driver.click(form.next_selector)
         await self.driver.settle(self.settle_timeout_s)
         self._steps_advanced += 1
@@ -513,6 +592,7 @@ class GenericApplicationBrowser:
             return NavigationResult(advanced=False, inspection=after.inspection,
                                     validation_errors=_validation_errors(after.form))
         self._filled = None
+        self._fill_document = None
         return NavigationResult(advanced=True, inspection=after.inspection)
 
     # --- submission -----------------------------------------------------------------
@@ -545,6 +625,9 @@ class GenericApplicationBrowser:
             return not_dispatched(f"no application form on the page ({model.inspection.kind})")
         if form.is_final_step is not True or not form.submit_selector:
             return not_dispatched("the step has no unambiguous final submit control")
+        if self._context_lost:
+            return not_dispatched("the page changed while filling; inspect and resolve it again",
+                                  next_state=NotSubmittedNext.FILLING)
         if self._changed_since_fill(form):
             return not_dispatched("questions changed after filling; re-inspect and resolve",
                                   next_state=NotSubmittedNext.FILLING)
@@ -574,6 +657,10 @@ class GenericApplicationBrowser:
         before = await self._evidence.capture(self.driver, f"before-submit-step-{form.step}",
                                               description="completed form before submit")
         marker = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
+        try:
+            await self._assert_fill_context()
+        except PageContextLost as exc:
+            return not_dispatched(str(exc), next_state=NotSubmittedNext.FILLING)
         text = next((b.button.text for b in model.buttons if b.button.selector == form.submit_selector),
                     form.submit_selector)
         dispatched_at = utc_now()

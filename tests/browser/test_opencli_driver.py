@@ -8,6 +8,7 @@ produces the same form (fingerprint) and the same refusals over the OpenCLI driv
 
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import sys
@@ -58,6 +59,9 @@ class FakeOpenCli:
         self.status: int | None = 200
         self.controls: dict[str, dict[str, Any]] = {}
         self.snapshot: Any = None
+        self.digests: dict[str, str | None] = {}
+        self.tabs = [PAGE]
+        self.created = PAGE
         self.native_invalid: list[str] = []
         self.upload_allowed = False
         self.navigate_on: set[str] = set()
@@ -83,13 +87,13 @@ class FakeOpenCli:
             "inspector": inspector_script(), "doc": oc._DOC_STATE, "control": oc._CONTROL_STATE,
             "actionable": oc._ACTIONABLE, "read": rt._READ_CONTROL, "checked": rt._READ_CHECKED,
             "validity": rt._NATIVE_VALIDITY, "identity": rt._DOCUMENT_IDENTITY,
-            "effective": rt._EFFECTIVE_SUBMISSION,
+            "effective": rt._EFFECTIVE_SUBMISSION, "digest": oc._FILE_DIGEST,
         }
         name = next((key for key, script in scripts.items() if "(" + script + ")(" in js), None)
         if name is None:
             return CommandResult(0, json.dumps({"ok": False, "error": "unknown script"}), "")
         marker = "(" + scripts[name] + ")("
-        arg = json.loads(js[js.index(marker) + len(marker): js.rindex(")}; } catch")])
+        arg = json.loads(js[js.index(marker) + len(marker): js.rindex(")}); } catch")])
         value: Any
         if name == "inspector":
             value = self.snapshot
@@ -98,6 +102,8 @@ class FakeOpenCli:
         elif name in ("control", "read"):
             c = self.controls.get(arg)
             value = None if c is None else {"origin": self.origin, "url": self.url, **c}
+        elif name == "digest":
+            value = {"origin": self.origin, "url": self.url, "sha256": self.digests.get(arg)}
         elif name == "actionable":
             value = {"n": 1, "disabled": False, "visible": True} if arg in self.controls else {"n": 0}
         elif name == "checked":
@@ -119,7 +125,12 @@ class FakeOpenCli:
         command = argv[i + 2]
         positionals = argv[argv.index("--") + 1:] if "--" in argv else []
         if command == "tab":
-            return self.ok([])
+            sub = argv[i + 3]
+            if sub == "new":
+                return self.ok({"page": self.created, "url": None})
+            if sub == "list":
+                return self.ok([{"page": p} for p in self.tabs])
+            return self.ok({"closed": positionals[0]})
         if command == "open":
             self.url = positionals[0]
             return self.ok({"url": self.url, "page": PAGE})
@@ -151,6 +162,7 @@ class FakeOpenCli:
                 return CommandResult(1, "", '✖  {"code":-32000,"message":"Not allowed"}\n')
             path = Path(positionals[1])
             c["files"] = [{"name": path.name, "size": path.stat().st_size}]
+            self.digests[sel] = hashlib.sha256(path.read_bytes()).hexdigest()
             return self.ok({"uploaded": True, "matches_n": 1, "match_level": level})
         if command == "click":
             return self.ok({"clicked": True, "matches_n": 1, "match_level": level})
@@ -182,12 +194,12 @@ def test_argv_uses_profile_session_pinned_tab_and_end_of_options(kit: SimpleName
 
     kit.run(scenario())
     first = fake.calls[0]
-    assert first == ["opencli", "--profile", "fixture-profile", "browser", "imx-application",
-                     "open", "--window", "background", "--", URL]
+    assert first == ["opencli", "--profile", "fixture-profile", "browser", driver.session,
+                     "tab", "new", "--window", "background"]
     fill = next(c for c in fake.calls if "fill" in c)
-    assert fill == ["opencli", "--profile", "fixture-profile", "browser", "imx-application", "fill",
+    assert fill == ["opencli", "--profile", "fixture-profile", "browser", driver.session, "fill",
                     "--tab", PAGE, "--", "#name", "--tab OTHER; $(rm -rf ~)"]
-    assert all("--tab" in c and c[c.index("--tab") + 1] == PAGE for c in fake.calls[1:])
+    assert all("--tab" in c and c[c.index("--tab") + 1] == PAGE for c in fake.calls[2:])
     assert not {"bind", "unbind"} & set(commands(fake))
 
 
@@ -301,6 +313,7 @@ def test_upload_unavailable_is_actionable_and_user_attachment_is_accepted(
         kit.run(driver.set_files("#resume", resume))
     # The person attaches the same file in the visible browser: nothing more is sent.
     fake.controls["#resume"]["files"] = [{"name": resume.name, "size": resume.stat().st_size}]
+    fake.digests["#resume"] = hashlib.sha256(resume.read_bytes()).hexdigest()
     sent = len(fake.calls)
     kit.run(driver.set_files("#resume", resume))
     assert "upload" not in commands(fake)[sent:]
@@ -329,8 +342,8 @@ def test_evaluation_is_read_only(kit: SimpleNamespace) -> None:
         with pytest.raises(DriverError, match="read-only"):
             kit.run(driver.evaluate(script))
     assert len(fake.calls) == sent
-    with pytest.raises(DriverError, match="page script failed"):
-        kit.run(driver.evaluate("() => 1"))  # the page reports ok=false
+    with pytest.raises(DriverError, match="fixed read-only"):
+        kit.run(driver.evaluate("() => 1"))
     fake.calls.clear()
 
     async def garbage(argv: Sequence[str], timeout_s: float) -> CommandResult:
@@ -338,7 +351,7 @@ def test_evaluation_is_read_only(kit: SimpleNamespace) -> None:
 
     driver._run = garbage
     with pytest.raises(OpenCliError, match="non-JSON"):
-        kit.run(driver.evaluate("() => 1"))
+        kit.run(driver.evaluate(oc._DOC_STATE))
 
 
 def test_settle_follows_navigation_and_status(kit: SimpleNamespace) -> None:
@@ -411,4 +424,119 @@ def test_runtime_semantics_are_identical_over_opencli(
     assert "click" not in commands(fake)
     assert "fixture-profile" in out["location"] and "imx-application" in out["location"]
     assert commands(fake)[-1] == "close"
+    assert server.submissions()["accepted_count"] == 0
+
+
+def test_ownership_precedes_every_navigation_and_sessions_never_collide(kit: SimpleNamespace) -> None:
+    fake = FakeOpenCli()
+    first, second = driver_with(fake), driver_with(fake)
+    assert first.session != second.session
+    assert first.session.startswith(CONFIG.session + "-")
+    kit.run(first.goto(URL))
+    fake.created = "SECOND_OWNED_TAB"
+    fake.tabs.append(fake.created)
+    kit.run(second.goto(URL))
+    assert first.tab == PAGE and second.tab == "SECOND_OWNED_TAB"
+    for driver in (first, second):
+        calls = [c for c in fake.calls if c[c.index("browser") + 1] == driver.session]
+        assert calls[0][calls[0].index("browser") + 2:] == ["tab", "new", "--window", "background"]
+        assert calls[1][-2:] == ["tab", "list"]
+        opened = next(c for c in calls if "open" in c)
+        assert opened[opened.index("--tab") + 1] == driver.tab
+    kit.run(first.release())
+    assert fake.calls[-2][-2:] == ["--", PAGE]
+    assert fake.calls[-1][fake.calls[-1].index("browser") + 1] == first.session
+    assert second.tab == "SECOND_OWNED_TAB"
+
+
+@pytest.mark.parametrize("reason", ["protected", "unlisted"])
+def test_no_open_or_release_when_tab_ownership_is_unproven(kit: SimpleNamespace, reason: str) -> None:
+    fake = FakeOpenCli()
+    if reason == "unlisted":
+        fake.tabs = []
+    cfg = OpenCliConfig(protected_tabs=frozenset({PAGE}) if reason == "protected" else frozenset())
+    driver = driver_with(fake, cfg)
+    with pytest.raises(DriverError):
+        kit.run(driver.goto(URL))
+    kit.run(driver.release())
+    assert "open" not in commands(fake) and "close" not in commands(fake)
+    assert driver.tab is None
+
+
+@pytest.mark.parametrize("attached", [b"different bytes!", None])
+def test_same_name_and_size_never_substitute_for_the_pinned_file_digest(
+    kit: SimpleNamespace, tmp_path: Path, attached: bytes | None,
+) -> None:
+    path = tmp_path / "fictional_resume.pdf"
+    path.write_bytes(b"approved bytes!!")
+    fake = FakeOpenCli()
+    fake.control("#resume")["files"] = [{"name": path.name, "size": path.stat().st_size}]
+    fake.digests["#resume"] = hashlib.sha256(attached).hexdigest() if attached else None
+    driver = _opened(fake, kit)
+    with pytest.raises(CapabilityUnsupported, match="exact pinned file"):
+        kit.run(driver.set_files("#resume", path))
+    assert "upload" not in commands(fake)
+
+
+def test_arbitrary_bracket_mutation_is_rejected_before_eval(kit: SimpleNamespace) -> None:
+    fake = FakeOpenCli()
+    driver = _opened(fake, kit)
+    sent = len(fake.calls)
+    for script in ("() => document.forms[0]['requestSubmit']()", "() => window['fetch']('/apply')"):
+        with pytest.raises(DriverError, match="fixed read-only"):
+            kit.run(driver.evaluate(script))
+    assert len(fake.calls) == sent
+
+
+@pytest.mark.parametrize("failure", ["readback", "missing", "bad_envelope", "url_only"])
+def test_runtime_aborts_remaining_fields_and_submit_after_document_loss(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, failure: str,
+) -> None:
+    async def capture() -> Any:
+        browser = await PlaywrightSessionFactory().start(options)
+        try:
+            await browser.open(server.url("/jobs/validation/apply"))
+            return await browser.page.evaluate(inspector_script())
+        finally:
+            await browser.close()
+
+    class LostPage(FakeOpenCli):
+        async def __call__(self, argv: Sequence[str], timeout_s: float) -> CommandResult:
+            result = await super().__call__(argv, timeout_s)
+            if "fill" in argv and commands(self).count("fill") == 1:
+                if failure == "url_only":
+                    self.url = "http://localhost:9/other-origin"
+                else:
+                    self.origin = "9999.9"
+                if failure == "missing":
+                    self.controls.clear()
+                if failure == "bad_envelope":
+                    return self.error("selector_not_found", "target disappeared")
+            return result
+
+    fake = LostPage()
+    fake.snapshot = kit.run(capture())
+    for control in fake.snapshot["controls"]:
+        fake.control(control["selector"])
+
+    async def scenario() -> None:
+        browser = await OpenCliSessionFactory(CONFIG, runner=fake).start(options)
+        try:
+            form = (await browser.open(fake.snapshot["url"])).form
+            assert form is not None
+            packet = kit.build(form, kit.CORE).packet
+            filled = await browser.fill(form, packet)
+            assert not filled.ok
+            assert "page changed" in " ".join(filled.page_errors) or "navigated" in " ".join(filled.page_errors)
+            assert commands(fake).count("fill") == 1
+            assert not {"upload", "select", "check", "uncheck"} & set(commands(fake))
+            assert not (await browser.submit()).dispatched
+            with pytest.raises(ValueError, match="inspect"):
+                await browser.fill(form, packet)
+            await browser.inspect()
+            assert not (await browser.submit()).dispatched  # inspection alone is not a refill
+            assert "click" not in commands(fake)
+        finally:
+            await browser.close()
+    kit.run(scenario())
     assert server.submissions()["accepted_count"] == 0
