@@ -11,12 +11,29 @@ Public entry points:
 * :meth:`GenericApplicationBrowser.reconcile` and :func:`reconciliation_from` —
   re-read the site to settle a ``SUBMISSION_UNKNOWN`` application.
 * :mod:`~interviewmaxxing_browser.needs` — user-action and unsupported-control items.
+* :class:`OpenCliSessionFactory` / :class:`OpenCliDriver` — the same runtime in the
+  user's own Chrome through OpenCLI Browser Bridge (owned background tab).
 """
 
 from .adapter import GenericAdapter
 from .driver import DriverError, NotActionable, PageDriver, PlaywrightDriver
 from .needs import attestation_fields, unsupported_control_needs, user_action_needs
 from .normalize import PageModel, build_page, detect_ats, extract_job_identity
+from .opencli import (
+    DEFAULT_SESSION,
+    CapabilityUnsupported,
+    CommandResult,
+    OpenCliApplicationBrowser,
+    OpenCliConfig,
+    OpenCliDriver,
+    OpenCliError,
+    OpenCliSessionFactory,
+    OpenCliTargetError,
+    OpenCliTimeout,
+    OpenCliUnavailable,
+    UnverifiedAction,
+    assert_read_only,
+)
 from .runtime import (
     ActionPolicy,
     AmbiguousAction,
@@ -30,20 +47,33 @@ from .session import PlaywrightApplicationBrowser, PlaywrightSessionFactory
 from .snapshot import DomSnapshot, inspector_script
 
 __all__ = [
+    "DEFAULT_SESSION",
     "ActionPolicy",
     "AmbiguousAction",
+    "CapabilityUnsupported",
+    "CommandResult",
     "ConfirmationTie",
     "DomSnapshot",
     "DriverError",
     "GenericAdapter",
     "GenericApplicationBrowser",
     "NotActionable",
+    "OpenCliApplicationBrowser",
+    "OpenCliConfig",
+    "OpenCliDriver",
+    "OpenCliError",
+    "OpenCliSessionFactory",
+    "OpenCliTargetError",
+    "OpenCliTimeout",
+    "OpenCliUnavailable",
     "PageDriver",
     "PageModel",
     "PlaywrightApplicationBrowser",
     "PlaywrightDriver",
     "PlaywrightSessionFactory",
     "SubmissionRefused",
+    "UnverifiedAction",
+    "assert_read_only",
     "attestation_fields",
     "build_page",
     "classify",

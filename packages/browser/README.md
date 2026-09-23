@@ -29,7 +29,8 @@ await browser.close()
 | --- | --- |
 | `PlaywrightSessionFactory` | `BrowserSessionFactory`. Launches Chromium, with a persistent profile when `profile_dir` is set (one process per profile). |
 | `PlaywrightApplicationBrowser` | `ApplicationBrowser` (`open`, `inspect`, `fill`, `advance`, `submit`, `confirm`, `wait_for_user`, `close`), plus `reconcile` and `.page`. |
-| `GenericApplicationBrowser(driver, options, policy=)` | The same runtime over any `PageDriver`. This is the seam for a user-present OpenCLI driver. |
+| `GenericApplicationBrowser(driver, options, policy=)` | The same runtime over any `PageDriver`. |
+| `OpenCliSessionFactory(config)` / `OpenCliDriver` / `OpenCliApplicationBrowser` | The runtime in the user's own Chrome through OpenCLI (see below). |
 | `GenericAdapter` | `ATSAdapter` for native, accessible forms. |
 | `ConfirmationTie` | What ties a confirmation to this application: the job id or title, and references already visible before the submit. `ConfirmationTie.from_job(job_record)`. |
 | `reconciliation_from(observation, method=)` | The `SubmissionReconciliation` an ACCEPTED re-read establishes, or `None`. |
@@ -67,15 +68,37 @@ Follow CONTRACTS.md section 7. Browser-specific points:
 - `SubmitActionResult.dispatched=False` still needs `confirm()`, which returns the proof-bearing `NOT_SUBMITTED` observation to record.
 - To settle `SUBMISSION_UNKNOWN`: start a session, call `obs = await browser.reconcile(job.application_url, tie=ConfirmationTie.from_job(job), lookup_email=candidate.identity.email)`, and if `reconciliation_from(obs, method=...)` returns one, pass it to `store.reconcile_submission`. Never call the mock's `/__test__/` API from product code.
 
-## OpenCLI user-present path (next package, not implemented here)
+## Choosing a browser: Playwright or OpenCLI
 
-ARCHITECTURE.md section 9 adds a user-present OpenCLI session. That path should plug in as a **driver**, not as a second runtime or state machine:
+Both factories return an `ApplicationBrowser` built on the same `GenericApplicationBrowser`, so field ids, fingerprints, consent/attestation handling, confirmation, uncertainty and reconciliation behave identically. Only the page driver differs.
 
-1. `OpenCliDriver` implements `PageDriver` (`url`, `last_status`, `goto`, `evaluate`, `fill`, `select_values`, `set_checked`, `set_files`, `click`, `settle`, `screenshot`, `html`, `bring_to_front`) over a **named, stable** OpenCLI session and tab. It passes arguments as structured process arguments, never shell-interpolated text. `evaluate(inspector_script())` must return the same `DomSnapshot` JSON, so field ids, fingerprints and page kinds are identical to the Playwright path, along with provenance and store records.
-2. Run `GenericApplicationBrowser(OpenCliDriver(...), options, policy=ActionPolicy(automation_may_navigate=..., automation_may_submit=...))`. The policy records who owns navigation and submission in that session. When the user keeps them, `advance` raises and `submit` reports `dispatched=False`, and the user acts. Asking for advice does not authorize clicking.
-3. After each page change the runtime re-inspects, as it already does. Screenshots only for visual questions.
-4. Use the same `ApplicationStore`, packets, `UserInput`s and receipts. Assessment or follow-up completion stays separate from application receipts. Commit no invitation tokens, real questions or answers, or candidate data.
-5. Tests: the whole `tests/browser` suite can be parameterized over a second driver against the same mock ATS. Do not use it against the user's live session during development.
+```python
+from interviewmaxxing_browser import OpenCliConfig, OpenCliSessionFactory, PlaywrightSessionFactory
+
+factory = PlaywrightSessionFactory()                                   # own Chromium
+factory = OpenCliSessionFactory(OpenCliConfig(profile="jgd7jms9"))    # the user's Chrome
+browser = await factory.start(options)   # same BrowserOptions; same ApplicationBrowser calls
+```
+
+| | `PlaywrightSessionFactory` | `OpenCliSessionFactory` |
+| --- | --- | --- |
+| Browser | Chromium launched by Playwright | The user's own Chrome via OpenCLI Browser Bridge |
+| Sign-in / cookies | `BrowserOptions.profile_dir` (persistent profile) | The connected Chrome profile (`OpenCliConfig.profile`, see `opencli profile list`); `profile_dir` is ignored |
+| Visibility | `headless=False` shows the window; `wait_for_user` brings it to front | Owned tab in a named session (default `imx-application`), `window="background"` by default; OpenCLI cannot focus windows, so tell the user where the tab is (`browser.location`) |
+| Mutations | Playwright locators | Structured `opencli browser` commands only (`open`, `fill`, `select`, `check`, `uncheck`, `upload`, `click`), each verified afterwards (envelope, read-back, same document) |
+| Evaluation | Read-only page scripts | The same scripts; `assert_read_only` refuses anything that could write, submit or fetch |
+| File upload | Supported | Only where Browser Bridge may set files. Otherwise the field fails with `CapabilityUnsupported` asking the user to attach the file in the visible tab; a file the user attached (same name and size) is accepted without re-uploading |
+| Multi-select with several options | Supported | `CapabilityUnsupported` (OpenCLI `select` replaces the choice); checkbox groups work |
+| Errors | `DriverError` / `NotActionable` | Also `OpenCliUnavailable` (daemon/extension/profile; run `opencli doctor`), `OpenCliTargetError` (nothing done), `OpenCliTimeout` and `UnverifiedAction` (effect unknown; never counted as success) |
+
+OpenCLI session rules:
+- The driver opens its **own** tab and pins every command to it (`--tab`). It never binds, selects or closes another tab.
+- It refuses the user's assessment session and job-search sessions (`imx-assessment*`, `imx-jobs*`), plus any ids in `OpenCliConfig.protected_tabs`.
+- Arguments go to `opencli` as structured argv lists after `--`, never through a shell.
+- `close()` releases the session's tab lease.
+- `ActionPolicy(automation_may_navigate=False, automation_may_submit=False)` leaves navigation or submission to the user. `advance` then raises, and `submit` reports `dispatched=False`.
+- A dispatched submit whose outcome is unknown still blocks any retry in the session.
+- Use the same `ApplicationStore`, packets, `UserInput`s and receipts as the Playwright path; there is no second state machine.
 
 ## Tests
 
@@ -84,4 +107,6 @@ uv venv .venv-task --python 3.12
 uv pip install --python .venv-task/bin/python -e packages/core -e apps/cli -e packages/browser pytest ruff mypy
 .venv-task/bin/playwright install chromium        # only if not already cached
 .venv-task/bin/python -m pytest tests/browser     # real headless Chromium vs the localhost mock ATS
+IMX_OPENCLI_LIVE=1 IMX_OPENCLI_PROFILE=jgd7jms9 \
+  .venv-task/bin/python -m pytest -s tests/browser/test_opencli_live.py   # opt-in, owned background tab, localhost only
 ```

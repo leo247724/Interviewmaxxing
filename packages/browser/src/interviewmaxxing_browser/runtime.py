@@ -26,7 +26,7 @@ Safety rules enforced here:
 from __future__ import annotations
 
 import asyncio
-import uuid
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,7 +109,7 @@ _NATIVE_VALIDITY = """({form, button}) => {
   if (!f || f.noValidate || (b && b.formNoValidate)) return [];
   const out = [];
   for (const el of f.elements) {
-    if (!el.willValidate || el.checkValidity()) continue;
+    if (!el.willValidate || el.validity.valid) continue;  // read-only: no 'invalid' events
     const label = (el.labels && el.labels[0] ? el.labels[0].innerText : el.name || el.id || el.type);
     const line = label.replace(/\\s+/g, ' ').replace(/[\\s*:]+$/, '').trim() + ': ' + el.validationMessage;
     if (!out.includes(line)) out.push(line);
@@ -130,8 +130,8 @@ _EFFECTIVE_SUBMISSION = """(sel) => {
   };
 }"""
 
-_SET_MARKER = "(token) => { window.__imxSubmitMarker = token; }"
-_HAS_MARKER = "(token) => window.__imxSubmitMarker === token"
+_DOCUMENT_IDENTITY = "() => String(performance.timeOrigin) + ' ' + location.href"
+"""Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
 
 
 @dataclass(frozen=True)
@@ -342,7 +342,7 @@ class GenericApplicationBrowser:
                 continue
             try:
                 results.append(await self._apply(app_field, binding, answer.value))
-            except NotActionable as exc:
+            except DriverError as exc:  # includes unsupported driver capabilities
                 results.append(FieldFillResult(
                     field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
         # The packet authorized exactly the inspected questions; that stays the authority.
@@ -573,15 +573,14 @@ class GenericApplicationBrowser:
         )
         before = await self._evidence.capture(self.driver, f"before-submit-step-{form.step}",
                                               description="completed form before submit")
-        marker = uuid.uuid4().hex
-        await self.driver.evaluate(_SET_MARKER, marker)
+        marker = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
         text = next((b.button.text for b in model.buttons if b.button.selector == form.submit_selector),
                     form.submit_selector)
         dispatched_at = utc_now()
         detail = f"clicked {text!r} once"
         try:
             await self.driver.click(form.submit_selector)
-        except NotActionable as exc:
+        except DriverError as exc:
             # The trial click passed; a failure now may have happened mid-dispatch.
             detail = f"click raised after it was dispatched ({exc}); outcome uncertain"
         self._pending = _PendingSubmit(dispatched=True, detail=detail, form=form, tie=tie,
@@ -604,7 +603,9 @@ class GenericApplicationBrowser:
             )
         await self.driver.settle(self.settle_timeout_s)
         model = await self._model(evidence="after-submit", html=True)
-        same_document = bool(await self.driver.evaluate(_HAS_MARKER, pending.marker))
+        same_document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY)).split(" ")[0] == (
+            (pending.marker or "").split(" ")[0]
+        )
         observation = self._judge(pending, model, same_document)
         if observation.outcome is SubmissionOutcome.ACCEPTED:
             self._accepted = True
@@ -738,7 +739,9 @@ class GenericApplicationBrowser:
         CAPTCHA, operated custom controls) or ``timeout_s`` elapses, then return a
         fresh inspection. The runtime does nothing to the page meanwhile."""
         if not self.options.headless:
-            await self.driver.bring_to_front()
+            # OpenCLI cannot focus windows; the user is told where the tab is instead.
+            with contextlib.suppress(DriverError):
+                await self.driver.bring_to_front()
         loop = asyncio.get_running_loop()
         deadline = None if timeout_s is None else loop.time() + timeout_s
         while True:
