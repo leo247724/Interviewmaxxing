@@ -208,3 +208,18 @@ def test_provider_receives_only_the_scrubbed_projection(
         for private in ("avery", "example", "fictional widgets", "candidate_id", "@"):
             assert private not in sent
         assert "led paid media" in sent
+
+
+@pytest.mark.parametrize("employer", ["Fictional  Widgets Co", "Fictional\tWidgets Co", "Fictional_Widgets_Co"])
+def test_provider_projection_scrubs_identifier_separators_and_whitespace(
+    with_facts: Facts, listing: Any, prefs: Any, new_bot: Any, make_service: Any, employer: str,
+) -> None:
+    profile = with_facts(("Avery_metric", f"Led acquisition at {employer}; cut CAC 30%"))
+    evidence = CandidateEvidence.from_profile(profile)
+    assert evidence.verified_facts["[candidate]_metric"] == "Led acquisition at [employer]; cut CAC 30%"
+    bot = new_bot()
+    make_service(bot).select(listing("remote_manager"), prefs, evidence)
+    for call in bot.calls:
+        sent = json.dumps(call["state"]["candidate"]).casefold()
+        assert "avery" not in sent and "fictional" not in sent
+        assert "cut cac 30%" in sent

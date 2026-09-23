@@ -156,6 +156,9 @@ _NOISE = frozenset(
         "in office",
         "office",
         "flexible",
+        "location",
+        "flexible location",
+        "remote location",
         "multiple locations",
         "various locations",
         "several locations",
@@ -182,7 +185,7 @@ _PART_SPLIT = re.compile(rf"\s*(?:,|:|\s[{_DASHES}]\s)\s*")
 _BRACKETS = re.compile(r"[()\[\]]")
 _ZIP = re.compile(r"\s+\d{5}(?:-\d{4})?$")
 _PREFIX = re.compile(
-    r"^(?:based in|located in|office in|offices in|headquartered in|hq in|hq|in|greater|"
+    r"^(?:(?:multiple|various|several|flexible) locations? in|location in|based in|located in|office in|offices in|headquartered in|hq in|hq|in|greater|"
     r"downtown|metro|the|anywhere in|anywhere within|within|throughout|across)\s+"
 )
 _SUFFIX = re.compile(
@@ -295,15 +298,22 @@ def _assemble(parts: list[tuple[_Kind, str, bool]]) -> list[Place]:
             flush()
             places.append(Place(worldwide=True))
         elif kind == "locality":
-            flush()
-            locality = value
+            if locality and not region and not country:
+                # An unknown province/region is still part of this comma-separated
+                # place, not an independent bare city that can lose its country.
+                locality = f"{locality}, {value}"
+            else:
+                flush()
+                locality = value
         elif kind == "region":
             if region:
                 flush()
             region, country = value, "US"
         elif kind == "country":
-            if country_stated or (country and country != value):
+            if country_stated:
                 flush()
+            # Explicit country belongs to the city/region even when the region
+            # abbreviation was interpreted as a US state (e.g. London, CA, UK).
             country, country_stated = value, True
     flush()
     return places
@@ -371,6 +381,14 @@ def remote_eligibility_status(stated: str | None, preferred: str) -> RemoteRegio
     OUTSIDE. Text that is narrower (a state), unrecognized (an unknown region name) or
     unparseable is AMBIGUOUS: the candidate's residence is not known here.
     """
+    # Do not let splitting/normalization erase negative or conditional clauses.
+    # Residence is unavailable here; even a known exclusion requires review.
+    if stated and re.search(
+        r"\b(?:except|excluding|excluded|excludes|exclusion|not|without|unless|"
+        r"restricted|limited|restriction|restrictions|but|must|subject to|other than)\b",
+        stated, re.IGNORECASE,
+    ):
+        return RemoteRegionStatus.AMBIGUOUS
     target = parse_place(preferred)
     places = parse_places(re.sub(r"\s+(?:and|&)\s+", ";", stated, flags=re.IGNORECASE) if stated else stated)
     if not places or not target.stated:
@@ -407,6 +425,12 @@ def remote_eligibility_status(stated: str | None, preferred: str) -> RemoteRegio
             verdicts.append(RemoteRegionStatus.OUTSIDE)
         else:
             verdicts.append(RemoteRegionStatus.AMBIGUOUS)
+    # Unknown/narrower clauses qualify a broad country label rather than vanish
+    # behind it. Multiple explicit whole countries (US and Canada) remain valid.
+    if RemoteRegionStatus.AMBIGUOUS in verdicts:
+        return RemoteRegionStatus.AMBIGUOUS
+    if stated and len(places) > 1 and re.search(r"\bonly\b", stated, re.IGNORECASE):
+        return RemoteRegionStatus.AMBIGUOUS
     if RemoteRegionStatus.MATCH in verdicts:
         return RemoteRegionStatus.MATCH
     if all(v is RemoteRegionStatus.OUTSIDE for v in verdicts):

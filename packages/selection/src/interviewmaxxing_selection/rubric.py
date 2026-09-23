@@ -17,7 +17,7 @@ from interviewmaxxing_core import SelectionChoice
 from .jev import ChoiceAnswer, ChoiceQuestion, DecisionRequest, DecisionResponse
 from .policy import Hold, HoldReason
 
-RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.6"
+RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.7"
 """Bumped whenever the questions, the ``state.checks`` values Jev sees, or the code
 holds change, so decisions made under an older procedure are not reused."""
 

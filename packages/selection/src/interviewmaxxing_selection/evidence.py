@@ -220,7 +220,8 @@ def _strings(value: Any) -> list[str]:
 
 def _phrase(text: str) -> re.Pattern[str]:
     """Case-insensitive whole-phrase match (not inside a longer word)."""
-    return re.compile(rf"(?<!\w){re.escape(' '.join(text.split()))}(?!\w)", re.IGNORECASE)
+    phrase = r"[\s_]+".join(re.escape(part) for part in text.split())
+    return re.compile(rf"(?<![^\W_]){phrase}(?![^\W_])", re.IGNORECASE)
 
 
 def _name_variants(name: str) -> list[str]:
@@ -277,7 +278,7 @@ class IdentityScrubber:
                 elif re.search(r"institution", fact.key, re.IGNORECASE):
                     institutions.extend(_name_variants(fact.value))
         return cls(
-            contact=tuple(v.strip().casefold() for v in contact if v and len(v.strip()) >= 3),
+            contact=tuple(" ".join(v.split()).casefold() for v in contact if v and len(v.strip()) >= 3),
             contact_digits=tuple(sorted({digits, digits[-10:]})) if len(digits) >= 7 else (),
             names=tuple(_phrase(n) for n in names if n and len(n.strip()) >= 2),
             employers=tuple(_phrase(n) for n in employers if len(n.strip()) >= 2),
@@ -287,6 +288,7 @@ class IdentityScrubber:
     def scrub(self, text: str) -> str | None:
         """``text`` with identity replaced by placeholders, or ``None`` when it carries
         contact details or nothing but identity."""
+        text = " ".join(text.split())
         folded = text.casefold()
         if _CONTACT.search(text) or any(c in folded for c in self.contact):
             return None

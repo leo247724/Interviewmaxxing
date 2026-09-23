@@ -115,12 +115,12 @@ class SelectionStore:
     def _migrate(self) -> None:
         """Rows written before candidate scoping carry their candidate id only inside
         ``record_json``; copy it into the new column so scoped lookups see them."""
-        columns = {
-            row["name"] for row in self._conn.execute("PRAGMA table_info(selection_decisions)")
-        }
-        if "candidate_id" in columns:
-            return
+        # Inspect under the write lock: another thread-local store may be doing
+        # its first open against the same legacy database at the same time.
         with self._tx() as c:
+            columns = {row["name"] for row in c.execute("PRAGMA table_info(selection_decisions)")}
+            if "candidate_id" in columns:
+                return
             c.execute(
                 "ALTER TABLE selection_decisions ADD COLUMN candidate_id TEXT NOT NULL DEFAULT ''"
             )
