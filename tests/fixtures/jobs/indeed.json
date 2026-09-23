@@ -1,0 +1,87 @@
+{
+  "_note": "Fictional payloads in the shape returned by js/indeed_search.js and js/indeed_detail.js (layout observed 2026-09-22).",
+  "search": {
+    "page": {
+      "url": "https://www.indeed.com/jobs?q=marketing+manager&l=Austin%2C+TX",
+      "title": "Marketing Manager Jobs in Austin, TX | Indeed",
+      "hidden": true,
+      "signals": {"challenge": false, "password_field": false, "denied": false}
+    },
+    "cards": [
+      {
+        "jk": "a1b2c3d4e5f60718",
+        "title": "Marketing Manager",
+        "href": "/rc/clk?jk=a1b2c3d4e5f60718&bb=xyz",
+        "company": "Sample Coffee Roasters",
+        "location": "Hybrid work in Austin, TX 78701",
+        "salary": "$95,000 - $120,000 a year",
+        "attributes": ["$95,000 - $120,000 a year", "Full-time"]
+      },
+      {
+        "jk": "0f1e2d3c4b5a6978",
+        "title": "Marketing Director",
+        "href": "/pagead/clk?mo=r&ad=abc",
+        "company": "Example Analytics",
+        "location": "Remote",
+        "salary": "Estimated $140K - $170K a year",
+        "attributes": ["Full-time"]
+      }
+    ],
+    "count_text": "2 jobs",
+    "next_href": null,
+    "no_results": false
+  },
+  "details": {
+    "a1b2c3d4e5f60718": {
+      "page": {
+        "url": "https://www.indeed.com/viewjob?jk=a1b2c3d4e5f60718",
+        "title": "Marketing Manager - Austin, TX 78701 - Indeed.com",
+        "hidden": true,
+        "signals": {"challenge": false, "password_field": false, "denied": false}
+      },
+      "posting": {
+        "@type": "JobPosting",
+        "title": "Marketing Manager",
+        "description": "<div><p><b>Description</b></p><p>Grow a fictional coffee brand.</p></div>",
+        "datePosted": "2026-09-20T15:00:00.000Z",
+        "validThrough": "2099-01-01T00:00:00.000Z",
+        "employmentType": ["FULL_TIME"],
+        "hiringOrganization": {"@type": "Organization", "name": "Sample Coffee Roasters"},
+        "jobLocation": {"@type": "Place", "address": {"addressLocality": "Austin", "addressRegion": "TX", "addressCountry": "US"}}
+      },
+      "header_lines": ["Marketing Manager", "Sample Coffee Roasters", "·", "Austin, TX 78701", "$95,000 - $120,000 a year", "Full-time", "Apply now"],
+      "detail_lines": ["Job details", "Pay", "$95,000 - $120,000 a year", "Job type", "Full-time"],
+      "description_text": null,
+      "apply_links": [
+        {"text": "Apply on company site", "label": null, "href": "https://careers.sample-coffee.test/jobs/55"}
+      ],
+      "expired": false
+    },
+    "0f1e2d3c4b5a6978": {
+      "page": {
+        "url": "https://www.indeed.com/viewjob?jk=0f1e2d3c4b5a6978",
+        "title": "Marketing Director - Remote - Indeed.com",
+        "hidden": true,
+        "signals": {"challenge": false, "password_field": false, "denied": false}
+      },
+      "posting": null,
+      "header_lines": ["Marketing Director", "Example Analytics", "Remote"],
+      "detail_lines": [],
+      "description_text": "This job has expired on Indeed.",
+      "apply_links": [],
+      "expired": true
+    }
+  },
+  "challenge": {
+    "page": {
+      "url": "https://www.indeed.com/jobs?q=marketing+manager&l=Austin%2C+TX",
+      "title": "Just a moment...",
+      "hidden": true,
+      "signals": {"challenge": true, "password_field": false, "denied": false}
+    },
+    "cards": [],
+    "count_text": "",
+    "next_href": null,
+    "no_results": false
+  }
+}
