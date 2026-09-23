@@ -1,5 +1,5 @@
 import { SOURCE_LABELS, type SearchRunView, type SourceState } from "@/lib/jobs/types";
-import { formatClock } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 
 const STATE_LABELS: Record<SourceState, string> = {
   QUEUED: "Waiting",
@@ -13,12 +13,9 @@ const STATE_LABELS: Record<SourceState, string> = {
 };
 
 export function SourceStatus({ run }: { run: SearchRunView }) {
-  return (
-    <section className="sources" aria-labelledby="sources-title">
-      <h2 id="sources-title" className="sources__title">
-        {run.finishedAt ? `Last search · finished ${formatClock(run.finishedAt)}` : "Searching sources"}
-      </h2>
-      <ul className="sources__list">
+  const needsAttention = run.results.filter((result) => ["PARTIAL", "NEEDS_USER", "BLOCKED", "ERROR"].includes(result.state)).length;
+  const count = run.results.reduce((sum, result) => sum + result.resultCount, 0);
+  const results = <ul className="sources__list">
         {run.results.map((result) => (
           <li key={result.source} className={`source state-${result.state.toLowerCase()}`}>
             <p className="source__head">
@@ -41,7 +38,19 @@ export function SourceStatus({ run }: { run: SearchRunView }) {
             )}
           </li>
         ))}
-      </ul>
-    </section>
-  );
+      </ul>;
+  if (!run.finishedAt) return <section className="sources" aria-labelledby="sources-title">
+    <h2 id="sources-title" className="sources__title">Searching sources</h2>
+    {results}
+  </section>;
+  return <details className="sources sources--finished">
+    <summary className="sources__summary">
+      <span>Last search · {formatDateTime(run.finishedAt)}</span>
+      <span className={needsAttention ? "sources__attention" : "sources__complete"}>
+        {count} source {count === 1 ? "result" : "results"}{needsAttention ? ` · ${needsAttention} ${needsAttention === 1 ? "source needs" : "sources need"} attention` : " · search finished"}
+      </span>
+      <span className="sources__disclosure">Source details</span>
+    </summary>
+    {results}
+  </details>;
 }

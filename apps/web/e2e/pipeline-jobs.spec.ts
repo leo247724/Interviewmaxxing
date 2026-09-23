@@ -250,6 +250,7 @@ test.describe("jobs preview", () => {
     const sources = page.locator(".sources");
     await expect(sources).toContainText("Searching sources");
     await expect(sources).toContainText(/Last search/, { timeout: 15_000 });
+    await sources.locator("summary").click();
     const linkedin = sources.locator(".source", { hasText: "LinkedIn Jobs" });
     await expect(linkedin).toContainText("Needs you");
     await expect(linkedin).toContainText("imx-jobs-linkedin");
@@ -438,7 +439,7 @@ test.describe("live pipeline and jobs without a backend", () => {
     const live = card(page, "Fictional Live Co");
     await live.getByLabel("Move Fictional Live Co to lane").selectOption("closed");
     await live.getByRole("button", { name: "Move" }).click();
-    await expect(page.getByRole("alert").filter({ hasText: "nothing was moved" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "this move wasn't saved" })).toBeVisible();
     expect(moveBody).toEqual({ revision: 3, lane: "closed" });
     const applied = page.locator("section.lane", { has: page.getByRole("heading", { name: /^Applied/ }) });
     await expect(applied.locator("article.card", { hasText: "Fictional Live Co" })).toBeVisible();

@@ -66,7 +66,7 @@ export function AppShell({
         <main id="main" className="desk__main" tabIndex={-1}>
           {mode === "live" && readiness && <div className={`execution-banner${readiness.applicationMode !== "TEST_ONLY" ? " execution-banner--blocked" : ""}`} role="status">
             <span className="execution-banner__label">{readiness.applicationMode === "TEST_ONLY" ? "Test mode" : "Applications paused"}</span>
-            <span>{readiness.applicationMode === "TEST_ONLY" ? "Applications run only on local test pages. Real employer submissions are disabled." : "This development workspace requires the service to be in TEST_ONLY mode."}</span>
+            <span>{readiness.applicationMode === "TEST_ONLY" ? "Local test applications only. Real employer submissions are disabled." : "This development workspace requires the service to be in TEST_ONLY mode."}</span>
           </div>}
           {children}
         </main>

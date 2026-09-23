@@ -343,7 +343,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
             <div>
               <span className="eyebrow">Location</span>
               <strong>{prefs.onsite[0]?.location ?? "Remote"}{prefs.locationPriority === "STRONGLY_PREFER_ONSITE_HYBRID" && prefs.onsite.length > 0 ? " first" : ""}</strong>
-              <span>{prefs.remote ? `Remote in ${prefs.remote.eligibleRegion} included` : "Onsite and hybrid targets"}</span>
+              <span>{prefs.remote ? prefs.remote.eligibleRegion === "United States" ? "US remote included" : `Remote in ${prefs.remote.eligibleRegion} included` : "Onsite and hybrid targets"}</span>
             </div>
             <div>
               <span className="eyebrow">Minimum pay</span>

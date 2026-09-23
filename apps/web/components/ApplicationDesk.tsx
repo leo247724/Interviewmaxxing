@@ -21,7 +21,7 @@ import { PreviewBar } from "./PreviewBar";
 import { ServiceNotice } from "./ServiceNotice";
 import { RestoreNotice } from "./RestoreNotice";
 import { AppShell, type Connection } from "./shell/AppShell";
-import { takeHandoff, type DeskHandoff } from "@/lib/handoff";
+import { takeHandoff, applicationLinks, type DeskHandoff } from "@/lib/handoff";
 import { executionProblem } from "@/lib/service/readiness";
 import { useReadiness } from "./useReadiness";
 
@@ -226,7 +226,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
           return;
         }
       }
-      const started = await service.start({ applicationUrl: applicationUrl.trim(), profile, resumeId });
+      const started = await service.start({ applicationUrl: applicationUrl.trim(), profile, resumeId, ...applicationLinks(handoff, applicationUrl) });
       setConnection("connected");
       failuresRef.current = 0;
       setLostContact(null);
@@ -237,6 +237,8 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       if (Object.keys(serviceError.fieldErrors).length > 0) {
         setFormErrors(serviceError.fieldErrors);
         setSubmitCount((count) => count + 1);
+        const sourceErrors = [serviceError.fieldErrors.pipelineEntryId, serviceError.fieldErrors.listingId].filter(Boolean);
+        if (sourceErrors.length) setFormAlert(`${sourceErrors.join(" ")} Return to Jobs or Pipeline and choose the current card before starting.`);
       } else {
         setFormAlert(
           serviceError.code === "unavailable"

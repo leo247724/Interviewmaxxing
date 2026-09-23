@@ -74,7 +74,7 @@ export function ListingCard({
           {listing.title}
         </h3>
         <p className="listing__company">{listing.company ?? "Company not stated"}</p>
-        <p className={`listing__tier${tierUnknown ? " is-unknown" : ""}${listing.rankReason ? "" : " listing__tier--repeated"}`}>{listing.rankReason ?? `Location match: ${tierLabel}`}</p>
+        <p className={`listing__tier listing__tier--repeated${tierUnknown ? " is-unknown" : ""}`}>Location match: {tierLabel}</p>
         {closed && <p className="listing__closed">Closed on the source · no longer accepting applications</p>}
       </header>
 

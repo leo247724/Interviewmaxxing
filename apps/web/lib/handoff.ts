@@ -15,6 +15,15 @@ export interface DeskHandoff {
   listingId: string | null;
 }
 
+/** Editing the URL starts an independent application, not a link to the old card. */
+export function applicationLinks(handoff: DeskHandoff | null, applicationUrl: string): { pipelineEntryId?: string; listingId?: string } {
+  if (!handoff || handoff.applicationUrl.trim() !== applicationUrl.trim()) return {};
+  return {
+    ...(handoff.pipelineEntryId ? { pipelineEntryId: handoff.pipelineEntryId } : {}),
+    ...(handoff.listingId ? { listingId: handoff.listingId } : {}),
+  };
+}
+
 export function writeHandoff(handoff: DeskHandoff, storage: Pick<Storage, "setItem"> = window.sessionStorage) {
   storage.setItem(HANDOFF_KEY, JSON.stringify(handoff));
 }

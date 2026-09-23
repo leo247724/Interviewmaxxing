@@ -128,6 +128,29 @@ test("a mounted desk rechecks the recovered runner before starting", async ({ pa
   expect(healthReads).toBeGreaterThanOrEqual(3);
 });
 
+test("an invalid handoff link is explained on the desk and is never silently discarded", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem("imx.deskHandoff", JSON.stringify({
+    applicationUrl: "http://127.0.0.1:9/jobs/fictional", company: "Fictional Tern", role: "Paid Media Manager", from: "pipeline",
+    pipelineEntryId: "pipe_old", listingId: "listing_old",
+  })));
+  await page.route("**/api/imx/healthz", (route) => route.fulfill({ json: { status: "ok", executor: "idle", runner: "available", applicationMode: "TEST_ONLY" } }));
+  await page.route("**/api/imx/candidate", (route) => route.fulfill({ json: {
+    profile: { firstName: "Casey", lastName: "Fixture", email: "casey@example.test", phone: "", location: "Austin, TX", linkedinUrl: "", websiteUrl: "" },
+    resumes: [{ id: "resume_fixture", fileName: "Fictional.pdf", sizeBytes: 100, uploadedAt: "2026-09-22T12:00:00Z" }], defaultResumeId: "resume_fixture",
+  } }));
+  let posts = 0;
+  await page.route("**/api/imx/applications", (route) => {
+    posts += 1;
+    expect(route.request().postDataJSON()).toMatchObject({ pipelineEntryId: "pipe_old", listingId: "listing_old" });
+    return route.fulfill({ status: 422, json: { error: { code: "invalid", message: "The source link needs attention.", fieldErrors: { listingId: "That listing is no longer available." } } } });
+  });
+  await page.goto("/");
+  await expect(page.getByLabel("First name")).toHaveValue("Casey");
+  await page.getByRole("button", { name: "Apply and submit" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "That listing is no longer available. Return to Jobs or Pipeline" })).toBeVisible();
+  expect(posts).toBe(1);
+});
+
 test("a failed refresh after a move conflict labels the cached board and offers retry", async ({ page }) => {
   let unavailable = false;
   const entry = { id: "pipeline_fixture", revision: 3, lane: "saved", fields: { ...EMPTY_FIELDS, company: "Fictional Tern", role: "Paid Acquisition Lead" },

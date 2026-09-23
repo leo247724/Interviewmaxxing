@@ -49,6 +49,9 @@ export interface StartApplicationInput {
   /** The profile the user confirmed on screen for this request. */
   profile: CandidateProfileInput;
   resumeId: string;
+  /** Optional source links; the service validates candidate ownership and job URL. */
+  pipelineEntryId?: string | null;
+  listingId?: string | null;
 }
 
 export interface JobIdentityView {

@@ -55,13 +55,13 @@ export function ApplicationWorkspace({
   }, [phase, view.state]);
 
   const jobLine =
-    view.job.title && view.job.company ? (
+    view.job.title || view.job.company ? (
       <>
-        <span className="case__role">{view.job.title}</span>
-        <span className="case__company">{view.job.company}</span>
+        {view.job.title && <span className="case__role">{view.job.title}</span>}
+        {view.job.company && <span className="case__company">{view.job.company}</span>}
       </>
     ) : (
-      <span className="case__company case__company--pending">Identifying the job…</span>
+      <span className="case__company case__company--pending">{isActive(view.state) ? "Identifying the job…" : "Job details not reported"}</span>
     );
 
   return (

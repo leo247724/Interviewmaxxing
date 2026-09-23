@@ -23,7 +23,7 @@ Recommendations and tracked cards never apply by themselves. Applying always goe
 Requires Node ≥ 20.9. Run all commands from `apps/web`. There is no root Node workspace.
 
 ```bash
-npm install
+npm ci
 npm run dev -- --hostname 127.0.0.1 --port 4317   # any free port
 npm run typecheck                                  # tsc --noEmit
 npm test                                           # vitest: validation + preview state machine
@@ -42,7 +42,7 @@ IMX_BACKEND_URL=http://127.0.0.1:8765 IMX_WEB_ORIGIN=http://127.0.0.1:4317 npm s
 
 ## Service interface
 
-`lib/service/types.ts` defines `ApplicationService`. Its types are **presentation view models** pending alignment with the canonical core contracts (C1). They are not a second backend model. State names match `ARCHITECTURE.md` §6.
+`lib/service/types.ts` defines `ApplicationService`. Its presentation view models match the local service's HTTP contract; canonical application state and persistence remain in the backend. State names match `ARCHITECTURE.md` §6.
 
 ```ts
 interface ApplicationService {
@@ -106,7 +106,7 @@ Error responses use `{"error": {"code", "message", "fieldErrors"?}}`. Status cod
 
 ## Pipeline, jobs and selection routes (S2/S3)
 
-These are the contracts the Pipeline and Jobs views call today. The presentation types are in `lib/pipeline/types.ts` and `lib/jobs/types.ts`, and they mirror core D0 (`PipelineEntry`, `JobSearchQuery`, `JobListing`, `SourceSearchResult`, `SelectionPreferences`, `JobSelection`) and P1's tracker fields. All bodies are JSON, all mutations are `POST`, and errors use the structured shape above. `404` means a record is genuinely absent. Until S1 serves a route group, the view shows it as not available.
+These are the contracts the Pipeline and Jobs views call today. The presentation types are in `lib/pipeline/types.ts` and `lib/jobs/types.ts`, and they mirror core D0 (`PipelineEntry`, `JobSearchQuery`, `JobListing`, `SourceSearchResult`, `SelectionPreferences`, `JobSelection`) and P1's tracker fields. All bodies are JSON, all mutations are `POST`, and errors use the structured shape above. `404` means a record is genuinely absent. A disabled route group or an unavailable service stays visibly unavailable.
 
 ### Pipeline (P1 via S1)
 
@@ -147,18 +147,40 @@ Semantics the UI relies on:
 - **Location tier:** each listing may carry an optional `locationTier`: `ONSITE_HYBRID_TARGET`, `REMOTE_ELIGIBLE`, `REMOTE_UNCONFIRMED`, `OUTSIDE_TARGET` or `UNRESOLVED`. When it's absent, the UI derives the tier from the listing's stated `workArrangement`, `location` and `remoteEligibility` (`lib/jobs/ranking.ts`). A missing location or arrangement is `UNRESOLVED`, never assumed to be Austin. Results are grouped by tier in priority order: under the default, target-city onsite/hybrid comes first, then remote open to the region, then remote with unstated eligibility, then unresolved, then elsewhere.
 - **Per-source state:** each source reports one of `QUEUED`, `RUNNING`, `OK`, `PARTIAL`, `NEEDS_USER`, `BLOCKED`, `ERROR` or `SKIPPED`, with `message`, `userAction` and `sessionName`. `NEEDS_USER` and `BLOCKED` are never shown as empty success.
 - **Listings:** listings carry only observed facts. `workArrangement: "UNKNOWN"`, `compensation: null` and absent fields stay visibly unknown. `status: "CLOSED"` listings are marked and never recommended. `provenance` lists every source URL and application URL seen.
-- **Posting links:** `provenance[].postingUrl` is the job-specific posting. `sourceUrl` may be a search page. Navigation prefers `postingUrl`, and the Apply handoff uses an actual `applicationUrl`, then `postingUrl`; it never substitutes a search URL.
-- **Delayed decisions:** a 202 is pending, not a decision. The UI polls `GET /jobs/{id}` and remembers the pending task across a page reload without re-POSTing. Additive `decisionTask` has `{id,state,error,resultId?}`; `SUCCEEDED` finishes even for a cached unchanged selection id, while `FAILED`/`INTERRUPTED` stops with an actionable message. An older service without task state has a bounded wait and a manual Refresh listings action. Final S3R field agreement and real service integration remain to verify.
+- **Posting links:** `postingUrl` and `provenance[].postingUrl` are job-specific postings. `sourceUrl` may be a search page. Navigation and the Apply handoff use an actual `applicationUrl`, then `postingUrl`; neither substitutes a search URL.
+- **Delayed decisions:** a 202 is pending, not a decision. The UI polls `GET /jobs/{id}` and remembers the pending task across a page reload without re-POSTing. S3R `decisionTask` has `{id,state,error,resultId,requestedAt,updatedAt}`; `DONE` finishes even for a cached unchanged selection id, while `FAILED`/`INTERRUPTED` stops with an actionable message. A fresh tab or Refresh listings recovers durable `QUEUED`/`RUNNING` tasks even without a local session marker. An older service without task state has a bounded wait and a manual Refresh listings action.
 - **Decisions:** `SelectionView` separates Jev's `modelChoice`, `probabilities` and `confidence` from the `effectiveChoice` after `holds`. It also carries `reasons`, `unresolved` facts, `providerError`, the requested and returned models, `rubricVersion` and `stale`. A provider failure or missing evidence can never produce an effective `APPLY`.
-- **Applying:** "Apply" from a listing or card only prefills the desk. The user's press of **Apply and submit** starts the normal `POST /applications`, where S1's duplicate check applies.
+- **Applying:** "Apply" from a listing or card only prefills the desk. The user's press of **Apply and submit** starts the normal `POST /applications`, where S1's duplicate check applies. The request includes optional `pipelineEntryId`/`listingId` only while the URL matches the handoff. The service validates ownership and matching URLs, then links the canonical application before execution. Changing the URL starts an independent application. The tracker reads receipt authority from that linked application.
 
 ### Development readiness and visual checkpoint
 
-`GET /healthz` reports `executor: "idle" | "busy"`, `runner: "available" | "unavailable"` and `applicationMode: "TEST_ONLY" | "LIVE"`. The desk requires `TEST_ONLY`, an available runner and a loopback target; an absent health response fails closed. The same gate covers resume, answer-and-continue and site recheck. User-reported reconciliation involves no browser execution and remains available. Jobs and pipeline show the test-mode notice independently of read-only discovery. This frontend intentionally does not enable real employer dispatch in this development deployment.
+`GET /healthz` reports `executor: "idle" | "busy"`, `runner: "available" | "unavailable"` and `applicationMode: "TEST_ONLY" | "LIVE"`. The desk requires `TEST_ONLY`, an available runner and a loopback target; an absent health response fails closed. The same gate covers resume, answer-and-continue and site recheck. Each execution action fetches current health, so runner recovery needs no page reload. User-reported reconciliation involves no browser execution and remains available. Jobs and pipeline show the test-mode notice independently of read-only discovery. This frontend intentionally does not enable real employer dispatch in this development deployment.
 
 The workspace uses Newsreader for page titles, Schibsted Grotesk for controls/data and restrained forest accents. Jobs shows an editable search brief above result rows, with evidence and decision reasoning side by side. Pipeline includes actionable filters, readable dates/pay, separate arrangement/commute, and both board and list layouts. Upcoming interviews includes dates today or later in America/Chicago; historical follow-up suggestions are not appointments. Linked pipeline receipts require explicit site confirmation authority; user reports and missing authority remain labelled separately.
 
-The current automated suite covers preview interactions, same-origin transport, recovery races, 202/cached/interrupted decision handling, source-vs-posting links and the local-test dispatch boundary. It does not by itself establish frontend → real runner → Chromium → localhost ATS acceptance; that is a separate integration receipt.
+The default automated suite covers preview interactions, same-origin transport, recovery races, 202/cached/interrupted decision handling, source-vs-posting links and the local-test dispatch boundary. The separate fictional acceptance suite below verifies frontend → service → real runner → Chromium → localhost ATS, including server-side submission evidence. Its result is tied to the tested backend checkout, not to preview fixtures.
+
+### Fictional local acceptance
+
+`scripts/fictional-service.py` starts the actual service, candidate/pipeline/jobs/selection stores and I1 runner over a newly created temporary home. The application site is the backend's separate localhost mock ATS. Only job discovery and Jev's HTTP transport are fixtures. It reads the committed backend's fictional Avery Quill test profile; it never loads the default user home or real provider credentials.
+
+Use a Python environment with the backend dependencies and a committed backend integration checkout. Keep the frontend origin and backend port aligned:
+
+```bash
+python scripts/fictional-service.py --backend-root /path/to/committed/backend \
+  --output output/live-acceptance --origin http://127.0.0.1:4382 --port 4383
+```
+
+In separate terminals, build and run the frontend, then run acceptance:
+
+```bash
+npm run build
+IMX_BACKEND_URL=http://127.0.0.1:4383 IMX_WEB_ORIGIN=http://127.0.0.1:4382 \
+  npm start -- --hostname 127.0.0.1 --port 4382
+npx playwright test --config=playwright.live.config.ts
+```
+
+Start a fresh fixture process/home for each full acceptance run. Stop and restart the production frontend after any new build so it serves the matching asset set. The suite checks real local submission counts and receipt evidence, resume hashes, paused-answer reload, duplicate protection, unknown-outcome reconciliation, Jev persistence, tracker linking and all-column import/reimport. Screenshots and traces stay under ignored `output/`.
 
 ### Reference field mapping
 

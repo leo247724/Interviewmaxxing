@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ImportPreviewView, ImportReceiptView, PipelineService } from "@/lib/pipeline/types";
+import { REFERENCE_COLUMNS, type ImportPreviewView, type ImportReceiptView, type PipelineService } from "@/lib/pipeline/types";
 import { asServiceError } from "@/lib/service/errors";
 import { formatDateTime } from "@/lib/format";
 
@@ -54,9 +54,10 @@ export function ImportPanel({ service, onImported }: { service: PipelineService;
   return (
     <div className="import">
       <p className="lede">
-        Bring rows in from a CSV or JSON export that uses the tracker&rsquo;s column names. You&rsquo;ll see every row
+        Bring rows in from a CSV or JSON export with all 23 tracker columns. Empty cells are fine. You&rsquo;ll see every row
         before anything is saved. Importing the same file again doesn&rsquo;t duplicate cards or undo your edits.
       </p>
+      <p><a className="text-link" download="interviewmaxxing-tracker-template.csv" href={`data:text/csv;charset=utf-8,${encodeURIComponent(REFERENCE_COLUMNS.map((column) => column.header).join(",") + "\n")}`}>Download the empty CSV template</a></p>
       <div className="field">
         <label htmlFor="import-source" className="field__label">Tracker name</label>
         <input id="import-source" className="input" value={sourceId} disabled={busy} aria-describedby="import-source-hint" onChange={(event) => {
@@ -84,7 +85,7 @@ export function ImportPanel({ service, onImported }: { service: PipelineService;
           {busy && !preview ? "Reading…" : "Choose a file"}
         </label>
         <p id="import-file-hint" className="field__hint">
-          CSV or JSON, up to 2 MB. Headers such as Company, Role, Stage and Fit / 10.
+          CSV or JSON, up to 2 MB. Keep every column heading from the template.
         </p>
         {error && (
           <p id="import-file-error" className="field__error" role="alert">
