@@ -5,7 +5,9 @@
 Runs five fictional selections (two Jev calls each, about USD 0.0007 in total) and
 prints a JSON receipt: requested/returned model, provider, choices, confidence, holds,
 location tier, ranked order, tokens, cost and latency. The key is read from the env file and never printed.
-Without ``--live`` nothing is sent. Decisions go to a temporary store unless
+With ``--semantic`` it instead runs three role-focus cases (an Acquisition Lead, a pure
+Senior Data Platform Engineer, and a "Marketing Manager" with unrelated duties) for a
+fictional performance marketer: six calls. Without ``--live`` nothing is sent. Decisions go to a temporary store unless
 ``--store`` is given.
 """
 
@@ -164,7 +166,67 @@ def fictional_listings() -> list[JobListing]:
     ]
 
 
-def run(env_file: Path | None, store_path: Path | None) -> dict[str, Any]:
+FICTIONAL_OPERATOR = CandidateEvidence(
+    candidate_id="fictional-smoke-operator",
+    verified_facts={
+        "current_title": "Senior Paid Media Manager",
+        "years_experience.paid_media": 8,
+        "years_experience.people_management": 3,
+        "annual_paid_budget_owned": "USD 4M across Meta, Google and TikTok",
+        "skills": ["incrementality testing", "Google Ads API", "SQL", "GA4", "bid automation"],
+    },
+    experience=[
+        {"title": "Senior Paid Media Manager", "start": "2019-06", "end": None, "current": True}
+    ],
+)
+
+
+def semantic_listings() -> list[JobListing]:
+    return [
+        fictional_listing(
+            "acq-lead",
+            title="Acquisition Lead",
+            company="Example Subscriptions Co (fictional)",
+            location="Austin, TX",
+            arrangement=WorkArrangement.HYBRID,
+            description=(
+                "Hybrid in Austin, TX. Own a $3M annual paid acquisition budget across Meta, "
+                "Google and TikTok. Design and run creative and bidding experiments, own "
+                "incrementality measurement and attribution, and report CAC, ROAS and revenue "
+                "impact. Lead two channel managers. Requires 6+ years in paid acquisition."
+            ),
+        ),
+        fictional_listing(
+            "data-platform",
+            title="Senior Data Platform Engineer",
+            company="Example Data Co (fictional)",
+            location="Austin, TX",
+            arrangement=WorkArrangement.HYBRID,
+            description=(
+                "Hybrid in Austin, TX. Design and operate Spark and Kafka data pipelines, "
+                "maintain the Snowflake warehouse and Terraform infrastructure, and build "
+                "internal APIs for analytics teams. Requires 6+ years of software engineering "
+                "in Python or Scala."
+            ),
+        ),
+        fictional_listing(
+            "mm-events",
+            title="Marketing Manager",
+            company="Example Venues LLC (fictional)",
+            location="Austin, TX",
+            arrangement=WorkArrangement.ONSITE,
+            description=(
+                "Onsite in Austin, TX. Plan and staff trade-show booths, order branded "
+                "merchandise, manage venue vendors and event logistics, and coordinate "
+                "sponsorship signage. No paid media or digital advertising responsibilities."
+            ),
+        ),
+    ]
+
+
+def run(
+    env_file: Path | None, store_path: Path | None, *, semantic: bool = False
+) -> dict[str, Any]:
     key = load_api_key(env_file)
     client = JevClient(key, max_attempts=2, timeout_seconds=20.0)
     rows: list[dict[str, Any]] = []
@@ -175,11 +237,13 @@ def run(env_file: Path | None, store_path: Path | None) -> dict[str, Any]:
         store = SelectionStore(store_path or Path(tmp) / "selection.sqlite3")
         service = SelectionService(client=client, store=store, candidate_id="fictional-smoke")
         prefs = SelectionPreferences()
-        listings = fictional_listings()
-        cases: list[tuple[JobListing, CandidateEvidence | None]] = [
-            (listing, FICTIONAL_CANDIDATE) for listing in listings
-        ]
-        cases.append((listings[0], None))  # no candidate profile -> never APPLY
+        cases: list[tuple[JobListing, CandidateEvidence | None]]
+        if semantic:
+            cases = [(listing, FICTIONAL_OPERATOR) for listing in semantic_listings()]
+        else:
+            listings = fictional_listings()
+            cases = [(listing, FICTIONAL_CANDIDATE) for listing in listings]
+            cases.append((listings[0], None))  # no candidate profile -> never APPLY
         outcomes = []
         for listing, candidate in cases:
             out = service.select(listing, prefs, candidate, use_cache=False)
@@ -233,12 +297,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="actually call Jev (spends credits)")
     parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--store", type=Path, default=None, help="keep decisions in this SQLite")
+    parser.add_argument("--semantic", action="store_true", help="run the 3 role-focus cases")
     args = parser.parse_args(argv)
     if not args.live:
         print("refusing to spend credits without --live", file=sys.stderr)
         return 2
     try:
-        receipt = run(args.env_file, args.store)
+        receipt = run(args.env_file, args.store, semantic=args.semantic)
     except CredentialError as exc:
         print(f"credential error: {exc}", file=sys.stderr)
         return 1

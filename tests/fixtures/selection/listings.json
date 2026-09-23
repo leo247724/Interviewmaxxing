@@ -238,5 +238,110 @@
       "currency": "USD",
       "period": "YEAR"
     }
+  },
+  "acquisition_lead": {
+    "id": "lst_0299e7be4330c6f9417274ac91d5dbc1",
+    "source": "fixture",
+    "source_listing_id": "acq-lead",
+    "posting_url": "https://example.invalid/jobs/acq-lead",
+    "source_url": "https://example.invalid/jobs/acq-lead",
+    "title": "Acquisition Lead",
+    "company": "Fictional Subscriptions Co",
+    "location": "Austin, TX",
+    "work_arrangement": "HYBRID",
+    "description": "Hybrid in Austin, TX. Own a $3M annual paid acquisition budget across Meta, Google and TikTok. Design and run creative and bidding experiments, own incrementality measurement and attribution, and report CAC, ROAS and revenue impact. Lead two channel managers.",
+    "description_completeness": "FULL",
+    "status": "OPEN",
+    "observed_at": "2026-09-22T12:00:00Z",
+    "evidence": "fictional fixture",
+    "provenance": [
+      {
+        "source": "fixture",
+        "source_listing_id": "acq-lead",
+        "source_url": "https://example.invalid/jobs/acq-lead",
+        "application_url": "https://example.invalid/apply/acq-lead",
+        "observed_at": "2026-09-22T12:00:00Z",
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/acq-lead"
+      }
+    ],
+    "application_url": "https://example.invalid/apply/acq-lead",
+    "compensation": {
+      "raw_text": "$130,000 - $150,000 a year",
+      "minimum": 130000,
+      "maximum": 150000,
+      "currency": "USD",
+      "period": "YEAR"
+    }
+  },
+  "data_platform_engineer": {
+    "id": "lst_882b9575229584ae991142bfe8cef638",
+    "source": "fixture",
+    "source_listing_id": "data-platform",
+    "posting_url": "https://example.invalid/jobs/data-platform",
+    "source_url": "https://example.invalid/jobs/data-platform",
+    "title": "Senior Data Platform Engineer",
+    "company": "Fictional Data Co",
+    "location": "Austin, TX",
+    "work_arrangement": "HYBRID",
+    "description": "Hybrid in Austin, TX. Design and operate Spark and Kafka data pipelines, maintain the Snowflake warehouse and Terraform infrastructure, and build internal APIs for analytics teams. Requires 6+ years of software engineering in Python or Scala.",
+    "description_completeness": "FULL",
+    "status": "OPEN",
+    "observed_at": "2026-09-22T12:00:00Z",
+    "evidence": "fictional fixture",
+    "provenance": [
+      {
+        "source": "fixture",
+        "source_listing_id": "data-platform",
+        "source_url": "https://example.invalid/jobs/data-platform",
+        "application_url": "https://example.invalid/apply/data-platform",
+        "observed_at": "2026-09-22T12:00:00Z",
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/data-platform"
+      }
+    ],
+    "application_url": "https://example.invalid/apply/data-platform",
+    "compensation": {
+      "raw_text": "$160,000 - $190,000 a year",
+      "minimum": 160000,
+      "maximum": 190000,
+      "currency": "USD",
+      "period": "YEAR"
+    }
+  },
+  "marketing_title_unrelated": {
+    "id": "lst_f3a514a5e7909f6ccf1ce21b7116c9aa",
+    "source": "fixture",
+    "source_listing_id": "mm-events",
+    "posting_url": "https://example.invalid/jobs/mm-events",
+    "source_url": "https://example.invalid/jobs/mm-events",
+    "title": "Marketing Manager",
+    "company": "Fictional Venues LLC",
+    "location": "Austin, TX",
+    "work_arrangement": "ONSITE",
+    "description": "Onsite in Austin, TX. Plan and staff trade-show booths, order branded merchandise, manage venue vendors and event logistics, and coordinate sponsorship signage. No paid media or digital advertising responsibilities.",
+    "description_completeness": "FULL",
+    "status": "OPEN",
+    "observed_at": "2026-09-22T12:00:00Z",
+    "evidence": "fictional fixture",
+    "provenance": [
+      {
+        "source": "fixture",
+        "source_listing_id": "mm-events",
+        "source_url": "https://example.invalid/jobs/mm-events",
+        "application_url": "https://example.invalid/apply/mm-events",
+        "observed_at": "2026-09-22T12:00:00Z",
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/mm-events"
+      }
+    ],
+    "application_url": "https://example.invalid/apply/mm-events",
+    "compensation": {
+      "raw_text": "$105,000 a year",
+      "minimum": 105000,
+      "maximum": 105000,
+      "currency": "USD",
+      "period": "YEAR"
+    }
   }
 }

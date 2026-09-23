@@ -75,7 +75,8 @@ def job_evidence(listing: JobListing) -> dict[str, Any]:
 def jev_preferences_view(preferences: SelectionPreferences) -> dict[str, Any]:
     """Preferences Jev needs to judge fit. The pay floor is applied by code only."""
     return {
-        "target_titles": preferences.target_titles,
+        "role_focus": preferences.role_focus,
+        "representative_titles": preferences.target_titles,
         "onsite_or_hybrid_targets": [
             {"location": t.location, "arrangements": [a.value for a in t.arrangements]}
             for t in preferences.onsite

@@ -69,6 +69,7 @@ from .rubric import (
     final_request,
     focused_request,
     reasons_from,
+    role_focus_reason,
 )
 from .storage import SelectionStore
 
@@ -269,7 +270,11 @@ class SelectionService:
         return self._finish(
             ctx,
             holds=holds,
-            reasons=[ctx.tier_reason, *reasons_from(assessments)]
+            reasons=[
+                ctx.tier_reason,
+                *filter(None, [role_focus_reason(assessments)]),
+                *reasons_from(assessments),
+            ]
             + [h.detail for h in holds]
             + note,
             model_decision=decision,

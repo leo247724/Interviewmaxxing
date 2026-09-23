@@ -17,7 +17,7 @@ from interviewmaxxing_core import SelectionChoice
 from .jev import ChoiceAnswer, ChoiceQuestion, DecisionRequest, DecisionResponse
 from .policy import Hold, HoldReason
 
-RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.4"
+RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.5"
 
 Threshold = Annotated[FiniteFloat, Field(ge=0, le=1)]
 
@@ -50,23 +50,40 @@ _UNTRUSTED = (
 FOCUSED_QUESTIONS: dict[str, ChoiceQuestion] = {
     "role_match": ChoiceQuestion(
         instructions=(
-            "Does the listing's actual role (title and responsibilities, not keywords alone) "
-            "match one of state.preferences.target_titles? " + _UNTRUSTED
+            "Is this listing the kind of role described by state.preferences.role_focus? "
+            "Judge the listing's actual duties and ownership, not its title. "
+            "state.preferences.representative_titles are examples and search seeds, not an "
+            "allowlist: a different title whose duties fit the focus is a match, and a "
+            "matching-sounding title whose duties are something else is not. Evidence of "
+            "fit includes owning paid acquisition budgets or channels, running experiments, "
+            "measurement and attribution, funnel, pipeline or revenue outcomes, and leading a "
+            "team or channel. Title keywords alone are not proof. Technical tools mentioned "
+            "inside marketing work (analytics, APIs, automation) do not make it an engineering "
+            "role; a role whose actual duties are data, software or platform engineering is a "
+            "mismatch. " + _UNTRUSTED
         ),
         criteria={
-            "match": "The role is one of the target roles or a direct equivalent.",
-            "adjacent": "Related marketing role at a different scope or specialty.",
-            "mismatch": "A different role family or function.",
-            "insufficient_evidence": "The listing does not say enough to tell.",
+            "match": "The duties are the focus role (for example owning paid acquisition, "
+            "growth or demand generation), whatever the title.",
+            "adjacent": "A marketing role sharing some focus duties but centered on "
+            "something else.",
+            "mismatch": "The duties are a different function (such as data, software or "
+            "platform engineering) or an unrelated marketing specialty, even if the title "
+            "sounds similar.",
+            "insufficient_evidence": "The listing's duties are too thin to judge; the title "
+            "alone is not enough.",
         },
     ),
     "seniority_match": ChoiceQuestion(
         instructions=(
-            "Is the listing's seniority consistent with the target titles "
-            "(manager or director level)? " + _UNTRUSTED
+            "Is the listing's seniority consistent with the level implied by "
+            "state.preferences.representative_titles and role_focus (manager, senior "
+            "manager, lead, head or director of the focus area)? Judge scope and ownership, "
+            "not the title wording alone. " + _UNTRUSTED
         ),
         criteria={
-            "at_target_level": "Manager/director level or equivalent.",
+            "at_target_level": "Manager, senior manager, lead, head or director level or "
+            "equivalent scope.",
             "below_target_level": "Junior, associate, specialist or coordinator level.",
             "above_target_level": "VP, C-level or head of a large organization.",
             "insufficient_evidence": "Seniority cannot be determined.",
@@ -75,7 +92,9 @@ FOCUSED_QUESTIONS: dict[str, ChoiceQuestion] = {
     "qualification_match": ChoiceQuestion(
         instructions=(
             "Using only state.candidate, does the candidate meet the requirements stated in "
-            "the listing? If state.candidate is empty or missing, answer "
+            "the listing? Software, API or data-tool terms in the candidate's marketing "
+            "experience are part of that marketing work and are not evidence against a "
+            "marketing fit. If state.candidate is empty or missing, answer "
             "insufficient_evidence. " + _UNTRUSTED
         ),
         criteria={
@@ -220,6 +239,13 @@ def assessment_holds(assessments: dict[str, Assessment], final: SelectionChoice)
         holds.append(
             Hold(reason=HoldReason.CONTRADICTORY_EVIDENCE, detail="listing fields vs description")
         )
+    if final is SelectionChoice.APPLY and assessments["role_match"].choice == "adjacent":
+        holds.append(
+            Hold(
+                reason=HoldReason.ROLE_FOCUS_UNCONFIRMED,
+                detail="duties only adjacent to the role focus",
+            )
+        )
     if final is SelectionChoice.APPLY:
         negatives = [n for n, bad in _NEGATIVE.items() if assessments[n].choice in bad]
         if negatives:
@@ -239,6 +265,23 @@ def assessment_holds(assessments: dict[str, Assessment], final: SelectionChoice)
             )
         )
     return holds
+
+
+_ROLE_FOCUS_TEXT = {
+    "match": "the listing's duties match the role focus",
+    "adjacent": "the duties only partly overlap the role focus",
+    "mismatch": "the duties are outside the role focus, whatever the title",
+    "insufficient_evidence": "the duties are too thin to judge; the title alone is not proof",
+}
+
+
+def role_focus_reason(assessments: dict[str, Assessment]) -> str | None:
+    """A plain reason from Jev's semantic ``role_match`` answer, if it was asked."""
+    answer = assessments.get("role_match")
+    if answer is None:
+        return None
+    text = _ROLE_FOCUS_TEXT.get(answer.choice, answer.choice)
+    return f"role focus: {text} (confidence {answer.confidence:.2f})"
 
 
 def reasons_from(assessments: dict[str, Assessment]) -> list[str]:
