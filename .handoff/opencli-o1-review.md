@@ -1,0 +1,13 @@
+# O1R after C4R3 checkpoint
+
+Independent review of O1 983192c found three P1 defects. Own packages/browser/**, tests/browser/** and necessary fictional browser fixtures only. All probes offline/fake transport or newly owned localhost headless fixtures; do not touch user tabs, protected assessment tab, actual resume/profile, employer sites, or auth challenges. Preserve C4R3 record isolation.
+
+1. Initial navigation can overwrite protected tab. OpenCliDriver.goto sends unpinned open before checking ownership. Installed OpenCLI1.8.6 restores session saved defaultPage before navigating (dist/src/cli.js445). Protected-tab probe changed URL before raising. Default shared session also collides between drivers, and release releases entire session. Explicitly create a uniquely owned tab/session and establish ownership before any navigation; never navigate or release another driver's/user's tab. Use actual supported CLI API; no invented flags.
+2. Wrong resume accepted as pinned artifact: set_files skips upload on same filename and size. Reviewer attached different bytes of same filename/length; runtime _apply returned FILLED with zero upload commands despite different SHA256. Verify actual browser File digest against pinned bytes/artifact, or fail closed with manual-attachment guidance. Do not bypass real OpenCLI upload Not allowed restrictions; no JS file-setting workaround. Read-only digest inspection is acceptable if supported.
+3. Filling continues after document loss. GenericApplicationBrowser.fill catches every DriverError; first field navigating to different origin raises UnverifiedAction but subsequent last-name and email writes still run. Abort all writes on context/origin/document replacement and require fresh inspection. Distinguish safely recoverable per-field errors from invalidated page context. Cover both transports and final-submit preconditions.
+
+Additional API hygiene: exported assert_read_only regex accepts bracket mutation document.forms[0]['requestSubmit'](). Current runtime uses fixed scripts, but do not claim it is a general evaluation security boundary. Narrow public evaluator to fixed/allowlisted read scripts or clearly internalize/document limits without introducing a false security guarantee. No regex-only general JS safety claims.
+
+Review archive /private/tmp/imx-o1-983192c-kvk92ioh/snapshot; 170 browser tests passed, 5 live skipped. Positive timeout/confirmation outage remained uncertain and prevented second click. Preserve that behavior.
+
+Report exact checkpoint and focused/regression verification; don't claim a real upload capability if host still rejects upload. No new subagents/unrelated connectors or global upgrades.
