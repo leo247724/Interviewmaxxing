@@ -175,3 +175,11 @@ Fixtures in `tests/fixtures/generation/` are fictional. `candidate_additions.jso
 extends the core Avery Example profile. `screening_form.json` covers every edge case
 above. The `expected_*_packet.json` files are the golden projections of the resolved
 packets.
+
+## Offline tailored-document prototype (separate API)
+
+`build_document_bundle(candidate, job, JobDocumentEvidence, provider=None)` prepares
+an immutable, scoped plan, Markdown resume and concise cover-letter draft with
+verified fact citations and version/digest provenance. It leaves this resolver and
+the runner's selected resume pin unchanged. No live writing provider or PDF/DOCX
+export is implemented. See [the document design and runnable fictional demo](../../docs/documents/README.md).
