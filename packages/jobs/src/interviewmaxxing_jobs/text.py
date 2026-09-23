@@ -41,9 +41,31 @@ _PERIODS: tuple[tuple[re.Pattern[str], CompensationPeriod], ...] = (
      CompensationPeriod.HOUR),
 )
 _AMOUNT = re.compile(
-    r"(?P<cur>\$|USD\s*)?\s*(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?P<mult>[kKmM])?\b"
+    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?P<mult>[kKmM])?\b"
 )
-_ESTIMATE = re.compile(r"\b(?:estimated|estimate|est\.)\b", re.I)
+# Estimates are not employer-stated pay: "Estimated", "Est.", "approx.", "~$120K".
+_ESTIMATE = re.compile(r"(?<![A-Za-z])(?:estimated|estimate|est\.?|approx(?:imately|\.)?)(?![A-Za-z])|~\s*[$€£]?\d", re.I)
+_CURRENCY_CODES = ("USD", "CAD", "EUR", "GBP", "AUD", "NZD", "CHF", "MXN", "INR", "JPY", "SGD",
+                   "HKD", "BRL", "SEK", "NOK", "DKK", "PLN", "ZAR")
+_CURRENCY_CODE = re.compile(r"(?<![A-Za-z])(" + "|".join(_CURRENCY_CODES) + r")(?![A-Za-z])", re.I)
+_CURRENCY_SYMBOLS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?<![A-Za-z])(?:C|CA)\$"), "CAD"),
+    (re.compile(r"(?<![A-Za-z])(?:A|AU)\$"), "AUD"),
+    (re.compile(r"(?<![A-Za-z])(?:NZ)\$"), "NZD"),
+    (re.compile(r"(?<![A-Za-z])(?:US)\$"), "USD"),
+    (re.compile(r"(?<![A-Za-z])(?:MX)\$"), "MXN"),
+    (re.compile(r"€"), "EUR"),
+    (re.compile(r"£"), "GBP"),
+)
+_BARE_DOLLAR = re.compile(r"(?<![A-Za-z])\$")
+
+
+def explicit_currencies(text: str) -> set[str]:
+    """ISO codes stated in ``text`` by code (``CAD``, ``USD``) or symbol (``C$``, ``€``,
+    ``£``). A bare ``$`` is not explicit."""
+    found = {m.group(1).upper() for m in _CURRENCY_CODE.finditer(text)}
+    found |= {code for pattern, code in _CURRENCY_SYMBOLS if pattern.search(text)}
+    return found
 
 
 def pay_segment(text: str | None) -> str | None:
@@ -60,47 +82,40 @@ def pay_segment(text: str | None) -> str | None:
 def parse_compensation(raw: str | None, *, dollar_currency: str | None = None) -> Compensation | None:
     """Pay as stated.
 
-    ``dollar_currency`` is the currency a bare ``$`` denotes on this source (e.g.
-    ``"USD"`` on a US site); without it, ``$`` is not an explicit currency. Text that
-    is an estimate (not stated by the employer), has no period, or no explicit
-    currency keeps only ``raw_text``.
+    Numeric bounds are set only when the pay text states one currency and a period
+    and is not marked as an estimate. An explicit currency (``CAD $110,000``,
+    ``€60,000``, ``110,000 USD``) always wins; ``dollar_currency`` is only what a bare
+    ``$`` denotes on this source (``"USD"`` on a US site). Otherwise only ``raw_text``
+    is kept.
     """
     text = clean(raw)
     if not text:
         return None
     # Cards join facts with " · " ("$110K/yr - $130K/yr · 3 benefits"); keep the pay part.
-    segments = [s for s in re.split(r"\s+[·•]\s+", text) if s]
-    pay_like = [s for s in segments if _AMOUNT.search(s) and any(p.search(s) for p, _ in _PERIODS)]
-    if len(segments) > 1 and pay_like:
-        text = pay_like[0]
+    segment = pay_segment(text)
+    if segment is not None and len(re.split(r"\s+[·•]\s+", text)) > 1:
+        text = segment
     period = next((p for pattern, p in _PERIODS if pattern.search(text)), None)
-    matches = list(_AMOUNT.finditer(text))
+    explicit = explicit_currencies(text)
+    if len(explicit) == 1:
+        currency: str | None = explicit.pop()
+    elif explicit:
+        currency = None  # two currencies stated: not comparable
+    elif _BARE_DOLLAR.search(text):
+        currency = dollar_currency
+    else:
+        currency = None
+    # Amounts, ignoring the currency tokens themselves.
+    stripped = _CURRENCY_CODE.sub(" ", text)
+    for pattern, _ in _CURRENCY_SYMBOLS:
+        stripped = pattern.sub(" ", stripped)
     amounts: list[float] = []
-    currencies: set[str] = set()
-    for m in matches:
+    for m in _AMOUNT.finditer(stripped):
         value = float(m.group("num").replace(",", ""))
         mult = (m.group("mult") or "").lower()
-        value *= 1000 if mult == "k" else 1_000_000 if mult == "m" else 1
-        amounts.append(value)
-        cur = (m.group("cur") or "").strip().upper()
-        if cur == "$":
-            if dollar_currency:
-                currencies.add(dollar_currency)
-            else:
-                currencies.add("?")
-        elif cur == "USD":
-            currencies.add("USD")
-        else:
-            currencies.add("")
-    explicit = {c for c in currencies if c not in ("", "?")}
-    # Every amount must carry the same explicit currency ("$110K - 130K" is still
-    # explicit because the first amount states it and the rest have none).
-    if (
-        not amounts or period is None or _ESTIMATE.search(text) or len(explicit) != 1
-        or "?" in currencies or len(amounts) > 2
-    ):
+        amounts.append(value * (1000 if mult == "k" else 1_000_000 if mult == "m" else 1))
+    if not amounts or period is None or currency is None or _ESTIMATE.search(text) or len(amounts) > 2:
         return Compensation(raw_text=text)
-    currency = explicit.pop()
     lowered = text.lower()
     if len(amounts) == 2:
         low, high = amounts
@@ -210,6 +225,19 @@ def split_indeed_location(text: str | None) -> tuple[str | None, WorkArrangement
 
 
 _COUNTRY_NAMES = {"united states", "united states of america", "usa", "us", "u.s.", "u.s.a."}
+US_STATES: dict[str, str] = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "DC": "District of Columbia",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
+    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
+    "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon",
+    "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia",
+    "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+}
 
 
 def country_level_region(location: str | None) -> str | None:
@@ -218,6 +246,19 @@ def country_level_region(location: str | None) -> str | None:
     if text and text.lower().rstrip(".") in {c.rstrip(".") for c in _COUNTRY_NAMES}:
         return text
     return None
+
+
+def stated_remote_region(location: str | None) -> str | None:
+    """Preserve an explicitly named country/state on a remote card without
+    expanding it to the search country. City-only locations remain unverified."""
+    text = clean(location)
+    if text is None:
+        return None
+    label = re.sub(r"(?:[- ]only)$", "", text, flags=re.I).strip().casefold().rstrip(".")
+    regions = {name.casefold() for name in US_STATES.values()} | {
+        state.casefold() for state in US_STATES
+    } | {c.rstrip(".") for c in _COUNTRY_NAMES} | {"canada", "united kingdom", "uk"}
+    return text if label in regions else None
 
 
 # --- URLs and source ids ----------------------------------------------------------------

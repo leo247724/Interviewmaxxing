@@ -29,8 +29,10 @@ from ..text import (
     parse_arrangement,
     parse_compensation,
     pay_segment,
+    stated_remote_region,
 )
 from .base import (
+    AccessGuard,
     AccessProblem,
     BudgetPlan,
     Observation,
@@ -40,6 +42,7 @@ from .base import (
     SourceOutcome,
     build_legs,
     check_access,
+    interrupted,
     make_listing,
     plan_note,
 )
@@ -153,6 +156,8 @@ def item_observation(item: Item, query_text: str, *, observed_at: datetime, quer
         employer_key_url=ats_url,
         title=item.title, company=item.company, location=item.location,
         work_arrangement=arrangement, compensation=parse_compensation(item.pay_text),
+        remote_eligibility=stated_remote_region(item.location)
+        if arrangement is WorkArrangement.REMOTE else None,
         description=description, full_description=not partial, posted_text=item.posted,
         observed_at=observed_at, query_id=query_id,
         evidence="Google Jobs result" + (" and detail pane" if detail else "")
@@ -161,6 +166,20 @@ def item_observation(item: Item, query_text: str, *, observed_at: datetime, quer
     return Observation(listing, {"kind": "google.result", "leg": leg, "via": item.via,
                                  "chips": item.chips, "apply_options": options,
                                  "linked_postings": linked})
+
+
+def pane_matches(active: dict[str, Any], item: Item) -> bool:
+    """True only when the detail pane is provably this result: Google's own document
+    id matches, or both the heading and the company line match. Two results with the
+    same title at different companies must never share a pane's apply links."""
+    if clean(active.get("encoded_docid")) and clean(active.get("encoded_docid")) == item.doc_id:
+        return True
+    if clean(active.get("heading")) != item.title or not item.company:
+        return False
+    company = item.company.casefold()
+    head = [clean(ln) or "" for ln in str(active.get("text") or "").splitlines()[:6]]
+    return any(ln.casefold() == company or ln.casefold().startswith(company + " · ")
+               for ln in head)
 
 
 class GoogleAdapter:
@@ -175,40 +194,44 @@ class GoogleAdapter:
         more_available = False
         problems: list[str] = []
         plan = BudgetPlan(ctx.limit, legs, ctx.query.location_priority)
-        for index, leg in enumerate(legs):
-            budget = plan.budget(index)
-            if budget <= 0:
-                more_available = True
-                continue
-            text = search_text(leg)
-            ctx.transport.open(ctx.session, search_url(leg))
-            ctx.transport.wait_for(ctx.session, "[data-share-url]", 15000)
-            payload = ctx.evaluate("google_search")
-            pages += 1
-            check_access("Google", payload, ctx, home_url=HOME)
-            items = parse_items(payload)
-            taken = 0
-            for item in items:
-                if item.doc_id in seen:
-                    continue
-                if taken >= budget:
+        guard = AccessGuard()
+        with guard:
+            for index, leg in enumerate(legs):
+                budget = plan.budget(index)
+                if budget <= 0:
                     more_available = True
+                    continue
+                text = search_text(leg)
+                ctx.transport.open(ctx.session, search_url(leg))
+                ctx.transport.wait_for(ctx.session, "[data-share-url]", 15000)
+                payload = ctx.evaluate("google_search")
+                pages += 1
+                check_access("Google", payload, ctx, home_url=HOME)
+                items = parse_items(payload)
+                taken = 0
+                for item in items:
+                    if item.doc_id in seen:
+                        continue
+                    if taken >= budget:
+                        more_available = True
+                        break
+                    seen.add(item.doc_id)
+                    taken += 1
+                    detail = None
+                    if details_left > 0 and guard.problem is None:
+                        details_left -= 1
+                        try:
+                            detail = self._detail(ctx, item)
+                        except AccessProblem as problem:
+                            guard.problem = problem  # keep the cards, stop opening panes
+                        except Exception as exc:
+                            problems.append(f"result {item.doc_id}: {exc}")
+                    observations.append(item_observation(
+                        item, text, observed_at=ctx.clock(), query_id=ctx.query.id,
+                        leg=leg.label, detail=detail))
+                plan.spent(index, taken)
+                if guard.problem is not None:
                     break
-                seen.add(item.doc_id)
-                taken += 1
-                detail = None
-                if details_left > 0:
-                    details_left -= 1
-                    try:
-                        detail = self._detail(ctx, item)
-                    except AccessProblem:
-                        raise
-                    except Exception as exc:
-                        problems.append(f"result {item.doc_id}: {exc}")
-                observations.append(item_observation(
-                    item, text, observed_at=ctx.clock(), query_id=ctx.query.id,
-                    leg=leg.label, detail=detail))
-            plan.spent(index, taken)
         notes = ["Google shows only its first results page here",
                  *[n for n in (plan_note(ctx.query, SYNTAX),) if n]]
         if ctx.query.posted_within_days:
@@ -218,7 +241,8 @@ class GoogleAdapter:
         if more_available:
             notes.append(f"stopped at the limit of {ctx.limit} listings")
         state = SourceSearchState.PARTIAL if (more_available or problems) else SourceSearchState.OK
-        return SourceOutcome(state, observations, pages, "; ".join(notes))
+        outcome = SourceOutcome(state, observations, pages, "; ".join(notes))
+        return interrupted(outcome, guard.problem) if guard.problem else outcome
 
     def _detail(self, ctx: SearchContext, item: Item) -> dict[str, Any]:
         ctx.transport.click(ctx.session, "[data-share-url]", nth=item.index)
@@ -227,6 +251,7 @@ class GoogleAdapter:
             payload = ctx.evaluate("google_detail")
             check_access("Google", payload, ctx, home_url=HOME)
             active = payload.get("active")
-            if isinstance(active, dict) and clean(active.get("heading")) == item.title:
+            if isinstance(active, dict) and pane_matches(active, item):
                 return active
-        raise ValueError("the detail pane did not show the selected result")
+        raise ValueError("the detail pane did not show the selected result (title and company "
+                         "must both match); kept the search card only")

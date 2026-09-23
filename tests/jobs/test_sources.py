@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-
-import pytest
+from typing import Any
 
 from interviewmaxxing_core import (
     CompensationPeriod,
@@ -16,7 +15,6 @@ from interviewmaxxing_core import (
     WorkArrangement,
 )
 from interviewmaxxing_jobs.sources import (
-    AccessProblem,
     BuiltInAdapter,
     GoogleAdapter,
     IndeedAdapter,
@@ -38,7 +36,7 @@ from interviewmaxxing_jobs.sources.base import (
     plan_note,
 )
 
-from .conftest import FakeTransport, fixture_routes
+from .conftest import FakeTransport, fixture_routes, load_fixture
 
 Clock = Callable[[], datetime]
 
@@ -240,11 +238,60 @@ def test_linkedin_unrendered_cards_beyond_the_detail_budget_make_the_result_part
 
 
 def test_linkedin_sign_in_wall_is_needs_user(clock: Clock) -> None:
-    with pytest.raises(AccessProblem) as err:
-        run(LinkedInAdapter(), clock, overrides={"linkedin": "login_wall"})
-    assert err.value.state is SourceSearchState.NEEDS_USER
-    assert err.value.user_action and "imx-jobs-linkedin" in err.value.user_action
-    assert "--profile test-profile" in err.value.user_action
+    listings, _, state, message = run(LinkedInAdapter(), clock, overrides={"linkedin": "login_wall"})
+    assert listings == [] and state is SourceSearchState.NEEDS_USER
+    assert message and "requires sign-in" in message
+
+
+def test_linkedin_cards_survive_a_sign_in_wall_on_job_pages(clock: Clock) -> None:
+    # Search results were read; the first job page then demanded sign-in. The cards
+    # already collected are kept and reported PARTIAL with the user action; no bypass.
+    base = fixture_routes()
+
+    def route(session: str, url: str, script: str, clicked: int | None) -> dict[str, Any]:
+        if script == "linkedin_detail":
+            return dict(load_fixture("linkedin")["login_wall"])
+        return base(session, url, script, clicked)
+
+    transport = FakeTransport(route)
+    ctx = SearchContext(transport=transport, session="imx-jobs-linkedin", query=austin_manager_query(),
+                        limit=5, detail_limit=2, clock=clock, profile="test-profile")
+    outcome = LinkedInAdapter().search(ctx)
+    assert outcome.state is SourceSearchState.PARTIAL
+    assert {o.listing.title for o in outcome.observations} == {"Marketing Manager", "Director of Marketing"}
+    assert outcome.access is not None and outcome.access.state is SourceSearchState.NEEDS_USER
+    assert outcome.user_action and "imx-jobs-linkedin" in outcome.user_action
+    assert outcome.message and "2 listings collected" in outcome.message
+    # Only one job page was attempted after the wall appeared.
+    assert sum(1 for c in transport.calls if c[0] == "evaluate" and c[2] == "linkedin_detail") == 1
+
+
+def test_linkedin_job_page_for_another_job_does_not_enrich_the_card(clock: Clock) -> None:
+    # Requesting job 4000000002 lands on a page whose URL and content are job
+    # 4000000001: the card keeps its own company and gains no apply link or key.
+    base = fixture_routes()
+
+    def route(session: str, url: str, script: str, clicked: int | None) -> dict[str, Any]:
+        if script == "linkedin_detail":
+            return dict(load_fixture("linkedin")["details"]["4000000001"])
+        return base(session, url, script, clicked)
+
+    transport = FakeTransport(route)
+    ctx = SearchContext(transport=transport, session="imx-jobs-linkedin", query=austin_manager_query(),
+                        limit=5, detail_limit=3, clock=clock, profile="test-profile")
+    outcome = LinkedInAdapter().search(ctx)
+    found = {o.listing.title: o.listing for o in outcome.observations}
+    assert set(found) == {"Marketing Manager", "Director of Marketing"}
+    director = found["Director of Marketing"]
+    assert director.company == "Example Analytics"
+    assert director.application_url is None
+    assert director.provenance[0].employer_job_key is None
+    assert director.source_listing_id == "4000000002"
+    assert "search result card" in director.evidence
+    manager = found["Marketing Manager"]
+    assert manager.provenance[0].employer_job_key == "ats:greenhouse:fictionalwidgets:7001"
+    assert outcome.state is SourceSearchState.PARTIAL
+    assert outcome.message and "showed 4000000001 instead" in outcome.message
 
 
 # --- Built In -----------------------------------------------------------------------
@@ -304,10 +351,27 @@ def test_indeed_cards_and_job_pages(clock: Clock) -> None:
 
 
 def test_indeed_challenge_is_needs_user_not_empty(clock: Clock) -> None:
-    with pytest.raises(AccessProblem) as err:
-        run(IndeedAdapter(), clock, overrides={"indeed": "challenge"})
-    assert err.value.state is SourceSearchState.NEEDS_USER
-    assert "not solved automatically" in err.value.message
+    listings, _, state, message = run(IndeedAdapter(), clock, overrides={"indeed": "challenge"})
+    assert listings == [] and state is SourceSearchState.NEEDS_USER
+    assert message and "not solved automatically" in message
+
+
+def test_indeed_challenge_on_job_pages_keeps_the_cards(clock: Clock) -> None:
+    base = fixture_routes()
+
+    def route(session: str, url: str, script: str, clicked: int | None) -> dict[str, Any]:
+        if script == "indeed_detail":
+            return dict(load_fixture("indeed")["challenge"])
+        return base(session, url, script, clicked)
+
+    transport = FakeTransport(route)
+    ctx = SearchContext(transport=transport, session="imx-jobs-indeed", query=austin_manager_query(),
+                        limit=5, detail_limit=5, clock=clock, profile="test-profile")
+    outcome = IndeedAdapter().search(ctx)
+    assert outcome.state is SourceSearchState.PARTIAL
+    assert {o.listing.title for o in outcome.observations} == {"Marketing Manager", "Marketing Director"}
+    assert all(o.listing.description is None for o in outcome.observations)
+    assert outcome.access is not None and outcome.user_action
 
 
 # --- Google -------------------------------------------------------------------------
@@ -345,9 +409,65 @@ def test_google_results_are_identified_by_google_and_proven_only_by_ats_keys(clo
 
 
 def test_google_unusual_traffic_page_is_needs_user(clock: Clock) -> None:
-    with pytest.raises(AccessProblem) as err:
-        run(GoogleAdapter(), clock, overrides={"google": "sorry"})
-    assert err.value.state is SourceSearchState.NEEDS_USER
+    listings, _, state, _ = run(GoogleAdapter(), clock, overrides={"google": "sorry"})
+    assert listings == [] and state is SourceSearchState.NEEDS_USER
+
+
+def _google_pane(company: str, title: str, docid: str, apply_href: str) -> dict[str, Any]:
+    return {"page": {"url": "https://www.google.com/search?q=x&udm=8#sv=1", "title": "x",
+                     "hidden": True, "signals": {"challenge": False, "password_field": False,
+                                                 "denied": False}},
+            "active": {"encoded_docid": docid, "heading": title,
+                       "text": f"{company}\n{title}\n{company} · Austin, TX · via Example Board\n"
+                               "2 days ago\nApply on Example Board\nJob description\nText.\n"
+                               "Report this listing",
+                       "apply_links": [{"text": "Apply on Example Board", "href": apply_href}]}}
+
+
+def test_google_stale_pane_for_a_same_title_result_is_not_attached(clock: Clock) -> None:
+    # Two "Marketing Manager" results at different companies. Clicking the second
+    # leaves the first company's pane showing; its heading matches but the company
+    # does not, so the second result keeps only its card and no apply link.
+    search = {"page": {"url": "https://www.google.com/search?q=x&udm=8", "title": "x",
+                       "hidden": True, "signals": {"challenge": False, "password_field": False,
+                                                   "denied": False}},
+              "items": [{"index": 0, "doc_id": "RG9jQQ==", "share_url": "s",
+                         "lines": ["Marketing Manager", "Fictional Widgets Co",
+                                   "Austin, TX • via Example Board", "2 days ago"]},
+                        {"index": 1, "doc_id": "RG9jQg==", "share_url": "s",
+                         "lines": ["Marketing Manager", "Sample Coffee Roasters",
+                                   "Austin, TX • via Example Board", "3 days ago"]}]}
+    widgets_pane = _google_pane("Fictional Widgets Co", "Marketing Manager", "cGFuZUE=",
+                                "https://boards.greenhouse.io/fictionalwidgets/jobs/7001")
+
+    def route(session: str, url: str, script: str, clicked: int | None) -> dict[str, Any]:
+        return dict(search) if script == "google_search" else dict(widgets_pane)
+
+    transport = FakeTransport(route)
+    ctx = SearchContext(transport=transport, session="imx-jobs-google", query=austin_manager_query(),
+                        limit=5, detail_limit=5, clock=clock, profile="test-profile")
+    outcome = GoogleAdapter().search(ctx)
+    by_company = {o.listing.company: o for o in outcome.observations}
+    widgets = by_company["Fictional Widgets Co"].listing
+    assert widgets.provenance[0].employer_job_key == "ats:greenhouse:fictionalwidgets:7001"
+    coffee = by_company["Sample Coffee Roasters"].listing
+    assert coffee.application_url is None
+    assert coffee.provenance[0].employer_job_key is None
+    assert coffee.description is None and "detail pane" not in coffee.evidence
+    assert outcome.state is SourceSearchState.PARTIAL
+    assert outcome.message and "title and company" in outcome.message
+
+
+def test_google_pane_identity_rules() -> None:
+    item = google.Item(index=0, doc_id="RG9jQQ==", title="Marketing Manager", company="Fictional Widgets Co")
+    same_doc = _google_pane("Other Co", "Marketing Manager", "RG9jQQ==", "https://x.test")["active"]
+    assert google.pane_matches(same_doc, item)  # Google's own document id is proof
+    other_company = _google_pane("Other Co", "Marketing Manager", "cGFuZQ==", "https://x.test")["active"]
+    assert not google.pane_matches(other_company, item)
+    other_title = _google_pane("Fictional Widgets Co", "Growth Lead", "cGFuZQ==", "https://x.test")["active"]
+    assert not google.pane_matches(other_title, item)
+    no_company = google.Item(index=0, doc_id="RG9jQQ==", title="Marketing Manager", company=None)
+    assert not google.pane_matches(other_company, no_company)  # ambiguous: card only
 
 
 def test_google_logo_initial_is_not_taken_as_the_title() -> None:
@@ -357,3 +477,28 @@ def test_google_logo_initial_is_not_taken_as_the_title() -> None:
                    "Austin, TX • via Example Jobs Board", "3 days ago"]}]})
     assert (items[0].title, items[0].company, items[0].location) == (
         "Senior Marketing Director", "Sample Coffee Roasters", "Austin, TX")
+
+
+def test_remote_cards_preserve_restrictions_before_ranking(clock: Clock) -> None:
+    from interviewmaxxing_jobs.ranking import remote_eligibility
+
+    query = JobSearchQuery()
+    for region, expected in (("Canada-only", "ineligible"), ("Texas-only", "ineligible"),
+                             ("United States", "eligible")):
+        li = linkedin.parse_cards({"cards": [{"id": "4000000099", "rendered": True,
+            "title": "Acquisition Lead", "company": "Fictional Co",
+            "caption": f"{region} (Remote)"}]})[0]
+        params = {"observed_at": clock(), "query_id": query.id, "leg": "fictional"}
+        observations = [
+            linkedin.card_observation(li, **params),
+            indeed.card_observation(indeed.Card(jk="aaaaaaaaaaaaaaaa", title="Acquisition Lead",
+                location=region, arrangement=WorkArrangement.REMOTE), **params),
+            builtin.card_observation(builtin.Card(id="9000099", title="Acquisition Lead",
+                url="https://builtin.com/job/acquisition-lead/9000099", location=region,
+                arrangement_label="Remote"), **params),
+            google.item_observation(google.Item(index=0, doc_id="ZmljdGlvbmFs", title="Acquisition Lead",
+                location=region, arrangement=WorkArrangement.REMOTE), "acquisition", **params),
+        ]
+        for observation in observations:
+            assert observation.listing.remote_eligibility == region
+            assert remote_eligibility(observation.listing, query) == expected
