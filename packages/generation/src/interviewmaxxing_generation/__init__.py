@@ -6,6 +6,23 @@ the verified identity and verified facts, and reports everything else that is
 required as a scoped ``MissingInput``. See the package README.
 """
 
+from .documents import (
+    DocumentArtifact,
+    DocumentBundle,
+    DocumentIssue,
+    DocumentScope,
+    FactCitation,
+    JobDocumentEvidence,
+    ProposedClaim,
+    ResumeVariantPlan,
+    SupportedClaim,
+    WritingBrief,
+    WritingProposal,
+    WritingProvider,
+    build_document_bundle,
+    document_scope,
+    plan_resume_variant,
+)
 from .questions import (
     QuestionText,
     display_question,
@@ -22,12 +39,27 @@ from .resolver import (
 )
 
 __all__ = [
+    "DocumentArtifact",
+    "DocumentBundle",
+    "DocumentIssue",
+    "DocumentScope",
+    "FactCitation",
     "FactualPacketResolver",
+    "JobDocumentEvidence",
     "PacketResolutionError",
+    "ProposedClaim",
     "QuestionText",
+    "ResumeVariantPlan",
+    "SupportedClaim",
+    "WritingBrief",
+    "WritingProposal",
+    "WritingProvider",
+    "build_document_bundle",
     "display_question",
+    "document_scope",
     "is_neutral_hint",
     "missing_input_id",
+    "plan_resume_variant",
     "question_key",
     "resolve_packet",
     "saved_answer_matches",
