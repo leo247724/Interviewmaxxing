@@ -7,10 +7,14 @@ export function useReadiness(mode: "live" | "preview") {
   const [readiness, setReadiness] = useState<ServiceReadiness | null>(null);
   const [checking, setChecking] = useState(mode === "live");
   const refresh = useCallback(async () => {
-    if (mode === "preview") return;
+    if (mode === "preview") return null;
     setChecking(true);
-    try { setReadiness(await getReadiness()); }
-    catch { setReadiness(null); }
+    try {
+      const current = await getReadiness();
+      setReadiness(current);
+      return current;
+    }
+    catch { setReadiness(null); return null; }
     finally { setChecking(false); }
   }, [mode]);
   useEffect(() => { void refresh(); }, [refresh]);

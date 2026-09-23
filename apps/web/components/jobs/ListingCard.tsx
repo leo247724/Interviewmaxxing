@@ -40,7 +40,7 @@ function payText(listing: ListingView): { text: string; unknown: boolean } {
 
 export function applicationUrlOf(listing: ListingView) {
   return listing.provenance.find((source) => source.applicationUrl)?.applicationUrl
-    ?? listing.provenance.find((source) => source.postingUrl)?.postingUrl ?? null;
+    ?? listing.postingUrl ?? listing.provenance.find((source) => source.postingUrl)?.postingUrl ?? null;
 }
 
 export function ListingCard({
@@ -123,10 +123,10 @@ export function ListingCard({
         <ul>
           {listing.provenance.map((source, index) => (
             <li key={`${source.source}-${index}`}>
-              <a href={source.postingUrl ?? source.sourceUrl} target="_blank" rel="noreferrer noopener">
+              {source.applicationUrl || source.postingUrl ? <a href={(source.applicationUrl ?? source.postingUrl)!} target="_blank" rel="noreferrer noopener">
                 {SOURCE_LABELS[source.source] ?? source.source}
-                <span className="visually-hidden"> {source.postingUrl ? "listing" : "source"} (opens in a new tab)</span>
-              </a>
+                <span className="visually-hidden"> listing (opens in a new tab)</span>
+              </a> : <span>{SOURCE_LABELS[source.source] ?? source.source}</span>}
             </li>
           ))}
           {applicationUrlOf(listing) && (
@@ -178,7 +178,7 @@ function Decision({ selection, pending, task }: { selection: SelectionView | nul
   if (pending) return <section className="decision decision--pending" role="status"><span className="eyebrow">Jev is reviewing</span><p>Comparing this role with your experience and preferences.</p><span className="field__hint">The decision will appear here. You can keep browsing.</span></section>;
   if (task?.state === "FAILED" || task?.state === "INTERRUPTED") return <section className="decision choice-review" aria-label="Jev decision">
     <span className="decision__choice">NOT COMPLETED</span>
-    <p>{typeof task.error === "string" ? task.error : task.error?.message || "The decision stopped before a result was recorded."}</p>
+    <p>{task.error || "The decision stopped before a result was recorded."}</p>
     <span className="field__hint">Ask Jev again when the decision service is available.</span>
   </section>;
   if (!selection) {

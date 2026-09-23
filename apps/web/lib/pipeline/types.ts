@@ -77,8 +77,8 @@ export interface LinkedApplicationView {
   state: string;
   submittedAt: string | null;
   confirmationReference: string | null;
-  confirmationAuthority?: "site" | "user";
-  confirmationMethod?: string;
+  confirmationAuthority?: "site" | "user" | null;
+  confirmationMethod?: string | null;
 }
 
 export interface LinkedSelectionView {

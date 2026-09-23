@@ -25,6 +25,6 @@ export function executionProblem(readiness: ServiceReadiness | null, application
   if (!readiness) return "Application readiness could not be checked. Reconnect the local service before starting.";
   if (readiness.applicationMode !== "TEST_ONLY") return "Applications are paused in this development workspace. The service must be in TEST_ONLY mode.";
   if (!isLoopbackApplication(applicationUrl)) return "Test mode accepts only a local application page on localhost, 127.0.0.1 or ::1. Real employer applications are disabled.";
-  if (readiness.runner !== "available") return "The application browser is not ready. Restart the local application service, then check again.";
+  if (readiness.runner !== "available") return "The application browser is not ready. Try this action again after the local service recovers.";
   return null;
 }

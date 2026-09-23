@@ -54,12 +54,31 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
   const [decisionPoll, setDecisionPoll] = useState(0);
   const pollFailures = useRef(0);
 
+  const recoverDecisions = useCallback((items: ListingView[]) => {
+    setPendingDecisions((current) => {
+      const next = { ...current };
+      for (const item of items) {
+        const task = item.decisionTask;
+        if (task?.state === "QUEUED" || task?.state === "RUNNING") {
+          next[item.id] = {
+            previous: item.selection?.id ?? null,
+            taskId: task.id,
+            requestedAt: current[item.id]?.taskId === task.id ? current[item.id].requestedAt : Date.now(),
+          };
+        } else if (task && current[item.id]?.taskId === task.id) delete next[item.id];
+      }
+      if (mode === "live") window.sessionStorage.setItem("imx.pending-decisions", JSON.stringify(next));
+      return next;
+    });
+  }, [mode]);
+
   const load = useCallback(async () => {
     try {
       const [loadedPrefs, loaded] = await Promise.all([service.preferences(), service.listings()]);
       setPrefs(loadedPrefs);
       setFormKey((key) => key + 1);
       setListings(loaded.listings);
+      recoverDecisions(loaded.listings);
       setRun((current) => current ?? loaded.lastRun);
       setLoadError(null);
       setConnection("connected");
@@ -68,7 +87,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
       setLoadError(serviceError);
       setConnection(serviceError.code === "unavailable" ? "unavailable" : "connected");
     }
-  }, [service]);
+  }, [service, recoverDecisions]);
 
   useEffect(() => {
     void load();
@@ -95,9 +114,9 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
         const task = next.decisionTask;
         const applies = task && (!pending.taskId || task.id === pending.taskId);
         const failed = applies && (task.state === "FAILED" || task.state === "INTERRUPTED");
-        const completed = applies && task.state === "SUCCEEDED";
+        const completed = applies && task.state === "DONE";
         const timedOut = Date.now() - pending.requestedAt > 120_000;
-        const error = failed ? (typeof task.error === "string" ? task.error : task.error?.message) || "The decision stopped before it completed. You can ask Jev again."
+        const error = failed ? task.error || "The decision stopped before it completed. You can ask Jev again."
           : timedOut && !completed ? "This decision is taking longer than expected. Refresh listings to check its status; another request is not needed." : null;
         return { id, next, error, done: Boolean(failed || completed || timedOut || (!task && next.selection && !next.selection.stale && next.selection.id !== pending.previous)) };
       }));
@@ -114,7 +133,8 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
             return remaining;
           });
         } else {
-          setNotice({ tone: "error", text: `The decision is still pending. ${asServiceError(result.reason).message} Checking again shortly.` });
+          const expired = Object.values(pendingDecisions).some((pending) => Date.now() - pending.requestedAt > 120_000);
+          setNotice({ tone: "error", text: `${asServiceError(result.reason).message} ${expired ? "Refresh listings to check the decision's status; another request is not needed." : "The decision is still pending. Checking again shortly."}` });
         }
       }
       if (Object.values(pendingDecisions).some((pending) => Date.now() - pending.requestedAt > 120_000)) {
@@ -418,7 +438,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
                           listing={listing}
                           tierLabel={heading}
                           tierUnknown={group.tiers.includes("UNRESOLVED") || group.tiers.includes("REMOTE_UNCONFIRMED")}
-                          busy={Object.prototype.hasOwnProperty.call(pendingDecisions, listing.id) ? "decide" : busy[listing.id] ?? null}
+                          busy={Object.prototype.hasOwnProperty.call(pendingDecisions, listing.id) || listing.decisionTask?.state === "RUNNING" || listing.decisionTask?.state === "QUEUED" ? "decide" : busy[listing.id] ?? null}
                           pipelineHref={mode === "preview" ? "/preview/pipeline" : "/pipeline"}
                           onDecide={() => void act(listing, "decide")}
                           onTrack={() => void act(listing, "track")}

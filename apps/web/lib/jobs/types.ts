@@ -147,6 +147,8 @@ export interface ListingView {
   descriptionCompleteness: "FULL" | "PARTIAL" | "NONE";
   status: "OPEN" | "CLOSED" | "UNKNOWN";
   postedText: string | null;
+  /** This job's own posting, when known independently of source observations. */
+  postingUrl?: string | null;
   observedAt: string;
   /** Every source that showed this listing; at least one. */
   provenance: ListingSourceView[];
@@ -161,9 +163,11 @@ export interface ListingView {
   decisionPending?: boolean;
   decisionTask?: {
     id: string;
-    state: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "INTERRUPTED";
-    error: string | { code?: string; message: string } | null;
-    resultId?: string | null;
+    state: "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "INTERRUPTED";
+    error: string | null;
+    resultId: string | null;
+    requestedAt: string;
+    updatedAt: string;
   } | null;
 }
 

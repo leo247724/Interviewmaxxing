@@ -89,8 +89,8 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
     } catch (error) {
       const serviceError = asServiceError(error);
       if (serviceError.code === "conflict") {
-        await load();
-        setMoveError(`${serviceError.message} The board now shows the latest version; nothing was moved.`);
+        const latest = await load();
+        setMoveError(`${serviceError.message} ${latest ? "The board now shows the latest version; this move wasn't saved." : "This move wasn't saved, and the latest board couldn't be fetched. The cards below are the last loaded version."}`);
       } else {
         setMoveError(serviceError.message);
       }
@@ -216,6 +216,13 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
         <p className="lede">Loading your pipeline…</p>
       ) : (
         <>
+          {loadError && <section className="notice notice--unavailable" role="alert" aria-labelledby="pipeline-refresh-failed">
+            <h2 id="pipeline-refresh-failed" className="notice__title">Showing the last loaded board</h2>
+            <p>The latest changes couldn&rsquo;t be fetched. {loadError.message}</p>
+            <button type="button" className="button button--secondary" onClick={async () => {
+              if (await load()) setMoveError(null);
+            }}>Refresh board</button>
+          </section>}
           <div className="pipeline-focus" aria-label="Focus the pipeline">
             {([
               ["all", "All tracked", entries.length],

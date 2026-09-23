@@ -217,16 +217,15 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     setFormErrors(errors);
     setSubmitCount((count) => count + 1);
     if (Object.keys(errors).length > 0 || !resumeId) return;
-    if (mode === "live") {
-      const problem = executionProblem(readiness, applicationUrl);
-      if (problem) {
-        setFormAlert(`Couldn't start the application. ${problem}`);
-        return;
-      }
-    }
-
     setStarting(true);
     try {
+      if (mode === "live") {
+        const problem = executionProblem(await refreshReadiness(), applicationUrl);
+        if (problem) {
+          setFormAlert(`Couldn't start the application. ${problem}`);
+          return;
+        }
+      }
       const started = await service.start({ applicationUrl: applicationUrl.trim(), profile, resumeId });
       setConnection("connected");
       failuresRef.current = 0;
@@ -309,19 +308,19 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
           setActionError("The site didn't accept some answers. They're marked below; nothing was submitted.");
           return false;
         }
-        return runAction(() => {
-          const problem = mode === "live" ? executionProblem(readiness, view?.applicationUrl ?? "") : null;
+        return runAction(async () => {
+          const problem = mode === "live" ? executionProblem(await refreshReadiness(), view?.applicationUrl ?? "") : null;
           if (problem) throw new ServiceError("invalid", problem);
           return service.resume(viewId!);
         });
       },
-      resume: () => runAction(() => {
-        const problem = mode === "live" ? executionProblem(readiness, view?.applicationUrl ?? "") : null;
+      resume: () => runAction(async () => {
+        const problem = mode === "live" ? executionProblem(await refreshReadiness(), view?.applicationUrl ?? "") : null;
         if (problem) throw new ServiceError("invalid", problem);
         return service.resume(viewId!);
       }),
-      reconcile: (input) => runAction(() => {
-        const problem = mode === "live" && input.kind === "recheck" ? executionProblem(readiness, view?.applicationUrl ?? "") : null;
+      reconcile: (input) => runAction(async () => {
+        const problem = mode === "live" && input.kind === "recheck" ? executionProblem(await refreshReadiness(), view?.applicationUrl ?? "") : null;
         if (problem) throw new ServiceError("invalid", problem);
         return service.reconcile(viewId!, input);
       }),
@@ -341,7 +340,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
         setSubmitCount(0);
       },
     }),
-    [runAction, service, viewId, view?.applicationUrl, mode, readiness],
+    [runAction, service, viewId, view?.applicationUrl, mode, refreshReadiness],
   );
 
   function handleScenario(scenario: PreviewScenarioId) {
