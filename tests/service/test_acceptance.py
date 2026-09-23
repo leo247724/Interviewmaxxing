@@ -290,3 +290,38 @@ def test_uncertain_submission_is_locked_then_reconciled_from_the_site(
         assert view["receipt"]["confirmationAuthority"] == "site"
         assert view["receipt"]["confirmationReference"] == record["confirmation_reference"]
         assert ats.submissions("uncertain")["accepted_count"] == 1
+
+
+def test_repeated_site_rejections_stay_answerable_across_service_restart(
+    home: LocalPaths, ats: MockAts, fictional_site: FictionalSite
+) -> None:
+    with real_service(home, fictional_site) as h:
+        app_id = start(h, ats.url("validation")).json["id"]
+        view = wait_for(h, app_id, STATES_DONE)
+        assert view["state"] == "NEEDS_INPUT", view["events"][-5:]
+        assert ats.submissions("validation")["rejected_count"] == 1
+        [question] = view["needs"]["questions"]
+        saved = h.client.post(f"/applications/{app_id}/answers", {
+            "answers": {question["id"]: "555"}, "attestations": {},
+        })
+        assert saved.status == 200 and not saved.json["needs"]["errors"]
+        assert h.client.post(f"/applications/{app_id}/resume", {}).status == 200
+        view = wait_for(h, app_id, STATES_DONE)
+        assert view["state"] == "NEEDS_INPUT", view["events"][-5:]
+        assert ats.submissions("validation")["rejected_count"] == 2
+        assert ats.submissions("validation")["accepted_count"] == 0
+
+    with real_service(home, fictional_site) as h:
+        view = h.client.get(f"/applications/{app_id}").json
+        [question] = view["needs"]["questions"]
+        saved = h.client.post(f"/applications/{app_id}/answers", {
+            "answers": {question["id"]: "3035550142"}, "attestations": {},
+        })
+        assert saved.status == 200 and not saved.json["needs"]["errors"]
+        assert h.client.post(f"/applications/{app_id}/resume", {}).status == 200
+        view = wait_for(h, app_id, STATES_DONE)
+        assert view["state"] == "SUBMITTED", view["events"][-5:]
+        server = ats.submissions("validation")
+        assert server["accepted_count"] == 1 and server["rejected_count"] == 2
+        assert server["submissions"][0]["fields"]["phone"] == "3035550142"
+        assert view["receipt"]["confirmationAuthority"] == "site"
