@@ -16,6 +16,7 @@
   "remote": {
     "eligible_region": "United States"
   },
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID",
   "minimum_compensation": {
     "amount": 100000,
     "currency": "USD",

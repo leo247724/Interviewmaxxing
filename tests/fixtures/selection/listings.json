@@ -1,9 +1,10 @@
 {
   "_note": "Fictional core JobListing records only. No real employers, people or profile data.",
   "remote_manager": {
-    "id": "lst_fff8a8f052f60ab5b69ae5d07c30052b",
+    "id": "lst_bf28fe7d0ff19cf65a60823f8d9412fa",
     "source": "fixture",
     "source_listing_id": "remote-mm",
+    "posting_url": "https://example.invalid/jobs/remote-mm",
     "source_url": "https://example.invalid/jobs/remote-mm",
     "application_url": "https://example.invalid/apply/remote-mm",
     "title": "Marketing Manager, Lifecycle",
@@ -30,14 +31,16 @@
         "source_url": "https://example.invalid/jobs/remote-mm",
         "application_url": "https://example.invalid/apply/remote-mm",
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/remote-mm"
       }
     ]
   },
   "austin_director_no_salary": {
-    "id": "lst_e06ed30041b43afc37d38ca252ab066c",
+    "id": "lst_fdb704951f5f77b95e374030f7ab2bb2",
     "source": "fixture",
     "source_listing_id": "austin-dir",
+    "posting_url": "https://example.invalid/jobs/austin-dir",
     "source_url": "https://example.invalid/jobs/austin-dir",
     "title": "Director of Marketing",
     "company": "Fictional Foods Inc",
@@ -55,14 +58,16 @@
         "source_url": "https://example.invalid/jobs/austin-dir",
         "application_url": null,
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/austin-dir"
       }
     ]
   },
   "hourly_contract": {
-    "id": "lst_43ffe214764c0bc4ce2f0139b957c805",
+    "id": "lst_b35508cd65703cb9970f313dc8589b1f",
     "source": "fixture",
     "source_listing_id": "hourly",
+    "posting_url": "https://example.invalid/jobs/hourly",
     "source_url": "https://example.invalid/jobs/hourly",
     "title": "Marketing Manager (Contract)",
     "company": "Fictional Staffing LLC",
@@ -87,14 +92,16 @@
         "source_url": "https://example.invalid/jobs/hourly",
         "application_url": null,
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/hourly"
       }
     ]
   },
   "dallas_onsite": {
-    "id": "lst_faa17d98398ccfe381e4ed58a0f2d4cf",
+    "id": "lst_8c688c6e45403fe1dd59fa2d1711dfbe",
     "source": "fixture",
     "source_listing_id": "dallas",
+    "posting_url": "https://example.invalid/jobs/dallas",
     "source_url": "https://example.invalid/jobs/dallas",
     "title": "Marketing Director",
     "company": "Fictional Logistics",
@@ -112,14 +119,16 @@
         "source_url": "https://example.invalid/jobs/dallas",
         "application_url": null,
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/dallas"
       }
     ]
   },
   "closed": {
-    "id": "lst_472b8c0d8d979b334c8885303b07f555",
+    "id": "lst_590ea0e44a0a03655443de7c408d36c4",
     "source": "fixture",
     "source_listing_id": "closed",
+    "posting_url": "https://example.invalid/jobs/closed",
     "source_url": "https://example.invalid/jobs/closed",
     "title": "Marketing Manager",
     "company": "Fictional Closed Co",
@@ -137,14 +146,16 @@
         "source_url": "https://example.invalid/jobs/closed",
         "application_url": null,
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/closed"
       }
     ]
   },
   "snippet_only": {
-    "id": "lst_67fc25123bb589da5801d30aaf9d7e8e",
+    "id": "lst_ea7f483586aad4dc587111d91919c3d2",
     "source": "fixture",
     "source_listing_id": "snippet",
+    "posting_url": "https://example.invalid/jobs/snippet",
     "source_url": "https://example.invalid/jobs/snippet",
     "title": "Marketing Manager",
     "company": "Fictional Snippet Co",
@@ -161,14 +172,16 @@
         "source_url": "https://example.invalid/jobs/snippet",
         "application_url": null,
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/snippet"
       }
     ]
   },
   "injection": {
-    "id": "lst_7c605053fd5978af1a908b0644140fcf",
+    "id": "lst_1bebce704291939bc86627e2e33868d5",
     "source": "fixture",
     "source_listing_id": "injection",
+    "posting_url": "https://example.invalid/jobs/injection",
     "source_url": "https://example.invalid/jobs/injection",
     "title": "Marketing Director",
     "company": "Fictional Tricks Co",
@@ -186,8 +199,44 @@
         "source_url": "https://example.invalid/jobs/injection",
         "application_url": null,
         "observed_at": "2026-09-22T12:00:00Z",
-        "evidence": "fictional fixture"
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/injection"
       }
     ]
+  },
+  "austin_onsite_manager": {
+    "id": "lst_83167e22bbd64e1791faac4c057b01da",
+    "source": "fixture",
+    "source_listing_id": "austin-onsite-mm",
+    "posting_url": "https://example.invalid/jobs/austin-onsite-mm",
+    "source_url": "https://example.invalid/jobs/austin-onsite-mm",
+    "title": "Senior Marketing Manager",
+    "company": "Fictional Hill Country Co",
+    "location": "Austin, TX",
+    "work_arrangement": "ONSITE",
+    "description": "Onsite in Austin, TX. Lead lifecycle and demand generation for a B2B product and manage two marketers. Requires 5+ years of B2B marketing.",
+    "description_completeness": "FULL",
+    "status": "OPEN",
+    "observed_at": "2026-09-22T12:00:00Z",
+    "evidence": "fictional fixture",
+    "provenance": [
+      {
+        "source": "fixture",
+        "source_listing_id": "austin-onsite-mm",
+        "source_url": "https://example.invalid/jobs/austin-onsite-mm",
+        "application_url": "https://example.invalid/apply/austin-onsite-mm",
+        "observed_at": "2026-09-22T12:00:00Z",
+        "evidence": "fictional fixture",
+        "posting_url": "https://example.invalid/jobs/austin-onsite-mm"
+      }
+    ],
+    "application_url": "https://example.invalid/apply/austin-onsite-mm",
+    "compensation": {
+      "raw_text": "$115,000 - $130,000 a year",
+      "minimum": 115000,
+      "maximum": 130000,
+      "currency": "USD",
+      "period": "YEAR"
+    }
   }
 }

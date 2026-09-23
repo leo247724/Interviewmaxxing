@@ -17,7 +17,7 @@ from interviewmaxxing_core import SelectionChoice
 from .jev import ChoiceAnswer, ChoiceQuestion, DecisionRequest, DecisionResponse
 from .policy import Hold, HoldReason
 
-RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.3"
+RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.4"
 
 Threshold = Annotated[FiniteFloat, Field(ge=0, le=1)]
 
@@ -126,20 +126,34 @@ FOCUSED_QUESTIONS: dict[str, ChoiceQuestion] = {
     ),
 }
 
+_LOCATION_PRIORITY = (
+    "state.preferences.location_priority states how much work arrangement matters "
+    "relative to other fit; state.checks.location_tier is the tier code computed for this "
+    "listing. STRONGLY_PREFER_ONSITE_HYBRID: a matching onsite/hybrid role (tier "
+    "PREFERRED) is strongly preferred over an eligible remote role (tier SECONDARY). For "
+    "a PREFERRED role, solid role and seniority fit with partial qualifications still "
+    "favors APPLY or REVIEW. For a SECONDARY role, choose APPLY only when role, seniority "
+    "and qualification fit are clearly strong; otherwise prefer REVIEW. PREFER_REMOTE is "
+    "the mirror image. BALANCED: both tiers (EQUAL) count the same. Location priority is "
+    "never by itself a reason to SKIP an eligible role, and tier UNRANKED never counts as "
+    "the preferred tier. "
+)
+
 FINAL_QUESTION = ChoiceQuestion(
     instructions=(
         "Should the candidate apply to this job? Use state.assessments (earlier answers "
         "with their probabilities), state.checks (computed by code: pay against the "
-        "minimum, location status, policy holds), state.listing, state.candidate and "
-        "state.preferences. Choose APPLY only when role, seniority, qualifications and "
+        "minimum, location status and tier, policy holds), state.listing, state.candidate "
+        "and state.preferences. Choose APPLY only when role, seniority, qualifications and "
         "eligibility are supported by evidence. Choose SKIP for a clear mismatch. Choose "
         "REVIEW when evidence is missing, ambiguous or contradictory, or the tradeoff "
-        "needs the candidate's judgment. " + _UNTRUSTED
+        "needs the candidate's judgment. " + _LOCATION_PRIORITY + _UNTRUSTED
     ),
     criteria={
-        "APPLY": "Worth applying: fit is supported by the evidence.",
+        "APPLY": "Worth applying: fit is supported by the evidence and location priority.",
         "SKIP": "Not worth applying: clear mismatch with role, level, eligibility or needs.",
-        "REVIEW": "Needs the candidate: missing, ambiguous or conflicting evidence.",
+        "REVIEW": "Needs the candidate: missing, ambiguous or conflicting evidence, or a "
+        "secondary-tier role without clearly strong fit.",
     },
 )
 

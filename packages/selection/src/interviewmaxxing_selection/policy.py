@@ -23,6 +23,7 @@ from interviewmaxxing_core import (
     HoldCode,
     JobListing,
     ListingStatus,
+    LocationPriority,
     PolicyHold,
     SelectionChoice,
     SelectionPreferences,
@@ -113,6 +114,58 @@ def check_location(listing: JobListing, preferences: SelectionPreferences) -> Lo
         if arrangement in target.arrangements and _has_term(listing.location, locality):
             return LocationStatus.ONSITE_ACCEPTED
     return LocationStatus.ONSITE_MISMATCH
+
+
+class LocationTier(StrEnum):
+    """Where an eligible listing ranks under ``SelectionPreferences.location_priority``.
+    An ordinal preference, not a weight and never an exclusion."""
+
+    PREFERRED = "PREFERRED"
+    """The arrangement the user ranks first (default: matching Austin onsite/hybrid)."""
+    EQUAL = "EQUAL"
+    """BALANCED priority: matching onsite/hybrid and eligible remote rank the same."""
+    SECONDARY = "SECONDARY"
+    """Eligible, and a valid option, but ranked below the preferred tier."""
+    UNRANKED = "UNRANKED"
+    """Location unknown or not accepted; never assumed to be the preferred tier."""
+
+
+_ONSITE_STATUSES = frozenset({LocationStatus.ONSITE_ACCEPTED})
+_REMOTE_STATUSES = frozenset(
+    {LocationStatus.REMOTE_REGION_MATCH, LocationStatus.REMOTE_NEEDS_ELIGIBILITY}
+)
+
+
+def location_tier(location: LocationStatus, priority: LocationPriority) -> LocationTier:
+    if priority is LocationPriority.BALANCED and location in _ONSITE_STATUSES | _REMOTE_STATUSES:
+        return LocationTier.EQUAL
+    first, second = (
+        (_REMOTE_STATUSES, _ONSITE_STATUSES)
+        if priority is LocationPriority.PREFER_REMOTE
+        else (_ONSITE_STATUSES, _REMOTE_STATUSES)
+    )
+    if location in first:
+        return LocationTier.PREFERRED
+    if location in second:
+        return LocationTier.SECONDARY
+    return LocationTier.UNRANKED
+
+
+def location_priority_reason(
+    tier: LocationTier, priority: LocationPriority, location: LocationStatus
+) -> str:
+    """A plain ranking reason for display and for Jev's state."""
+    kind = "onsite/hybrid in an accepted location" if location in _ONSITE_STATUSES else "remote"
+    if tier is LocationTier.PREFERRED:
+        return f"location priority: {kind} is the preferred tier ({priority.value})"
+    if tier is LocationTier.SECONDARY:
+        return (
+            f"location priority: {kind} is an eligible secondary tier, ranked below the "
+            f"preferred tier ({priority.value}); not excluded"
+        )
+    if tier is LocationTier.EQUAL:
+        return f"location priority: {kind} ranks equally with other eligible roles (BALANCED)"
+    return "location priority: unranked (location unknown or not accepted)"
 
 
 class HoldReason(StrEnum):

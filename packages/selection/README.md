@@ -103,14 +103,36 @@ service.is_current(
 
 Each fine-grained `HoldReason` is recorded as a core `PolicyHold`, with the reason name as the prefix of its detail.
 
-`SelectionOutcome` adds audit detail the contract has no place for: focused assessments, per-call model IDs, generation IDs, the detailed provider failure, the pay and location statuses, and the cache key. The store also keeps the exact job and candidate evidence snapshots, the preferences, the requests sent and the raw responses.
+`SelectionOutcome` adds audit detail the contract has no place for: focused assessments, per-call model IDs, generation IDs, the detailed provider failure, the pay and location statuses, the location tier, and the cache key. The store also keeps the exact job and candidate evidence snapshots, the preferences, the requests sent and the raw responses.
+
+### Location priority
+
+`SelectionPreferences.location_priority` (core `LocationPriority`) is an ordinal preference. It is never a weight and never an exclusion. The default, `STRONGLY_PREFER_ONSITE_HYBRID`, is the user's stated preference: matching Austin onsite/hybrid roles rank well above US-wide remote roles, and remote roles stay eligible.
+
+- **Tier.** `location_tier(location_status, priority)` gives `PREFERRED`, `SECONDARY`, `EQUAL` (for `BALANCED`) or `UNRANKED`. A missing or unaccepted location is `UNRANKED` and never counts as Austin.
+- **Jev.** The state carries `preferences.location_priority`, `checks.location_tier` and a plain `checks.location_priority_reason`. The final question states the relative importance:
+  - a preferred-tier role with solid role and seniority fit favors APPLY or REVIEW even when qualifications are partial;
+  - a secondary-tier remote role needs clearly strong fit for APPLY, otherwise REVIEW;
+  - location priority is never by itself a reason to SKIP.
+
+  If Jev skips an eligible remote role despite strong focused answers, the decision becomes REVIEW (contradictory evidence).
+- **Record.** `selection.reasons` starts with the ranking reason, and `SelectionOutcome.location_tier` stores the tier.
+- **Cache.** The priority is part of `preferences.fingerprint`, so changing it invalidates earlier decisions. The rubric version is `jev-selection-rubric/2026-09-22.4`.
+- **Ranking.** `rank_outcomes(outcomes)` orders results as follows:
+  1. every SKIP last;
+  2. then by tier, with PREFERRED and EQUAL first, then SECONDARY, then UNRANKED;
+  3. then APPLY before REVIEW;
+  4. then Jev's APPLY probability.
+
+  An Austin REVIEW therefore ranks above a remote APPLY. `ranking_reason(outcome)` explains the position.
 
 ### What is sent to Jev
 
 - **Listing:** title, company, location text, work arrangement, stated remote eligibility, pay as raw text, and the description (at most 12,000 characters).
 - **Candidate:** verified facts, plus experience and education entries backed by verified facts. Contact details, identity, protected attributes, pay history, employer names, saved answers and generated answers are excluded.
-- **Preferences:** titles, onsite targets, remote region, excluded keywords and notes.
-- **Code results:** the pay status, location status and hold names.
+- **Preferences:** titles, onsite targets, remote region, location priority, excluded keywords and notes.
+- **Code results:** the pay status, location status, location tier and ranking reason, and hold names.
+- **Candidate identity:** never sent. `CandidateEvidence.from_profile` drops any fact whose value contains the candidate's name, email, phone, address or profile URLs, or any email, phone or URL. `CandidateEvidence` itself also rejects email, phone and URL values.
 
 URLs, IDs and numeric pay bounds are never sent.
 
@@ -120,7 +142,52 @@ URLs, IDs and numeric pay bounds are never sent.
 python -m interviewmaxxing_selection.smoke --live --env-file /path/to/ignored/env.local
 ```
 
-The smoke runs 4 fictional selections with 8 calls, costing about USD 0.0005. Offline tests never touch the network.
+The smoke runs 5 fictional selections with 10 calls, costing about USD 0.0007. The receipt includes each location tier and the ranked order. Offline tests never touch the network.
+
+## API for S2 (local service)
+
+```python
+from interviewmaxxing_core import JobListing, SelectionPreferences, JobSelection, LocationPriority
+from interviewmaxxing_selection import (
+    CandidateEvidence,
+    CredentialError,
+    JevClient,
+    SelectionOutcome,
+    SelectionService,
+    SelectionStore,
+    load_api_key,
+    rank_outcomes,
+    ranking_reason,
+)
+
+try:
+    client = JevClient(load_api_key())  # IMX_OPENROUTER_ENV_FILE -> ignored env.local
+except CredentialError:
+    client = None  # every selection becomes REVIEW with provider_error.code == "NOT_CONFIGURED"
+service = SelectionService(
+    client=client,
+    store=SelectionStore(),  # private; default $IMX_HOME/selection/selection.sqlite3
+    application_lookup=existing_application_id,  # (JobListing) -> str | None, from the ApplicationStore
+    candidate_id=paths.candidate_id,  # used when there is no candidate evidence
+)
+candidate = CandidateEvidence.from_profile(profile) if profile else None
+outcome: SelectionOutcome = service.select(
+    listing, preferences, candidate
+)  # sync; do it off the event loop
+outcome.selection  # core JobSelection to return/persist
+outcome.location_tier, outcome.assessments, outcome.holds  # display detail
+service.is_current(outcome.selection, listing, preferences, candidate)  # stale-badge check
+ordered = rank_outcomes(outcomes)
+[ranking_reason(o) for o in ordered]
+store = service.store
+store.latest(listing.id)
+store.history(listing.id)
+store.get(selection_id)
+store.audit(selection_id)  # snapshots and raw provider exchange; local only, not for the frontend
+```
+
+- **Threads.** `select` blocks for about 0.5–2 s when it calls Jev, and returns immediately for hard-constraint SKIPs and cache hits. `SelectionStore` holds one SQLite connection, so give each worker thread its own store.
+- **Preferences.** Preferences come from the user, including `location_priority`, and persist unchanged. Never return `store.audit` or the API key to the frontend.
 
 ## Contract requests to core (additive, optional)
 

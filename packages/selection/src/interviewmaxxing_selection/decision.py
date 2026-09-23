@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from interviewmaxxing_core import JobSelection
 
 from .jev import ProviderFailure
-from .policy import CompensationStatus, Hold, LocationStatus
+from .policy import CompensationStatus, Hold, LocationStatus, LocationTier
 from .rubric import Assessment
 
 
@@ -29,6 +29,9 @@ class SelectionOutcome(BaseModel):
     """Jev's focused answers (choice, probabilities, confidence) fed to the final question."""
     compensation: CompensationStatus
     location: LocationStatus
+    location_tier: LocationTier
+    """Rank of this listing under ``preferences.location_priority`` (ordinal, never an
+    exclusion); used by :func:`rank_outcomes`."""
     existing_application_id: str | None = None
     returned_models: list[str] = Field(default_factory=list)
     """Model ID returned by each successful call, in order."""

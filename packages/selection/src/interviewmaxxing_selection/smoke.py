@@ -2,9 +2,9 @@
 
     python -m interviewmaxxing_selection.smoke --live --env-file /path/to/ignored/env.local
 
-Runs four fictional selections (two Jev calls each, about USD 0.0006 in total) and
+Runs five fictional selections (two Jev calls each, about USD 0.0007 in total) and
 prints a JSON receipt: requested/returned model, provider, choices, confidence, holds,
-tokens, cost and latency. The key is read from the env file and never printed.
+location tier, ranked order, tokens, cost and latency. The key is read from the env file and never printed.
 Without ``--live`` nothing is sent. Decisions go to a temporary store unless
 ``--store`` is given.
 """
@@ -34,6 +34,7 @@ from interviewmaxxing_core import (
 from .credentials import CredentialError, load_api_key
 from .evidence import CandidateEvidence
 from .jev import JevClient
+from .ranking import rank_outcomes, ranking_reason
 from .service import SelectionService
 from .storage import SelectionStore
 
@@ -69,6 +70,7 @@ def fictional_listing(
         id=listing_id_for("fictional", key, url),
         source="fictional",
         source_listing_id=key,
+        posting_url=url,
         source_url=url,
         title=title,
         company=company,
@@ -85,6 +87,7 @@ def fictional_listing(
             ListingSource(
                 source="fictional",
                 source_listing_id=key,
+                posting_url=url,
                 source_url=url,
                 observed_at=_OBSERVED,
                 evidence="fictional smoke listing",
@@ -117,6 +120,26 @@ def fictional_listings() -> list[JobListing]:
             ),
         ),
         fictional_listing(
+            "austin-mm",
+            title="Marketing Manager, Demand Generation",
+            company="Example Hill Country Co (fictional)",
+            location="Austin, TX",
+            arrangement=WorkArrangement.HYBRID,
+            compensation=Compensation(
+                raw_text="$120,000 - $140,000 per year",
+                minimum=120_000,
+                maximum=140_000,
+                currency="USD",
+                period=CompensationPeriod.YEAR,
+            ),
+            description=(
+                "Hybrid in Austin, TX, three days a week in office. Lead B2B demand "
+                "generation and lifecycle programs, manage two marketers, and own pipeline "
+                "reporting. Requires 6+ years of B2B marketing experience and 2+ years "
+                "managing people."
+            ),
+        ),
+        fictional_listing(
             "austin-swe",
             title="Senior Software Engineer, Backend",
             company="Example Robotics (fictional)",
@@ -145,6 +168,7 @@ def run(env_file: Path | None, store_path: Path | None) -> dict[str, Any]:
     key = load_api_key(env_file)
     client = JevClient(key, max_attempts=2, timeout_seconds=20.0)
     rows: list[dict[str, Any]] = []
+    ranked: list[str] = []
     total_calls = 0
     costs: list[float] = []
     with tempfile.TemporaryDirectory(prefix="imx-jev-smoke-") as tmp:
@@ -156,8 +180,11 @@ def run(env_file: Path | None, store_path: Path | None) -> dict[str, Any]:
             (listing, FICTIONAL_CANDIDATE) for listing in listings
         ]
         cases.append((listings[0], None))  # no candidate profile -> never APPLY
+        outcomes = []
         for listing, candidate in cases:
             out = service.select(listing, prefs, candidate, use_cache=False)
+            if candidate is not None:
+                outcomes.append((listing.source_listing_id, out))
             sel = out.selection
             model = sel.model_decision
             total_calls += out.provider_calls
@@ -171,6 +198,8 @@ def run(env_file: Path | None, store_path: Path | None) -> dict[str, Any]:
                     "model_confidence": model.confidence if model else None,
                     "effective_choice": sel.effective_choice,
                     "holds": [h.reason for h in out.holds],
+                    "location_priority": prefs.location_priority,
+                    "location_tier": out.location_tier,
                     "assessments": {k: a.choice for k, a in out.assessments.items()},
                     "requested_model": sel.requested_model,
                     "returned_models": out.returned_models,
@@ -182,12 +211,18 @@ def run(env_file: Path | None, store_path: Path | None) -> dict[str, Any]:
                     else None,
                 }
             )
+        names = {id(out): name for name, out in outcomes}
+        ranked = [
+            f"{names[id(out)]}: {ranking_reason(out)}"
+            for out in rank_outcomes(out for _, out in outcomes)
+        ]
         store.close()
     return {
         "endpoint": client.url,
         "key_source": key.source,
         "rubric_version": service.rubric_version,
         "selections": rows,
+        "ranked_with_candidate": ranked,
         "total_calls": total_calls,
         "total_cost_usd": sum(costs) if costs else None,
     }

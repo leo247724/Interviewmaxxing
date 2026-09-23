@@ -52,11 +52,14 @@ from .policy import (
     Hold,
     HoldReason,
     LocationStatus,
+    LocationTier,
     check_compensation,
     check_location,
     effective_decision,
     evidence_holds,
     hard_constraint_holds,
+    location_priority_reason,
+    location_tier,
 )
 from .rubric import (
     Assessment,
@@ -102,7 +105,14 @@ class _Context:
     cache_key: str
     compensation: CompensationStatus
     location: LocationStatus
+    tier: LocationTier
     existing: str | None
+
+    @property
+    def tier_reason(self) -> str:
+        return location_priority_reason(
+            self.tier, self.preferences.location_priority, self.location
+        )
 
 
 class SelectionService:
@@ -172,6 +182,7 @@ class SelectionService:
         use_cache: bool = True,
     ) -> SelectionOutcome:
         job_hash, candidate_hash = evidence_hashes(listing, candidate)
+        location = check_location(listing, preferences)
         ctx = _Context(
             listing=listing,
             preferences=preferences,
@@ -180,7 +191,8 @@ class SelectionService:
             candidate_hash=candidate_hash,
             cache_key=self.cache_key(listing, preferences, candidate),
             compensation=check_compensation(listing, preferences),
-            location=check_location(listing, preferences),
+            location=location,
+            tier=location_tier(location, preferences.location_priority),
             existing=self.application_lookup(listing) if self.application_lookup else None,
         )
         holds = evidence_holds(
@@ -198,7 +210,9 @@ class SelectionService:
             existing_application_id=ctx.existing,
         )
         if hard:
-            return self._finish(ctx, holds=hard + holds, reasons=[h.detail for h in hard])
+            return self._finish(
+                ctx, holds=hard + holds, reasons=[h.detail for h in hard] + [ctx.tier_reason]
+            )
 
         if use_cache and self.store is not None:
             cached = self.store.find_cached(listing.id, ctx.cache_key)
@@ -215,6 +229,8 @@ class SelectionService:
             "checks": {
                 "pay_vs_floor": ctx.compensation.value,
                 "location": ctx.location.value,
+                "location_tier": ctx.tier.value,
+                "location_priority_reason": ctx.tier_reason,
                 "policy_holds": sorted({h.reason.value for h in holds}),
             },
         }
@@ -253,7 +269,9 @@ class SelectionService:
         return self._finish(
             ctx,
             holds=holds,
-            reasons=reasons_from(assessments) + [h.detail for h in holds] + note,
+            reasons=[ctx.tier_reason, *reasons_from(assessments)]
+            + [h.detail for h in holds]
+            + note,
             model_decision=decision,
             assessments=assessments,
             results=results,
@@ -276,7 +294,7 @@ class SelectionService:
         return self._finish(
             ctx,
             holds=[*holds, hold],
-            reasons=[hold.detail],
+            reasons=[hold.detail, ctx.tier_reason],
             assessments=assessments_from(results[0].response) if results else {},
             results=results,
             requests=requests,
@@ -320,6 +338,7 @@ class SelectionService:
             assessments=assessments or {},
             compensation=ctx.compensation,
             location=ctx.location,
+            location_tier=ctx.tier,
             existing_application_id=ctx.existing,
             returned_models=[r.response.model for r in results],
             provider_generation_ids=[r.response.id for r in results if r.response.id],
