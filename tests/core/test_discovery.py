@@ -73,7 +73,13 @@ def _listing(source: str, source_id: str | None, posting_url: str | None = None,
 
 def test_default_search_is_the_users_stated_targets():
     query = JobSearchQuery()
-    assert query.title_phrases == ["marketing manager", "marketing director"]
+    assert query.title_phrases[:6] == [
+        "paid media manager", "senior paid media manager", "performance marketing manager",
+        "growth marketing manager", "demand generation manager", "digital marketing manager",
+    ]
+    assert "marketing director" in query.title_phrases
+    assert "not an exact job-title match" in query.role_focus
+    assert "Semantically similar" in query.role_focus
     [austin] = query.onsite
     assert austin.location == "Austin, TX"
     assert austin.arrangements == [WorkArrangement.ONSITE, WorkArrangement.HYBRID]
@@ -119,6 +125,14 @@ def test_location_priority_is_explicit_editable_and_invalidates_decisions():
     balanced = SelectionPreferences(location_priority="BALANCED")
     assert balanced.fingerprint != preferred.fingerprint
     assert JobSearchQuery.from_preferences(balanced).location_priority is LocationPriority.BALANCED
+
+
+def test_semantic_role_focus_is_editable_and_part_of_query_and_decision_inputs():
+    original = SelectionPreferences()
+    assert original.excluded_keywords == []
+    changed = SelectionPreferences(role_focus="Paid acquisition leadership and growth operations")
+    assert changed.fingerprint != original.fingerprint
+    assert JobSearchQuery.from_preferences(changed).role_focus == changed.role_focus
 
 
 def test_repeat_observation_retains_new_employer_identity_and_evidence():

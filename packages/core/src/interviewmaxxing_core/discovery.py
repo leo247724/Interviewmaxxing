@@ -57,7 +57,24 @@ CurrencyCode = Annotated[str, BeforeValidator(_upper), StringConstraints(pattern
 Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 KNOWN_SOURCES: tuple[str, ...] = ("linkedin", "builtin", "indeed", "google")
-DEFAULT_TITLE_PHRASES: tuple[str, ...] = ("marketing manager", "marketing director")
+DEFAULT_TITLE_PHRASES: tuple[str, ...] = (
+    "paid media manager",
+    "senior paid media manager",
+    "performance marketing manager",
+    "growth marketing manager",
+    "demand generation manager",
+    "digital marketing manager",
+    "marketing manager",
+    "marketing director",
+)
+DEFAULT_ROLE_FOCUS = (
+    "Performance marketing operator: hands-on paid acquisition, paid media, "
+    "performance and growth marketing, demand generation, and digital marketing leadership. "
+    "Judge actual responsibilities and ownership, not an exact job-title match. "
+    "Semantically similar acquisition, lead and director roles are eligible. "
+    "Pure data, software or platform engineering and unrelated marketing specialties "
+    "are outside this focus."
+)
 DEFAULT_ONSITE_LOCATION = "Austin, TX"
 DEFAULT_REMOTE_REGION = "United States"
 DEFAULT_JEV_MODEL = "typesafe/jev-1.13"
@@ -168,6 +185,8 @@ class JobSearchQuery(Contract):
 
     id: NonEmptyStr = Field(default_factory=lambda: new_id("qry"))
     title_phrases: list[str] = Field(default_factory=lambda: list(DEFAULT_TITLE_PHRASES))
+    """Search seeds, not an exact-title eligibility allowlist."""
+    role_focus: NonEmptyStr = DEFAULT_ROLE_FOCUS
     keywords: list[str] = Field(default_factory=list)
     """Extra terms to include (custom keywords)."""
     excluded_keywords: list[str] = Field(default_factory=list)
@@ -201,6 +220,7 @@ class JobSearchQuery(Contract):
     def from_preferences(cls, preferences: SelectionPreferences, **overrides: Any) -> JobSearchQuery:
         base = {
             "title_phrases": preferences.target_titles,
+            "role_focus": preferences.role_focus,
             "excluded_keywords": preferences.excluded_keywords,
             "onsite": preferences.onsite,
             "remote": preferences.remote,
@@ -607,6 +627,8 @@ class SelectionPreferences(Contract):
     edit, which invalidates decisions made under the old preferences."""
 
     target_titles: list[str] = Field(default_factory=lambda: list(DEFAULT_TITLE_PHRASES))
+    """Representative titles; selection evaluates the role's actual responsibilities."""
+    role_focus: NonEmptyStr = DEFAULT_ROLE_FOCUS
     onsite: list[OnsiteTarget] = Field(default_factory=_default_onsite)
     remote: RemoteTarget | None = Field(default_factory=_default_remote)
     location_priority: LocationPriority = LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
