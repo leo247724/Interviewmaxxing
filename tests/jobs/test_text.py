@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from interviewmaxxing_core import CompensationPeriod, WorkArrangement
+from interviewmaxxing_core import (
+    CompensationFloor,
+    CompensationPeriod,
+    WorkArrangement,
+    meets_floor,
+)
 from interviewmaxxing_jobs.text import (
     compensation_from_schema,
     country_level_region,
@@ -15,6 +20,7 @@ from interviewmaxxing_jobs.text import (
     pay_segment,
     split_indeed_location,
     split_linkedin_caption,
+    stated_remote_region,
 )
 
 
@@ -154,3 +160,58 @@ def test_html_description_to_text() -> None:
 )
 def test_employer_job_key_only_from_job_specific_ats_urls(url: str | None, key: str | None) -> None:
     assert employer_key_from_url(url) == key
+
+
+@pytest.mark.parametrize(
+    ("text", "currency", "low", "high"),
+    [
+        ("CAD $110,000 - $130,000 per year", "CAD", 110_000, 130_000),
+        ("C$95,000 a year", "CAD", 95_000, 95_000),
+        ("€60,000 - €70,000 per year", "EUR", 60_000, 70_000),
+        ("£50,000 a year", "GBP", 50_000, 50_000),
+        ("110,000 USD per year", "USD", 110_000, 110_000),
+        ("A$120K/yr", "AUD", 120_000, 120_000),
+    ],
+)
+def test_explicit_currency_overrides_the_dollar_default(
+    text: str, currency: str, low: float, high: float
+) -> None:
+    pay = parse_compensation(text, dollar_currency="USD")
+    assert pay is not None and pay.is_comparable
+    assert (pay.currency, pay.minimum, pay.maximum) == (currency, low, high)
+    # Another currency can never satisfy a USD floor; it is unknown, not a pass.
+    floor = CompensationFloor(amount=100_000, currency="USD", period=CompensationPeriod.YEAR)
+    assert meets_floor(pay, floor) is (True if currency == "USD" else None)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Est. $110,000 - $130,000 per year",
+        "est $110,000 a year",
+        "Approx. $120K/yr",
+        "approximately $120,000 a year",
+        "~$120K a year",
+        "USD 100,000 - CAD 120,000 a year",  # two currencies stated
+    ],
+)
+def test_estimates_and_ambiguous_currency_are_not_employer_stated_pay(text: str) -> None:
+    pay = parse_compensation(text, dollar_currency="USD")
+    assert pay is not None and pay.raw_text == text and not pay.is_comparable
+
+
+def test_estimate_words_elsewhere_do_not_hide_stated_pay() -> None:
+    pay = parse_compensation("$120,000 a year · Est. 2001", dollar_currency="USD")
+    assert pay is not None and pay.is_comparable and pay.raw_text == "$120,000 a year"
+    best = parse_compensation("Best $100,000 a year", dollar_currency="USD")  # "est" inside a word
+    assert best is not None and best.is_comparable
+
+
+@pytest.mark.parametrize("region", ["United States", "Canada", "Canada-only", "Texas-only", "TX"])
+def test_remote_region_keeps_the_source_restriction(region: str) -> None:
+    assert stated_remote_region(region) == region
+
+
+def test_remote_region_does_not_expand_city_or_generic_remote() -> None:
+    assert stated_remote_region("Austin, TX") is None
+    assert stated_remote_region("Remote") is None

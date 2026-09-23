@@ -27,6 +27,7 @@ from .integration import (
     runner_factory,
     runner_problem,
 )
+from .ownership import ServiceAlreadyRunning
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,16 +60,24 @@ def main(argv: list[str] | None = None) -> int:
         unavailable["selection"] = (
             "Jev selection (interviewmaxxing-selection) isn't installed in this service."
         )
-    app = build_app(
-        config,
-        candidates=candidates,
-        dispatcher=Dispatcher(runner_factory(config)),
-        profile_loader=lambda: candidates.profile(config.candidate_id),
-        runner_problem=runner_problem,
-        unavailable=unavailable,
-        **backends,
-    )
-    server = app.server()
+    try:
+        app = build_app(
+            config,
+            candidates=candidates,
+            dispatcher=Dispatcher(runner_factory(config)),
+            profile_loader=lambda: candidates.profile(config.candidate_id),
+            runner_problem=runner_problem,
+            unavailable=unavailable,
+            **backends,
+        )
+        try:
+            server = app.server()
+        except BaseException:
+            app.close()
+            raise
+    except (ServiceAlreadyRunning, OSError) as exc:
+        print(f"interviewmaxxing-service: {exc}", file=sys.stderr)
+        return 1
 
     def _stop(signum: int, frame: FrameType | None) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()

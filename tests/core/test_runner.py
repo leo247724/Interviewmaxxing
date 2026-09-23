@@ -733,8 +733,51 @@ REJECTED = SubmissionObservation(
 )
 
 
+@pytest.mark.parametrize("input_case", ["none", "older", "other_step", "other_question"])
+def test_unresolved_rejection_survives_a_fresh_form_without_validation_text(
+    isolated_imx_home, fictional_candidate, input_case
+):
+    form = _form()
+    if input_case == "older":
+        with _store(isolated_imx_home) as store:
+            app = store.record_request("c1", URL).application
+            claim = store.claim(app.id, "earlier-answer")
+            store.save_user_inputs(claim, [UserInput.for_field(
+                form, "first_name", TextValue(text="Avery"))])
+            store.release(claim)
+    again = _page(_shown_again(form, "first_name", "Enter a valid name"))
+    script = Script(pages=[_page(form)], confirm=[REJECTED], inspect_pages=[again])
+    first = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script)
+                        .apply(URL, candidate_id="c1"))
+    assert first.state is S.NEEDS_INPUT
+    [question] = first.missing_inputs
+    if input_case in ("other_step", "other_question"):
+        correction = UserInput.answering(question, TextValue(text="Avery"))
+        correction = correction.model_copy(update={
+            "form_step": 1} if input_case == "other_step" else {"field_fingerprint": "0" * 64})
+        with _store(isolated_imx_home) as store:
+            claim = store.claim(first.application_id, "unrelated-answer")
+            store.save_user_inputs(claim, [correction])
+            store.release(claim)
+
+    clean = Script(pages=[_page(form)])
+    second = asyncio.run(_runner(isolated_imx_home, fictional_candidate, clean)
+                         .resume(first.application_id))
+    assert second.state is S.NEEDS_INPUT
+    [pending] = second.missing_inputs
+    assert pending.field_id == "first_name" and pending.form_step == 0
+    assert pending.field_fingerprint == question.field_fingerprint
+    assert "Enter a valid name" in pending.prompt
+    assert clean.calls == ["open", "close"]
+    with _store(isolated_imx_home) as store:
+        assert len(store.list_attempts(first.application_id)) == 1
+        assert [e.event for e in store.list_events(first.application_id)].count(REJECTION_EVENT) == 1
+        assert store.latest_packet(first.application_id).answer_for("first_name") is None
+
+
+@pytest.mark.parametrize("sticky_message", [False, True])
 def test_a_rejection_persists_and_a_correction_from_another_process_is_used(
-    isolated_imx_home, fictional_candidate
+    isolated_imx_home, fictional_candidate, sticky_message
 ):
     form = _form()
     again = _page(_shown_again(form, "first_name", "Enter a valid name"))
@@ -754,8 +797,8 @@ def test_a_rejection_persists_and_a_correction_from_another_process_is_used(
         store.save_user_inputs(claim, [UserInput.answering(question, TextValue(text="Avery"))])
         store.release(claim)
 
-    # A new process: the site still shows the old message on a fresh open of the form.
-    sticky = Script(pages=[again])
+    # A new process accepts the correction whether or not the old message is visible.
+    sticky = Script(pages=[again if sticky_message else _page(form)])
     second = asyncio.run(_runner(isolated_imx_home, fictional_candidate, sticky).resume(app_id))
     assert second.state is S.SUBMITTED, second.message
     assert sticky.calls.count("submit") == 1

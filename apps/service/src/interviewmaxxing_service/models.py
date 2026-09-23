@@ -89,6 +89,8 @@ class StartApplicationInput(Body):
     application_url: StrictStr
     profile: CandidateProfileInput
     resume_id: StrictStr
+    pipeline_entry_id: StrictStr | None = None
+    listing_id: StrictStr | None = None
 
 
 # --- application ----------------------------------------------------------------------

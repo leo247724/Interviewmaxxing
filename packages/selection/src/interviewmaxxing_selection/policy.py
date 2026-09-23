@@ -33,6 +33,14 @@ from interviewmaxxing_core import (
 )
 
 from .evidence import MAX_DESCRIPTION_CHARS
+from .places import (
+    RemoteRegionStatus,
+    explicitly_elsewhere,
+    parse_place,
+    parse_places,
+    remote_eligibility_status,
+    same_place,
+)
 
 
 class _Model(BaseModel):
@@ -69,51 +77,75 @@ def check_compensation(
 
 class LocationStatus(StrEnum):
     ONSITE_ACCEPTED = "ONSITE_ACCEPTED"
+    """Onsite/hybrid role whose stated location names an accepted locality."""
     ONSITE_MISMATCH = "ONSITE_MISMATCH"
-    """Explicit onsite/hybrid role outside every accepted location/arrangement."""
+    """Onsite/hybrid role whose arrangement is not accepted, or whose every stated
+    place is explicitly a different locality, region or country."""
     REMOTE_REGION_MATCH = "REMOTE_REGION_MATCH"
-    """Remote, and the stated eligibility equals the user's remote region."""
+    """Remote, and the stated eligibility covers the user's eligible region."""
     REMOTE_NEEDS_ELIGIBILITY = "REMOTE_NEEDS_ELIGIBILITY"
-    """Remote with unstated or different eligibility text; judged from the listing."""
+    """Remote with unstated eligibility; Jev judges it from the listing text."""
+    REMOTE_ELIGIBILITY_AMBIGUOUS = "REMOTE_ELIGIBILITY_AMBIGUOUS"
+    """Remote with stated eligibility narrower than or unclear against the eligible
+    region (for example one state); held for review regardless of Jev's answer."""
+    REMOTE_OUTSIDE_REGION = "REMOTE_OUTSIDE_REGION"
+    """Remote with stated eligibility explicitly in another country or region; held
+    for review regardless of Jev's answer."""
     REMOTE_NOT_WANTED = "REMOTE_NOT_WANTED"
     UNKNOWN = "UNKNOWN"
+    """Arrangement unknown, or the location text names no locality (a bare region or
+    country, or nothing usable); never treated as a match or a mismatch."""
 
 
-_US_ALIASES = frozenset(
-    {"us", "u.s.", "usa", "u.s.a.", "united states", "united states of america"}
-)
+_REMOTE_VERDICTS = {
+    RemoteRegionStatus.MATCH: LocationStatus.REMOTE_REGION_MATCH,
+    RemoteRegionStatus.OUTSIDE: LocationStatus.REMOTE_OUTSIDE_REGION,
+    RemoteRegionStatus.AMBIGUOUS: LocationStatus.REMOTE_ELIGIBILITY_AMBIGUOUS,
+}
 
 
-def _region_key(text: str) -> str:
-    key = " ".join(text.casefold().split())
-    return "united states" if key in _US_ALIASES else key
-
-
-def _has_term(text: str | None, term: str) -> bool:
-    if not text or not term.strip():
-        return False
-    return re.search(rf"\b{re.escape(term.strip().casefold())}\b", text.casefold()) is not None
+def _remote_status(listing: JobListing, preferences: SelectionPreferences) -> LocationStatus:
+    if preferences.remote is None:
+        return LocationStatus.REMOTE_NOT_WANTED
+    region = preferences.remote.eligible_region
+    stated = (listing.remote_eligibility or "").strip()
+    if stated:
+        return _REMOTE_VERDICTS[remote_eligibility_status(stated, region)]
+    # No eligibility text: a location that is only a country (or worldwide) is an
+    # explicit statement; anything narrower is left to Jev with the description.
+    places = parse_places(listing.location)
+    if places and all(p.whole_country or p.worldwide for p in places):
+        return _REMOTE_VERDICTS[remote_eligibility_status(listing.location, region)]
+    return LocationStatus.REMOTE_NEEDS_ELIGIBILITY
 
 
 def check_location(listing: JobListing, preferences: SelectionPreferences) -> LocationStatus:
-    """Work arrangement and location only; commute is not considered. An onsite
-    target matches when the listing's location names its locality (the part of
-    ``"Austin, TX"`` before the comma) and the arrangement is accepted there."""
+    """Work arrangement and location only; commute is not considered.
+
+    Onsite/hybrid: the location text is parsed into stated places (see ``places``).
+    A place naming an accepted target locality, with no stated region or country
+    contradicting it, is accepted (``"Austin, TX"``, ``"Austin TX"``, ``"Greater Austin
+    Area"``; not ``"Austin, MN"``). It is a mismatch only when the arrangement is not
+    accepted anywhere or every stated place is explicitly elsewhere (``"Dallas, TX"``,
+    ``"California, United States"``). A location without a locality (``"Texas, United
+    States"``, ``"United States"``, ``"Multiple Locations"``) is UNKNOWN and reviewed.
+    """
     arrangement = listing.work_arrangement
     if arrangement is WorkArrangement.REMOTE:
-        if preferences.remote is None:
-            return LocationStatus.REMOTE_NOT_WANTED
-        stated = listing.remote_eligibility
-        if stated and _region_key(stated) == _region_key(preferences.remote.eligible_region):
-            return LocationStatus.REMOTE_REGION_MATCH
-        return LocationStatus.REMOTE_NEEDS_ELIGIBILITY
-    if arrangement is WorkArrangement.UNKNOWN or not listing.location:
+        return _remote_status(listing, preferences)
+    if arrangement is WorkArrangement.UNKNOWN:
         return LocationStatus.UNKNOWN
-    for target in preferences.onsite:
-        locality = target.location.split(",", 1)[0]
-        if arrangement in target.arrangements and _has_term(listing.location, locality):
-            return LocationStatus.ONSITE_ACCEPTED
-    return LocationStatus.ONSITE_MISMATCH
+    places = parse_places(listing.location)
+    if not places:
+        return LocationStatus.UNKNOWN
+    targets = [parse_place(t.location) for t in preferences.onsite if arrangement in t.arrangements]
+    if not targets:
+        return LocationStatus.ONSITE_MISMATCH
+    if any(same_place(p, t) for p in places for t in targets):
+        return LocationStatus.ONSITE_ACCEPTED
+    if all(all(explicitly_elsewhere(p, t) for t in targets) for p in places):
+        return LocationStatus.ONSITE_MISMATCH
+    return LocationStatus.UNKNOWN
 
 
 class LocationTier(StrEnum):
@@ -127,12 +159,17 @@ class LocationTier(StrEnum):
     SECONDARY = "SECONDARY"
     """Eligible, and a valid option, but ranked below the preferred tier."""
     UNRANKED = "UNRANKED"
-    """Location unknown or not accepted; never assumed to be the preferred tier."""
+    """Location unknown, not accepted, or remote outside the eligible region; never
+    assumed to be the preferred tier."""
 
 
 _ONSITE_STATUSES = frozenset({LocationStatus.ONSITE_ACCEPTED})
 _REMOTE_STATUSES = frozenset(
-    {LocationStatus.REMOTE_REGION_MATCH, LocationStatus.REMOTE_NEEDS_ELIGIBILITY}
+    {
+        LocationStatus.REMOTE_REGION_MATCH,
+        LocationStatus.REMOTE_NEEDS_ELIGIBILITY,
+        LocationStatus.REMOTE_ELIGIBILITY_AMBIGUOUS,
+    }
 )
 
 
@@ -165,7 +202,10 @@ def location_priority_reason(
         )
     if tier is LocationTier.EQUAL:
         return f"location priority: {kind} ranks equally with other eligible roles (BALANCED)"
-    return "location priority: unranked (location unknown or not accepted)"
+    return (
+        "location priority: unranked (location unknown, not accepted, or remote outside "
+        "the eligible region)"
+    )
 
 
 class HoldReason(StrEnum):
@@ -178,6 +218,10 @@ class HoldReason(StrEnum):
     EXCLUDED_KEYWORD = "EXCLUDED_KEYWORD"
     EXCLUDED_COMPANY = "EXCLUDED_COMPANY"
     # Holds: APPLY becomes REVIEW (those in SKIP_BLOCKING also turn SKIP into REVIEW).
+    REMOTE_OUTSIDE_REGION = "REMOTE_OUTSIDE_REGION"
+    """Stated remote eligibility is explicitly outside the eligible region. Reviewed
+    rather than skipped because eligibility text can be partial (``"Canada"`` may have
+    been cut from ``"US and Canada"``)."""
     MISSING_PROFILE = "MISSING_PROFILE"
     MISSING_LISTING_DETAILS = "MISSING_LISTING_DETAILS"
     INCOMPLETE_DESCRIPTION = "INCOMPLETE_DESCRIPTION"
@@ -201,6 +245,7 @@ HOLD_CODES: dict[HoldReason, HoldCode] = {
     HoldReason.REMOTE_NOT_WANTED: HoldCode.HARD_CONSTRAINT,
     HoldReason.EXCLUDED_KEYWORD: HoldCode.HARD_CONSTRAINT,
     HoldReason.EXCLUDED_COMPANY: HoldCode.HARD_CONSTRAINT,
+    HoldReason.REMOTE_OUTSIDE_REGION: HoldCode.HARD_CONSTRAINT,
     HoldReason.MISSING_PROFILE: HoldCode.MISSING_PROFILE,
     HoldReason.MISSING_LISTING_DETAILS: HoldCode.INSUFFICIENT_EVIDENCE,
     HoldReason.INCOMPLETE_DESCRIPTION: HoldCode.INSUFFICIENT_EVIDENCE,
@@ -215,7 +260,9 @@ HOLD_CODES: dict[HoldReason, HoldCode] = {
     HoldReason.PROVIDER_ERROR: HoldCode.PROVIDER_ERROR,
 }
 """Core ``HoldCode`` for each reason. Contradiction, ambiguity and suspected injection
-have no dedicated core code yet and are recorded as INSUFFICIENT_EVIDENCE."""
+have no dedicated core code yet and are recorded as INSUFFICIENT_EVIDENCE. A remote
+role stated outside the eligible region is a violated explicit preference
+(HARD_CONSTRAINT) that reviews rather than skips."""
 
 HARD_CONSTRAINTS = frozenset(
     {
@@ -249,6 +296,12 @@ class Hold(_Model):
         return PolicyHold(
             code=HOLD_CODES[self.reason], detail=f"{self.reason.value}: {self.detail}"
         )
+
+
+def _has_term(text: str | None, term: str) -> bool:
+    if not text or not term.strip():
+        return False
+    return re.search(rf"\b{re.escape(term.strip().casefold())}\b", text.casefold()) is not None
 
 
 def hard_constraint_holds(
@@ -319,7 +372,27 @@ def evidence_holds(
         )
     if location is LocationStatus.UNKNOWN:
         holds.append(
-            Hold(reason=HoldReason.LOCATION_UNKNOWN, detail="work arrangement or location unstated")
+            Hold(
+                reason=HoldReason.LOCATION_UNKNOWN,
+                detail="work arrangement or locality unstated",
+            )
+        )
+    region = preferences.remote.eligible_region if preferences.remote else None
+    stated = listing.remote_eligibility or listing.location
+    if location is LocationStatus.REMOTE_OUTSIDE_REGION:
+        holds.append(
+            Hold(
+                reason=HoldReason.REMOTE_OUTSIDE_REGION,
+                detail=f"stated remote eligibility {stated!r} is outside {region!r}",
+            )
+        )
+    if location is LocationStatus.REMOTE_ELIGIBILITY_AMBIGUOUS:
+        holds.append(
+            Hold(
+                reason=HoldReason.ELIGIBILITY_AMBIGUOUS,
+                detail=f"stated remote eligibility {stated!r} is narrower than or unclear "
+                f"against {region!r}",
+            )
         )
     if preferences.unknown_compensation is UnknownCompensationPolicy.REVIEW and compensation in (
         CompensationStatus.UNKNOWN,
@@ -334,12 +407,42 @@ def evidence_holds(
     return holds
 
 
+# Instruction-like text aimed at a model. The rubric constants are the primary
+# boundary (listing text only ever travels as ``state`` data); this detection only
+# adds a hold. Ordinary application wording ("Click Apply to submit", "Select Apply
+# Now", "choose to apply", "marketing to AI startups") must not match.
+_DECISION = r"(?:APPLY|SKIP|REVIEW)"
+_DIRECTIVE = (
+    r"(?:respond\s+with|reply\s+with|answer\s+with|answer|output|return|decide|select|"
+    r"choose|pick|recommend|rate|(?:rate|classify|mark|label|grade|score|flag|tag)\s+"
+    r"(?:this|it|the\s+(?:candidate|listing|job|role|posting|applicant))\s+as|"
+    r"set\s+(?:the\s+)?(?:decision|answer|selection|choice|verdict)\s+to)"
+)
+_ORDINARY_FOLLOWER = (
+    r"(?!\s*(?:now|today|here|below|above|online|button|link|via|through|directly|by|at|on|"
+    r"to\b|and|then|&|for|with|before|after|using|in\b|early|soon|within|as\b|only|if\b|"
+    r"when|once|first|again|form|page|process))"
+)
+_AI = r"(?:ai|a\.i\.|llm|language[\s-]+model|automated|automatic|machine|bot|chatbot|screening)"
+_AI_READER = r"(?:reviewer|screener|reader|agent|assistant|recruiter|evaluator|grader|scorer|bot)"
+_QUOTES = "\"'`" + "".join(chr(c) for c in (0x201C, 0x201D, 0x2018, 0x2019))
+"""Straight, backtick and curly quotes that may wrap a decision word."""
 _INJECTION = re.compile(
-    r"(ignore|disregard|forget|override)\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier|"
-    r"preceding|your|system)\s+(instructions|prompts?|rules|rubric)"
-    r"|system\s+prompt|you\s+are\s+(now\s+)?(an?\s+)?(ai|assistant|language\s+model|jev)"
-    r"|(respond\s+with|answer\s+with|answer|output|decide|classify\s+(this|it)\s+as|"
-    r"mark\s+(this|it)\s+as)\s*[:\"'`]?\s*(APPLY|SKIP|REVIEW)\b",
+    rf"(?:ignore|disregard|forget|override|bypass)\s+"
+    r"(?:(?:all|any|the|your|these|those|other|previous|prior|above|earlier|preceding|system)"
+    r"\s+){0,3}(?:instructions?|prompts?|rules|rubric|guidelines|criteria|constraints|"
+    r"directions)\b"
+    r"|system\s+prompt"
+    rf"|you\s+are\s+(?:now\s+)?(?:an?\s+|the\s+)?(?:{_AI}|assistant|jev)\b"
+    rf"|\b{_DIRECTIVE}\s*[:={_QUOTES}]*\s*{_DECISION}\b[{_QUOTES}]*+{_ORDINARY_FOLLOWER}"
+    rf"|\b{_AI}[\s-]*{_AI_READER}s?\s*:"
+    rf"|\b(?:(?:to|for)\s+(?:any|all|every|the)|dear|attention|attn|note\s+to|"
+    rf"message\s+(?:to|for)|instructions?\s+(?:to|for)|hey|hi|hello)[\s,:]+"
+    rf"(?:any|all|every|the|an?\s+)?\s*{_AI}[\s-]*{_AI_READER}s?\b"
+    rf"|\b(?:if|when)\s+you\s+(?:are|'re)\s+(?:an?\s+|the\s+)?{_AI}\b"
+    rf"|\b{_AI}s?\s+(?:reading|reviewing|screening|evaluating|scoring|grading|processing|"
+    r"parsing|assessing)\s+this\b"
+    r"|\b(?:dear|attention|attn|hey|hi|hello)[\s,:]+(?:ai|a\.i\.|llm|assistant|bot|model|jev)\b",
     re.IGNORECASE,
 )
 

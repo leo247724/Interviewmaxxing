@@ -16,7 +16,7 @@ Public entry points:
 """
 
 from .adapter import GenericAdapter
-from .driver import DriverError, NotActionable, PageDriver, PlaywrightDriver
+from .driver import DriverError, NotActionable, PageContextLost, PageDriver, PlaywrightDriver
 from .needs import attestation_fields, unsupported_control_needs, user_action_needs
 from .normalize import PageModel, build_page, detect_ats, extract_job_identity
 from .opencli import (
@@ -25,6 +25,7 @@ from .opencli import (
     CommandResult,
     OpenCliApplicationBrowser,
     OpenCliConfig,
+    OpenCliContextLost,
     OpenCliDriver,
     OpenCliError,
     OpenCliSessionFactory,
@@ -32,7 +33,6 @@ from .opencli import (
     OpenCliTimeout,
     OpenCliUnavailable,
     UnverifiedAction,
-    assert_read_only,
 )
 from .runtime import (
     ActionPolicy,
@@ -60,12 +60,14 @@ __all__ = [
     "NotActionable",
     "OpenCliApplicationBrowser",
     "OpenCliConfig",
+    "OpenCliContextLost",
     "OpenCliDriver",
     "OpenCliError",
     "OpenCliSessionFactory",
     "OpenCliTargetError",
     "OpenCliTimeout",
     "OpenCliUnavailable",
+    "PageContextLost",
     "PageDriver",
     "PageModel",
     "PlaywrightApplicationBrowser",
@@ -73,7 +75,6 @@ __all__ = [
     "PlaywrightSessionFactory",
     "SubmissionRefused",
     "UnverifiedAction",
-    "assert_read_only",
     "attestation_fields",
     "build_page",
     "classify",

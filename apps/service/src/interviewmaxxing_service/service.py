@@ -41,6 +41,7 @@ from interviewmaxxing_core import (
 
 from . import errors
 from .answers import plan_answers, unanswered_required
+from .application_links import ApplicationLinks
 from .candidate import (
     CandidateDataInvalid,
     CandidateGateway,
@@ -122,6 +123,7 @@ class PresentationService:
         self.candidates = candidates
         self.dispatcher = dispatcher
         self.owner = f"service:{os.getpid()}"
+        self.application_links: ApplicationLinks | None = None
 
     # --- plumbing -------------------------------------------------------------------
 
@@ -331,6 +333,11 @@ class PresentationService:
         )
 
         with self.dispatcher.lock, self._store() as store:
+            if self.application_links is None and (
+                body.pipeline_entry_id is not None or body.listing_id is not None
+            ):
+                raise errors.unavailable("Pipeline application linking isn't available.")
+            link = self.application_links.prepare(body, store) if self.application_links else None
             running = self.dispatcher.current
             existing = store.find_application(cid, url)
             if (
@@ -366,6 +373,9 @@ class PresentationService:
                 # any run. First writer wins: a repeated request or a restart keeps the
                 # original pin, whatever the profile says later.
                 store.pin_resume(app.id, selected)
+            if link is not None and self.application_links is not None:
+                self.application_links.bind(link, app.id, store)
+            if dispatch:
                 self.dispatcher.submit(
                     app.id,
                     "apply",

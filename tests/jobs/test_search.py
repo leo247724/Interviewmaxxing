@@ -8,7 +8,7 @@ from typing import Any
 from interviewmaxxing_core import JobSearchQuery, LocationPriority, SourceSearchState
 from interviewmaxxing_jobs import JobSearchService, JobStore, TransportError
 
-from .conftest import FakeTransport, fixture_routes
+from .conftest import FakeTransport, fixture_routes, load_fixture
 
 Clock = Callable[[], datetime]
 
@@ -118,3 +118,43 @@ def test_run_id_and_per_source_callbacks_for_the_service(tmp_path: Path, clock: 
     assert stored.query.role_focus == "Fictional paid acquisition focus."
     # Listings are stored before the callback reports the finished source.
     assert svc.store.list_listings(ids=run.results[1].listing_ids)
+
+
+def test_sign_in_wall_on_job_pages_keeps_cards_and_the_session(tmp_path: Path, clock: Clock) -> None:
+    base = fixture_routes()
+
+    def route(session: str, url: str, script: str, clicked: int | None) -> dict[str, Any]:
+        if script == "linkedin_detail":
+            return dict(load_fixture("linkedin")["login_wall"])
+        return base(session, url, script, clicked)
+
+    transport = FakeTransport(route)
+    run = service(tmp_path, transport, clock).run(query(sources=["linkedin", "builtin"]))
+    results = by_source(run)
+    partial = results["linkedin"]
+    assert partial.state is SourceSearchState.PARTIAL
+    assert partial.result_count == 2
+    assert partial.session_name == "imx-jobs-linkedin"
+    assert partial.user_action and "Sign in to LinkedIn" in partial.user_action
+    assert partial.message and "2 listings collected" in partial.message
+    assert ("close", "imx-jobs-linkedin") not in transport.calls  # left for the user
+    assert results["builtin"].state is SourceSearchState.OK
+
+
+def test_conflicting_observations_are_counted_not_stored(tmp_path: Path, clock: Clock) -> None:
+    from tests.jobs.test_store import listing
+
+    from interviewmaxxing_core import ListingStatus
+
+    svc = service(tmp_path, FakeTransport(fixture_routes()), clock)
+    # A stored, closed LinkedIn posting 4000000001 proven under another employer key.
+    stored = svc.store.upsert(listing(source="linkedin", sid="4000000001",
+                                      key="ats:greenhouse:othertenant:1", status=ListingStatus.CLOSED))
+    run = svc.run(query(sources=["linkedin"]))
+    result = by_source(run)["linkedin"]
+    assert result.state is SourceSearchState.PARTIAL
+    assert result.message and "1 observations contradicted stored listings" in result.message
+    assert stored.id not in result.listing_ids
+    kept = svc.store.get_listing(stored.id)
+    assert kept is not None and kept.status is ListingStatus.CLOSED
+    assert len(svc.store.conflicts(stored.id)) == 1

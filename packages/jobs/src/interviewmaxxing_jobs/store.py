@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS observations (
     raw TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS observations_listing ON observations(listing_id);
+CREATE TABLE IF NOT EXISTS conflicts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_listing_id TEXT,
+    run_id TEXT,
+    query_id TEXT,
+    observed_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    data TEXT NOT NULL,
+    raw TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conflicts_listing ON conflicts(listing_id);
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL,
@@ -81,6 +94,18 @@ def default_db_path(env: Mapping[str, str] | None = None) -> Path:
 
 def _dump(model: JobListing | JobSearchRun) -> str:
     return model.model_dump_json()
+
+
+class ListingConflict(ValueError):
+    """An observation claims a posting identity the store already holds for a record
+    it contradicts (a different employer job key or a different id from the same
+    source). The observation was kept aside (``JobStore.conflicts``); the stored
+    record, its identity keys and aliases were not changed."""
+
+    def __init__(self, listing_id: str, reason: str) -> None:
+        super().__init__(f"{reason} (stored listing {listing_id})")
+        self.listing_id = listing_id
+        self.reason = reason
 
 
 class JobStore:
@@ -123,49 +148,97 @@ class JobStore:
     def upsert(self, listing: JobListing, *, raw: Mapping[str, Any] | None = None,
                run_id: str | None = None) -> JobListing:
         """Store an observation, merging it into any provably identical listing.
-        Returns the stored (possibly merged) listing."""
+        Returns the stored (possibly merged) listing.
+
+        Raises ``ListingConflict`` (after recording the observation under
+        ``conflicts``) when the observation's own posting identity already belongs
+        to a stored record it contradicts; nothing else is written in that case. An
+        observation with a fresh identity that merely shares an employer key with a
+        record it contradicts is stored on its own; the shared key stays with the
+        earlier record."""
         with self._tx() as db:
             matched = self._matching_ids(db, listing)
+            own = self._resolve(db, listing.id)
             existing = [self._load(db, i) for i in matched]
-            stored, absorbed = combine(listing, [e for e in existing if e is not None])
-            matched = [i for i in matched if i in absorbed]
-            now = utc_now().isoformat()
-            first_seen = [
-                row[0] for row in db.execute(
-                    f"SELECT first_seen_at FROM listings WHERE id IN ({_marks(matched)})", matched)
-            ]
-            db.execute(
-                "INSERT INTO listings(id, source, status, data, first_seen_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET source=excluded.source, "
-                "status=excluded.status, data=excluded.data, updated_at=excluded.updated_at",
-                (stored.id, stored.source, stored.status.value, _dump(stored),
-                 min(first_seen, default=now), now),
-            )
-            for old in matched:
-                if old != stored.id:
-                    db.execute("DELETE FROM listings WHERE id = ?", (old,))
+            records = [e for e in existing if e is not None]
+            posting_keys = {p.posting_key for p in listing.provenance}
+            contradictory = next((e for e in records if listing.contradicts(e) and (
+                e.id == own or posting_keys & {p.posting_key for p in e.provenance}
+            )), None)
+            conflict: ListingConflict | None = None
+            if contradictory is not None:
+                reason = (f"{listing.source} observation "
+                          f"{listing.source_listing_id or listing.posting_url} contradicts the "
+                          "stored listing that already holds its identity")
+                self._quarantine(db, contradictory.id, listing, raw, run_id, reason)
+                conflict = ListingConflict(contradictory.id, reason)
+            else:
+                stored, absorbed = combine(listing, records)
+                matched = [i for i in matched if i in absorbed]
+                now = utc_now().isoformat()
+                first_seen = [
+                    row[0] for row in db.execute(
+                        f"SELECT first_seen_at FROM listings WHERE id IN ({_marks(matched)})", matched)
+                ]
+                db.execute(
+                    "INSERT INTO listings(id, source, status, data, first_seen_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET source=excluded.source, "
+                    "status=excluded.status, data=excluded.data, updated_at=excluded.updated_at",
+                    (stored.id, stored.source, stored.status.value, _dump(stored),
+                     min(first_seen, default=now), now),
+                )
+                for old in matched:
+                    if old != stored.id:
+                        db.execute("DELETE FROM listings WHERE id = ?", (old,))
+                        db.execute("INSERT OR REPLACE INTO listing_aliases(alias_id, listing_id) "
+                                   "VALUES (?, ?)", (old, stored.id))
+                        db.execute("UPDATE listing_aliases SET listing_id = ? WHERE listing_id = ?",
+                                   (stored.id, old))
+                        db.execute("UPDATE listing_keys SET listing_id = ? WHERE listing_id = ?",
+                                   (stored.id, old))
+                        db.execute("UPDATE observations SET listing_id = ? WHERE listing_id = ?",
+                                   (stored.id, old))
+                        db.execute("UPDATE conflicts SET listing_id = ? WHERE listing_id = ?",
+                                   (stored.id, old))
+                if listing.id != stored.id:
                     db.execute("INSERT OR REPLACE INTO listing_aliases(alias_id, listing_id) "
-                               "VALUES (?, ?)", (old, stored.id))
-                    db.execute("UPDATE listing_aliases SET listing_id = ? WHERE listing_id = ?",
-                               (stored.id, old))
-                    db.execute("UPDATE listing_keys SET listing_id = ? WHERE listing_id = ?",
-                               (stored.id, old))
-                    db.execute("UPDATE observations SET listing_id = ? WHERE listing_id = ?",
-                               (stored.id, old))
-            if listing.id != stored.id:
-                db.execute("INSERT OR REPLACE INTO listing_aliases(alias_id, listing_id) "
-                           "VALUES (?, ?)", (listing.id, stored.id))
-            for key in stored.identity_keys:
-                db.execute("INSERT OR IGNORE INTO listing_keys(key, listing_id) VALUES (?, ?)",
-                           (key, stored.id))
-            first = listing.provenance[0]
-            db.execute(
-                "INSERT INTO observations(listing_id, source, source_listing_id, run_id, query_id, "
-                "observed_at, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (stored.id, first.source, first.source_listing_id, run_id, first.query_id,
-                 first.observed_at.isoformat(), json.dumps(dict(raw or {}), ensure_ascii=False)),
-            )
-            return stored
+                               "VALUES (?, ?)", (listing.id, stored.id))
+                for key in stored.identity_keys:
+                    db.execute("INSERT OR IGNORE INTO listing_keys(key, listing_id) VALUES (?, ?)",
+                               (key, stored.id))
+                first = listing.provenance[0]
+                db.execute(
+                    "INSERT INTO observations(listing_id, source, source_listing_id, run_id, query_id, "
+                    "observed_at, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (stored.id, first.source, first.source_listing_id, run_id, first.query_id,
+                     first.observed_at.isoformat(), json.dumps(dict(raw or {}), ensure_ascii=False)),
+                )
+                return stored
+        # The rejected observation is committed under ``conflicts`` before raising.
+        assert conflict is not None
+        raise conflict
+
+    def conflicts(self, listing_id: str) -> list[dict[str, Any]]:
+        """Observations rejected as contradicting this listing, oldest first."""
+        with self._lock:
+            target = self._resolve(self._conn, listing_id)
+            rows = self._conn.execute(
+                "SELECT source, source_listing_id, run_id, query_id, observed_at, reason, data, raw "
+                "FROM conflicts WHERE listing_id = ? ORDER BY seq", (target,)).fetchall()
+        return [{"source": r[0], "source_listing_id": r[1], "run_id": r[2], "query_id": r[3],
+                 "observed_at": r[4], "reason": r[5], "listing": json.loads(r[6]),
+                 "raw": json.loads(r[7])} for r in rows]
+
+    def _quarantine(self, db: sqlite3.Connection, listing_id: str, listing: JobListing,
+                    raw: Mapping[str, Any] | None, run_id: str | None, reason: str) -> None:
+        first = listing.provenance[0]
+        db.execute(
+            "INSERT INTO conflicts(listing_id, source, source_listing_id, run_id, query_id, "
+            "observed_at, reason, data, raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (listing_id, first.source, first.source_listing_id, run_id, first.query_id,
+             first.observed_at.isoformat(), reason, _dump(listing),
+             json.dumps(dict(raw or {}), ensure_ascii=False)),
+        )
 
     def get_listing(self, listing_id: str) -> JobListing | None:
         """A listing by id; ids replaced by a merge resolve to the surviving listing."""
@@ -291,7 +364,11 @@ def combine(new: JobListing, existing: Sequence[JobListing]) -> tuple[JobListing
     absorbed: list[str] = []
     same = next((e for e in existing if e.id == new.id), None)
     if same is not None:
-        merged = _prefer_bounds(new.merged_with(same), same) if new.is_same_posting(same) else new
+        if not new.is_same_posting(same):
+            # Same posting id, contradicting identity (e.g. another employer job key):
+            # never overwrite; the store keeps the observation aside.
+            return new, []
+        merged = _prefer_bounds(new.merged_with(same), same)
         absorbed.append(same.id)
         pending = [e for e in existing if e is not same]
     else:
@@ -313,8 +390,8 @@ def combine(new: JobListing, existing: Sequence[JobListing]) -> tuple[JobListing
                     absorbed.append(other.id)
                 progress = True
     if any(p is new for p in pending):
-        # The observation contradicts the stored record it shares a key with: keep it
-        # as its own listing and leave the stored ones untouched.
+        # The observation contradicts the stored record it shares a key with: leave
+        # the stored ones untouched (the store decides whether it can stand alone).
         return new, []
     return merged, absorbed
 

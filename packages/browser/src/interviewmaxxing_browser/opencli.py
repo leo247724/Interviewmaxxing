@@ -8,16 +8,20 @@ of the Playwright path.
 
 Rules this driver enforces:
 
-* **Owned session and tab only.** It opens its own tab in a named owned session
-  (default ``imx-application``, background window) and pins every command to that
-  tab with ``--tab``. It never binds, selects or closes another tab, and refuses
-  protected sessions (the user's assessment session, job-search sessions).
+* **Owned session and tab only.** Each driver creates its own tab (``tab new``) in a
+  uniquely named owned session (``imx-application-<16 hex>`` by default, background
+  window) and pins every command to that tab with ``--tab``. Ownership is established
+  and checked against the protected-tab list *before* any navigation; a session's
+  restored default tab is never navigated. It never binds, selects or closes another
+  tab, and refuses protected sessions (the user's assessment session, job-search
+  sessions).
 * **Mutations only through structured commands** (``fill``, ``select``, ``check``,
   ``uncheck``, ``upload``, ``click``, ``open``). Each is verified afterwards: the
   command's own envelope, then a read-only check of the control and of the
   document (an unexpected navigation is an error).
-* **Evaluation is read-only.** ``evaluate`` rejects scripts that would change the
-  page (clicks, submits, assignments to DOM state, network calls).
+* **Evaluation is read-only and allowlisted.** ``evaluate`` runs only the fixed
+  read scripts of this package (inspector, control/document state, digests). It is
+  not a general JavaScript sandbox; the internal regex lint is only defence in depth.
 * **Unsupported capabilities are errors, never success.** Selecting several options
   of a multi-select, uploading when Browser Bridge may not set files, and focusing a
   window raise :class:`CapabilityUnsupported` with what the user can do instead.
@@ -26,8 +30,10 @@ Rules this driver enforces:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+import secrets
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,8 +41,17 @@ from typing import Any, Literal
 
 from interviewmaxxing_core import BrowserOptions
 
-from .driver import DriverError, NotActionable
-from .runtime import ActionPolicy, GenericApplicationBrowser
+from .driver import _FILE_DIGEST, DriverError, NotActionable, PageContextLost
+from .runtime import (
+    _DOCUMENT_IDENTITY,
+    _EFFECTIVE_SUBMISSION,
+    _NATIVE_VALIDITY,
+    _READ_CHECKED,
+    _READ_CONTROL,
+    ActionPolicy,
+    GenericApplicationBrowser,
+)
+from .snapshot import inspector_script
 
 DEFAULT_SESSION = "imx-application"
 PROTECTED_SESSION_PREFIXES = ("imx-assessment", "imx-jobs")
@@ -77,6 +92,10 @@ class CapabilityUnsupported(NotActionable):
 class UnverifiedAction(DriverError):
     """The command ran but its effect could not be confirmed (re-identified element,
     value read back differently, or the page navigated unexpectedly)."""
+
+
+class OpenCliContextLost(UnverifiedAction, PageContextLost):
+    """The document was replaced while operating a control; the fill is aborted."""
 
 
 _TARGET_CODES = frozenset({
@@ -139,18 +158,21 @@ _WRITES = re.compile(
 )
 
 
-def assert_read_only(expression: str) -> None:
-    """Refuse page scripts that could change the page, submit, or reach the network."""
+def _lint_read_script(expression: str) -> None:
+    """Lint: refuse obvious page-changing calls. This is defence in depth for the fixed
+    scripts below, not a general guarantee that arbitrary JavaScript is harmless;
+    ``OpenCliDriver.evaluate`` therefore also allowlists the exact scripts it runs."""
     match = _WRITES.search(expression)
     if match:
         raise DriverError(f"evaluation must be read-only; refused {match.group(0).strip()!r}")
 
 
 def _wrap(expression: str, arg: Any) -> str:
+    # Async so that a script may await (file digests); OpenCLI awaits the promise.
     return (
-        "JSON.stringify((() => { try { return {ok: true, value: (" + expression + ")("
-        + json.dumps(arg) + ")}; } catch (e) { return {ok: false, error: String((e && e.message) "
-        "|| e)}; } })())"
+        "(async () => { try { return JSON.stringify({ok: true, value: await (" + expression + ")("
+        + json.dumps(arg) + ")}); } catch (e) { return JSON.stringify({ok: false, error: "
+        "String((e && e.message) || e)}); } })()"
     )
 
 
@@ -173,6 +195,12 @@ _ACTIONABLE = (
 )
 _HTML = "() => document.documentElement.outerHTML"
 
+_ALLOWED_SCRIPTS: frozenset[str] = frozenset({
+    inspector_script(), _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
+    _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
+})
+"""The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
+
 
 # --- driver ---------------------------------------------------------------------------
 
@@ -183,6 +211,7 @@ class OpenCliConfig:
     (``opencli profile list``); ``None`` uses OpenCLI's default profile."""
 
     session: str = DEFAULT_SESSION
+    """Prefix for a uniquely owned session; the driver always appends a random suffix."""
     profile: str | None = None
     window: Literal["background", "foreground"] = "background"
     executable: str = "opencli"
@@ -213,6 +242,7 @@ class OpenCliDriver:
 
     def __init__(self, config: OpenCliConfig | None = None, *, runner: Runner | None = None) -> None:
         self.config = config or OpenCliConfig()
+        self.session = f"{self.config.session}-{secrets.token_hex(8)}"
         self._run = runner or subprocess_runner
         self._lock = asyncio.Lock()
         self._tab: str | None = None
@@ -233,7 +263,7 @@ class OpenCliDriver:
         argv = [self.config.executable]
         if self.config.profile:
             argv += ["--profile", self.config.profile]
-        argv += ["browser", self.config.session, *command, *options]
+        argv += ["browser", self.session, *command, *options]
         if pin:
             if self._tab is None:
                 raise DriverError("no page is open in this OpenCLI session yet; call goto() first")
@@ -279,24 +309,38 @@ class OpenCliDriver:
     def last_status(self) -> int | None:
         return self._doc.status
 
+    async def _own_tab(self) -> None:
+        """Create this driver's own tab and prove ownership before navigating anything.
+        ``tab new`` never reuses a session's restored default tab, unlike ``open``."""
+        created = await self._call(
+            self._argv(["tab", "new"], ["--window", self.config.window], pin=False)
+        )
+        page = created.get("page") if isinstance(created, dict) else None
+        if not page:
+            raise OpenCliError(f"tab new did not report a tab id: {created!r}", command="tab")
+        page = str(page)
+        if page in self.config.protected_tabs:
+            raise DriverError(f"OpenCLI returned protected tab {page}; refusing to use it")
+        listed = await self._call(self._argv(["tab", "list"], pin=False))
+        pages = {str(t.get("page")) for t in listed if isinstance(t, dict)} if isinstance(listed, list) else set()
+        if page not in pages:
+            raise OpenCliError(f"new tab {page} is not listed in session {self.session}", command="tab")
+        self._tab = page
+
     async def goto(self, url: str) -> int | None:
         if self._tab is None:
-            argv = self._argv(["open"], ["--window", self.config.window], [url], pin=False)
-            opened = await self._call(argv)
-            page = opened.get("page") if isinstance(opened, dict) else None
-            if not page:
-                raise OpenCliError(f"open did not report a tab id: {opened!r}", command="open")
-            if page in self.config.protected_tabs:
-                raise DriverError("OpenCLI returned a protected tab; refusing to use it")
-            self._tab = str(page)
-        else:
-            await self._call(self._argv(["open"], positionals=[url]))
+            await self._own_tab()
+        await self._call(self._argv(["open"], positionals=[url]))
         await self._refresh_doc()
         self._mark = self._doc.origin
         return self._doc.status
 
     async def evaluate(self, expression: str, arg: Any = None) -> Any:
-        assert_read_only(expression)
+        if expression not in _ALLOWED_SCRIPTS:
+            raise DriverError("OpenCLI evaluation runs only this package's fixed read-only scripts")
+        _lint_read_script(expression)
+        if expression == inspector_script():
+            await self._refresh_doc()
         raw = await self._call(self._argv(["eval"], positionals=[_wrap(expression, arg)]))
         if isinstance(raw, str):
             try:
@@ -320,8 +364,8 @@ class OpenCliDriver:
         state = await self.evaluate(_CONTROL_STATE, selector)
         if not isinstance(state, dict):
             raise UnverifiedAction(f"{selector} is no longer on the page after the action")
-        if state.get("origin") != self._doc.origin:
-            raise UnverifiedAction(
+        if state.get("origin") != self._doc.origin or state.get("url") != self._doc.url:
+            raise OpenCliContextLost(
                 f"the page navigated while operating {selector}; re-inspect before continuing"
             )
         return state
@@ -369,11 +413,31 @@ class OpenCliDriver:
         if envelope.get("checked") is not checked or state.get("checked") is not checked:
             raise UnverifiedAction(f"{selector} reads back checked={state.get('checked')!r}")
 
+    async def _attached_digest(self, selector: str) -> str | None:
+        """SHA-256 of the file the control holds, computed read-only in the page."""
+        result = await self.evaluate(_FILE_DIGEST, selector)
+        if not isinstance(result, dict):
+            return None
+        if result.get("origin") != self._doc.origin or result.get("url") != self._doc.url:
+            raise OpenCliContextLost(f"the page navigated while reading {selector}")
+        digest = result.get("sha256")
+        return digest if isinstance(digest, str) and len(digest) == 64 else None
+
     async def set_files(self, selector: str, path: Path) -> None:
         wanted = [{"name": path.name, "size": path.stat().st_size}]
+        pinned = hashlib.sha256(path.read_bytes()).hexdigest()
         before = await self._control(selector)
         if before.get("files") == wanted:
-            return  # already attached (for example by the user); nothing to change
+            # Something with the same name and size is attached (for example by the
+            # user). Only the actual bytes decide; an unverifiable file is never accepted.
+            digest = await self._attached_digest(selector)
+            if digest == pinned:
+                return
+            raise CapabilityUnsupported(
+                f"the file attached to {selector} is not the pinned {path.name} "
+                f"({'different contents' if digest else 'contents could not be verified'}); "
+                "replace it with the exact pinned file in the browser window, then continue"
+            )
         try:
             envelope = await self._call(self._argv(["upload"], positionals=[selector, str(path)]))
         except OpenCliTargetError:
@@ -382,14 +446,16 @@ class OpenCliDriver:
             if await self._files(selector) == []:
                 raise CapabilityUnsupported(
                     f"Browser Bridge could not attach files here ({exc}). Attach {path.name} to "
-                    "the upload field yourself in the browser window, or allow the OpenCLI "
-                    "extension file access, then continue"
+                    "the upload field yourself in the browser window, then continue so its "
+                    "actual bytes can be verified against the pinned file"
                 ) from exc
             raise UnverifiedAction(f"upload {selector} failed after changing the field: {exc}") from exc
         self._check_match(envelope, f"upload {selector}")
         after = await self._control(selector)
         if after.get("files") != wanted:
             raise UnverifiedAction(f"upload {selector}: the field holds {after.get('files')!r}")
+        if await self._attached_digest(selector) != pinned:
+            raise UnverifiedAction(f"upload {selector}: the attached bytes are not the pinned file")
 
     async def _files(self, selector: str) -> Any:
         state = await self.evaluate(_CONTROL_STATE, selector)
@@ -443,15 +509,17 @@ class OpenCliDriver:
     async def bring_to_front(self) -> None:
         raise CapabilityUnsupported(
             f"OpenCLI does not focus windows; switch to the tab of session "
-            f"{self.config.session!r} ({self._doc.url or 'not opened yet'}) yourself"
+            f"{self.session!r} ({self._doc.url or 'not opened yet'}) yourself"
         )
 
     async def release(self) -> None:
-        """Release this session's tab lease (``opencli browser <session> close``)."""
+        """Close this driver's own tab, then release the session lease only when the
+        session is uniquely ours. A failed tab close keeps ownership available for retry."""
         if self._tab is None:
             return
-        await self._call(self._argv(["close"], pin=False))
+        await self._call(self._argv(["tab", "close"], positionals=[self._tab], pin=False))
         self._tab = None
+        await self._call(self._argv(["close"], pin=False))
 
 
 class OpenCliApplicationBrowser(GenericApplicationBrowser):
@@ -468,7 +536,7 @@ class OpenCliApplicationBrowser(GenericApplicationBrowser):
     def location(self) -> str:
         """Where the user finds this application's tab, for ``UserInteraction`` prompts."""
         cfg = self.driver.config
-        return (f"Chrome profile {cfg.profile or '(default)'}, OpenCLI session {cfg.session!r}, "
+        return (f"Chrome profile {cfg.profile or '(default)'}, OpenCLI session {self.driver.session!r}, "
                 f"tab {self.driver.tab or '(not opened)'} at {self.driver.url or 'no page yet'}")
 
     async def close(self) -> None:
@@ -495,7 +563,7 @@ class OpenCliSessionFactory:
         argv = [self.config.executable]
         if self.config.profile:
             argv += ["--profile", self.config.profile]
-        argv += ["browser", self.config.session, "tab", "list"]
+        argv += ["browser", driver.session, "tab", "list"]
         try:
             await driver._call(argv, timeout_s=min(self.config.command_timeout_s, 20.0))
         except OpenCliError as exc:

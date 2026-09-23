@@ -4,6 +4,8 @@ import stat
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from interviewmaxxing_core import (
     Compensation,
     CompensationPeriod,
@@ -16,7 +18,7 @@ from interviewmaxxing_core import (
 )
 from interviewmaxxing_jobs.ranking import location_tier, rank_listings
 from interviewmaxxing_jobs.sources.base import make_listing
-from interviewmaxxing_jobs.store import JobStore, default_db_path
+from interviewmaxxing_jobs.store import JobStore, ListingConflict, default_db_path
 
 from .conftest import NOW
 
@@ -28,12 +30,14 @@ def listing(source: str = "linkedin", sid: str = "4000000001", *, title: str = "
             arrangement: WorkArrangement = WorkArrangement.HYBRID, seen_on: str | None = None,
             key: str | None = None, status: ListingStatus = ListingStatus.UNKNOWN,
             description: str | None = None, pay: Compensation | None = None,
-            application_url: str | None = None, minutes: int = 0) -> JobListing:
+            application_url: str | None = None, minutes: int = 0,
+            remote_eligibility: str | None = None) -> JobListing:
     posting = f"https://jobs.{source}.test/view/{sid}"
     return make_listing(
         source=source, source_listing_id=sid, posting_url=posting,
         source_url=seen_on or posting, title=title, company=company, location=location,
         work_arrangement=arrangement, status=status, description=description,
+        remote_eligibility=remote_eligibility,
         full_description=True, compensation=pay, application_url=application_url,
         employer_job_key=key, employer_key_url=f"https://boards.greenhouse.io/x/jobs/{sid}" if key else None,
         observed_at=NOW + timedelta(minutes=minutes), query_id="qry_test",
@@ -122,6 +126,58 @@ def test_contradicting_employer_keys_are_kept_apart(tmp_path: Path) -> None:
     assert len(s.list_listings()) == 2
 
 
+OTHER_KEY = "ats:greenhouse:fictionalwidgets:9999"
+
+
+def test_same_posting_id_with_another_employer_key_is_rejected_unchanged(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    closed = s.upsert(listing(key=KEY, status=ListingStatus.CLOSED))
+    with pytest.raises(ListingConflict) as err:
+        s.upsert(listing(key=OTHER_KEY, status=ListingStatus.OPEN, minutes=1), raw={"kind": "test"})
+    assert err.value.listing_id == closed.id
+    stored = s.get_listing(closed.id)
+    assert stored is not None
+    assert stored.status is ListingStatus.CLOSED
+    assert {p.employer_job_key for p in stored.provenance} == {KEY}
+    assert f"job:{OTHER_KEY}" not in stored.identity_keys
+    assert len(s.list_listings()) == 1
+    kept = s.conflicts(closed.id)
+    assert len(kept) == 1 and kept[0]["raw"] == {"kind": "test"}
+    assert "contradicts" in kept[0]["reason"]
+    # The rejected key was never indexed: a posting proven under it stays separate.
+    other = s.upsert(listing(source="google", sid="doc9", key=OTHER_KEY))
+    assert other.id != closed.id and len(s.list_listings()) == 2
+
+
+def test_contradiction_through_an_alias_is_rejected_and_the_alias_still_resolves(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    google = s.upsert(listing(source="google", sid="doc1", key=KEY))
+    direct = s.upsert(listing(source="linkedin", sid="4000000001", key=KEY))
+    assert s.get_listing(google.id) == s.get_listing(direct.id)  # G is now an alias of L
+    with pytest.raises(ListingConflict) as err:
+        s.upsert(listing(source="google", sid="doc1", key=OTHER_KEY, minutes=2))
+    assert err.value.listing_id == direct.id
+    assert s.get_listing(google.id) == s.get_listing(direct.id)
+    assert [x.id for x in s.list_listings()] == [direct.id]
+    assert {p.employer_job_key for p in s.list_listings()[0].provenance} == {KEY}
+    assert len(s.conflicts(google.id)) == 1
+    # A consistent re-observation through the alias still merges normally.
+    again = s.upsert(listing(source="google", sid="doc1", key=KEY, status=ListingStatus.CLOSED, minutes=3))
+    assert again.id == direct.id and again.status is ListingStatus.CLOSED
+
+
+def test_fresh_posting_contradicting_a_shared_key_stands_alone(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    first = s.upsert(listing(source="linkedin", sid="1", key=KEY))
+    second = s.upsert(listing(source="linkedin", sid="2", key=KEY))  # same key, other LinkedIn id
+    assert second.id != first.id and len(s.list_listings()) == 2
+    assert s.conflicts(first.id) == [] and s.conflicts(second.id) == []
+    # The shared key stays with the record that held it first.
+    proven = s.upsert(listing(source="google", sid="docK", key=KEY))
+    assert proven.id == first.id
+    assert s.get_listing(second.id) is not None and s.get_listing(second.id).source_listing_id == "2"
+
+
 def test_runs_roundtrip(tmp_path: Path) -> None:
     from interviewmaxxing_core import JobSearchRun
     s = store(tmp_path)
@@ -138,7 +194,7 @@ def test_runs_roundtrip(tmp_path: Path) -> None:
 def test_austin_onsite_hybrid_ranks_well_above_eligible_remote(tmp_path: Path) -> None:
     s = store(tmp_path)
     remote = s.upsert(listing(sid="r", location="United States", arrangement=WorkArrangement.REMOTE,
-                              minutes=3))
+                              remote_eligibility="United States", minutes=3))
     elsewhere = s.upsert(listing(sid="e", location="Denver, CO", arrangement=WorkArrangement.ONSITE,
                                  minutes=2))
     unknown = s.upsert(listing(sid="u", location="Austin, TX 78701",
@@ -150,9 +206,33 @@ def test_austin_onsite_hybrid_ranks_well_above_eligible_remote(tmp_path: Path) -
     assert [x.id for x in ranked] == [austin.id, unknown.id, remote.id, elsewhere.id, closed.id]
     # Bounded results keep Austin even though remote is newer; remote is not excluded.
     assert [x.id for x in s.list_listings(rank_for=query, limit=3)] == [austin.id, unknown.id, remote.id]
-    assert location_tier(remote, query) == 2
+    assert location_tier(remote, query) == 3
 
     remote_first = JobSearchQuery(location_priority=LocationPriority.PREFER_REMOTE)
     assert rank_listings([austin, remote], remote_first) == [remote, austin]
     no_remote = JobSearchQuery(remote=None)
-    assert location_tier(remote, no_remote) == 3
+    assert location_tier(remote, no_remote) == 5
+
+
+def test_conflicting_identity_cannot_be_redirected_to_another_matching_record(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    original = s.upsert(listing(source="google", sid="original", key=KEY))
+    # A direct record holds the *other* key. The source identity of the incoming
+    # observation must win over a compatible merge candidate under that other key.
+    other = s.upsert(listing(source="linkedin", sid="9999", key=OTHER_KEY))
+    with pytest.raises(ListingConflict):
+        s.upsert(listing(source="google", sid="original", key=OTHER_KEY))
+    assert s.get_listing(original.id) == original
+    assert s.get_listing(other.id) == other
+    assert len(s.list_listings()) == 2
+
+
+def test_conflict_evidence_follows_a_later_canonical_merge(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    google = s.upsert(listing(source="google", sid="doc1", key=KEY))
+    with pytest.raises(ListingConflict):
+        s.upsert(listing(source="google", sid="doc1", key=OTHER_KEY), raw={"rejected": True})
+    direct = s.upsert(listing(key=KEY))
+    assert s.get_listing(google.id) == direct
+    assert len(s.conflicts(direct.id)) == 1
+    assert s.conflicts(google.id)[0]["raw"] == {"rejected": True}

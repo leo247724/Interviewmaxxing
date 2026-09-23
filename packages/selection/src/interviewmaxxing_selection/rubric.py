@@ -17,7 +17,9 @@ from interviewmaxxing_core import SelectionChoice
 from .jev import ChoiceAnswer, ChoiceQuestion, DecisionRequest, DecisionResponse
 from .policy import Hold, HoldReason
 
-RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.5"
+RUBRIC_VERSION = "jev-selection-rubric/2026-09-22.6"
+"""Bumped whenever the questions, the ``state.checks`` values Jev sees, or the code
+holds change, so decisions made under an older procedure are not reused."""
 
 Threshold = Annotated[FiniteFloat, Field(ge=0, le=1)]
 
@@ -37,7 +39,7 @@ class SelectionPolicy(BaseModel):
     def rubric_version(self) -> str:
         if self == SelectionPolicy():
             return RUBRIC_VERSION
-        return f"{RUBRIC_VERSION};apply>={self.apply_confidence:g};skip>={self.skip_confidence:g}"
+        return f"{RUBRIC_VERSION};apply>={self.apply_confidence};skip>={self.skip_confidence}"
 
 
 _UNTRUSTED = (

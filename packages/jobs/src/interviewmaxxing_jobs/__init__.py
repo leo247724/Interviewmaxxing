@@ -8,10 +8,10 @@ existing application flow through its ``application_url`` or ``posting_url``.
 """
 
 from .opencli import DEFAULT_PROFILE, BrowserTransport, OpenCliTransport, TransportError
-from .ranking import location_tier, rank_listings
+from .ranking import location_tier, place_match, rank_listings, remote_eligibility
 from .search import JobSearchService, session_name
 from .sources import AccessProblem, Observation, SourceAdapter, SourceOutcome, default_adapters
-from .store import JobStore, combine, default_db_path
+from .store import JobStore, ListingConflict, combine, default_db_path
 
 __all__ = [
     "DEFAULT_PROFILE",
@@ -19,6 +19,7 @@ __all__ = [
     "BrowserTransport",
     "JobSearchService",
     "JobStore",
+    "ListingConflict",
     "Observation",
     "OpenCliTransport",
     "SourceAdapter",
@@ -28,6 +29,8 @@ __all__ = [
     "default_adapters",
     "default_db_path",
     "location_tier",
+    "place_match",
     "rank_listings",
+    "remote_eligibility",
     "session_name",
 ]

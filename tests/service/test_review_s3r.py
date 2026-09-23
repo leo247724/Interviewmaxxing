@@ -21,6 +21,7 @@ from interviewmaxxing_core import (
     ListingSource,
     LocalPaths,
     ReconciliationMethod,
+    SelectionPreferences,
     SubmissionObservation,
     SubmissionOutcome,
     SubmissionReconciliation,
@@ -111,6 +112,47 @@ def test_candidates_never_see_or_link_each_others_decisions(
     assert set(decisions.get_many([sel_a["id"]], candidate_id="cand-a")) == {sel_a["id"]}
     latest_b = decisions.latest_for([x.id], candidate_id="cand-b")[x.id].selection
     assert latest_b.id == sel_b["id"] and latest_b.candidate_id == "cand-b"
+
+
+def test_missing_profile_currentness_keeps_the_explicit_candidate(shared_home: Any) -> None:
+    _paths, _repo, decisions = shared_home
+    x = posting("no-profile", location="Austin, TX", arrangement=WorkArrangement.HYBRID,
+                observed=datetime.now(UTC))
+    prefs = SelectionPreferences()
+    record = decisions.decide(x, prefs, None, candidate_id="cand-without-profile",
+                              application_lookup=lambda _: None)
+    assert record.selection.candidate_id == "cand-without-profile"
+    assert decisions.is_current(record.selection, x, prefs, None)
+    changed = prefs.model_copy(update={"role_focus": "A different responsibility focus"})
+    assert not decisions.is_current(record.selection, x, changed, None)
+
+
+def test_real_selection_batch_avoids_per_listing_history(
+    shared_home: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _paths, _repo, decisions = shared_home
+    x = posting("batched-real", location="Austin, TX", arrangement=WorkArrangement.HYBRID,
+                observed=datetime.now(UTC))
+    record = decisions.decide(x, SelectionPreferences(), None, candidate_id="batch-candidate",
+                              application_lookup=lambda _: None)
+    calls: list[tuple[list[str], str]] = []
+    real_batch = sel_pkg.SelectionStore.latest_many
+
+    def batch(store: Any, ids: Any, *, candidate_id: str) -> Any:
+        values = list(ids)
+        calls.append((values, candidate_id))
+        return real_batch(store, values, candidate_id=candidate_id)
+
+    def no_single_read(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("per-listing selection read")
+
+    monkeypatch.setattr(sel_pkg.SelectionStore, "latest_many", batch)
+    monkeypatch.setattr(sel_pkg.SelectionStore, "latest", no_single_read)
+    monkeypatch.setattr(sel_pkg.SelectionStore, "history", no_single_read)
+    found = decisions.latest_for([x.id, x.id, "missing"], candidate_id="batch-candidate")
+    assert {key: value.selection.id for key, value in found.items()} == {x.id: record.selection.id}
+    assert calls == [([x.id, "missing"], "batch-candidate")]
+    assert decisions.latest_for([x.id], candidate_id="other-candidate") == {}
 
 
 # --- 2. decision task lifecycle -----------------------------------------------------------

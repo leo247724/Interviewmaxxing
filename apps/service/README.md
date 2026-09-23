@@ -135,6 +135,29 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
 - **Failures.** If a run raises before submitting, the service moves the application to `FAILED_RETRYABLE` ("nothing was sent"), so the user can try again. A run that dies during submit is left to the store: it becomes `SUBMISSION_UNKNOWN` when the lease lapses, and status reads trigger that recovery.
 - **Logs** contain method, route template and status only. Runner errors are logged by exception type.
 
+### Application handoff links
+
+`StartApplicationInput` accepts optional `pipelineEntryId: string | null` and
+`listingId: string | null`. URL-only starts keep their existing behavior.
+
+- A supplied entry must belong to the configured candidate. A supplied listing must
+  exist. Both IDs must resolve to the same saved job; a manual entry without a listing
+  can match by its saved URL. Known posting/application URLs must match the handoff.
+  Shared search `sourceUrl` values are never matching evidence.
+- Invalid, missing, foreign or mismatched IDs/URLs return `422` with
+  `fieldErrors.pipelineEntryId`, `listingId` or `applicationUrl`, before recording or
+  dispatching. An entry already linked to a different application returns `409` and
+  keeps that link.
+- A listing-only handoff tracks the listing once. After recording the canonical
+  application and pinning the resume, the service writes the pipeline link before
+  browser dispatch. Repeats keep the same application and card.
+- If linking fails, no browser run starts. The recorded/pinned request remains safe
+  to retry; the same handoff completes the missing link idempotently. A concurrent
+  entry edit returns `409` and asks for a reload. Unexpected storage failure returns
+  `500`; the existing entry and application are not silently replaced.
+- `GET /pipeline` reads the linked application's actual state and receipt authority,
+  including `SUBMISSION_UNKNOWN`, site confirmation and user-reported confirmation.
+
 ### Resume pinning (S3)
 
 `POST /applications` pins the exact selected `ResumeArtifact` to the application with `ApplicationStore.pin_resume`. It does this synchronously after `record_request` and before dispatch.

@@ -6,12 +6,18 @@ Flow for one listing:
    hard constraints (closed, already applied, pay below floor, onsite outside accepted
    locations, excluded title keywords or companies). Any hard constraint means SKIP
    without calling Jev.
-2. A complete earlier Jev decision for identical inputs (same model, rubric, job,
-   candidate and preference hashes) is reused instead of spending credits again.
+2. A complete earlier Jev decision by the *same candidate* for identical inputs (same
+   model, rubric, job, candidate and preference hashes) is reused instead of spending
+   credits again.
 3. Jev answers the focused questions, then the final APPLY/SKIP/REVIEW question with
    those assessments. Provider failure or an invalid answer means REVIEW.
-4. Holds (missing/contradictory evidence, ambiguous eligibility, low confidence,
-   suspected injection, missing profile) cap the effective decision.
+4. Holds (missing/contradictory evidence, ambiguous or outside remote eligibility,
+   low confidence, suspected injection, missing profile) cap the effective decision.
+
+Every decision is scoped to a candidate id. It comes from the candidate evidence when
+there is any; otherwise the caller passes it (``select(..., candidate_id=...)``) or the
+service was built with a default. Two candidates with identical qualifications, or two
+without a profile, never share a decision.
 
 The result is a core ``JobSelection`` (inside :class:`SelectionOutcome`). This package
 never opens browsers or submits applications; an effective APPLY only makes the
@@ -33,7 +39,6 @@ from interviewmaxxing_core import (
     DEFAULT_JEV_MODEL,
     JobListing,
     JobSelection,
-    LocalPaths,
     ModelDecision,
     ProviderError,
     ProviderUsage,
@@ -101,6 +106,7 @@ class _Context:
     listing: JobListing
     preferences: SelectionPreferences
     candidate: CandidateEvidence | None
+    candidate_id: str
     job_hash: str
     candidate_hash: str | None
     cache_key: str
@@ -134,21 +140,43 @@ class SelectionService:
         self.policy = policy or SelectionPolicy()
         self.application_lookup = application_lookup
         self.candidate_id = candidate_id
+        """Default owner for calls without candidate evidence or an explicit id."""
         self.clock = clock
 
     @property
     def rubric_version(self) -> str:
         return self.policy.rubric_version
 
+    def resolve_candidate_id(
+        self, candidate: CandidateEvidence | None, candidate_id: str | None = None
+    ) -> str:
+        """The candidate a decision belongs to. Evidence carries its own id; an explicit
+        id must agree with it. Without evidence the explicit id, else the service
+        default, is used; with neither this raises rather than guessing an owner."""
+        if candidate is not None:
+            if candidate_id is not None and candidate_id != candidate.candidate_id:
+                raise ValueError(
+                    f"candidate_id {candidate_id!r} does not match the evidence's "
+                    f"{candidate.candidate_id!r}"
+                )
+            return candidate.candidate_id
+        resolved = candidate_id or self.candidate_id
+        if not resolved:
+            raise ValueError("candidate_id is required when there is no candidate evidence")
+        return resolved
+
     def cache_key(
         self,
         listing: JobListing,
         preferences: SelectionPreferences,
         candidate: CandidateEvidence | None,
+        *,
+        candidate_id: str | None = None,
     ) -> str:
         job_hash, candidate_hash = evidence_hashes(listing, candidate)
         return snapshot_hash(
             {
+                "candidate_id": self.resolve_candidate_id(candidate, candidate_id),
                 "model": self.model,
                 "rubric": self.rubric_version,
                 "job": job_hash,
@@ -163,15 +191,22 @@ class SelectionService:
         listing: JobListing,
         preferences: SelectionPreferences,
         candidate: CandidateEvidence | None,
+        *,
+        candidate_id: str | None = None,
     ) -> bool:
         """False once the listing, candidate evidence, preferences, rubric/thresholds or
-        model changed since ``selection`` was made (it must then be recomputed)."""
+        model changed since ``selection`` was made (it must then be recomputed), and
+        always False for another candidate's selection."""
         job_hash, candidate_hash = evidence_hashes(listing, candidate)
-        return selection.requested_model == self.model and selection.is_current_for(
-            preferences=preferences,
-            job_evidence_hash=job_hash,
-            candidate_evidence_hash=candidate_hash,
-            rubric_version=self.rubric_version,
+        return (
+            selection.candidate_id == self.resolve_candidate_id(candidate, candidate_id)
+            and selection.requested_model == self.model
+            and selection.is_current_for(
+                preferences=preferences,
+                job_evidence_hash=job_hash,
+                candidate_evidence_hash=candidate_hash,
+                rubric_version=self.rubric_version,
+            )
         )
 
     def select(
@@ -180,17 +215,20 @@ class SelectionService:
         preferences: SelectionPreferences,
         candidate: CandidateEvidence | None,
         *,
+        candidate_id: str | None = None,
         use_cache: bool = True,
     ) -> SelectionOutcome:
+        owner = self.resolve_candidate_id(candidate, candidate_id)
         job_hash, candidate_hash = evidence_hashes(listing, candidate)
         location = check_location(listing, preferences)
         ctx = _Context(
             listing=listing,
             preferences=preferences,
             candidate=candidate,
+            candidate_id=owner,
             job_hash=job_hash,
             candidate_hash=candidate_hash,
-            cache_key=self.cache_key(listing, preferences, candidate),
+            cache_key=self.cache_key(listing, preferences, candidate, candidate_id=owner),
             compensation=check_compensation(listing, preferences),
             location=location,
             tier=location_tier(location, preferences.location_priority),
@@ -216,7 +254,7 @@ class SelectionService:
             )
 
         if use_cache and self.store is not None:
-            cached = self.store.find_cached(listing.id, ctx.cache_key)
+            cached = self.store.find_cached(listing.id, owner, ctx.cache_key)
             if cached is not None:
                 log.info(
                     "selection cache hit listing=%s selection=%s", listing.id, cached.selection.id
@@ -322,7 +360,7 @@ class SelectionService:
         model_choice = model_decision.choice if model_decision else None
         selection = JobSelection(
             listing_id=ctx.listing.id,
-            candidate_id=self._candidate_id(ctx.candidate),
+            candidate_id=ctx.candidate_id,
             requested_model=self.model,
             returned_model=results[-1].response.model if results else None,
             rubric_version=self.rubric_version,
@@ -372,11 +410,6 @@ class SelectionService:
             selection.usage.cost_usd if selection.usage else None,
         )
         return outcome
-
-    def _candidate_id(self, candidate: CandidateEvidence | None) -> str:
-        if candidate is not None:
-            return candidate.candidate_id
-        return self.candidate_id or LocalPaths.from_env().candidate_id
 
 
 def _model_decision(

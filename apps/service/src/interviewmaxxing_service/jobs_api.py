@@ -396,8 +396,8 @@ class JobsApi:
         self.listing_limit = LISTING_LIMIT
 
     def shutdown(self) -> None:
-        self._search_pool.shutdown(wait=False, cancel_futures=True)
-        self._decision_pool.shutdown(wait=False, cancel_futures=True)
+        self._search_pool.shutdown(wait=True, cancel_futures=True)
+        self._decision_pool.shutdown(wait=True, cancel_futures=True)
 
     def status(self) -> dict[str, str]:
         return {

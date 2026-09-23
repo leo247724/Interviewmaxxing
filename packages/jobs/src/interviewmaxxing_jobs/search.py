@@ -23,7 +23,7 @@ from interviewmaxxing_core import (
 
 from .opencli import DEFAULT_PROFILE, BrowserTransport, TransportError
 from .sources import AccessProblem, SearchContext, SourceAdapter, default_adapters
-from .store import JobStore
+from .store import JobStore, ListingConflict
 
 
 def session_name(source: str) -> str:
@@ -114,6 +114,10 @@ class JobSearchService:
         keep_session = False
         try:
             outcome = adapter.search(ctx)
+            # A wall hit part-way keeps the collected listings (PARTIAL) and the
+            # session, so the user can sign in there and search again.
+            keep_session = (outcome.access is not None
+                            and outcome.access.state is SourceSearchState.NEEDS_USER)
         except AccessProblem as problem:
             keep_session = problem.state is SourceSearchState.NEEDS_USER
             return SourceSearchResult(
@@ -134,19 +138,30 @@ class JobSearchService:
         excluded = [k.casefold() for k in query.excluded_keywords]
         stored_ids: list[str] = []
         dropped = 0
+        conflicts = 0
         for obs in outcome.observations:
             title = obs.listing.title.casefold()
             if any(k in title for k in excluded):
                 dropped += 1
                 continue
-            stored = self.store.upsert(obs.listing, raw=obs.raw, run_id=run_id)
+            try:
+                stored = self.store.upsert(obs.listing, raw=obs.raw, run_id=run_id)
+            except ListingConflict:
+                conflicts += 1  # kept aside by the store; the stored listing is unchanged
+                continue
             if stored.id not in stored_ids:
                 stored_ids.append(stored.id)
-        message = outcome.message
+        state = outcome.state
+        notes = [outcome.message]
         if dropped:
-            message = "; ".join(filter(None, [message, f"{dropped} titles matched excluded keywords"]))
+            notes.append(f"{dropped} titles matched excluded keywords")
+        if conflicts:
+            notes.append(f"{conflicts} observations contradicted stored listings and were kept "
+                         "aside (JobStore.conflicts)")
+            if state is SourceSearchState.OK:
+                state = SourceSearchState.PARTIAL
         return SourceSearchResult(
-            query_id=query.id, source=source, state=outcome.state, listing_ids=stored_ids,
-            pages_visited=outcome.pages_visited, message=message,
-            user_action=outcome.user_action, started_at=started,
-            finished_at=max(self.clock(), started))
+            query_id=query.id, source=source, state=state, listing_ids=stored_ids,
+            pages_visited=outcome.pages_visited, message="; ".join(n for n in notes if n) or None,
+            user_action=outcome.user_action, session_name=session if keep_session else None,
+            started_at=started, finished_at=max(self.clock(), started))
