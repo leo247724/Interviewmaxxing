@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -12,10 +13,12 @@ import pytest
 
 from interviewmaxxing_core import (
     CandidateProfile,
+    HoldCode,
     JobListing,
     LocationPriority,
     SelectionChoice,
     SelectionPreferences,
+    WorkArrangement,
 )
 from interviewmaxxing_selection import (
     FINAL_QUESTION,
@@ -214,7 +217,8 @@ def test_candidate_identity_never_reaches_jev_or_logs(
     ]
     profile = fictional_candidate.model_copy(update={"facts": leaky_facts})
     evidence = CandidateEvidence.from_profile(profile)
-    assert {"bio", "signature", "cell"}.isdisjoint(evidence.verified_facts)
+    assert {"bio", "cell"}.isdisjoint(evidence.verified_facts)  # contact details: dropped
+    assert evidence.verified_facts["signature"] == "[candidate], marketer"  # name: redacted
     assert evidence.verified_facts["current_title"] == "Paid Media Lead"
 
     caplog.set_level(logging.DEBUG)
@@ -227,6 +231,10 @@ def test_candidate_identity_never_reaches_jev_or_logs(
         if value:
             assert value.casefold() not in sent
             assert value.casefold() not in caplog.text.casefold()
+    for name in (who.first_name, who.last_name, who.preferred_name):
+        if name:
+            assert re.search(rf"\b{re.escape(name.casefold())}\b", sent) is None
+            assert re.search(rf"\b{re.escape(name.casefold())}\b", caplog.text.casefold()) is None
 
 
 @pytest.mark.parametrize(
@@ -244,3 +252,72 @@ def test_ordinary_qualifications_are_not_mistaken_for_contact() -> None:
         verified_facts={"tenure": "2019-01 - 2023-05", "budget": "USD 4,800,000 per year"},
     )
     assert evidence.has_qualifications
+
+
+def test_remote_outside_region_is_held_regardless_of_jev(
+    listing: Listing,
+    prefs: SelectionPreferences,
+    candidate: CandidateEvidence,
+    new_bot: Callable[..., Any],
+    make_service: MakeService,
+) -> None:
+    canada = listing("remote_manager").model_copy(
+        update={"remote_eligibility": "Canada", "location": "Canada"}
+    )
+    bot = new_bot()  # Jev (mistakenly) says eligible and APPLY
+    out = make_service(bot).select(canada, prefs, candidate)
+    assert out.location is LocationStatus.REMOTE_OUTSIDE_REGION
+    assert out.location_tier is LocationTier.UNRANKED
+    assert out.selection.effective_choice is SelectionChoice.REVIEW
+    assert HoldReason.REMOTE_OUTSIDE_REGION in {h.reason for h in out.holds}
+    assert HoldCode.HARD_CONSTRAINT in {h.code for h in out.selection.holds}
+    assert not {h.reason for h in out.holds} & HARD_CONSTRAINTS  # reviewed, not skipped
+    assert "REMOTE_OUTSIDE_REGION" in bot.calls[0]["state"]["checks"]["policy_holds"]
+    skipped = make_service(new_bot(location_eligibility="not_eligible", selection="SKIP")).select(
+        canada, prefs, candidate, use_cache=False
+    )
+    assert skipped.selection.effective_choice is SelectionChoice.SKIP  # Jev's SKIP stands
+
+
+def test_narrower_remote_eligibility_is_held_regardless_of_jev(
+    listing: Listing,
+    prefs: SelectionPreferences,
+    candidate: CandidateEvidence,
+    new_bot: Callable[..., Any],
+    make_service: MakeService,
+) -> None:
+    texas = listing("remote_manager").model_copy(
+        update={"remote_eligibility": "Texas", "location": "Texas"}
+    )
+    bot = new_bot()  # Jev says eligible and APPLY
+    out = make_service(bot).select(texas, prefs, candidate)
+    assert out.location is LocationStatus.REMOTE_ELIGIBILITY_AMBIGUOUS
+    assert out.location_tier is LocationTier.SECONDARY  # still a possible role
+    assert out.selection.effective_choice is SelectionChoice.REVIEW
+    assert HoldReason.ELIGIBILITY_AMBIGUOUS in {h.reason for h in out.holds}
+    assert bot.calls[0]["state"]["checks"]["location"] == "REMOTE_ELIGIBILITY_AMBIGUOUS"
+    assert "ELIGIBILITY_AMBIGUOUS" in bot.calls[0]["state"]["checks"]["policy_holds"]
+
+
+def test_onsite_without_a_locality_is_reviewed_not_skipped(
+    listing: Listing,
+    prefs: SelectionPreferences,
+    candidate: CandidateEvidence,
+    new_bot: Callable[..., Any],
+    make_service: MakeService,
+) -> None:
+    for location in ("Texas, United States", "United States", "Multiple Locations"):
+        item = listing("austin_onsite_manager").model_copy(
+            update={"location": location, "work_arrangement": WorkArrangement.HYBRID}
+        )
+        bot = new_bot()
+        out = make_service(bot).select(item, prefs, candidate)
+        assert out.location is LocationStatus.UNKNOWN, location
+        assert out.location_tier is LocationTier.UNRANKED
+        assert out.selection.effective_choice is SelectionChoice.REVIEW
+        assert HoldReason.LOCATION_UNKNOWN in {h.reason for h in out.holds}
+        assert len(bot.calls) == 2  # Jev was consulted; nothing was skipped by code
+    minnesota = listing("austin_onsite_manager").model_copy(update={"location": "Austin, MN"})
+    bot = new_bot()
+    out = make_service(bot).select(minnesota, prefs, candidate)
+    assert out.selection.effective_choice is SelectionChoice.SKIP and bot.calls == []
