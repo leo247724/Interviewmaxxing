@@ -257,6 +257,84 @@ def test_constructs_without_side_effects_and_runs_on_a_service_thread(
 # --- submission safety -----------------------------------------------------------------------
 
 
+def _expected_application(paths):
+    with _store(paths) as store:
+        app = store.record_request("c1", URL).application
+        store.pin_expected_job_identity(app.id, IDENTITY.identity_key)
+        return app
+
+
+@pytest.mark.parametrize("identity", [None, IDENTITY.model_copy(update={"external_job_id": "other"})])
+def test_expected_job_blocks_wrong_or_unidentified_page_across_restarts(
+    isolated_imx_home, fictional_candidate, identity
+):
+    app = _expected_application(isolated_imx_home)
+    for _ in range(2):
+        script = Script(pages=[_page(_form(), identity=identity)])
+        result = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script).resume(app.id))
+        assert result.state is S.FAILED_RETRYABLE and "selected job" in result.message
+        assert script.calls == ["open", "close"]
+        with _store(isolated_imx_home) as store:
+            assert store.expected_job_identity(app.id) == IDENTITY.identity_key
+            assert store.get_job(app.job_id).identity_key is None
+            assert store.list_attempts(app.id) == [] and store.get_receipt(app.id) is None
+    # A later fresh page supplies matching evidence; the expectation itself never did.
+    correct = Script()
+    result = asyncio.run(_runner(isolated_imx_home, fictional_candidate, correct).resume(app.id))
+    assert result.state is S.SUBMITTED and correct.calls.count("submit") == 1
+
+
+@pytest.mark.parametrize("identity", [None, IDENTITY.model_copy(update={"external_job_id": "other"})])
+@pytest.mark.parametrize("boundary", ["before_fill", "before_submit", "before_advance"])
+def test_expected_job_is_rechecked_before_every_form_action(
+    isolated_imx_home, fictional_candidate, identity, boundary
+):
+    app = _expected_application(isolated_imx_home)
+    form = _form(final=boundary != "before_advance")
+    correct = _page(form)
+    changed = _page(form, identity=identity)
+    inspections = [changed] if boundary == "before_fill" else [correct, changed]
+    script = Script(pages=[correct], inspect_pages=inspections)
+    result = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script).resume(app.id))
+    assert result.state is S.FAILED_RETRYABLE and "selected job" in result.message
+    assert script.calls.count("fill") == (0 if boundary == "before_fill" else 1)
+    assert "submit" not in script.calls and "advance" not in script.calls
+    with _store(isolated_imx_home) as store:
+        assert store.list_attempts(app.id) == [] and store.get_receipt(app.id) is None
+        assert store.get_job(app.job_id).identity_key == IDENTITY.identity_key
+
+
+def test_expected_job_survives_login_stop_before_identity_is_observed(
+    isolated_imx_home, fictional_candidate
+):
+    app = _expected_application(isolated_imx_home)
+    login = Script(pages=[_page(kind=PageKind.SIGN_IN_REQUIRED, identity=None)])
+    first = asyncio.run(_runner(isolated_imx_home, fictional_candidate, login).resume(app.id))
+    assert first.state is S.NEEDS_INPUT
+    changed = Script(pages=[_page(_form(), identity=IDENTITY.model_copy(
+        update={"external_job_id": "other"}))])
+    resumed = asyncio.run(_runner(isolated_imx_home, fictional_candidate, changed).resume(app.id))
+    assert resumed.state is S.FAILED_RETRYABLE and "fill" not in changed.calls
+
+
+def test_expected_job_checks_identity_after_submit_progress_callback(
+    isolated_imx_home, fictional_candidate
+):
+    app = _expected_application(isolated_imx_home)
+    script = Script()
+
+    class PageChanges(NoninteractiveInteraction):
+        async def progress(self, message):
+            if message == "Submitting the application":
+                script.inspect_pages.append(_page(_form(), identity=None))
+
+    result = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script,
+                                 interaction=PageChanges()).resume(app.id))
+    assert result.state is S.FAILED_RETRYABLE and "submit" not in script.calls
+    with _store(isolated_imx_home) as store:
+        assert store.list_attempts(app.id) == []
+
+
 @pytest.mark.parametrize("failure", [asyncio.CancelledError(), KeyboardInterrupt()])
 def test_interruption_during_submit_records_unknown_and_blocks_retry(
     isolated_imx_home, fictional_candidate, failure
