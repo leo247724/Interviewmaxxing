@@ -117,7 +117,8 @@ describe("PreviewApplicationService", () => {
     });
     expect(settled.state).toBe("SUBMITTED");
     expect(settled.receipt?.confirmationReference).toBe("JV-1");
-    expect(settled.receipt?.evidence[0].source).toBe("user");
+    expect(settled.receipt?.evidence.some((item) => item.source === "user" && item.kind === "user_report")).toBe(true);
+    expect(settled.receipt).toMatchObject({ confirmationMethod: "USER_CONFIRMED", confirmationAuthority: "user" });
   });
 
   it("reports a prior submission without sending", async () => {

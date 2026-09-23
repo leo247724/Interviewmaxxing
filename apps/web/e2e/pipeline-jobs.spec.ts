@@ -205,6 +205,39 @@ test.describe("jobs preview", () => {
     await expect(page.getByText("Remote roles are searched nationwide")).toBeVisible();
   });
 
+  test("ranks Austin onsite/hybrid well above nationwide remote by default, without dropping remote", async ({
+    page,
+  }) => {
+    await page.goto("/preview/jobs");
+    await expect(page.getByRole("radio", { name: /Strongly prefer onsite or hybrid/ })).toBeChecked();
+    await expect(
+      page.getByText(
+        "Austin onsite and hybrid roles come first. Remote roles open to United States are still included",
+      ),
+    ).toBeVisible();
+
+    const tiers = page.locator(".tier__title");
+    await expect(tiers.first()).toContainText("Austin onsite or hybrid");
+    const titles = await tiers.allTextContents();
+    const austinIndex = titles.findIndex((text) => text.includes("Austin onsite or hybrid"));
+    const remoteIndex = titles.findIndex((text) => text.includes("Remote, open to United States"));
+    expect(austinIndex).toBe(0);
+    expect(remoteIndex).toBeGreaterThan(austinIndex);
+    await expect(page.locator(".tier", { hasText: "Remote, open to United States" })).toContainText(
+      "Copperline Credit",
+    );
+    await expect(page.locator(".tier", { hasText: "Location not established" })).toContainText("Lark & Loom");
+
+    const order = await page.locator("article.listing .listing__company").allInnerTexts();
+    expect(order.indexOf("Meridian Loop Software")).toBeLessThan(order.indexOf("Copperline Credit"));
+
+    await page.getByRole("radio", { name: /Prefer remote/ }).check();
+    await page.getByRole("button", { name: "Save preferences" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Preferences saved" })).toBeVisible();
+    await expect(tiers.first()).toContainText("Remote, open to United States");
+    await expect(page.locator("article.listing", { hasText: "Meridian Loop Software" })).toBeVisible();
+  });
+
   test("runs a search with honest per-source states", async ({ page }) => {
     await page.goto("/preview/jobs");
     await page.getByRole("button", { name: "Search", exact: true }).click();

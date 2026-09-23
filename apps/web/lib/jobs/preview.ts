@@ -445,7 +445,11 @@ export class PreviewJobsService implements JobsService {
         confidence: 0.77,
         reasons: [
           "The title and responsibilities match a marketing manager target.",
-          `${item.workArrangement === "REMOTE" ? "Remote" : "Hybrid in Austin"} matches your location preferences.`,
+          item.workArrangement === "REMOTE"
+            ? this.prefs.locationPriority === "STRONGLY_PREFER_ONSITE_HYBRID"
+              ? "Remote and open to the United States: eligible, but ranked below Austin onsite and hybrid roles by your location priority."
+              : "Remote and open to the United States matches your location preferences."
+            : `${item.workArrangement === "HYBRID" ? "Hybrid" : "Onsite"} in Austin matches your strongest location preference.`,
           `Posted pay (${pay.rawText}) is above your minimum.`,
         ],
         decidedAt: now,

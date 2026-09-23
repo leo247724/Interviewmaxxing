@@ -156,6 +156,7 @@ export function ComposeForm(props: ComposeFormProps) {
               onChange={setField("location")}
               error={errors.location}
               autoComplete="address-level2"
+              hint="City, then state or region, e.g. Austin, TX. Add a country only if you want one on the form."
             />
             <TextField
               id="linkedinUrl"

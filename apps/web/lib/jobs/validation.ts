@@ -1,4 +1,4 @@
-import type { SearchPreferencesView } from "./types";
+import { LOCATION_PRIORITIES, type SearchPreferencesView } from "./types";
 
 type PreferencesInput = Omit<SearchPreferencesView, "fingerprint">;
 
@@ -23,6 +23,9 @@ export function validatePreferences(input: PreferencesInput): Record<string, str
     (!Number.isFinite(input.minimumCompensation.amount) || input.minimumCompensation.amount <= 0)
   ) {
     errors.minimumCompensation = "Enter a minimum above zero, or leave it blank for no minimum.";
+  }
+  if (!LOCATION_PRIORITIES.includes(input.locationPriority)) {
+    errors.locationPriority = "Choose how to rank onsite, hybrid and remote roles.";
   }
   if (input.sources.length === 0) errors.sources = "Choose at least one source.";
   if (

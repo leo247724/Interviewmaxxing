@@ -1,4 +1,5 @@
 import type { ApplicationState, ApplicationView } from "./service/types";
+import { receiptAuthority } from "./receipt";
 
 /** States in which the service is working and the desk should keep polling. */
 export const ACTIVE_STATES: ReadonlySet<ApplicationState> = new Set([
@@ -94,7 +95,9 @@ export function describe(view: ApplicationView): { headline: string; mood: Mood 
       }
       return { headline: "Waiting for you", mood: "attention" };
     case "SUBMITTED":
-      return { headline: "Submitted and confirmed", mood: "success" };
+      return view.receipt && receiptAuthority(view.receipt).byUser
+        ? { headline: "Submitted, on your report", mood: "success" }
+        : { headline: "Submitted and confirmed", mood: "success" };
     case "SUBMISSION_UNKNOWN":
       return { headline: "Submission not confirmed", mood: "caution" };
     case "FAILED_RETRYABLE":

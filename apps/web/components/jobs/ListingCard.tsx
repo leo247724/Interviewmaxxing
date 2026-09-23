@@ -44,6 +44,8 @@ export function applicationUrlOf(listing: ListingView) {
 
 export function ListingCard({
   listing,
+  tierLabel,
+  tierUnknown,
   busy,
   pipelineHref,
   onDecide,
@@ -51,6 +53,9 @@ export function ListingCard({
   onApply,
 }: {
   listing: ListingView;
+  /** Which location group the listing was ranked into. */
+  tierLabel: string;
+  tierUnknown: boolean;
   busy: "decide" | "track" | null;
   pipelineHref: string;
   onDecide: () => void;
@@ -68,6 +73,7 @@ export function ListingCard({
           {listing.title}
         </h3>
         <p className="listing__company">{listing.company ?? "Company not stated"}</p>
+        <p className={`listing__tier${tierUnknown ? " is-unknown" : ""}`}>Location match: {tierLabel}</p>
         {closed && <p className="listing__closed">Closed on the source · no longer accepting applications</p>}
       </header>
 

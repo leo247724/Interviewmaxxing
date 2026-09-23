@@ -3,10 +3,13 @@
 import { useState, type FormEvent } from "react";
 import {
   DEFAULT_PREFERENCES,
+  LOCATION_PRIORITIES,
   SOURCE_LABELS,
   type CompensationPeriod,
+  type LocationPriority,
   type SearchPreferencesView,
 } from "@/lib/jobs/types";
+import { PRIORITY_LABELS } from "@/lib/jobs/ranking";
 import { validatePreferences } from "@/lib/jobs/validation";
 import { FieldMessages, describedBy } from "../fields";
 import { ErrorSummary } from "../ErrorSummary";
@@ -27,6 +30,7 @@ interface Draft {
   minimum: string;
   period: CompensationPeriod;
   unknownCompensation: "KEEP" | "REVIEW";
+  locationPriority: LocationPriority;
   sources: string[];
   maxResults: string;
 }
@@ -47,6 +51,8 @@ function toDraft(prefs: PreferencesInput): Draft {
     minimum: prefs.minimumCompensation ? String(prefs.minimumCompensation.amount) : "",
     period: prefs.minimumCompensation?.period ?? "YEAR",
     unknownCompensation: prefs.unknownCompensation,
+    // Older saved preferences may predate this field; the user's stated default applies.
+    locationPriority: prefs.locationPriority ?? DEFAULT_PREFERENCES.locationPriority,
     sources: [...prefs.sources],
     maxResults: String(prefs.maxResultsPerSource),
   };
@@ -79,6 +85,7 @@ function fromDraft(draft: Draft): PreferencesInput {
     remote: draft.remoteEnabled ? { eligibleRegion: draft.remoteRegion.trim() } : null,
     minimumCompensation: minimum ? { amount: Number(minimum), currency: "USD", period: draft.period } : null,
     unknownCompensation: draft.unknownCompensation,
+    locationPriority: draft.locationPriority,
     sources: draft.sources,
     maxResultsPerSource: Number(draft.maxResults),
   };
@@ -103,11 +110,20 @@ export function SearchForm({
   const shown = { ...serverErrors, ...errors };
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
 
-  const order = ["titlePhrases", "onsite", "remote", "minimumCompensation", "sources", "maxResultsPerSource"];
+  const order = [
+    "titlePhrases",
+    "onsite",
+    "remote",
+    "locationPriority",
+    "minimumCompensation",
+    "sources",
+    "maxResultsPerSource",
+  ];
   const targets: Record<string, string> = {
     titlePhrases: "js-titles",
     onsite: "js-onsite-location",
     remote: "js-remote-region",
+    locationPriority: "js-priority",
     minimumCompensation: "js-minimum",
     sources: "js-sources",
     maxResultsPerSource: "js-max",
@@ -253,6 +269,40 @@ export function SearchForm({
           hint="Remote roles are searched nationwide for this region, not limited to your city or state."
           error={shown.remote}
         />
+      </fieldset>
+
+      <fieldset
+        id="js-priority"
+        className={`search__group${shown.locationPriority ? " is-invalid" : ""}`}
+        tabIndex={-1}
+      >
+        <legend className="field__label">Location priority</legend>
+        <div className="priority-options">
+          {LOCATION_PRIORITIES.map((value) => {
+            const city = draft.onsiteLocation.split(",")[0].trim() || "Your city";
+            const region = draft.remoteRegion.trim() || "your region";
+            return (
+              <label key={value} className="priority-option">
+                <input
+                  type="radio"
+                  name="location-priority"
+                  value={value}
+                  checked={draft.locationPriority === value}
+                  aria-describedby={`js-priority-${value}`}
+                  onChange={() => set("locationPriority", value)}
+                />
+                <span>
+                  <span className="priority-option__label">{PRIORITY_LABELS[value].label}</span>
+                  <span id={`js-priority-${value}`} className="priority-option__detail">
+                    {PRIORITY_LABELS[value].detail(city, region)}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <p className="field__hint">This orders results. It never drops remote roles you&rsquo;re eligible for.</p>
+        {shown.locationPriority && <p className="field__error">{shown.locationPriority}</p>}
       </fieldset>
 
       <fieldset className={`search__group${shown.minimumCompensation ? " is-invalid" : ""}`}>

@@ -9,6 +9,31 @@ export type WorkArrangement = "ONSITE" | "HYBRID" | "REMOTE" | "UNKNOWN";
 export type CompensationPeriod = "YEAR" | "MONTH" | "WEEK" | "DAY" | "HOUR";
 export type SelectionChoice = "APPLY" | "SKIP" | "REVIEW";
 
+/** D0 `LocationPriority`. A ranking preference only: remote stays eligible under every value. */
+export type LocationPriority = "STRONGLY_PREFER_ONSITE_HYBRID" | "BALANCED" | "PREFER_REMOTE";
+
+export const LOCATION_PRIORITIES: readonly LocationPriority[] = [
+  "STRONGLY_PREFER_ONSITE_HYBRID",
+  "BALANCED",
+  "PREFER_REMOTE",
+];
+
+/**
+ * How a listing's observed location relates to the targets. Set by the service when
+ * it computes one; otherwise the UI derives it from the listing's stated facts.
+ */
+export type LocationTier =
+  /** Onsite or hybrid in a target city, as the listing states. */
+  | "ONSITE_HYBRID_TARGET"
+  /** Remote and stated as open to the remote region. */
+  | "REMOTE_ELIGIBLE"
+  /** Remote, but the listing doesn't say where you can work from. */
+  | "REMOTE_UNCONFIRMED"
+  /** Onsite or hybrid somewhere other than a target city. */
+  | "OUTSIDE_TARGET"
+  /** Location or arrangement isn't stated well enough to place it. */
+  | "UNRESOLVED";
+
 export interface OnsiteTargetView {
   location: string;
   arrangements: ("ONSITE" | "HYBRID")[];
@@ -34,6 +59,8 @@ export interface SearchPreferencesView {
   remote: RemoteTargetView | null;
   minimumCompensation: CompensationFloorView | null;
   unknownCompensation: "KEEP" | "REVIEW";
+  /** How strongly target-city onsite/hybrid roles rank above remote ones. */
+  locationPriority: LocationPriority;
   sources: SourceName[];
   maxResultsPerSource: number;
   /** Changes whenever a selection-relevant preference changes. */
@@ -119,6 +146,8 @@ export interface ListingView {
   selection: SelectionView | null;
   pipelineEntryId: string | null;
   applicationId: string | null;
+  /** Optional service-computed tier; absent until S1 provides it. */
+  locationTier?: LocationTier | null;
 }
 
 export interface ListingsView {
@@ -148,6 +177,7 @@ export const DEFAULT_PREFERENCES: Omit<SearchPreferencesView, "fingerprint"> = {
   remote: { eligibleRegion: "United States" },
   minimumCompensation: { amount: 100_000, currency: "USD", period: "YEAR" },
   unknownCompensation: "KEEP",
+  locationPriority: "STRONGLY_PREFER_ONSITE_HYBRID",
   sources: ["linkedin", "builtin", "indeed", "google"],
   maxResultsPerSource: 50,
 };

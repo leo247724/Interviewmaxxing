@@ -1,5 +1,6 @@
 import type { ApplicationView, SubmissionReceiptView } from "@/lib/service/types";
 import { formatDateTime, timeZoneName } from "@/lib/format";
+import { receiptAuthority } from "@/lib/receipt";
 import { EvidenceList } from "./Evidence";
 
 export function Receipt({
@@ -13,7 +14,7 @@ export function Receipt({
   mode: "live" | "preview";
   onStartAnother: () => void;
 }) {
-  const userReported = receipt.evidence.length > 0 && receipt.evidence.every((item) => item.source === "user");
+  const authority = receiptAuthority(receipt);
 
   return (
     <article className={`receipt${mode === "preview" ? " receipt--preview" : ""}`} aria-labelledby="receipt-title">
@@ -55,9 +56,15 @@ export function Receipt({
             {receipt.confirmationReference ? (
               <span className="mono receipt__reference">{receipt.confirmationReference}</span>
             ) : (
-              <span className="receipt__none">None shown. The evidence below is the confirmation.</span>
+              <span className="receipt__none">
+                {authority.byUser ? "None recorded." : "None shown. The evidence below is the confirmation."}
+              </span>
             )}
           </dd>
+        </div>
+        <div>
+          <dt>How it was confirmed</dt>
+          <dd data-testid="confirmation-method">{authority.description}</dd>
         </div>
         {view.resumeFileName && (
           <div>
@@ -67,9 +74,10 @@ export function Receipt({
         )}
       </dl>
 
-      {userReported && (
+      {authority.byUser && (
         <p className="receipt__caveat">
-          Confirmed from what you reported, not from the site directly. The note is kept with this receipt.
+          Marked submitted on your report, not on the site&rsquo;s confirmation. Any site screenshots below are from
+          before your report and don&rsquo;t show acceptance.
         </p>
       )}
 

@@ -20,6 +20,7 @@ import { ApplyPrompt } from "../pipeline/ApplyPrompt";
 import { SearchForm, type PreferencesInput } from "./SearchForm";
 import { SourceStatus } from "./SourceStatus";
 import { ListingCard, applicationUrlOf } from "./ListingCard";
+import { rankListings, tierHeading } from "@/lib/jobs/ranking";
 
 type Filter = "all" | SelectionChoice | "undecided";
 
@@ -185,6 +186,11 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
     undecided: listings.filter((item) => !item.selection && (!hideClosed || item.status !== "CLOSED")).length,
   };
   const closedCount = listings.filter((item) => item.status === "CLOSED").length;
+  const ranking = {
+    onsite: prefs?.onsite ?? DEFAULT_PREFERENCES.onsite,
+    remote: prefs ? prefs.remote : DEFAULT_PREFERENCES.remote,
+    locationPriority: prefs?.locationPriority ?? DEFAULT_PREFERENCES.locationPriority,
+  };
 
   return (
     <AppShell
@@ -301,17 +307,33 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
               <p className="lede">No listings match this filter.</p>
             ) : (
               <div className="listings">
-                {visible.map((listing) => (
-                  <ListingCard
-                    key={listing.id}
-                    listing={listing}
-                    busy={busy?.id === listing.id ? busy.kind : null}
-                    pipelineHref={mode === "preview" ? "/preview/pipeline" : "/pipeline"}
-                    onDecide={() => void act(listing, "decide")}
-                    onTrack={() => void act(listing, "track")}
-                    onApply={() => setApplying(listing)}
-                  />
-                ))}
+                {rankListings(visible, ranking).map((group, index) => {
+                  const heading = tierHeading(group.tiers, ranking);
+                  return (
+                    <section key={group.tiers.join("+")} className="tier" aria-label={heading}>
+                      <h3 className="tier__title">
+                        <span className="tier__rank">{String(index + 1).padStart(2, "0")}</span>
+                        {heading}
+                        <span className="tier__note">
+                          {group.listings.length} {group.listings.length === 1 ? "listing" : "listings"}
+                        </span>
+                      </h3>
+                      {group.listings.map((listing) => (
+                        <ListingCard
+                          key={listing.id}
+                          listing={listing}
+                          tierLabel={heading}
+                          tierUnknown={group.tiers.includes("UNRESOLVED") || group.tiers.includes("REMOTE_UNCONFIRMED")}
+                          busy={busy?.id === listing.id ? busy.kind : null}
+                          pipelineHref={mode === "preview" ? "/preview/pipeline" : "/pipeline"}
+                          onDecide={() => void act(listing, "decide")}
+                          onTrack={() => void act(listing, "track")}
+                          onApply={() => setApplying(listing)}
+                        />
+                      ))}
+                    </section>
+                  );
+                })}
               </div>
             )}
           </section>

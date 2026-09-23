@@ -224,8 +224,14 @@ test.describe("preview desk", () => {
     await page.getByLabel("Confirmation email").check();
     await page.getByLabel("Confirmation reference").fill("JV-2026-44");
     await page.getByRole("button", { name: "Record confirmation" }).click();
-    await expect(heading(page)).toHaveText("Submitted and confirmed");
-    await expect(page.getByText("Confirmed from what you reported")).toBeVisible();
+    await expect(heading(page)).toHaveText("Submitted, on your report");
+    const receipt = page.getByRole("article", { name: "Submission receipt" });
+    await expect(receipt.getByText("Marked submitted on your report")).toBeVisible();
+    await expect(receipt.getByTestId("confirmation-method")).toContainText("You reported");
+    // The earlier site screenshot stays listed, but doesn't turn this into a site confirmation.
+    await expect(receipt.getByText("Observed on the site")).toBeVisible();
+    await expect(receipt.getByText("Reported by you")).toBeVisible();
+    await expect(page.getByTestId("state-stamp")).toContainText("Reported");
     await expect(page.getByText("JV-2026-44")).toBeVisible();
   });
 
