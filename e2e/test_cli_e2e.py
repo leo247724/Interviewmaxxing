@@ -150,6 +150,13 @@ def test_site_rejection_asks_for_a_corrected_answer(cli: Cli, ats: MockServer, p
     assert [a["outcome"] for a in status["attempts"]] == ["NOT_SUBMITTED"]
     assert _events(cli, app_id).count("validation.rejected") == 1  # the rejection epoch
 
+    # Reopening clears the page's validation text, but cannot clear the rejection.
+    resumed = cli("resume", app_id, "--headless", "--json")
+    assert resumed.code == EXIT_INCOMPLETE and resumed.json()["state"] == "NEEDS_INPUT"
+    assert resumed.json()["missing_inputs"][0]["prompt"] == phone["prompt"]
+    assert ats.submissions("validation")["rejected_count"] == 1
+    assert len(cli("status", app_id, "--json").json()["attempts"]) == 1
+
     # A correction the site rejects again (new process, new epoch) is asked again,
     # not silently resubmitted with the same value or suppressed as "already answered".
     assert cli("answer", app_id, "--set", "phone=555").code == EXIT_OK
@@ -159,6 +166,12 @@ def test_site_rejection_asks_for_a_corrected_answer(cli: Cli, ats: MockServer, p
     assert phone["field_id"] == "phone" and "rejected" in phone["prompt"]
     assert ats.submissions("validation")["rejected_count"] == 2
     assert _events(cli, app_id).count("validation.rejected") == 2
+
+    # The previous user input is older than this rejection and cannot be reused.
+    resumed = cli("resume", app_id, "--headless", "--json")
+    assert resumed.code == EXIT_INCOMPLETE and resumed.json()["state"] == "NEEDS_INPUT"
+    assert ats.submissions("validation")["rejected_count"] == 2
+    assert len(cli("status", app_id, "--json").json()["attempts"]) == 2
 
     assert cli("answer", app_id, "--set", "phone=3035550142").code == EXIT_OK
     resumed = cli("resume", app_id, "--headless", "--json")
