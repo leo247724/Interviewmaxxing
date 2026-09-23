@@ -2,23 +2,21 @@
   "metadata": {
     "argv": [
       "/Users/leo/.superset/worktrees/Interviewmaxxing/build/performance-runtime/benchmarks/performance/imx_perf/__main__.py",
-      "all",
+      "chaos",
       "--seed",
-      "42",
-      "--population",
-      "2000"
+      "42"
     ],
-    "generated_at": "2026-09-22T20:01:21-0500",
-    "harness_sha256": "19415044afe7a637e7efe183252dfa34b2fb2fd9d27e5727bb2d8392f67a86dd",
+    "generated_at": "2026-09-22T20:05:15-0500",
+    "harness_sha256": "0dfe82f2e9bd583c79601ded72c002b13254d40af0dc16d2dae92ab55382f59f",
     "load_average_1_5_15": [
-      5.0751953125,
-      4.2392578125,
-      4.111328125
+      8.9677734375,
+      5.59375,
+      4.64013671875
     ],
     "machine": "arm64",
     "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
     "python": "3.14.2",
-    "repo_head": "457d8ca"
+    "repo_head": "bae34e4"
   },
   "variants": {
     "default_heartbeat": {
@@ -36,7 +34,7 @@
         "workers": 4
       },
       "double_effects": 0,
-      "effects": 36,
+      "effects": 37,
       "failures": [],
       "heartbeat_lost": 0,
       "kills": 11,
@@ -52,14 +50,14 @@
         "browser_profile:slot-0": 1
       },
       "passed": true,
-      "reclaims": 5,
-      "reconcile_routes": 6,
-      "reconciled_without_effect": 4,
+      "reclaims": 7,
+      "reconcile_routes": 4,
+      "reconciled_without_effect": 3,
       "states": {
         "DONE": 40
       },
       "takeovers": 0,
-      "wall_s": 2.596
+      "wall_s": 2.628
     },
     "long_steps_heartbeat": {
       "config": {
@@ -76,10 +74,10 @@
         "workers": 4
       },
       "double_effects": 0,
-      "effects": 36,
+      "effects": 37,
       "failures": [],
       "heartbeat_lost": 0,
-      "kills": 8,
+      "kills": 6,
       "lane_violations": 0,
       "live_leases_at_end": 0,
       "max_observed_active": {
@@ -92,14 +90,14 @@
         "browser_profile:slot-0": 1
       },
       "passed": true,
-      "reclaims": 4,
-      "reconcile_routes": 4,
-      "reconciled_without_effect": 4,
+      "reclaims": 3,
+      "reconcile_routes": 3,
+      "reconciled_without_effect": 3,
       "states": {
         "DONE": 40
       },
       "takeovers": 0,
-      "wall_s": 11.918
+      "wall_s": 12.038
     },
     "long_steps_no_heartbeat": {
       "config": {
@@ -119,7 +117,7 @@
       "effects": 1,
       "failures": [],
       "heartbeat_lost": 0,
-      "kills": 8,
+      "kills": 5,
       "lane_violations": 0,
       "live_leases_at_end": 0,
       "max_observed_active": {
@@ -132,14 +130,14 @@
         "browser_profile:slot-0": 1
       },
       "passed": true,
-      "reclaims": 25,
+      "reclaims": 20,
       "reconcile_routes": 40,
       "reconciled_without_effect": 39,
       "states": {
         "DONE": 40
       },
-      "takeovers": 57,
-      "wall_s": 9.843
+      "takeovers": 55,
+      "wall_s": 9.155
     }
   }
 }

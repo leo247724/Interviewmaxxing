@@ -77,6 +77,8 @@ It exercises these contracts without connecting to the production state machine:
   changes may reuse a semantic judgment, but always invalidate/recheck execution URL,
   listing staleness, application-link provenance and candidate/job duplicate status.
   A semantic hit never grants submission authorization.
+* Apply/resume/reconcile admission coalesces across kinds for the same active
+  application key, so uncertainty conversion cannot collide with a second item.
 * `BEGIN IMMEDIATE` serializes admission and claims. High-water backpressure is checked
   in enqueue. All lease mutations fence owner, token and expiry. Retries use persisted
   available_at; safe work reaches DEAD after bounded attempts. No provider failures

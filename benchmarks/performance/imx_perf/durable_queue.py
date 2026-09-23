@@ -359,6 +359,13 @@ class DurableQueue:
         """Idempotent: returns the active item for ``(kind, key)`` and whether it was created."""
         now = self.now()
         with self._tx() as c:
+            if kind in ("apply", "resume", "reconcile"):
+                operation = c.execute(
+                    "SELECT * FROM work_items WHERE key = ? AND kind IN ('apply','resume','reconcile')"
+                    " AND state IN ('READY','RUNNING') ORDER BY created_at LIMIT 1", (key,)
+                ).fetchone()
+                if operation is not None:
+                    return self._item(operation), False
             if kind in ("apply", "resume"):
                 uncertain = c.execute("SELECT w.* FROM work_items w JOIN submission_intents s ON s.item_id = w.id"
                                       " WHERE w.key = ? ORDER BY w.created_at DESC LIMIT 1", (key,)).fetchone()

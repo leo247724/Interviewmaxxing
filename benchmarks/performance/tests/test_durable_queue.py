@@ -183,3 +183,16 @@ class SafetyRegressionTests(unittest.TestCase):
         self.clock.t += 6
         with self.assertRaises(LeaseLost):
             self.q.release(lease)
+
+    def test_cross_kind_application_admission_coalesces_before_recovery(self):
+        original, _ = self.q.enqueue('apply', 'same-app')
+        _, lease = self.q.claim_next('worker', ttl_s=1)
+        self.q.begin_submission(lease)
+        for kind in ('resume', 'reconcile'):
+            existing, created = self.q.enqueue(kind, 'same-app')
+            self.assertEqual(existing.id, original.id)
+            self.assertFalse(created)
+        self.clock.t += 2
+        self.q.recover_expired()
+        recovered, _ = self.q.claim_next('reconciler', ttl_s=5)
+        self.assertEqual(recovered.kind, 'reconcile')

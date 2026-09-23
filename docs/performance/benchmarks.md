@@ -9,10 +9,11 @@ From `benchmarks/performance`:
 ```sh
 python3 -m unittest discover -s tests -t .
 python3 -m imx_perf all --seed 42 --population 2000
+python3 -m imx_perf chaos --seed 42  # rerun after cross-kind admission fix
 /Users/leo/.superset/worktrees/Interviewmaxxing/build/queue-runtime/.venv-task/bin/python -m imx_perf measure --tag queue-runtime
 ```
 
-26 unit tests pass. The seeded suite runs 2,000 fictional listings, three 40-item worker-abandonment variants and 12 virtual pipeline scenarios. Local worker scheduling is nondeterministic. Each result JSON records argv, interpreter, platform, base checkout and harness module SHA-256; repo_head is the pre-commit base, not a claim the generated files already existed at that commit.
+27 unit tests pass. The seeded suite runs 2,000 fictional listings, three 40-item worker-abandonment variants and 12 virtual pipeline scenarios. Local worker scheduling is nondeterministic. Each result JSON records argv, interpreter, platform, base checkout and harness module SHA-256; repo_head is the pre-commit base, not a claim the generated files already existed at that commit.
 
 Offline suite interpreter: 3.14.2; macOS-15.7.4-arm64-arm-64bit-Mach-O. Optional package timing interpreter: 3.12.13; imported packages from queue-runtime checkout `05c87b6`. This is not a timing of every sibling's latest source.
 
@@ -20,13 +21,13 @@ Offline suite interpreter: 3.14.2; macOS-15.7.4-arm64-arm-64bit-Mach-O. Optional
 
 | Variant | Abandonments | Lease losses | Reconcile routes | No effect after intent | Effects | Result |
 | --- | --- | --- | --- | --- | --- | --- |
-| default_heartbeat | 11 | 0 | 6 | 4 | 36 | PASS |
-| long_steps_heartbeat | 8 | 0 | 4 | 4 | 36 | PASS |
-| long_steps_no_heartbeat | 8 | 57 | 40 | 39 | 1 | PASS |
+| default_heartbeat | 11 | 0 | 4 | 3 | 37 | PASS |
+| long_steps_heartbeat | 6 | 0 | 3 | 3 | 37 | PASS |
+| long_steps_no_heartbeat | 5 | 55 | 40 | 39 | 1 | PASS |
 
 Each run ended with 40 DONE scheduler dispositions, zero live leases, zero duplicate ledger effects and zero sampled lane violations. DONE may mean routed/reconciled with no fictional effect; it does not mean an accepted application. Without heartbeat, long work is fenced and routes to uncertainty rather than being counted as successful throughput. The local effect ledger cannot prove exactly-once remote delivery. Worker abandonment is cooperative, not an OS process kill or power-loss test.
 
-Tests also exercise seven-field task identity, stale-owner/token/expiry fencing, retry timing and dead letters, high-water admission, restart-visible uncertainty, aged reconciliation priority, conservative reservations before paid attempts, timeout charges, and shared hour-long Retry-After that a shorter cooldown cannot overwrite. Same-call independent final answers cannot read sibling answers; failed attempts still consume modeled bytes/time; exhausted submit failures never become acceptance.
+Tests also exercise cross-kind application admission coalescing, seven-field task identity, stale-owner/token/expiry fencing, retry timing and dead letters, high-water admission, restart-visible uncertainty, aged reconciliation priority, conservative reservations before paid attempts, timeout charges, and shared hour-long Retry-After that a shorter cooldown cannot overwrite. Same-call independent final answers cannot read sibling answers; failed attempts still consume modeled bytes/time; exhausted submit failures never become acceptance.
 
 ## Local real-package microbenchmarks
 
