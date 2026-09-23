@@ -111,7 +111,8 @@
 
   const customWidgets = [];
   for (const el of document.querySelectorAll("[role], [contenteditable]")) {
-    if (NATIVE.has(el.tagName) || el.tagName === "BUTTON") continue;
+    // A <button> with a widget role (e.g. role="combobox") is a custom control, not an action.
+    if (NATIVE.has(el.tagName)) continue;
     const role = el.getAttribute("role");
     const editable = el.hasAttribute("contenteditable") && el.isContentEditable;
     if (!(CUSTOM_ROLES.has(role) || editable)) continue;
@@ -323,11 +324,15 @@
   const buttons = [];
   for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
     if (!visible(el)) continue;
+    if (CUSTOM_ROLES.has(el.getAttribute("role") || "")) continue; // a widget, reported as a control
     const isInput = el.tagName === "INPUT";
     const type = el.tagName === "BUTTON" ? (el.getAttribute("type") || "submit").toLowerCase()
       : isInput ? el.type.toLowerCase() : "role-button";
     const text = (isInput ? (el.value || el.alt || "") : textOf(el)) || el.getAttribute("aria-label") || el.title || "";
     const form = el.form || null;
+    // The request this button would actually send, including formmethod/formaction overrides.
+    const method = !form ? "" : (el.hasAttribute("formmethod") ? el.formMethod : form.method || "get").toLowerCase();
+    const action = !form ? "" : (el.hasAttribute("formaction") ? el.formAction : form.action);
     buttons.push({
       text: text.replace(/\s+/g, " ").trim(),
       type,
@@ -336,6 +341,8 @@
       form_index: form ? forms.indexOf(form) : (el.closest("form") ? forms.indexOf(el.closest("form")) : -1),
       submits_form: !!form && (type === "submit" || type === "image"),
       form_no_validate: !!el.formNoValidate,
+      effective_method: method,
+      effective_action: action,
     });
   }
   const links = [];
@@ -347,6 +354,39 @@
     .filter(visible).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h) })).filter((h) => h.text);
   const regions = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live]'))
     .filter(visible).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r) })).filter((r) => r.text);
+
+  // Record candidates: members of repeated sibling groups of block elements (cards,
+  // articles, list items, rows). Python decides which groups are application records
+  // and ties a status only to the outermost record that contains it.
+  const RECORD_TAGS = new Set(["LI", "TR", "ARTICLE", "SECTION", "DIV", "ASIDE", "DD"]);
+  const RECORD_ROLES = new Set(["listitem", "row", "article", "group"]);
+  const recordish = (el) => RECORD_TAGS.has(el.tagName) || RECORD_ROLES.has(el.getAttribute("role") || "");
+  const memberIndex = new Map();
+  const members = [];
+  let groupCount = 0;
+  for (const parent of [document.body, ...document.body.querySelectorAll("*")]) {
+    if (members.length >= 600) break;
+    // All record-like children of one parent form one group whatever their tags:
+    // a <div> card next to an <article> card is still two sibling records.
+    const group = Array.from(parent.children).filter((c) => recordish(c) && visible(c));
+    {
+      if (group.length < 2) continue;
+      const g = groupCount++;
+      for (const el of group) {
+        const text = textOf(el).slice(0, 4000);
+        if (!text) continue;
+        memberIndex.set(el, members.length);
+        members.push({ el, group: g, text });
+      }
+    }
+  }
+  const recordMembers = members.map((m) => {
+    const ancestors = [];
+    for (let n = m.el.parentElement; n; n = n.parentElement) {
+      if (memberIndex.has(n)) ancestors.push(memberIndex.get(n));
+    }
+    return { group: m.group, text: m.text, ancestors };
+  });
 
   let step = null;
   const current = document.querySelector('[aria-current="step"]');
@@ -370,6 +410,7 @@
     headings,
     regions,
     body_text: (document.body ? document.body.innerText || "" : "").slice(0, MAX_TEXT),
+    record_members: recordMembers,
     ld_json: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((s) => s.textContent || ""),
     meta: {
       og_site_name: (document.querySelector('meta[property="og:site_name"]') || {}).content || "",
