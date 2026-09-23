@@ -32,7 +32,9 @@ Expected offer value
 
 The product is not one giant autonomous agent. It is a pipeline of typed, replaceable services with explicit contracts.
 
-**Current MVP:** reliable supplied-URL applications, a local frontend and pipeline tracker, OpenCLI job browsing, and Jev application selection. The user expanded the running build on 2026-09-22: find marketing manager/director roles in Austin onsite/hybrid or US-wide remote, with a USD 100000 annual compensation minimum. The supplied-URL flow remains available independently.
+**Current MVP:** reliable supplied-URL applications, a local frontend and pipeline tracker, OpenCLI job browsing, and Jev application selection. Find roles matching a performance marketing operator semantically: paid media, acquisition, growth, demand generation, digital marketing and adjacent management/director work. Strongly prefer Austin onsite/hybrid; US-wide remote remains eligible, while Texas-only remote is not equivalent. Minimum compensation is USD 100000 per year. Search titles are examples, not a literal allowlist. The supplied-URL flow remains available independently.
+
+**Current build authorization:** no real job applications during testing. The user will supply a candidate JSON with final details; the resume-derived profile is provisional for live applications. Application acceptance tests use fictional candidates and localhost ATS fixtures. The dashboard service defaults to `TEST_ONLY`. Source browsing and authorized Jev selection are separate from submission.
 
 **Jev, from [TypeSafe AI](https://typesafe.ai/), decides which discovered jobs fit the candidate.** The local backend calls it through the user-funded OpenRouter Decisions API. Selection records evidence and APPLY/SKIP/REVIEW separately from a real application receipt. The requested-application executor remains the single submission path.
 
@@ -61,7 +63,7 @@ That command should:
 
 The request to apply authorizes submission using the user's supplied information and instructions. Additional confirmation is needed only for a material unanswered question, an uncovered personal attestation, or an interaction requiring the user, such as sign-in or CAPTCHA. Do not add a routine second approval step to every application.
 
-The first deliverable includes actual submission and confirmation. Filling a form alone is incomplete. Do this for **one URL correctly** before adding job discovery, job selection, or large-scale concurrency.
+The first deliverable includes fixture submission and confirmation through the actual executor. Filling a form alone is incomplete. Discovery, selection and the dashboard are being built in parallel; prove the single-application path before increasing submission concurrency.
 
 ---
 
@@ -130,7 +132,7 @@ The browser extracts the minimum job identity and page context needed to apply a
                                                           +-------------------------------+
 ```
 
-In the discovery flow, Jev's job-selection decision happens before packet generation. `APPLY` enters the P0/P1/P2 application routes, `SKIP` archives the job, and `REVIEW` waits for job-selection review. The user-provided URL flow enters application execution directly.
+In the discovery flow, Jev's job-selection decision happens before packet generation. The current dashboard records `APPLY`, `SKIP` or `REVIEW` and can track the job; a selection does not itself submit an application. P0/P1/P2 effort routing below is a future automation policy. The user-provided URL flow enters application execution directly, subject to the current application mode.
 
 ---
 
@@ -155,8 +157,8 @@ In the discovery flow, Jev's job-selection decision happens before packet genera
 - Later: large-scale queues and outcome-learning analytics. The MVP already includes editable job tracking stages, interview/follow-up fields and notes.
 
 ### Models
-- **GPT Astra**: project orchestrator / integration manager.
-- **Fable 5.x**: optional specialist for difficult investigations; not part of the current eight-worker roster.
+- **GPT Astra**: project orchestrator / integration manager; Astra Max owns the frontend and advises performance design.
+- **Fable 5.1**: active specialist for difficult implementation, independent review, document-writing work and performance design. The user corrected the earlier 5.2 reference to 5.1.
 - **Opus 5.5**: default implementation worker for bounded feature work.
 - **TypeSafe AI / Jev through OpenRouter**: product decision maker for which discovered jobs to apply for; evaluates candidate/job fit and returns `APPLY`, `SKIP`, or `REVIEW`.
 - Optional local/open-source models for cheap generation and classification.
@@ -167,7 +169,7 @@ In the discovery flow, Jev's job-selection decision happens before packet genera
 
 These contracts belong to the core worktree and must not be independently redefined by other agents.
 
-The MVP implements the subset needed for a supplied URL: candidate data, the application request, minimal job identity, form, packet, application state, and events. Discovery/scoring fields and cross-language schemas are later work.
+The current packages implement candidate data, the application request, job identity, form, packet, application state and events, plus discovery/selection and pipeline tracking contracts. `CONTRACTS.md` and the package models define implemented APIs; the sketches below also describe later extensions.
 
 ### ApplicationRequest
 
@@ -589,7 +591,7 @@ A worker retry must never accidentally create a second submission record for the
 
 # 12. Parallel worktree plan
 
-Eight worktrees are available, with five in the current MVP plan: `core-contracts`, `candidate-brain`, `application-packets`, `browser-ats`, and `dashboard`. Job ingestion, Jev selection, and distributed runtime are parked. WT-05 and WT-06 share the `browser-ats` worktree. The exact ownership and dispatch protocol are in [WORKTREES.md](WORKTREES.md).
+Eight feature worktrees are active: `core-contracts`, `candidate-brain`, `application-packets`, `browser-ats`, `dashboard`, `job-ingestion`, `jev-selection` and `queue-runtime`. A separate `performance-runtime` worktree holds design and fictional benchmarks. WT-05 and WT-06 share `browser-ats`; current task ownership and acceptance state are in `INTEGRATION_STATUS.md` and `.handoff/current-integration.md`. Superset transports the CLI workers; the orchestrator owns dependency and integration decisions.
 
 ## WT-00 — Core Contracts
 
@@ -618,7 +620,7 @@ The active worktrees can import the canonical models without redefining them. Lo
 
 **Model:** Opus 5.5
 
-**Status:** deferred. The browser/CLI handles minimal metadata for the supplied URL in the MVP. The following discovery work is a later milestone.
+**Status:** active. OpenCLI adapters cover LinkedIn, Built In, Indeed and Google with source provenance, partial results, normalization and deduplication. The supplied-URL runner can still operate independently of discovery.
 
 Build:
 - source adapter interface
@@ -650,7 +652,7 @@ async def dedupe(job: JobPosting) -> DuplicateResult
 
 **Product decision model:** Jev, via TypeSafe AI
 
-**Status:** deferred. The user chooses the job in the MVP; the following selection work is a later milestone.
+**Status:** active. Jev uses the OpenRouter Decisions API for semantic fit, with candidate constraints, explicit uncertainty, candidate-scoped decisions and versioned evidence. Effort routing and outcome-calibrated interview probabilities remain later work.
 
 Build:
 - Jev integration for deciding which jobs to apply for
@@ -699,7 +701,7 @@ Generated content cannot introduce unsupported factual or quantitative claims.
 
 **Model:** Opus 5.5
 
-**MVP scope:** resolve the current form's fields from the candidate profile and supplied resume, draft any required text from verified facts, and identify required answers that need user input. This package has no Jev or job-scoring dependency. Elaborate tailoring and optional cover letters are later improvements.
+**MVP scope:** resolve the current form's fields from the candidate profile and supplied resume, draft direct factual answers, and identify required answers that need user input. This resolver has no Jev or job-scoring dependency. A separate W1 worker is preparing tailored document bundles and cover-letter drafts as the next stage; it must preserve the existing resolver and the executor's immutable selected-resume pin.
 
 Roadmap responsibilities; limit current work to the MVP scope above:
 - deterministic answer resolver
@@ -785,10 +787,10 @@ The same `ApplicationPacket` works with the local mock form and the first suppor
 
 **Model:** Opus 5.5
 
-**Status:** deferred. Core owns the local CLI and durable application state in the MVP. This worktree later owns hosted/API orchestration and distributed execution.
+**Status:** active for the local HTTP service, durable task status and frontend integration. Core owns the CLI and canonical application state. Hosted execution and a durable multi-worker scheduler remain later performance work.
 
 Build:
-- FastAPI endpoints and hosted orchestration that connect the pipeline
+- local HTTP endpoints that connect the pipeline; evaluate hosted orchestration only when needed
 - worker queues
 - leases
 - retries
@@ -808,11 +810,11 @@ Kill workers randomly during a 100-job test and recover without corrupting state
 
 ## WT-08 — Dashboard / Analytics
 
-**Model:** Opus 5.5
+**Model:** Astra Max
 
-**Status:** active for the supplied-URL MVP. Build the Next.js interface in parallel with the executor: application URL, profile/resume, progress, missing required answers, recovery states, and saved submission receipt. The frontend must use the canonical executor and must never display simulated success for a real application. The local CLI remains available.
+**Status:** active for Jobs, Pipeline and the application Desk. Build the Next.js interface in parallel with the executor: semantic preferences and selection, workbook-backed tracking, application URL, profile/resume, progress, missing answers, recovery states and accurate submission receipts. The frontend uses the canonical executor. Preview fixtures are labeled and isolated from live data. The local CLI remains available.
 
-The broader dashboard and analytics responsibilities below are deferred until the application flow is reliable.
+Outcome analytics and the email/calendar integrations described in section 20 follow the tested MVP.
 
 ### Dashboard
 - jobs discovered
@@ -890,9 +892,9 @@ Astra should not spend its context budget writing routine adapters.
 
 ---
 
-## Fable — Optional Specialist / Difficult Problems
+## Fable 5.1 — Specialist / Difficult Problems
 
-Fable is not currently assigned a worktree. Astra owns escalation decisions within the eight-Opus roster and may use a specialist when one is available and assigned.
+Fable 5.1 is actively assigned difficult fixes, review and performance/document tasks. Astra retains orchestration and bounded file ownership. Astra Max owns the dashboard and independently reviews the performance design.
 
 Use Fable for:
 - shared architecture
@@ -942,7 +944,7 @@ Most code should be produced by Opus workers.
 
 ## Jev / TypeSafe — Job Selection Decision Maker
 
-In a later milestone, Jev will run inside the product and decide **which jobs to apply for**. WT-02 owns that future integration and selection rubric under Astra's interface review. The current supplied-URL MVP has no Jev dependency.
+Jev runs inside the discovery product to decide **which jobs fit the candidate** and warrant applying. WT-02 owns the integration and selection rubric under Astra's interface review. The supplied-URL executor has no Jev dependency and remains the single submission path.
 
 Its responsibility is evaluating candidate/job fit and choosing `APPLY`, `SKIP`, or `REVIEW`. The selected jobs then pass to the existing candidate, packet-generation, and browser services for preparation and execution.
 
@@ -1010,7 +1012,7 @@ WT-03 + WT-04 + WT-05/06
     -> confirmed submission and local receipt
 ```
 
-Build the frontend against a narrow service interface in parallel, then connect it to the integrated executor and verify the same submission flow through the UI. Job ingestion, Jev selection, distributed queues and outcome analytics join in later milestones. Integrate the supplied-URL flow continuously rather than waiting for the broader roadmap.
+Build the frontend against a narrow service interface in parallel, then connect it to the integrated executor and verify the same submission flow through the UI. Job ingestion, Jev selection and pipeline tracking join the current integration. Distributed queues, email/calendar outcome ingestion and outcome learning follow in bounded extensions.
 
 ---
 
@@ -1076,13 +1078,13 @@ User's application URL + verified profile/resume
 
 The receipt identifies the job, application URL, submission time, and available confirmation reference or evidence. Until confirmation is observed, report the actual blocked or uncertain state.
 
-Verify missing-answer resume, duplicate prevention, and ambiguous submission recovery using local fixtures. Verify the complete frontend flow against the same real local executor and fixture server, including persisted state and server-side submission counts. Then verify the supported real application flow using the user's supplied URL and information. Job discovery, Jev selection, distributed queues and analytics are outside this acceptance criterion.
+Verify missing-answer resume, duplicate prevention and ambiguous submission recovery using local fixtures. Verify the complete frontend flow against the same real local executor and fixture server, including persisted state, uploaded-document identity and server-side submission counts. Verify discovery/selection and pipeline behavior with fictional source/provider fixtures. Real application verification awaits final candidate details and separate live authorization. Distributed submission capacity and outcome analytics are outside this acceptance criterion.
 
 ---
 
-# 18. Later milestones — Discovery, Jev selection and interview feedback
+# 18. Later milestones — Reliable scale and interview feedback
 
-After URL-based application submission is reliable, add job discovery and Jev's job-selection decisions. They feed selected jobs into the same application executor. Outcome ingestion and ranking improvements follow as the product grows.
+Discovery and Jev selection are in the current build. Increase throughput only after measured local benchmarks, durable recovery and browser isolation support it. Count discovered, qualified, attempted, confirmed and interviewed jobs separately; simulated capacity is not measured real-site throughput.
 
 After application execution is reliable, add outcome ingestion:
 
@@ -1137,3 +1139,19 @@ expected offer value
 
 
 User clarification, 2026-09-22: strongly prefer Austin onsite/hybrid roles over US-wide remote. Remote remains eligible; USD100000 annual minimum remains. Canonical location_priority defaults to STRONGLY_PREFER_ONSITE_HYBRID; retain it in persisted preferences, Jev rubric/cache, search result ranking and dashboard controls.
+
+## 20. Email, calendars and tailored documents — next-stage design
+
+The user requested live email, Google Calendar and Cal tracking, plus job-specific resume tailoring and a cover-letter writing agent. Provider clarification is pending; Gmail and Cal.com are provisional assumptions, not connected accounts. These extensions must not delay the current MVP acceptance.
+
+### Observed outcomes in the pipeline
+
+Email replies, interview invitations, bookings, reschedules and cancellations become source-attributed events linked to a pipeline entry. Keep source/account/event/version identity and sync cursors so replay is idempotent. Resolve ambiguous job links explicitly instead of guessing from a sender or company. Preserve manual tracking edits and original source history. An event cancellation does not mean a job rejection; an email receipt retains email provenance and is not relabeled as browser-confirmed evidence.
+
+Start with read-only sync and a visible last-sync/error state. Sending messages, creating invitations and making bookings are separate capabilities. X1 in `candidate-brain` owns the initial design in `docs/integrations/`; actual account connection and OAuth configuration are not yet implemented.
+
+### Resume variants and the writing agent
+
+W1 in `application-packets` owns a separate document-bundle prototype and `docs/documents/`. A job-specific variant can reorder and emphasize relevant verified experience and use accurate terminology. Employers, titles, dates, credentials and metrics retain their factual source. Use readable single-column structure and semantic headings; never hidden instructions, keyword stuffing or invented experience. Do not claim an ATS score or increased interview rate without evidence.
+
+Keep the original resume immutable. Every generated document records its candidate/job evidence versions, source facts, changes and artifact digest. The exact selected artifact remains pinned to its application across retries and later profile edits. Cover letters should be concise and supported by relevant accomplishments. Jev handles selection and evidence triage; free prose uses a separate configurable writing-provider interface. Live writing-model integration and final PDF/DOCX export remain explicit follow-up work, not implied by a mocked or text-only prototype.
