@@ -237,3 +237,87 @@ def test_unknown_application_is_an_error(capsys, isolated_imx_home):
     run(capsys, "apply", URL)
     code, _, err = run(capsys, "status", "app_missing")
     assert code == 1 and "app_missing" in err
+
+
+# --- I1R: flag contradictions, interrupted-submit guidance, prompts ------------------------------
+
+
+@pytest.mark.parametrize("argv", [
+    ["apply", URL, "--act", "--headless"],
+    ["resume", "app_x", "--headless", "--act"],
+])
+def test_act_cannot_be_combined_with_headless(capsys, isolated_imx_home, argv):
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == EXIT_USAGE
+    assert "--headless" in capsys.readouterr().err
+    assert not isolated_imx_home.state_db.exists()  # refused before any state was touched
+
+
+def test_interactive_needs_a_terminal(capsys, isolated_imx_home):
+    with pytest.raises(SystemExit) as exc:  # pytest's stdin is not a terminal
+        main(["apply", URL, "--interactive"])
+    assert exc.value.code == EXIT_USAGE and "terminal" in capsys.readouterr().err
+
+
+def test_interrupted_submit_is_settled_and_points_at_reconcile(capsys, isolated_imx_home):
+    isolated_imx_home.ensure()
+    with _store(isolated_imx_home) as store:
+        app = store.record_request("default", URL).application
+        claim, _ = _drive_to_submitting(store, app.id)
+        store.release(claim)  # the owner vanished without an outcome
+    code, out, _ = run(capsys, "apply", URL, "--headless")
+    assert code == EXIT_UNCERTAIN and "SUBMISSION_UNKNOWN" in out and f"reconcile {app.id}" in out
+    with _store(isolated_imx_home) as store:
+        assert store.get_application(app.id).state is S.SUBMISSION_UNKNOWN
+        assert [a.outcome for a in store.list_attempts(app.id)] == ["INTERRUPTED"]
+        other = store.record_request("default", URL + "/live").application
+        _drive_to_submitting(store, other.id)  # lease still live: may be a running process
+    code, out, _ = run(capsys, "resume", other.id, "--headless")
+    assert code == EXIT_BLOCKED and "in progress in another run" in out
+    assert f"reconcile {other.id}" in out and "never resubmits" in out
+    code, out, _ = run(capsys, "status", other.id)
+    assert f"reconcile {other.id}" in out
+
+
+def test_answer_explains_a_needs_input_without_typed_questions(capsys, isolated_imx_home):
+    isolated_imx_home.ensure()
+    with _store(isolated_imx_home) as store:
+        app = store.record_request("default", URL).application
+        claim = store.claim(app.id, "runner")
+        store.transition(claim, S.INSPECTING)
+        store.transition(claim, S.NEEDS_INPUT, metadata={"missing_inputs": [], "reason": "sign in"})
+        store.release(claim)
+    code, _, err = run(capsys, "answer", app.id, "--set", "x=y")
+    assert code == EXIT_BLOCKED and "no typed answers" in err and f"resume {app.id}" in err
+
+
+def test_a_cancelled_terminal_prompt_does_not_hold_the_process_open():
+    """Ctrl-C or SIGTERM while a prompt is open must not wait for the user to press
+    Enter: the stdin reader is a daemon thread, not the loop's default executor."""
+    import asyncio
+    import io
+    import threading
+    import time
+
+    from interviewmaxxing_cli.interaction import TerminalInteraction
+
+    release = threading.Event()
+
+    class BlockingStdin(io.TextIOBase):
+        def readline(self, size: int = -1) -> str:
+            release.wait()
+            return "late\n"
+
+    async def scenario() -> None:
+        interaction = TerminalInteraction(out=io.StringIO(), stdin=BlockingStdin())
+        task = asyncio.create_task(interaction.request_action("Sign in"))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    started = time.monotonic()
+    asyncio.run(scenario())  # asyncio.run also shuts the default executor down
+    assert time.monotonic() - started < 2
+    release.set()

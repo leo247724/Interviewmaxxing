@@ -22,6 +22,7 @@ A ``ApplicationStore`` wraps one connection; use one instance per thread/process
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -261,6 +262,18 @@ def _json(value: Any) -> str:
     return json.dumps(to_jsonable_python(value), sort_keys=True, separators=(",", ":"))
 
 
+def _create_private_file(path: Path) -> None:
+    """Create the database file owner-only (0600) if it does not exist yet, so the
+    application history is never world-readable (SQLite would create it with the
+    umask, typically 0644; its ``-wal``/``-shm`` companions copy the file's mode).
+    An existing file is left exactly as it is: nothing is ever chmod-ed."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+
+
 class ApplicationStore:
     """Local durable store. Open with ``ApplicationStore.open(path)``."""
 
@@ -274,7 +287,8 @@ class ApplicationStore:
         self.path = Path(path)
         self._clock = clock
         if str(path) != ":memory:":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _create_private_file(self.path)
         self._conn = sqlite3.connect(str(path), timeout=busy_timeout, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout * 1000)}")
