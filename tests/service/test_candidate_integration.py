@@ -11,14 +11,12 @@ from typing import Any
 
 import pytest
 
+import interviewmaxxing_candidate as candidate
 from interviewmaxxing_core import CandidateProfile, LocalPaths
+from interviewmaxxing_service import ServiceConfig
+from interviewmaxxing_service.integration import LocalCandidateGateway
 
 from .conftest import ORIGIN, SITE_URL, FictionalSite, Harness, serve
-
-candidate = pytest.importorskip("interviewmaxxing_candidate")
-
-from interviewmaxxing_service import ServiceConfig  # noqa: E402
-from interviewmaxxing_service.integration import LocalCandidateGateway  # noqa: E402
 
 PDF = b"%PDF-1.4\n% fictional resume for Avery Example\n%%EOF\n"
 
@@ -120,7 +118,7 @@ def test_profile_update_keeps_facts_answers_and_history(
     real.wait_idle()
     other = real.client.post(
         "/applications",
-        {"applicationUrl": "https://jobs.example.test/fictional-co/7777/apply",
+        {"applicationUrl": "http://127.0.0.1:9/fictional-co/7777/apply",
          "profile": real.profile(phone="+1 555 0199"), "resumeId": rid},
     )
     assert other.status == 201

@@ -115,6 +115,10 @@ class Rank:
     tier: str
     """``PREFERRED``, ``EQUAL``, ``SECONDARY`` or ``UNRANKED`` (J2 ``LocationTier``)."""
     reason: str
+    location: str = "UNRESOLVED"
+    """How the listing's stated location relates to the targets, in the frontend's
+    ``LocationTier`` terms: ``ONSITE_HYBRID_TARGET``, ``REMOTE_ELIGIBLE``,
+    ``REMOTE_UNCONFIRMED``, ``OUTSIDE_TARGET`` or ``UNRESOLVED``."""
 
 
 ApplicationLookup = Callable[[JobListing], str | None]
@@ -173,6 +177,7 @@ _PREF_FIELDS = {
     "target_titles": "titlePhrases", "onsite": "onsite", "remote": "remote",
     "minimum_compensation": "minimumCompensation", "excluded_keywords": "excludedKeywords",
     "excluded_companies": "excludedCompanies", "location_priority": "locationPriority",
+    "role_focus": "roleFocus",
     "title_phrases": "titlePhrases", "keywords": "keywords", "sources": "sources",
     "max_results_per_source": "maxResultsPerSource",
 }
@@ -201,6 +206,7 @@ def preferences_from_input(
             if body.remote else None,
             location_priority=LocationPriority(body.location_priority)
             if body.location_priority else current.location_priority,
+            role_focus=body.role_focus if body.role_focus is not None else current.role_focus,
             minimum_compensation=CompensationFloor(
                 amount=float(body.minimum_compensation.amount),
                 currency=body.minimum_compensation.currency,
@@ -237,6 +243,7 @@ def preferences_view(prefs: SelectionPreferences, settings: SearchSettings) -> S
         remote=RemoteTargetView(eligible_region=prefs.remote.eligible_region)
         if prefs.remote else None,
         location_priority=prefs.location_priority.value,
+        role_focus=prefs.role_focus,
         minimum_compensation=CompensationFloorView(
             amount=floor.amount, currency=floor.currency, period=floor.period.value,
         ) if floor else None,
@@ -523,7 +530,8 @@ class JobsApi:
             selection=selection,
             pipeline_entry_id=item.id if item is not None else None,
             application_id=lookup(listing),
-            location_tier=rank.tier if rank else None,
+            location_tier=rank.location if rank else None,
+            priority_tier=rank.tier if rank else None,
             rank_reason=rank.reason if rank else None,
         )
 

@@ -30,6 +30,7 @@ from interviewmaxxing_core import (
     EvidenceKind,
     EvidenceRef,
     InvalidApplicationUrl,
+    MissingInput,
     NotFound,
     ReconciliationMethod,
     SubmissionOutcome,
@@ -48,7 +49,7 @@ from .candidate import (
     identity_from_input,
     resume_view,
 )
-from .config import ServiceConfig
+from .config import ServiceConfig, is_loopback_host
 from .executor import Dispatcher, Run
 from .models import (
     AnswerInput,
@@ -61,7 +62,7 @@ from .models import (
     UserConfirmedNotReceivedInput,
     UserFoundConfirmationInput,
 )
-from .views import SAFE_ID, PriorRecord, Snapshot, application_view
+from .views import SAFE_ID, PriorRecord, Snapshot, application_view, awaited_inputs
 
 log = logging.getLogger("interviewmaxxing.service")
 S = ApplicationState
@@ -167,6 +168,7 @@ class PresentationService:
         requests = store.list_requests(app.id)
         request = next((r for r in requests if r.id == app.request_id), requests[0])
         packet = store.latest_packet(app.id)
+        pinned = store.pinned_resume(app.id)
         prior = None
         if app.state is S.DUPLICATE and app.duplicate_of:
             try:
@@ -189,11 +191,18 @@ class PresentationService:
             packet=packet,
             user_inputs=store.list_user_inputs(app.id),
             prior=prior,
-            fallback_resume_name=self._current_resume_name() if packet is None else None,
+            pinned_resume_name=pinned.filename if pinned else None,
+            fallback_resume_name=(
+                self._current_resume_name() if packet is None and pinned is None else None
+            ),
             running=self.dispatcher.status(app.id),
             answer_errors=answer_errors or {},
         )
         return application_view(snap, public_base=self.config.public_base)
+
+    @staticmethod
+    def _awaited(store: ApplicationStore, app: Application) -> list[MissingInput]:
+        return awaited_inputs(store.list_events(app.id), store.latest_packet(app.id), app.state)
 
     def _current_resume_name(self) -> str | None:
         try:
@@ -231,10 +240,32 @@ class PresentationService:
             "contractVersion": CONTRACT_VERSION,
             "executor": "busy" if self.dispatcher.busy else "idle",
             "runner": "unavailable" if self._runner_unavailable() else "available",
+            "applicationMode": self.config.application_mode,
         }
 
     def _runner_unavailable(self) -> str | None:
         return self.runner_problem() if self.runner_problem is not None else None
+
+    def _mode_problem(self, url: str) -> str | None:
+        """In TEST_ONLY mode the browser may only be pointed at a loopback test site."""
+        if self.config.application_mode != "TEST_ONLY":
+            return None
+        host = urlsplit(url).hostname or ""
+        if is_loopback_host(host):
+            return None
+        return (
+            "This service is in TEST_ONLY mode: it only applies to local test sites "
+            "(127.0.0.1 or localhost). Nothing was recorded or sent."
+        )
+
+    def _require_test_site(self, store: ApplicationStore, app: Application) -> None:
+        requests = store.list_requests(app.id)
+        url = next((r.application_url for r in requests if r.id == app.request_id),
+                   requests[0].application_url if requests else "")
+        problem = self._mode_problem(url)
+        if problem:
+            raise errors.forbidden(problem.replace("Nothing was recorded or sent.",
+                                                   "Nothing was sent."))
 
     def _require_runner(self) -> None:
         """Refuse before recording anything when the I1 runner cannot run."""
@@ -280,7 +311,7 @@ class PresentationService:
         cid = self.config.candidate_id
         url = body.application_url.strip()
         self._require_runner()
-        url_error = _url_problem(url)
+        url_error = _url_problem(url) or self._mode_problem(url)
         if url_error:
             raise errors.invalid(url_error, {"applicationUrl": url_error})
         state = self.candidates.setup(cid)
@@ -317,18 +348,24 @@ class PresentationService:
                 and not self._claim_live_elsewhere(app)
             )
             if dispatch:
-                if needs_upsert:
-                    try:
-                        self.candidates.upsert_profile(
+                try:
+                    if needs_upsert:
+                        selected = self.candidates.upsert_profile(
                             cid, identity=identity, resume_id=body.resume_id
-                        )
-                    except CandidateSetupError as exc:
-                        raise errors.invalid(exc.message, {exc.field: exc.message}) from exc
-                    except CandidateDataInvalid as exc:
-                        raise errors.conflict(
-                            "Your saved profile can't be read, so it wasn't changed. Check "
-                            "profile.json in your Interviewmaxxing profile folder."
-                        ) from exc
+                        ).resume
+                    else:
+                        selected = self.candidates.resume_artifact(cid, body.resume_id)
+                except CandidateSetupError as exc:
+                    raise errors.invalid(exc.message, {exc.field: exc.message}) from exc
+                except CandidateDataInvalid as exc:
+                    raise errors.conflict(
+                        "Your saved profile can't be read, so it wasn't changed. Check "
+                        "profile.json in your Interviewmaxxing profile folder."
+                    ) from exc
+                # Pin exactly the resume the user selected for this application, before
+                # any run. First writer wins: a repeated request or a restart keeps the
+                # original pin, whatever the profile says later.
+                store.pin_resume(app.id, selected)
                 self.dispatcher.submit(
                     app.id,
                     "apply",
@@ -353,7 +390,7 @@ class PresentationService:
             app = self._owned(store, application_id)
             if self.dispatcher.status(app.id) is not None or app.state is not S.NEEDS_INPUT:
                 raise errors.conflict("This application isn't waiting for answers right now.")
-            plan = plan_answers(store.latest_packet(app.id), body)
+            plan = plan_answers(self._awaited(store, app), body)
             if plan.stale:
                 message = "These questions have changed. Reload to see the current questions."
                 raise errors.conflict(message, {qid: message for qid in plan.stale})
@@ -390,7 +427,7 @@ class PresentationService:
                 raise errors.conflict("This application is closed and can't continue.")
             if app.state is S.NEEDS_INPUT:
                 missing = unanswered_required(
-                    store.latest_packet(app.id), store.list_user_inputs(app.id)
+                    self._awaited(store, app), store.list_user_inputs(app.id)
                 )
                 if missing:
                     raise errors.invalid("Some required questions still need answers.", missing)
@@ -401,6 +438,7 @@ class PresentationService:
             if self.dispatcher.busy:
                 raise errors.conflict(BUSY_MESSAGE)
             self._require_runner()
+            self._require_test_site(store, app)
             before = app.state
             if before is S.REQUESTED:
                 url = store.list_requests(app.id)[0].application_url
@@ -441,6 +479,7 @@ class PresentationService:
             if isinstance(body, RecheckInput):
                 if running is None:
                     self._require_runner()
+                    self._require_test_site(store, app)
                 with self.dispatcher.lock:
                     current = self.dispatcher.current
                     if current is not None and current.application_id == app.id:
@@ -515,7 +554,14 @@ class PresentationService:
                     )
                 finally:
                     store.release(claim)
-            elif run.kind == "reconcile" and app.state is S.SUBMISSION_UNKNOWN:
+            elif (
+                run.kind == "reconcile"
+                and app.state is S.SUBMISSION_UNKNOWN
+                and not any(
+                    e.event == "reconcile.unconfirmed" and e.timestamp >= run.started_at
+                    for e in store.list_events(app.id)
+                )
+            ):  # the runner did not record its own inconclusive check
                 detail = (
                     "The check couldn't be completed. Applying again stays locked."
                     if run.error is not None

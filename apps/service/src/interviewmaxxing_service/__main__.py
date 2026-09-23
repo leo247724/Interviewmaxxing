@@ -9,6 +9,7 @@ Stop it with Ctrl-C (SIGINT) or SIGTERM.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import signal
 import sys
@@ -40,11 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = ServiceConfig.from_env()
         if args.port is not None:
-            config = ServiceConfig(
-                paths=config.paths, allowed_origin=config.allowed_origin, host=config.host,
-                port=args.port, public_base=config.public_base, headless=config.headless,
-                max_upload_bytes=config.max_upload_bytes,
-            )
+            config = dataclasses.replace(config, port=args.port)
     except ConfigError as exc:
         print(f"interviewmaxxing-service: {exc}", file=sys.stderr)
         return 2

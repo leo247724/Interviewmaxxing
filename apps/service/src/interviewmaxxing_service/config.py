@@ -12,6 +12,7 @@ Variable                       Default                      Meaning
                                                             reach this service (evidence links)
 ``IMX_SERVICE_HEADLESS``       ``0``                        ``1`` runs the browser headless
 ``IMX_SERVICE_MAX_UPLOAD``     ``10485760``                 Resume upload limit in bytes
+``IMX_SERVICE_APPLICATION_MODE`` ``TEST_ONLY``              ``TEST_ONLY`` or ``LIVE`` (see below)
 =============================  ===========================  ================================
 
 Local data paths and the candidate id come from ``LocalPaths.from_env()``
@@ -73,6 +74,10 @@ class ServiceConfig:
     max_json_bytes: int = MAX_JSON_BYTES
     reconcile_wait_s: float = 25.0
     """How long ``reconcile`` (recheck) waits for the browser check before answering."""
+    application_mode: str = "TEST_ONLY"
+    """``TEST_ONLY`` (default): application runs, resumes and site rechecks may only
+    target loopback test sites; job discovery and selection are unaffected. ``LIVE``
+    must be chosen explicitly (``IMX_SERVICE_APPLICATION_MODE=LIVE``)."""
 
     def __post_init__(self) -> None:
         if not is_loopback_host(self.host):
@@ -85,6 +90,10 @@ class ServiceConfig:
         object.__setattr__(self, "public_base", self.public_base.rstrip("/"))
         if self.max_upload_bytes < 1:
             raise ConfigError("upload limit must be positive")
+        mode = self.application_mode.strip().upper()
+        if mode not in ("TEST_ONLY", "LIVE"):
+            raise ConfigError("IMX_SERVICE_APPLICATION_MODE must be TEST_ONLY or LIVE")
+        object.__setattr__(self, "application_mode", mode)
 
     @property
     def candidate_id(self) -> str:
@@ -111,4 +120,5 @@ class ServiceConfig:
             public_base=env.get("IMX_SERVICE_PUBLIC_BASE", "/api/imx"),
             headless=env.get("IMX_SERVICE_HEADLESS", "0") in ("1", "true", "yes"),
             max_upload_bytes=max_upload,
+            application_mode=env.get("IMX_SERVICE_APPLICATION_MODE", "TEST_ONLY"),
         )

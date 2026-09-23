@@ -205,7 +205,12 @@ def _wait_run(h: Harness, run_id: str) -> dict[str, Any]:
 def test_default_preferences_are_the_users_targets(jobs: Any) -> None:
     h, *_ = jobs
     prefs = h.client.get("/selection/preferences").json
-    assert prefs["titlePhrases"] == ["marketing manager", "marketing director"]
+    # Semantic search seeds, most specific first; not an exact-title allowlist.
+    assert prefs["titlePhrases"][:3] == [
+        "paid media manager", "senior paid media manager", "performance marketing manager",
+    ]
+    assert {"marketing manager", "marketing director"} <= set(prefs["titlePhrases"])
+    assert prefs["roleFocus"].startswith("Performance marketing operator")
     assert prefs["onsite"] == [{"location": "Austin, TX", "arrangements": ["ONSITE", "HYBRID"]}]
     assert prefs["remote"] == {"eligibleRegion": "United States"}
     assert prefs["locationPriority"] == "STRONGLY_PREFER_ONSITE_HYBRID"
@@ -220,6 +225,12 @@ def test_preferences_persist_and_priority_changes_fingerprint(jobs: Any) -> None
     h, *_ = jobs
     body = _prefs(h)
     before = h.client.get("/selection/preferences").json["fingerprint"]
+    focus = h.client.post("/selection/preferences", dict(body, roleFocus="Hands-on paid social lead"))
+    assert focus.json["roleFocus"] == "Hands-on paid social lead"
+    assert focus.json["fingerprint"] != before  # role focus reaches Jev's cache key
+    assert focus.json["locationPriority"] == "STRONGLY_PREFER_ONSITE_HYBRID"
+    assert focus.json["minimumCompensation"]["amount"] == 100000
+    body.pop("roleFocus")
     body["keywords"] = ["B2B"]
     body["locationPriority"] = "BALANCED"
     saved = h.client.post("/selection/preferences", body)
@@ -293,7 +304,7 @@ def test_listings_rank_austin_above_remote_without_excluding_remote(jobs: Any) -
         "Austin Manager", "Austin Low Pay", "Remote Director", "Unknown Arrangement",
         "Closed Austin",
     ]
-    tiers = {v["title"]: v["locationTier"] for v in views}
+    tiers = {v["title"]: v["priorityTier"] for v in views}
     assert tiers["Remote Director"] == "SECONDARY"  # eligible, ranked lower, not excluded
     assert views[0]["provenance"][0]["applicationUrl"].endswith("/apply")
     body = _prefs(h)

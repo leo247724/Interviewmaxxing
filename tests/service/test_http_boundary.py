@@ -289,3 +289,42 @@ def test_evidence_symlink_escape_and_tampering(harness: Harness, tmp_path: Any) 
         conn.close()
     assert harness.client.get(f"/applications/{app_id}/evidence/ev_link").status == 404
     assert harness.client.get(f"/applications/{app_id}/evidence/ev_note").status == 409
+
+
+def test_test_only_mode_refuses_non_loopback_applications(harness: Harness) -> None:
+    assert harness.client.get("/healthz").json["applicationMode"] == "TEST_ONLY"
+    rid = harness.setup_candidate()
+    r = harness.client.post("/applications", {
+        "applicationUrl": "https://careers.example.com/jobs/1/apply",
+        "profile": harness.profile(), "resumeId": rid,
+    })
+    assert r.status == 422
+    assert "TEST_ONLY" in r.json["error"]["fieldErrors"]["applicationUrl"]
+    with harness.store() as store:
+        assert store.list_applications() == []  # nothing recorded
+    # An application recorded elsewhere for a real site cannot be driven from here.
+    with ApplicationStore.open(harness.paths.state_db) as store:
+        app = store.record_request("default", "https://careers.example.com/jobs/2/apply").application
+    assert harness.client.post(f"/applications/{app.id}/resume", {}).status == 403
+    assert harness.runs == []
+
+
+def test_selected_resume_is_pinned_per_application(harness: Harness) -> None:
+    first = harness.setup_candidate()
+    a = harness.start(resume_id=first).json["id"]
+    harness.wait_idle()
+    second = harness.client.upload("Second.pdf", b"%PDF-1.4 second fictional resume").json["id"]
+    b = harness.client.post("/applications", {
+        "applicationUrl": "http://127.0.0.1:9/fictional-co/8888/apply",
+        "profile": harness.profile(), "resumeId": second,
+    }).json["id"]
+    harness.wait_idle()
+    # Asking again for A with the other resume keeps A's original pin.
+    again = harness.start(resume_id=second)
+    assert again.json["id"] == a
+    harness.wait_idle()
+    with harness.store() as store:
+        pin_a, pin_b = store.pinned_resume(a), store.pinned_resume(b)
+    assert pin_a is not None and pin_a.id == first
+    assert pin_b is not None and pin_b.id == second
+    assert harness.client.get(f"/applications/{a}").json["resumeFileName"] == pin_a.filename

@@ -145,6 +145,7 @@ def test_import_preview_commit_and_idempotent_reimport(harness: Harness) -> None
     ]
     bad = harness.client.post("/pipeline/import/preview", {
         "format": "csv", "fileName": "tracker.csv", "content": _csv(rows),
+        "sourceId": "fictional-tracker",
     })
     assert bad.status == 200, bad.json
     assert bad.json["counts"]["error"] == 1
@@ -157,6 +158,7 @@ def test_import_preview_commit_and_idempotent_reimport(harness: Harness) -> None
     rows[1]["Fit / 10"] = "7"
     good = harness.client.post("/pipeline/import/preview", {
         "format": "csv", "fileName": "tracker.csv", "content": _csv(rows),
+        "sourceId": "fictional-tracker",
     }).json
     assert good["counts"] == {"create": 2, "update": 0, "unchanged": 0, "error": 0}
     receipt = harness.client.post(f"/pipeline/import/{good['previewId']}/commit", {})
@@ -168,11 +170,15 @@ def test_import_preview_commit_and_idempotent_reimport(harness: Harness) -> None
     assert prov["importId"] == receipt.json["importId"]
     assert prov["importedValues"]["Status"] == "Waiting to hear back"
     assert prov["sourceRow"] == 2
+    assert prov["sourceId"] == "fictional-tracker"
+    assert prov["latestImportedValues"] == prov["importedValues"]
+    assert prov["versionCount"] == 1
 
     # The same preview cannot be committed twice; a reimport changes nothing.
     assert harness.client.post(f"/pipeline/import/{good['previewId']}/commit", {}).status == 404
     again = harness.client.post("/pipeline/import/preview", {
         "format": "csv", "fileName": "tracker.csv", "content": _csv(rows),
+        "sourceId": "fictional-tracker",
     }).json
     assert again["counts"]["unchanged"] == 2
     assert len(harness.client.get("/pipeline").json["entries"]) == 2
@@ -195,3 +201,16 @@ def test_import_bounds_and_unreadable_files(harness: Harness) -> None:
         "Content-Type": "application/json", "Content-Length": str(100 * 1024),
     })
     assert r.status == 413
+
+
+def test_uploaded_bytes_need_an_explicit_logical_source(harness: Harness) -> None:
+    rows = [{"Company": "Fictional Co", "Role": "Marketing Director", "Stage": "Applied"}]
+    preview = harness.client.post("/pipeline/import/preview", {
+        "format": "csv", "fileName": "tracker.csv", "content": _csv(rows),
+    }).json
+    assert preview["counts"]["error"] >= 1  # no source id: nothing can be committed
+    assert harness.client.post(f"/pipeline/import/{preview['previewId']}/commit", {}).status == 409
+    bad = harness.client.post("/pipeline/import/preview", {
+        "format": "csv", "fileName": "tracker.csv", "content": _csv(rows), "sourceId": "../x",
+    })
+    assert bad.status == 422 and "sourceId" in bad.json["error"]["fieldErrors"]

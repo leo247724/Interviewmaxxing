@@ -1,27 +1,49 @@
-# interviewmaxxing-service (S1 + S2)
+# interviewmaxxing-service (S1 + S2 + S3)
 
 Loopback-only HTTP service between the frontend's same-origin gateway (`apps/web`, F2) and the local executor. It maps canonical store state to the frontend's presentation models (`apps/web/lib/service/types.ts`) and hands all execution to the I1 runner. It is not a second executor or state machine. The canonical `ApplicationStore` is the only state authority.
 
 Owner: queue-runtime. Package `interviewmaxxing-service`, import `interviewmaxxing_service`, script `interviewmaxxing-service`. Standard library HTTP only; no hosted platform, queue or extra dependency.
 
-**Status: checkpoint.**
-- **S1 (applications).** The HTTP boundary, view mapping, answer validation, background dispatch and recovery are tested against the real store with a scripted runner. The candidate side runs on the real C2P `LocalCandidateStore`.
-- **S2 (pipeline, jobs, preferences, Jev selection).** Pipeline routes run on the real P1 `PipelineStore`. Jobs and selection run on the real J1 `JobStore`/`JobSearchService` and J2 `SelectionService`, with fixture source adapters and a fixture Jev transport in tests.
-- **Still to do.** Final acceptance against the real I1 runner, Chromium, the localhost mock ATS and the UI. Until I1 is installed, application routes answer `503` and record nothing.
+**Status: S3 checkpoint.** Real package integration is complete, and nothing in the route layer is simulated.
+- **Applications (S1):** the real C2P `LocalCandidateStore`, the real I1 `create_runner` and headless Chromium against the separately running localhost mock ATS (`tests/service/test_acceptance.py`). The service pins the selected resume to each application before any run.
+- **Pipeline (S2):** the real P1R `PipelineStore`.
+- **Jobs and selection (S2):** the real J1 `JobStore`/`JobSearchService` and J2 `SelectionService`, with fixture source adapters and a fixture Jev transport in tests.
+- **Test-only by default:** the service refuses to drive the browser at non-loopback sites (see [Application mode](#application-mode)).
+- **Still to do:** frontend-driven end-to-end acceptance (F2/F3). The browser correction C4R2 is still held; the acceptance suite also passed with it installed.
 
 `integration.py` is the only module that names the C2P, J1, J2 and I1 APIs. See [Integration needs](#integration-needs).
 
 ## Run
 
+### Service (development deployment, test-only)
+
 ```bash
-IMX_HOME=$PWD/.imx IMX_SERVICE_ORIGIN=http://127.0.0.1:4317 \
+IMX_HOME=/path/to/a/fictional/test-home \
+IMX_SERVICE_ORIGIN=http://127.0.0.1:4317 \
+IMX_SERVICE_APPLICATION_MODE=TEST_ONLY \
+IMX_OPENROUTER_ENV_FILE=/path/to/ignored/env.local \
   uv run interviewmaxxing-service --port 8765
 # -> interviewmaxxing-service listening on http://127.0.0.1:8765
 ```
 
+- `IMX_HOME` must point at a fictional test home while testing. The real default home (`~/.interviewmaxxing`) holds the user's private profile and must not be used for test applications.
+- `IMX_OPENROUTER_ENV_FILE` is only needed for Jev decisions. Without it, decisions are recorded with a `NOT_CONFIGURED` provider hold.
+- Add `IMX_SERVICE_HEADLESS=1` for unattended runs. Leave it out when the user must sign in or solve a CAPTCHA in a visible window.
+
+### Dashboard (apps/web, dashboard `4567d24`)
+
+```bash
+cd apps/web
+IMX_BACKEND_URL=http://127.0.0.1:8765 IMX_WEB_ORIGIN=http://127.0.0.1:4317 \
+  npm run dev -- --hostname 127.0.0.1 --port 4317
+```
+
+`IMX_WEB_ORIGIN` must equal the service's `IMX_SERVICE_ORIGIN`. The gateway checks the browser's `Origin` against it and sends it upstream.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `IMX_SERVICE_ORIGIN` | required | Exact frontend origin allowed to send mutations (loopback only) |
+| `IMX_SERVICE_APPLICATION_MODE` | `TEST_ONLY` | `TEST_ONLY` or `LIVE`; see [Application mode](#application-mode) |
 | `IMX_SERVICE_HOST` | `127.0.0.1` | Bind address; non-loopback is refused at startup |
 | `IMX_SERVICE_PORT` | `8765` | `0` = ephemeral |
 | `IMX_SERVICE_PUBLIC_BASE` | `/api/imx` | Path prefix the browser uses for evidence links |
@@ -34,6 +56,24 @@ IMX_HOME=$PWD/.imx IMX_SERVICE_ORIGIN=http://127.0.0.1:4317 \
 The service's own state (saved preferences and background tasks) is `$IMX_HOME/state/service.sqlite3` (mode `0600`). The pipeline is P1's `$IMX_HOME/state/pipeline.sqlite3`, and selection is J2's store.
 
 On start the service marks submissions interrupted by an earlier process as `SUBMISSION_UNKNOWN` (`recover_interrupted_submissions`). Stop it with Ctrl-C or SIGTERM. A run still in progress is cancelled. The executor loop keeps running until the cancelled run's `finally` blocks finish (bounded), so the runner can await browser cleanup and release its claim. Only then does the loop stop. An interrupted submit stays durable `SUBMITTING`/`SUBMISSION_UNKNOWN` through the store's claim lease, so it is never retried.
+
+### Application mode
+
+`IMX_SERVICE_APPLICATION_MODE=TEST_ONLY` is the default for this development deployment.
+
+- **Start.** `POST /applications` answers `422 {fieldErrors.applicationUrl}` for any URL whose host is not loopback (`127.0.0.1`, `::1` or `localhost`), before anything is recorded.
+- **Resume and recheck.** `POST /applications/{id}/resume` and `/reconcile {"kind":"recheck"}` answer `403` for an application whose request URL is not loopback. They never start the browser for it.
+- **Unaffected.** Job search, listings, preferences, Jev decisions, pipeline routes and user-reported reconciliation (no browser involved) work normally. Reading job sources is not an application.
+- **Live mode.** `LIVE` must be set explicitly, and only for the separately authorized real application run.
+- **Readiness for the UI.** `GET /healthz` reports it, with no private data:
+
+  ```json
+  {"status":"ok","service":"interviewmaxxing-service","contractVersion":"2","executor":"idle"|"busy",
+   "runner":"available"|"unavailable","applicationMode":"TEST_ONLY"|"LIVE",
+   "pipeline":"available"|"unavailable","jobs":"available"|"unavailable","selection":"available"|"unavailable"}
+  ```
+
+- **Limit.** The check is on the URL the service is given. Redirects the site itself performs happen inside the I1 browser.
 
 ## HTTP contract (for F2)
 
@@ -92,6 +132,18 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
 - **Failures.** If a run raises before submitting, the service moves the application to `FAILED_RETRYABLE` ("nothing was sent"), so the user can try again. A run that dies during submit is left to the store: it becomes `SUBMISSION_UNKNOWN` when the lease lapses, and status reads trigger that recovery.
 - **Logs** contain method, route template and status only. Runner errors are logged by exception type.
 
+### Resume pinning (S3)
+
+`POST /applications` pins the exact selected `ResumeArtifact` to the application with `ApplicationStore.pin_resume`. It does this synchronously after `record_request` and before dispatch.
+
+- **Which artifact.** The resume from the C2P upsert result when the profile changed, else C2P `get_resume(candidate, resumeId)`. The service never rereads the global profile to choose it.
+- **First writer wins.** A repeated request (even with another resume selected) or a restart keeps the original pin. The I1 runner then always uploads the pinned file.
+- **In the view.** `ApplicationView.resumeFileName` shows the pinned file, and the event `document.resume_pinned` appears in `events`.
+
+### Pending questions (S3)
+
+`needs.questions`/`attestations` come from the I1 runner's `application.needs_input` event (`metadata.missing_inputs`, the same data as I1 `pending_inputs`). They fall back to the latest packet only for records without it. I1's inconclusive recheck event `reconcile.unconfirmed` sets `uncertain.lastCheckedAt`/`lastCheckResult`.
+
 ### Receipt confirmation (S1R, additive DTO fields for F2)
 
 `ApplicationView.receipt` (`SubmissionReceiptView`) carries two explicit fields in addition to the F1 shape:
@@ -130,21 +182,39 @@ These implement the routes proposed in `apps/web/README.md` (dashboard `816afa1`
 
 ### Additive DTO fields (+) and mapping notes
 
+- `SearchPreferencesView.roleFocus` (+) is a string: the canonical D0 `role_focus`, the semantic description Jev judges responsibilities against. It defaults to D0 `DEFAULT_ROLE_FOCUS` (performance marketing operator).
+  - It is optional in request bodies; leaving it out keeps the saved value.
+  - It is part of `SelectionPreferences` (so it changes `fingerprint` and J2's cache key) and of the search query (`JobSearchQuery.role_focus`).
+  - `titlePhrases` are search seeds, not an exact-title allowlist. The defaults are D0's performance-marketing seeds, most specific first.
 - `SearchPreferencesView.locationPriority` (+) takes `"STRONGLY_PREFER_ONSITE_HYBRID" | "BALANCED" | "PREFER_REMOTE"`. It is the canonical D0 `LocationPriority` and defaults to strongly preferring onsite/hybrid.
   - In request bodies it is optional. Leaving it out keeps the saved value.
   - It is part of `SelectionPreferences`, so it changes `fingerprint` (earlier decisions become `stale`), reaches Jev and J2's decision cache, and sets the J1 search leg order and budget.
-- `ListingView.locationTier` (+) takes `"PREFERRED" | "EQUAL" | "SECONDARY" | "UNRANKED" | null`, and `ListingView.rankReason` (+) is a string or `null`.
-  - Both come from J2's `check_location` + `location_tier`.
-  - They are `null` when the selection package isn't installed.
+- `ListingView.locationTier` uses the frontend's `LocationTier` strings exactly: `"ONSITE_HYBRID_TARGET" | "REMOTE_ELIGIBLE" | "REMOTE_UNCONFIRMED" | "OUTSIDE_TARGET" | "UNRESOLVED"`. They are mapped from J2 `check_location`:
+
+  | J2 `check_location` | `locationTier` |
+  | --- | --- |
+  | `ONSITE_ACCEPTED` | `ONSITE_HYBRID_TARGET` |
+  | `REMOTE_REGION_MATCH` | `REMOTE_ELIGIBLE` |
+  | `REMOTE_NEEDS_ELIGIBILITY` | `REMOTE_UNCONFIRMED` |
+  | `ONSITE_MISMATCH` | `OUTSIDE_TARGET` |
+  | `REMOTE_NOT_WANTED` | `OUTSIDE_TARGET` |
+  | `UNKNOWN` | `UNRESOLVED` |
+
+- `ListingView.priorityTier` (+) takes `"PREFERRED" | "EQUAL" | "SECONDARY" | "UNRANKED"`, from J2 `location_tier` under `locationPriority`. `ListingView.rankReason` (+) is a string. All three are `null` when the selection package is not installed.
 - **Listing order:**
   1. Closed listings last.
-  2. Then location tier. With the default priority, Austin onsite/hybrid is `PREFERRED` and eligible US-wide remote is `SECONDARY`, so remote roles are still listed, never excluded.
+  2. Then priority tier. With the default priority, Austin onsite/hybrid is `PREFERRED` and eligible US-wide remote is `SECONDARY`, so remote roles are still listed, never excluded.
   3. Then stated pay against the floor: meets, unknown, below. Unknown pay is not demoted below pay that misses the floor.
   4. Then most recently observed.
 - `PipelineEntryView.fields` holds the 23 P1 reference keys, and blank is `null`.
   - `origin` is `import` when P1 has provenance, `jobs` when linked to a listing, and `manual` otherwise.
   - `history` maps P1 kinds `created`, `imported`, `moved` and `stage_edited`; `stage_edited` becomes `edited`, with a readable summary.
-  - `provenance.importedValues` is P1's `original`, keyed by workbook header. `provenance.importId` is the receipt id of that document, and `sourceDigest` is the workbook digest (else the document digest).
+  - `provenance.importedValues` is P1R's immutable `initial` row (first import), keyed by workbook header.
+  - `provenance.importId` is the receipt id of that document, and `sourceDigest` is the workbook digest (else the document digest).
+  - Additive (+) `provenance` fields: `sourceId` (P1R logical source), `latestImportedValues` (P1R `latest`), `firstImportedAt` and `versionCount` (P1R `source_versions`).
+- **Import source (+).** `ImportInput.sourceId` is an optional string. It names the stable logical source of an upload, chosen by the user (for example `"numbers-pipeline"`), and re-imports of the same tracker reuse it.
+  - It must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`, else `422 {sourceId}`.
+  - A CSV (or a JSON export that declares no `source.sourceId` or workbook path) without it previews with a file-level error row. Commit is refused, because the service never derives a source from the file digest or the file name.
 - **Lane ids** are P1's: `saved, applied, scheduling, interviewing, assessment, follow-up, decision, offer, closed`.
   - **Incompatibility:** the frontend README proposed `follow_up`, but P1 uses `follow-up`. Use the ids from `GET /pipeline`.
 - `PipelineEntryView.application` is the only submission state shown on a card, read from the canonical `ApplicationStore` by the linked `application_id`. Moving a card to "Applied" or "Offer" creates or changes no application.
@@ -210,49 +280,33 @@ C2P decides the stored file name (a safe ASCII name) and media type, checks the 
 
 ## Integration needs
 
-Requested signatures. `integration.py` adapts to small differences without any change to the core schemas.
+All packages are merged into this branch at these checkpoints, and are used directly:
 
-**I1 (core-contracts): reusable runner.**
+| Package | Checkpoint | Used through |
+| --- | --- | --- |
+| I1 runner | `d43ce6b` | `create_runner(paths, *, headless, interaction)`; `ApplicationStore.pin_resume`/`pinned_resume`. `RunnerBusy` is handled inside the runner (returned as its outcome message). The service also serializes runs itself. |
+| C2P/C2P2 candidate | root `caae823` | `candidate_setup`, `store_resume`, `get_resume`, `upsert_profile`, `save_answer`, `load` |
+| J1 jobs | `44caab8` | `JobStore`, `JobSearchService(...).run(single-source query, detail_limit=)`, `OpenCliTransport`, `default_db_path` |
+| J2 selection | `53201dd` | `SelectionService`, `SelectionStore`, `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier`, `location_priority_reason` |
+| P1R pipeline | `d6ce9e4` | `PipelineStore` (incl. `source_versions`), `parse_import(..., source_id=)`, `TrackingFields`, `REFERENCE_FIELDS` |
+| Browser | root (C4) | via I1; acceptance also passed with the held C4R2 `00e0362` |
 
-```python
-# interviewmaxxing_cli.runner
-def create_runner(paths: LocalPaths, *, headless: bool, interaction: UserInteraction) -> Runner
-class Runner:
-    async def apply(self, application_url: str, *, candidate_id: str) -> ApplyOutcome
-    async def resume(self, application_id: str) -> ApplyOutcome
-    async def reconcile(self, application_id: str) -> ApplyOutcome
-```
+Remaining seam requests:
 
-- Called on the service's executor thread: one runner per run, one run at a time. The runner opens and closes its own `ApplicationStore` inside the call.
-- `apply` must proceed for an application the service already recorded (disposition `RESUMABLE`, state `REQUESTED`). Re-recording the request is fine; the view folds that event.
-- `resume` must accept `NEEDS_INPUT` and `FAILED_RETRYABLE`, plus `INSPECTING`/`PACKET_READY`/`FILLING` whose claim lapsed. For `REQUESTED` the service calls `apply`.
-- With a noninteractive `UserInteraction`, `request_inputs` returns `[]`: record `NEEDS_INPUT` with the packet's missing inputs and return. `request_action` returns `False` for runs the user did not start with Continue. On a sign-in/CAPTCHA page, transition to `NEEDS_INPUT` with `metadata={"page_kind": "SIGN_IN_REQUIRED" | "CAPTCHA", "observed_url": <url>}`, which the view shows as an interaction. When it returns `True`, wait for the user in the visible browser.
-- `reconcile(application_id)` re-inspects the site for this application in the browser and calls `store.reconcile_submission` only with concrete proof (ACCEPTED signals or definite NOT_SUBMITTED). It never submits. It returns the stored state otherwise.
-- Release the claim before returning. Record evidence under `<artifacts>/<application_id>/` with `EvidenceRef.path`.
+- **J2 → role focus.** J2 `53201dd` predates root `caae823`, so its Jev evidence (`jev_preferences_view`) does not yet send `preferences.role_focus`. The fingerprint and cache already change with it. J2 should add it to the preferences view and rubric.
+- **J1 (optional).** `run(query, *, run_id=None, on_source=callback)`. With it, one J1 run could carry the service task id instead of the service running J1 once per source.
 
-**I1 (current `LocalApplicationRunner`).** `runner_factory` uses `create_runner(...)` when it is published, else `LocalApplicationRunner(paths=, interaction=, headless=)`. `runner_problem()` makes application start, resume and recheck answer `503` without recording anything while the runner is not installed. Pending I1 seam: **per-application resume pinning**. Application A's selected resume must stay pinned across profile changes made for B and across a restart. When core publishes where that pin lives (on the request or application record, or a runner argument), the service will pass `StartApplicationInput.resumeId` for the new application. It will never let the runner reread the global profile's current resume.
-
-**J1 (job-ingestion, working tree read at this checkpoint).** Uses `JobStore(path)`, `.get_listing`, `.list_listings(limit=)`, `JobSearchService(store, transport, adapters=).run(query, detail_limit=)` with a single-source query per call for per-source progress, `OpenCliTransport()` and `default_db_path()`. Requested seam, optional: `run(query, *, run_id=None, on_source=callback)`. That would let one J1 run carry the service task id instead of one J1 run per source.
-
-**J2 (jev-selection, working tree read at this checkpoint).** Uses `SelectionService(client=, store=, application_lookup=, candidate_id=)`, `.select`, `.is_current`, `SelectionStore(default_store_path(paths))`, `.latest`, `.get`, `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier` and `location_priority_reason`.
-
-**P1 (application-packets `da97188`, merged).** Uses `PipelineStore.from_paths` and `list_items`, `create_item`, `update_item`, `move_item`, `history`, `lanes`, `list_imports`, `preview_import` and `apply_import`, plus `parse_import`, `TrackingFields` and `REFERENCE_FIELDS`. P1R (source-scoped imports, immutable originals) is consumed at its checkpoint without service changes, unless its import identity API changes.
-
-**C2P (candidate-brain `4d0d421`): integrated.** `tests/service/test_candidate_integration.py` runs the service over the real `LocalCandidateStore`. It covers upload before a profile exists, private permissions, setup and reload, preserved facts/answers/resume on update, resume selection, a reused answer written to `answers.json`, an unreadable profile left untouched and the shared upload bound. It is skipped when the package is not installed.
-
-**Dependencies.** `pyproject.toml` pins `interviewmaxxing-core==0.1.0`, `interviewmaxxing-candidate==0.1.0`, `interviewmaxxing-pipeline==0.1.0` and `interviewmaxxing-cli==0.1.0` (workspace sources). J1 (`interviewmaxxing-jobs`) and J2 (`interviewmaxxing-selection`) are imported dynamically and are optional until they land; add them as pinned dependencies once they are workspace members. No third-party dependency beyond `pydantic` (already in core). The root lock needs regenerating by core/coordinator to include this member.
+**Dependencies.** `pyproject.toml` pins `interviewmaxxing-core`, `-candidate`, `-pipeline`, `-jobs`, `-selection` and `-cli` at `==0.1.0` (workspace sources). J1/J2 are still imported lazily in `integration.py`, so the route layer has no hard import on them. The root lock is core/coordinator-owned and must include this member.
 
 ## Tests
 
 ```bash
 uv venv .venv-task --python 3.12
 uv pip install --python .venv-task/bin/python --no-sources -e packages/core -e packages/candidate \
-    -e packages/pipeline -e packages/generation -e apps/cli pytest ruff mypy
+    -e packages/pipeline -e packages/generation -e packages/browser -e packages/jobs \
+    -e packages/selection -e apps/cli "playwright==1.62.0" pytest ruff mypy
 uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/service
-# optional until J1/J2 are merged: install their current trees read-only (non-editable copies)
-uv pip install --python .venv-task/bin/python --no-deps --no-sources \
-    ../job-ingestion/packages/jobs ../jev-selection/packages/selection
-.venv-task/bin/python -m pytest tests/service
+.venv-task/bin/python -m pytest tests/service        # includes the real Chromium acceptance
 .venv-task/bin/ruff check apps/service tests/service && .venv-task/bin/mypy --strict apps/service/src
 ```
 
@@ -263,6 +317,12 @@ uv pip install --python .venv-task/bin/python --no-deps --no-sources \
 - `test_candidate_integration`: the real C2P store.
 - `test_pipeline_routes`: the real P1 store, including CSV import preview, commit and reimport.
 - `test_jobs_routes`: the jobs/selection orchestration over protocol fakes that produce canonical D0 records.
-- `test_package_integration`: the real J1 store and search service with fixture source adapters, and the real J2 selection service with a fixture Jev transport. It is skipped when J1/J2 are not installed.
+- `test_package_integration`: the real J1 store and search service with fixture source adapters, and the real J2 selection service with a fixture Jev transport.
+- `test_acceptance` (marked `slow`): HTTP → real I1 runner → headless Chromium → `scripts/mock_ats.py` in its own process, with a fictional profile in a temporary `IMX_HOME`. It covers:
+  - receipt, server-side acceptance count, uploaded file digest and a repeat request;
+  - A/B resume pins across a profile change and a restart, with missing answers answered after the restart;
+  - an uncertain submission that stays locked, an inconclusive recheck, and a site reveal reconciled.
+
+Playwright must be the root-locked `1.62.0`, which matches the cached browsers.
 
 Everything is fictional and local. No live source is browsed, no Jev credit is spent, and nothing is submitted.

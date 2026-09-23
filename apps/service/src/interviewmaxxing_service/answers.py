@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 from interviewmaxxing_core import (
     AnswerReuse,
-    ApplicationPacket,
     ControlType,
     MissingInput,
     UserInput,
@@ -42,10 +41,8 @@ class AnswerPlan:
     """Question ids that are not current questions of this application."""
 
 
-def current_questions(packet: ApplicationPacket | None) -> dict[str, MissingInput]:
-    if packet is None:
-        return {}
-    return {question_id(m): m for m in packet.missing_inputs if is_answerable(m)}
+def current_questions(awaited: Sequence[MissingInput]) -> dict[str, MissingInput]:
+    return {question_id(m): m for m in awaited if is_answerable(m)}
 
 
 def _is_blank(value: object) -> bool:
@@ -85,8 +82,8 @@ def _convert(missing: MissingInput, value: object) -> AnswerValue:
     raise ValueError("This question can't be answered here.")
 
 
-def plan_answers(packet: ApplicationPacket | None, body: AnswerInput) -> AnswerPlan:
-    questions = current_questions(packet)
+def plan_answers(awaited: Sequence[MissingInput], body: AnswerInput) -> AnswerPlan:
+    questions = current_questions(awaited)
     inputs: list[UserInput] = []
     errors: dict[str, str] = {}
     stale: list[str] = []
@@ -121,11 +118,11 @@ def _plain(exc: ValueError) -> str:
 
 
 def unanswered_required(
-    packet: ApplicationPacket | None, inputs: Sequence[UserInput]
+    awaited: Sequence[MissingInput], inputs: Sequence[UserInput]
 ) -> dict[str, str]:
     """Required answerable questions without a stored answer, keyed by question id."""
     out: dict[str, str] = {}
-    for qid, missing in current_questions(packet).items():
+    for qid, missing in current_questions(awaited).items():
         if not missing.required:
             continue
         saved = saved_input_for(missing, inputs)

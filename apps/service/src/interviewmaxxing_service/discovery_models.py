@@ -19,6 +19,9 @@ Period = Literal["YEAR", "MONTH", "WEEK", "DAY", "HOUR"]
 Arrangement = Literal["ONSITE", "HYBRID", "REMOTE", "UNKNOWN"]
 Priority = Literal["STRONGLY_PREFER_ONSITE_HYBRID", "BALANCED", "PREFER_REMOTE"]
 Tier = Literal["PREFERRED", "EQUAL", "SECONDARY", "UNRANKED"]
+LocationTier = Literal[
+    "ONSITE_HYBRID_TARGET", "REMOTE_ELIGIBLE", "REMOTE_UNCONFIRMED", "OUTSIDE_TARGET", "UNRESOLVED"
+]
 SourceState = Literal[
     "QUEUED", "RUNNING", "OK", "PARTIAL", "NEEDS_USER", "BLOCKED", "ERROR", "SKIPPED"
 ]
@@ -46,6 +49,15 @@ class PipelineProvenanceView(View):
     source_row: int
     imported_at: str
     imported_values: dict[str, str]
+    """The row as first imported (P1 ``initial``), verbatim, by workbook header."""
+    source_id: str
+    """Additive: P1's logical source id for this card."""
+    latest_imported_values: dict[str, str]
+    """Additive: the row as most recently imported (P1 ``latest``)."""
+    first_imported_at: str
+    """Additive."""
+    version_count: int
+    """Additive: how many imported versions P1 keeps (``source_versions``)."""
 
 
 class LinkedApplicationView(View):
@@ -143,6 +155,11 @@ class ImportInput(Body):
     format: Literal["csv", "json"]
     file_name: StrictStr
     content: StrictStr
+    source_id: StrictStr | None = None
+    """Additive: the stable logical source of this upload, chosen by the user (for
+    example ``"numbers-pipeline"``). Re-imports of the same tracker must reuse it.
+    Required for CSV and for JSON exports that do not declare ``source.sourceId`` or a
+    workbook path; never derived from the content digest."""
 
 
 # --- jobs and selection ------------------------------------------------------------------
@@ -173,6 +190,9 @@ class SearchPreferencesView(View):
     location_priority: Priority
     """Additive (canonical ``LocationPriority``): how onsite/hybrid targets rank
     against eligible remote roles. Default ``STRONGLY_PREFER_ONSITE_HYBRID``."""
+    role_focus: str
+    """Additive (canonical ``role_focus``): the semantic role description Jev judges
+    responsibilities against. Title phrases are search seeds, not an allowlist."""
     minimum_compensation: CompensationFloorView | None
     unknown_compensation: Literal["KEEP", "REVIEW"]
     sources: list[str]
@@ -204,6 +224,8 @@ class SearchPreferencesInput(Body):
     remote: RemoteTargetInput | None
     location_priority: Priority | None = None
     """Optional; omitted keeps the saved value (default strongly prefer onsite/hybrid)."""
+    role_focus: StrictStr | None = None
+    """Optional; omitted keeps the saved value (default: D0 ``DEFAULT_ROLE_FOCUS``)."""
     minimum_compensation: CompensationFloorInput | None
     unknown_compensation: Literal["KEEP", "REVIEW"]
     sources: list[StrictStr]
@@ -288,9 +310,12 @@ class ListingView(View):
     selection: SelectionView | None
     pipeline_entry_id: str | None
     application_id: str | None
-    location_tier: Tier | None
-    """Additive: the listing's rank under ``locationPriority`` (J2 ``LocationTier``);
-    null when the selection package is not installed. Ordering only, never a filter."""
+    location_tier: LocationTier | None
+    """How the stated location relates to the targets (frontend ``LocationTier``, from J2
+    ``check_location``); null when the selection package is not installed."""
+    priority_tier: Tier | None
+    """Additive: rank under ``locationPriority`` (J2 ``LocationTier``). Ordering only,
+    never a filter."""
     rank_reason: str | None
 
 

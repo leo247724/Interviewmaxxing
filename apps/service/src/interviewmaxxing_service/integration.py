@@ -22,6 +22,7 @@ from interviewmaxxing_core import (
     JobSearchQuery,
     JobSelection,
     LocalPaths,
+    ResumeArtifact,
     SavedAnswer,
     SelectionPreferences,
     SourceSearchResult,
@@ -87,6 +88,17 @@ class LocalCandidateGateway:
         except ResumeRejected as exc:
             raise CandidateSetupError("resumeFile", _sentence(str(exc))) from exc
         return _entry(stored)
+
+    def resume_artifact(self, candidate_id: str, resume_id: str) -> ResumeArtifact:
+        from interviewmaxxing_candidate import ResumeNotFound
+
+        try:
+            artifact: ResumeArtifact = self._store.get_resume(candidate_id, resume_id).artifact
+        except (ResumeNotFound, CandidateNotFound, CandidateProfileInvalid) as exc:
+            raise CandidateSetupError(
+                "resumeId", "Choose one of your saved resumes or upload one."
+            ) from exc
+        return artifact
 
     def upsert_profile(
         self, candidate_id: str, *, identity: CandidateIdentity, resume_id: str
@@ -318,4 +330,16 @@ class LocalSelectionBackend:
         return Rank(
             tier=tier.value,
             reason=self._sel.location_priority_reason(tier, preferences.location_priority, location),
+            location=_LOCATION_TIERS.get(location.value, "UNRESOLVED"),
         )
+
+
+_LOCATION_TIERS = {
+    "ONSITE_ACCEPTED": "ONSITE_HYBRID_TARGET",
+    "REMOTE_REGION_MATCH": "REMOTE_ELIGIBLE",
+    "REMOTE_NEEDS_ELIGIBILITY": "REMOTE_UNCONFIRMED",
+    "ONSITE_MISMATCH": "OUTSIDE_TARGET",
+    "REMOTE_NOT_WANTED": "OUTSIDE_TARGET",
+    "UNKNOWN": "UNRESOLVED",
+}
+"""J2 ``LocationStatus`` -> the frontend's ``LocationTier`` (dashboard 4567d24)."""

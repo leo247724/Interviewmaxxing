@@ -50,7 +50,7 @@ def test_health_has_no_private_data(harness: Harness) -> None:
     assert r.json == {
         "status": "ok", "service": "interviewmaxxing-service", "contractVersion": "2",
         "executor": "idle", "runner": "available", "pipeline": "available",
-        "jobs": "unavailable", "selection": "unavailable",
+        "jobs": "unavailable", "selection": "unavailable", "applicationMode": "TEST_ONLY",
     }
     assert "access-control-allow-origin" not in r.headers
     assert r.headers["cache-control"] == "no-store"
@@ -326,7 +326,7 @@ def test_one_run_at_a_time(harness: Harness) -> None:
     harness.site.hold.clear()
     first = harness.start()
     assert harness.site.holding.wait(5)
-    second = harness.start(url="https://jobs.example.test/fictional-co/5555/apply")
+    second = harness.start(url="http://127.0.0.1:9/fictional-co/5555/apply")
     assert second.status == 409
     assert second.json["error"]["code"] == "conflict"
     with harness.store() as store:  # the refused request was not recorded

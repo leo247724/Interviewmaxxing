@@ -107,6 +107,8 @@ class Snapshot:
     user_inputs: Sequence[UserInput] = ()
     prior: PriorRecord | None = None
     fallback_resume_name: str | None = None
+    pinned_resume_name: str | None = None
+    """File name of the resume pinned to this application (``pin_resume``)."""
     running: RunStatus | None = None
     answer_errors: Mapping[str, str] = field(default_factory=dict)
 
@@ -214,13 +216,31 @@ def saved_input_for(missing: MissingInput, inputs: Sequence[UserInput]) -> UserI
     return None
 
 
+def awaited_inputs(
+    events: Sequence[ApplicationEvent], packet: ApplicationPacket | None, state: ApplicationState
+) -> list[MissingInput]:
+    """What a NEEDS_INPUT application is waiting for, exactly as recorded.
+
+    The I1 runner records the questions and browser actions in the
+    ``application.needs_input`` event (``metadata.missing_inputs``; I1's
+    ``pending_inputs``), which also covers sign-in/CAPTCHA stops that have no packet.
+    Older records without that metadata fall back to the latest packet."""
+    if state is not S.NEEDS_INPUT:
+        return []
+    entered = _last_event(events, S.NEEDS_INPUT)
+    recorded = entered.metadata.get("missing_inputs") if entered else None
+    if isinstance(recorded, list):
+        return [MissingInput.model_validate(m) for m in recorded]
+    return list(packet.missing_inputs) if packet is not None else []
+
+
 def questions_need(
-    packet: ApplicationPacket, inputs: Sequence[UserInput], errors: Mapping[str, str]
+    awaited: Sequence[MissingInput], inputs: Sequence[UserInput], errors: Mapping[str, str]
 ) -> QuestionsNeed:
     questions: list[RequiredQuestionView] = []
     attestations: list[AttestationView] = []
     saved_times: list[datetime] = []
-    for missing in packet.missing_inputs:
+    for missing in awaited:
         if not is_answerable(missing):
             continue
         qid = question_id(missing)
@@ -308,9 +328,9 @@ def needs_view(snap: Snapshot) -> QuestionsNeed | InteractionNeed | None:
         return InteractionNeed(
             interaction=kind, instructions=_INTERACTION_TEXT[kind], page_url=page_url
         )
-    packet = snap.packet
-    if packet is not None:
-        actions = [m for m in packet.missing_inputs if m.reason is MissingReason.USER_ACTION]
+    awaited = awaited_inputs(snap.events, snap.packet, snap.application.state)
+    if awaited:
+        actions = [m for m in awaited if m.reason is MissingReason.USER_ACTION]
         if actions:
             kind = _interaction_kind(" ".join(f"{m.label} {m.prompt}" for m in actions))
             return InteractionNeed(
@@ -318,10 +338,10 @@ def needs_view(snap: Snapshot) -> QuestionsNeed | InteractionNeed | None:
                 instructions=_INTERACTION_TEXT[kind],
                 page_url=page_url,
             )
-        need = questions_need(packet, snap.user_inputs, snap.answer_errors)
+        need = questions_need(awaited, snap.user_inputs, snap.answer_errors)
         if need.questions or need.attestations:
             return need
-        blocked = [m for m in packet.missing_inputs if m.required and not is_answerable(m)]
+        blocked = [m for m in awaited if m.required and not is_answerable(m)]
         if blocked:
             labels = "; ".join(f"“{m.label.splitlines()[0]}”" for m in blocked)
             return InteractionNeed(
@@ -496,6 +516,16 @@ def _event_text(event: ApplicationEvent) -> tuple[str, EventTone]:
         if missing:
             return f"Prepared answers{page}; {len(missing)} need you.", "progress"
         return f"Prepared answers{page}.", "progress"
+    if name == "document.resume_pinned":
+        filename = meta.get("filename")
+        return (f"Resume for this application: {filename}." if filename
+                else "Resume chosen for this application."), "info"
+    if name == "reconcile.unconfirmed":
+        return (
+            "Checked the site again. No confirmation tied to this job yet; applying again "
+            "stays locked.",
+            "info",
+        )
     if name == "page.completed":
         return "Finished a page of the form.", "progress"
     if name == "reconcile.checked":
@@ -524,6 +554,14 @@ def events_view(events: Sequence[ApplicationEvent]) -> list[ApplicationEventView
             previous = event
             continue
         message, tone = _event_text(event)
+        if event.event.startswith("document."):
+            # A pin recorded between the service's request and the runner's own
+            # re-record does not break the fold.
+            out.append(ApplicationEventView(
+                id=event.id, type=event.event, at=iso(event.timestamp), message=message,
+                tone=tone,
+            ))
+            continue
         out.append(
             ApplicationEventView(
                 id=event.id, type=event.event, at=iso(event.timestamp), message=message, tone=tone
@@ -545,6 +583,8 @@ def _ats_name(ats_type: str | None) -> str | None:
 
 
 def _resume_name(snap: Snapshot) -> str | None:
+    if snap.pinned_resume_name:
+        return snap.pinned_resume_name
     if snap.packet is not None:
         for answer in snap.packet.answers:
             if answer.semantic_type is SemanticType.RESUME and isinstance(answer.value, FileValue):
@@ -565,7 +605,8 @@ def _uncertain_view(snap: Snapshot, public_base: str) -> UncertainSubmissionView
     )
     checks = [
         e for e in snap.events
-        if e.event in ("reconcile.checked", "reconcile.user_reported_not_received")
+        if e.event in ("reconcile.checked", "reconcile.unconfirmed",
+                       "reconcile.user_reported_not_received")
     ]
     last = checks[-1] if checks else None
     result = _event_text(last)[0] if last else None

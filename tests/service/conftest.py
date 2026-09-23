@@ -58,7 +58,8 @@ from interviewmaxxing_service.app import build_app
 from interviewmaxxing_service.candidate import CandidateSetupError, CandidateSetupState
 
 ORIGIN = "http://127.0.0.1:4317"
-SITE_URL = "https://jobs.example.test/fictional-co/4012/apply?src=desk"
+# Fictional loopback test site (TEST_ONLY mode). The scripted runner never opens it.
+SITE_URL = "http://127.0.0.1:9/fictional-co/4012/apply?src=desk"
 S = ApplicationState
 
 
@@ -90,6 +91,16 @@ class FakeCandidates:
 
     def list_resumes(self, candidate_id: str) -> list[ResumeEntry]:
         return list(self.setup(candidate_id).resumes)
+
+    def resume_artifact(self, candidate_id: str, resume_id: str) -> ResumeArtifact:
+        entry = self.resumes.get(candidate_id, {}).get(resume_id)
+        if entry is None:
+            raise CandidateSetupError("resumeId", "Choose one of your saved resumes.")
+        return ResumeArtifact(
+            id=entry.id, path=str(self.root / candidate_id / entry.id), filename=entry.filename,
+            media_type="application/pdf", sha256=self.digests[entry.id],
+            size_bytes=entry.size_bytes,
+        )
 
     def store_resume(self, candidate_id: str, *, filename: str, content: bytes) -> ResumeEntry:
         if b"REJECT" in content or not filename.lower().endswith((".pdf", ".docx", ".txt")):
@@ -383,6 +394,7 @@ def serve(
     search: Any = None,
     decisions: Any = None,
     runner_problem: Any = None,
+    executor_factory: Any = None,
     **config: Any,
 ) -> Iterator[Harness]:
     """A running service over ``paths`` with the scripted runner, ``candidates`` and
@@ -396,11 +408,18 @@ def serve(
 
     settings: dict[str, Any] = {"allowed_origin": ORIGIN, "port": 0, "reconcile_wait_s": 5.0}
     settings.update(config)
+    service_config = ServiceConfig(paths=paths, **settings)
+    if hasattr(candidates, "profile"):
+        def profile_loader() -> Any:
+            return candidates.profile(paths.candidate_id)
+    else:
+        def profile_loader() -> Any:
+            return getattr(candidates, "profiles", {}).get(paths.candidate_id)
     app = build_app(
-        ServiceConfig(paths=paths, **settings),
+        service_config,
         candidates=candidates,
-        dispatcher=Dispatcher(factory),
-        profile_loader=lambda: getattr(candidates, "profiles", {}).get(paths.candidate_id),
+        dispatcher=Dispatcher(executor_factory(service_config) if executor_factory else factory),
+        profile_loader=profile_loader,
         listings=listings, search=search, decisions=decisions,
         runner_problem=runner_problem,
     )

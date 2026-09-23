@@ -176,22 +176,31 @@ class PipelineApi:
             ))
         return out
 
-    def _provenance(self, item: PipelineItem, receipts: Mapping[str, str]) -> PipelineProvenanceView | None:
+    def _provenance(
+        self, store: PipelineStore, item: PipelineItem, receipts: Mapping[str, str]
+    ) -> PipelineProvenanceView | None:
         p = item.provenance
         if p is None:
             return None
-        values = {
-            _KEY_TO_HEADER[k]: str(v)
-            for k, v in p.original.by_key().items()
-            if v is not None and k in _KEY_TO_HEADER
-        }
+
+        def cells(values: TrackingFields) -> dict[str, str]:
+            return {
+                _KEY_TO_HEADER[k]: str(v)
+                for k, v in values.by_key().items()
+                if v is not None and k in _KEY_TO_HEADER
+            }
+
         return PipelineProvenanceView(
             import_id=receipts.get(p.document_sha256, p.import_key),
             file_name=p.source_name,
             source_digest=p.source_sha256 or p.document_sha256,
             source_row=p.source_row or 0,
             imported_at=iso(p.last_imported_at),
-            imported_values=values,
+            imported_values=cells(p.initial),
+            source_id=p.source_id,
+            latest_imported_values=cells(p.latest),
+            first_imported_at=iso(p.first_imported_at),
+            version_count=len(store.source_versions(self.candidate_id, item.id)),
         )
 
     def entry_view(
@@ -223,7 +232,7 @@ class PipelineApi:
             origin=origin,
             application=self._application(apps, item.application_id),
             selection=selection,
-            provenance=self._provenance(item, receipts),
+            provenance=self._provenance(store, item, receipts),
             history=self._history(store.history(cid, item.id), labels),
             created_at=iso(item.created_at),
             updated_at=iso(item.updated_at),
@@ -352,8 +361,16 @@ class PipelineApi:
         name = body.file_name.strip().replace("\\", "/").rsplit("/", 1)[-1]
         if not name or len(name) > 200 or any(ord(ch) < 32 for ch in name):
             raise errors.invalid("The file name isn't usable.", {"fileName": "Rename the file."})
+        if body.source_id is not None and not SAFE_ID.match(body.source_id.strip()):
+            raise errors.invalid(
+                "The source name isn't usable.",
+                {"sourceId": "Use letters, digits, dots, dashes or underscores."},
+            )
         try:
-            document = parse_import(body.content.encode(), name=name, format=body.format)
+            source_id = (body.source_id or "").strip() or None
+            document = parse_import(
+                body.content.encode(), name=name, format=body.format, source_id=source_id
+            )
         except ImportFileError as exc:
             raise errors.invalid(str(exc), {"content": str(exc)}) from exc
         with self.store() as store:

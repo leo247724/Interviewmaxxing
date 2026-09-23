@@ -1,8 +1,7 @@
 """The service over the real J1 jobs and J2 selection packages.
 
 Fixture source adapters and a fixture Jev transport replace only the network/browser
-edge; the packages' own stores, dedupe, policy, ranking and decision records are real.
-Skipped where the packages are not installed."""
+edge; the packages' own stores, dedupe, policy, ranking and decision records are real."""
 
 from __future__ import annotations
 
@@ -15,6 +14,8 @@ from typing import Any
 
 import pytest
 
+import interviewmaxxing_jobs as jobs_pkg
+import interviewmaxxing_selection as sel_pkg
 from interviewmaxxing_core import (
     JobListing,
     ListingSource,
@@ -23,16 +24,9 @@ from interviewmaxxing_core import (
     WorkArrangement,
     listing_id_for,
 )
+from interviewmaxxing_service.integration import LocalJobsBackend, LocalSelectionBackend
 
 from .conftest import FakeCandidates, FictionalSite, Harness, serve
-
-jobs_pkg = pytest.importorskip("interviewmaxxing_jobs")
-sel_pkg = pytest.importorskip("interviewmaxxing_selection")
-
-from interviewmaxxing_service.integration import (  # noqa: E402
-    LocalJobsBackend,
-    LocalSelectionBackend,
-)
 
 
 def _listing(source: str, job_id: str, title: str, location: str | None,
@@ -146,7 +140,8 @@ def test_real_j1_search_store_and_real_j2_ranking(real: Any) -> None:
     assert len(backend.store.list_listings()) == 2
     listings = h.client.get("/jobs").json["listings"]
     assert [x["title"] for x in listings] == ["Marketing Manager", "Marketing Director"]
-    assert [x["locationTier"] for x in listings] == ["PREFERRED", "SECONDARY"]
+    assert [x["priorityTier"] for x in listings] == ["PREFERRED", "SECONDARY"]
+    assert [x["locationTier"] for x in listings] == ["ONSITE_HYBRID_TARGET", "REMOTE_ELIGIBLE"]
     assert "not excluded" in listings[1]["rankReason"]
 
 

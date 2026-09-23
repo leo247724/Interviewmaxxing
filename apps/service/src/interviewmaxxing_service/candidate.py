@@ -32,6 +32,7 @@ from interviewmaxxing_core import (
     CandidateIdentity,
     CandidateProfile,
     PostalAddress,
+    ResumeArtifact,
     SavedAnswer,
 )
 
@@ -83,6 +84,11 @@ class CandidateGateway(Protocol):
     def setup(self, candidate_id: str) -> CandidateSetupState:
         """Contact details, supplied resumes and the selected one; works before any
         profile exists and for profiles that do not load."""
+        ...
+
+    def resume_artifact(self, candidate_id: str, resume_id: str) -> ResumeArtifact:
+        """The canonical artifact of one listed resume (for pinning to an application).
+        Raises ``CandidateSetupError`` (``resumeId``) when it is not listed or unusable."""
         ...
 
     def store_resume(self, candidate_id: str, *, filename: str, content: bytes) -> ResumeEntry:
