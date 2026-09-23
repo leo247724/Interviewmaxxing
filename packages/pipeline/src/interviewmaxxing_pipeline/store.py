@@ -10,9 +10,17 @@ revision the caller last saw and raise ``RevisionConflict`` (carrying the curren
 item) if someone else changed it first.
 
 Imports are all-or-nothing. ``preview_import`` reports exactly what ``apply_import``
-would do. Re-importing is idempotent per import key. A changed source value replaces
-a field only if the user has not edited that field since the last import;
-otherwise the user's edit is kept and reported. Re-imports never move a card.
+would do. Cards are keyed by (candidate, logical source, import key), so two files
+never overwrite each other's cards. Re-importing the same source is idempotent. A
+changed source value replaces a field only if the user has not edited that field
+since the latest import; otherwise the user's edit is kept and reported. An import
+key whose Company/Role changes within a source is rejected as ambiguous. Re-imports
+never move a card. Every imported version is kept (``source_versions``); the first
+imported values (``provenance.initial``) never change.
+
+Schema 2 added source scoping and source versions. Opening a schema-1 database
+migrates it in one transaction: existing imported cards keep their values, get a
+``legacy-...`` source id (shown in their provenance) and a first source version.
 """
 
 from __future__ import annotations
@@ -29,8 +37,9 @@ from typing import Any, Final, Self
 
 from pydantic import ValidationError
 
-from interviewmaxxing_core import LocalPaths, new_id, utc_now
+from interviewmaxxing_core import LocalPaths, PipelineEntry, new_id, utc_now
 
+from .entry import to_pipeline_entry
 from .fields import FIELD_NAMES, KEY_BY_NAME, TrackingFields
 from .importer import ImportDocument, ParsedRow
 from .lanes import DEFAULT_BOARD_LANES, BoardLanes, suggest_lane
@@ -46,26 +55,33 @@ from .models import (
     PipelineUpdate,
     RowIssue,
     RowPlan,
+    SourceVersion,
     StageChange,
 )
 
 PIPELINE_DB_NAME: Final = "pipeline.sqlite3"
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 _CANDIDATE_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS items (
+_META = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+
+_ITEMS_TABLE = """
+CREATE TABLE {name} (
     id TEXT PRIMARY KEY,
     candidate_id TEXT NOT NULL,
+    source_id TEXT,
     import_key TEXT,
     lane TEXT NOT NULL,
     revision INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     body TEXT NOT NULL,
-    UNIQUE (candidate_id, import_key)
+    UNIQUE (candidate_id, source_id, import_key),
+    CHECK ((source_id IS NULL) = (import_key IS NULL))
 );
+"""
+
+_SCHEMA = _ITEMS_TABLE.format(name="IF NOT EXISTS items") + """
 CREATE INDEX IF NOT EXISTS items_by_candidate ON items (candidate_id, lane);
 CREATE TABLE IF NOT EXISTS history (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +95,19 @@ CREATE TRIGGER IF NOT EXISTS history_no_update BEFORE UPDATE ON history
     BEGIN SELECT RAISE(ABORT, 'pipeline history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS history_no_delete BEFORE DELETE ON history
     BEGIN SELECT RAISE(ABORT, 'pipeline history is append-only'); END;
+CREATE TABLE IF NOT EXISTS source_versions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS source_versions_by_item
+    ON source_versions (candidate_id, item_id, sequence);
+CREATE TRIGGER IF NOT EXISTS source_versions_no_update BEFORE UPDATE ON source_versions
+    BEGIN SELECT RAISE(ABORT, 'pipeline source versions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS source_versions_no_delete BEFORE DELETE ON source_versions
+    BEGIN SELECT RAISE(ABORT, 'pipeline source versions are append-only'); END;
 CREATE TABLE IF NOT EXISTS boards (
     candidate_id TEXT PRIMARY KEY,
     updated_at TEXT NOT NULL,
@@ -91,6 +120,7 @@ CREATE TABLE IF NOT EXISTS imports (
     body TEXT NOT NULL
 );
 """
+LEGACY_IMPORT_ID: Final = "legacy-v1"
 
 
 class PipelineError(Exception):
@@ -129,6 +159,12 @@ class ImportRejected(PipelineError, ValueError):
         super().__init__(f"import rejected: {first}{more}")
 
 
+def _identity(tracking: TrackingFields) -> tuple[str, str]:
+    """Company/Role compared case- and space-insensitively."""
+    return (" ".join((tracking.company or "").split()).casefold(),
+            " ".join((tracking.role or "").split()).casefold())
+
+
 def default_pipeline_db(paths: LocalPaths) -> Path:
     """``$IMX_HOME/state/pipeline.sqlite3`` (beside, not inside, the application store)."""
     return paths.state_db.parent / PIPELINE_DB_NAME
@@ -144,9 +180,10 @@ def _ts(value: datetime) -> str:
     return value.isoformat()
 
 
-def imported_item_id(candidate_id: str, import_key: str) -> str:
-    """The stable id of the card created for ``import_key``."""
-    digest = hashlib.sha256(f"{candidate_id}\x1f{import_key}".encode()).hexdigest()
+def imported_item_id(candidate_id: str, source_id: str, import_key: str) -> str:
+    """The stable id of the card created for ``import_key`` from ``source_id``."""
+    digest = hashlib.sha256(
+        f"{candidate_id}\x1f{source_id}\x1f{import_key}".encode()).hexdigest()
     return f"pipe_{digest[:24]}"
 
 
@@ -177,6 +214,8 @@ class PipelineStore:
         conn.execute("PRAGMA synchronous=FULL")
         conn.execute(f"PRAGMA busy_timeout={int(busy_timeout * 1000)}")
         store = cls(conn, clock)
+        conn.executescript(_META)
+        store._migrate()
         conn.executescript(_SCHEMA)  # idempotent DDL; executescript cannot run inside _tx
         with store._tx() as c:
             row = c.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
@@ -189,6 +228,37 @@ class PipelineStore:
             if file.exists():
                 os.chmod(file, 0o600)
         return store
+
+    def _migrate(self) -> None:
+        """Upgrade a schema-1 database in one transaction (no-op otherwise)."""
+        with self._tx() as c:
+            row = c.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            if row is None or int(row["value"]) != 1:
+                return
+            c.execute(_ITEMS_TABLE.format(name="items_v2"))
+            c.execute("""CREATE TABLE IF NOT EXISTS source_versions (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id TEXT NOT NULL,
+                item_id TEXT NOT NULL, imported_at TEXT NOT NULL, body TEXT NOT NULL)""")
+            for old in c.execute("SELECT * FROM items ORDER BY rowid").fetchall():
+                item = PipelineItem.model_validate_json(old["body"])  # upgrades provenance
+                source_id = item.provenance.source_id if item.provenance else None
+                import_key = item.provenance.import_key if item.provenance else None
+                c.execute(
+                    "INSERT INTO items_v2 (id, candidate_id, source_id, import_key, lane, revision,"
+                    " created_at, updated_at, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (old["id"], old["candidate_id"], source_id, import_key, old["lane"],
+                     old["revision"], old["created_at"], old["updated_at"],
+                     item.model_dump_json()))
+                if item.provenance is not None:
+                    self._record_version(c, item, import_id=LEGACY_IMPORT_ID,
+                                         values=item.provenance.initial,
+                                         at=item.provenance.first_imported_at,
+                                         document_sha256=item.provenance.document_sha256,
+                                         source_row=item.provenance.source_row)
+            c.execute("DROP TABLE items")
+            c.execute("ALTER TABLE items_v2 RENAME TO items")
+            c.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                      (str(SCHEMA_VERSION),))
 
     @classmethod
     def from_paths(
@@ -294,7 +364,7 @@ class PipelineStore:
                 listing_id=new.listing_id, application_id=new.application_id,
                 selection_id=new.selection_id, application_url=new.application_url,
                 revision=1, created_at=now, updated_at=now)
-            self._insert(c, item, import_key=None)
+            self._insert(c, item)
             self._history(c, item, kind="created", actor="user", to_lane=lane,
                           to_stage=item.tracking.stage, to_status=item.tracking.status, now=now)
         return item
@@ -355,6 +425,16 @@ class PipelineStore:
                           to_lane=lane, note=note, now=now)
         return moved
 
+    def entry(self, candidate_id: str, item_id: str) -> PipelineEntry:
+        """The card as a core ``PipelineEntry`` (see ``entry.to_pipeline_entry``)."""
+        return to_pipeline_entry(self.get_item(candidate_id, item_id), self.lanes(candidate_id))
+
+    def entries(self, candidate_id: str) -> list[PipelineEntry]:
+        """Every card as a core ``PipelineEntry``; raises ``EntryUnavailable`` for a
+        card with neither a Role nor a listing."""
+        lanes = self.lanes(candidate_id)
+        return [to_pipeline_entry(i, lanes) for i in self.list_items(candidate_id)]
+
     def history(self, candidate_id: str, item_id: str) -> list[StageChange]:
         """The card's lane moves and stage/status edits, oldest first."""
         self.get_item(candidate_id, item_id)
@@ -382,11 +462,13 @@ class PipelineStore:
             raise RevisionConflict(item, expected_revision)
         return item
 
-    def _insert(self, c: sqlite3.Connection, item: PipelineItem, *, import_key: str | None) -> None:
+    def _insert(self, c: sqlite3.Connection, item: PipelineItem) -> None:
+        provenance = item.provenance
         c.execute(
-            "INSERT INTO items (id, candidate_id, import_key, lane, revision, created_at,"
-            " updated_at, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (item.id, item.candidate_id, import_key, item.lane, item.revision,
+            "INSERT INTO items (id, candidate_id, source_id, import_key, lane, revision,"
+            " created_at, updated_at, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (item.id, item.candidate_id, provenance.source_id if provenance else None,
+             provenance.import_key if provenance else None, item.lane, item.revision,
              _ts(item.created_at), _ts(item.updated_at), item.model_dump_json()))
 
     def _save(self, c: sqlite3.Connection, item: PipelineItem) -> None:
@@ -408,6 +490,30 @@ class PipelineStore:
         c.execute(
             "INSERT INTO history (candidate_id, item_id, changed_at, body) VALUES (?, ?, ?, ?)",
             (item.candidate_id, item.id, _ts(now), entry.model_dump_json()))
+
+    def _record_version(
+        self, c: sqlite3.Connection, item: PipelineItem, *, import_id: str,
+        values: TrackingFields, at: datetime, document_sha256: str | None,
+        source_row: int | None,
+    ) -> None:
+        assert item.provenance is not None
+        version = SourceVersion(
+            sequence=1, candidate_id=item.candidate_id, item_id=item.id,
+            source_id=item.provenance.source_id, import_id=import_id,
+            document_sha256=document_sha256, source_row=source_row, imported_at=at,
+            values=values)
+        c.execute("INSERT INTO source_versions (candidate_id, item_id, imported_at, body)"
+                  " VALUES (?, ?, ?, ?)",
+                  (item.candidate_id, item.id, _ts(at), version.model_dump_json()))
+
+    def source_versions(self, candidate_id: str, item_id: str) -> list[SourceVersion]:
+        """Every imported version of the card's source row, oldest first."""
+        self.get_item(candidate_id, item_id)
+        rows = self._conn.execute(
+            "SELECT sequence, body FROM source_versions WHERE candidate_id = ? AND item_id = ?"
+            " ORDER BY sequence", (candidate_id, item_id)).fetchall()
+        return [SourceVersion.model_validate_json(r["body"]).model_copy(
+            update={"sequence": r["sequence"]}) for r in rows]
 
     # --- import ---------------------------------------------------------------------
 
@@ -434,13 +540,19 @@ class PipelineStore:
         if document.issues:
             raise ImportRejected(list(document.issues))
         now = self._now()
+        receipt_id = new_id("pimp")
         with self._tx() as c:
             plans, issues, writes = self._plan(c, candidate_id, document, now)
             if issues:
                 raise ImportRejected(issues)
             for plan, before, after in writes:
+                assert after.provenance is not None
+                self._record_version(c, after, import_id=receipt_id,
+                                     values=after.provenance.latest, at=now,
+                                     document_sha256=document.source.document_sha256,
+                                     source_row=plan.source_row)
                 if before is None:
-                    self._insert(c, after, import_key=plan.import_key)
+                    self._insert(c, after)
                     self._history(c, after, kind="imported", actor="import", to_lane=after.lane,
                                   to_stage=after.tracking.stage, to_status=after.tracking.status,
                                   now=now)
@@ -453,7 +565,7 @@ class PipelineStore:
                                       to_stage=after.tracking.stage,
                                       from_status=before.tracking.status,
                                       to_status=after.tracking.status, now=now)
-            receipt = ImportReceipt(id=new_id("pimp"), candidate_id=candidate_id,
+            receipt = ImportReceipt(id=receipt_id, candidate_id=candidate_id,
                                     imported_at=now, source=document.source, rows=plans)
             c.execute("INSERT INTO imports (id, candidate_id, imported_at, body)"
                       " VALUES (?, ?, ?, ?)",
@@ -475,10 +587,13 @@ class PipelineStore:
         plans: list[RowPlan] = []
         issues: list[RowIssue] = []
         writes: list[tuple[RowPlan, PipelineItem | None, PipelineItem]] = []
+        source_id = document.source.source_id
+        if source_id is None:  # the document already carries an issue for this
+            return plans, issues, writes
         for row in document.rows:
             stored = c.execute(
-                "SELECT body FROM items WHERE candidate_id = ? AND import_key = ?",
-                (candidate_id, row.import_key)).fetchone()
+                "SELECT body FROM items WHERE candidate_id = ? AND source_id = ?"
+                " AND import_key = ?", (candidate_id, source_id, row.import_key)).fetchone()
             if stored is None:
                 plan, item = self._plan_create(candidate_id, row, document, lanes, now)
                 plans.append(plan)
@@ -497,26 +612,29 @@ class PipelineStore:
 
     def _provenance(
         self, row: ParsedRow, document: ImportDocument, *, first: datetime, now: datetime,
-        suggested_lane: str, lane_rule: str | None,
+        initial: TrackingFields, suggested_lane: str, lane_rule: str | None,
     ) -> ImportProvenance:
         source = document.source
+        assert source.source_id is not None
         return ImportProvenance(
-            import_key=row.import_key, source_name=source.name, source_format=source.format,
-            document_sha256=source.document_sha256, source_sha256=source.source_sha256,
-            source_row=row.source_row, first_imported_at=first, last_imported_at=now,
-            original=row.tracking, suggested_lane=suggested_lane, lane_rule=lane_rule)
+            import_key=row.import_key, source_id=source.source_id, source_name=source.name,
+            source_format=source.format, document_sha256=source.document_sha256,
+            source_sha256=source.source_sha256, source_row=row.source_row,
+            first_imported_at=first, last_imported_at=now, initial=initial,
+            latest=row.tracking, suggested_lane=suggested_lane, lane_rule=lane_rule)
 
     def _plan_create(
         self, candidate_id: str, row: ParsedRow, document: ImportDocument, lanes: BoardLanes,
         now: datetime,
     ) -> tuple[RowPlan, PipelineItem]:
         suggestion = suggest_lane(row.tracking.stage, row.tracking.status, lanes)
+        assert document.source.source_id is not None
         item = PipelineItem(
-            id=imported_item_id(candidate_id, row.import_key), candidate_id=candidate_id,
-            lane=suggestion.lane, tracking=row.tracking, revision=1, created_at=now,
-            updated_at=now,
+            id=imported_item_id(candidate_id, document.source.source_id, row.import_key),
+            candidate_id=candidate_id, lane=suggestion.lane, tracking=row.tracking, revision=1,
+            created_at=now, updated_at=now,
             provenance=self._provenance(row, document, first=now, now=now,
-                                        suggested_lane=suggestion.lane,
+                                        initial=row.tracking, suggested_lane=suggestion.lane,
                                         lane_rule=suggestion.rule))
         plan = RowPlan(source_row=row.source_row, import_key=row.import_key, action="create",
                        item_id=item.id, lane=item.lane, lane_rule=suggestion.rule,
@@ -532,13 +650,17 @@ class PipelineStore:
         base = RowPlan(source_row=row.source_row, import_key=row.import_key,
                        action="unchanged", item_id=existing.id, lane=existing.lane,
                        lane_rule=provenance.lane_rule)
-        if row.tracking == provenance.original:
+        if row.tracking == provenance.latest:
             return base, None
+        if _identity(row.tracking) != _identity(provenance.latest):
+            return RowIssue(row=row.source_row, message=(
+                "this import key belonged to a card with a different Company/Role in this "
+                "source; give the row a new import key, or change the card first"))
         merged = existing.tracking.model_dump()
         updated: list[str] = []
         kept: list[str] = []
         for name in FIELD_NAMES:
-            old, new, current = (provenance.original.value(name), row.tracking.value(name),
+            old, new, current = (provenance.latest.value(name), row.tracking.value(name),
                                  existing.tracking.value(name))
             if new == old or current == new:
                 continue
@@ -556,7 +678,8 @@ class PipelineStore:
                 + "); edit the card or the source row"))
         new_provenance = self._provenance(
             row, document, first=provenance.first_imported_at, now=now,
-            suggested_lane=provenance.suggested_lane, lane_rule=provenance.lane_rule)
+            initial=provenance.initial, suggested_lane=provenance.suggested_lane,
+            lane_rule=provenance.lane_rule)
         item = existing.model_copy(update={
             "tracking": tracking, "provenance": new_provenance,
             "revision": existing.revision + 1, "updated_at": now})

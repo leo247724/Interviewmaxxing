@@ -130,9 +130,13 @@ class TrackingFields(Contract):
             return None
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError("must be a number")
-        if not math.isfinite(value):
+        try:
+            number = float(value)  # huge integers overflow here instead of later
+        except OverflowError:
+            raise ValueError("must be a finite number") from None
+        if not math.isfinite(number):
             raise ValueError("must be a finite number")
-        return value
+        return number
 
     @field_validator("fit_score")
     @classmethod

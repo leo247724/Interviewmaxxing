@@ -20,6 +20,8 @@ from interviewmaxxing_pipeline import (
 from interviewmaxxing_pipeline.cli import main
 
 CAND = "cand_fictional"
+SOURCE = load_import(Path(__file__).parents[1] / "fixtures" / "pipeline"
+                     / "pipeline_export.json").source.source_id
 
 
 def _changed_export(pipeline_fixtures, **changes_by_key):
@@ -43,8 +45,8 @@ def test_preview_writes_nothing_and_apply_creates_every_row(pipeline, export_doc
     by_key = {i.provenance.import_key: i for i in items}
     for row in export_doc.rows:
         item = by_key[row.import_key]
-        assert item.id == imported_item_id(CAND, row.import_key)
-        assert item.tracking == row.tracking == item.provenance.original
+        assert item.id == imported_item_id(CAND, export_doc.source.source_id, row.import_key)
+        assert item.tracking == row.tracking == item.provenance.initial == item.provenance.latest
         assert item.tracking.by_key().keys() == set(FIELD_KEYS)
         assert item.provenance.source_row == row.source_row
         assert item.provenance.source_sha256 == export_doc.source.source_sha256
@@ -64,14 +66,18 @@ def test_preview_writes_nothing_and_apply_creates_every_row(pipeline, export_doc
     assert pipeline.list_imports(CAND) == [receipt]
 
 
-def test_reimporting_unchanged_data_is_a_no_op(pipeline, export_doc, csv_doc, clock):
+def test_reimporting_unchanged_data_is_a_no_op(
+    pipeline, export_doc, pipeline_fixtures, clock
+):
     pipeline.apply_import(CAND, export_doc)
     before = pipeline.list_items(CAND)
     clock.advance(hours=1)
     again = pipeline.apply_import(CAND, export_doc)
     assert again.counts() == {"create": 0, "update": 0, "unchanged": 8}
-    # The same rows as CSV (other formatting, same values and keys) are unchanged too.
-    assert pipeline.apply_import(CAND, csv_doc).counts()["unchanged"] == 8
+    # The same rows as CSV (other formatting, same values and keys), explicitly
+    # declared to be the same logical source, are unchanged too.
+    same_source_csv = load_import(pipeline_fixtures / "pipeline.csv", source_id=SOURCE)
+    assert pipeline.apply_import(CAND, same_source_csv).counts()["unchanged"] == 8
     assert pipeline.list_items(CAND) == before
     assert all(len(pipeline.history(CAND, i.id)) == 1 for i in before)
     assert len(pipeline.list_imports(CAND)) == 3
@@ -79,7 +85,7 @@ def test_reimporting_unchanged_data_is_a_no_op(pipeline, export_doc, csv_doc, cl
 
 def test_reimport_keeps_manual_edits_and_lane(pipeline, export_doc, pipeline_fixtures, clock):
     pipeline.apply_import(CAND, export_doc)
-    item_id = imported_item_id(CAND, "fixture-03")
+    item_id = imported_item_id(CAND, SOURCE, "fixture-03")
     clock.advance(minutes=1)
     pipeline.update_item(CAND, item_id, PipelineUpdate.model_validate({
         "tracking": {"nextAction": "My own next step", "priority": "Medium"},
@@ -108,7 +114,8 @@ def test_reimport_keeps_manual_edits_and_lane(pipeline, export_doc, pipeline_fix
     assert item.tracking.fit_rationale == "Updated rationale"
     assert item.notes == "private note"
     assert item.lane == "interviewing"                      # reimport never moves a card
-    assert item.provenance.original.next_action == "Source changed next step"
+    assert item.provenance.latest.next_action == "Source changed next step"
+    assert item.provenance.initial.next_action == "Confirm availability"  # never erased
     assert item.provenance.first_imported_at < item.provenance.last_imported_at
     last = pipeline.history(CAND, item_id)[-1]
     assert (last.kind, last.actor, last.to_status) == (
@@ -154,7 +161,7 @@ def test_a_merge_that_would_be_invalid_rejects_the_whole_import(
     pipeline, export_doc, pipeline_fixtures
 ):
     pipeline.apply_import(CAND, export_doc)
-    item_id = imported_item_id(CAND, "fixture-01")
+    item_id = imported_item_id(CAND, SOURCE, "fixture-01")
     pipeline.update_item(CAND, item_id, PipelineUpdate.model_validate(
         {"tracking": {"compensationHigh": 125000}}), expected_revision=1)
     changed = _changed_export(pipeline_fixtures, **{
@@ -164,7 +171,7 @@ def test_a_merge_that_would_be_invalid_rejects_the_whole_import(
     assert [i.row for i in preview.issues] == [2]
     with pytest.raises(ImportRejected, match="merging this row"):
         pipeline.apply_import(CAND, changed)
-    assert pipeline.get_item(CAND, imported_item_id(CAND, "fixture-02")).tracking.next_action \
+    assert pipeline.get_item(CAND, imported_item_id(CAND, SOURCE, "fixture-02")).tracking.next_action \
         == "None"
 
 

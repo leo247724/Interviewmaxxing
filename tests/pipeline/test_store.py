@@ -55,7 +55,8 @@ def test_database_is_private_and_separate_from_the_application_store(
     assert stat.S_IMODE(pipeline_db.parent.stat().st_mode) == 0o700
     tables = {r[0] for r in sqlite3.connect(pipeline_db).execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert tables == {"meta", "items", "history", "boards", "imports", "sqlite_sequence"}
+    assert tables == {"meta", "items", "history", "source_versions", "boards", "imports",
+                      "sqlite_sequence"}
     assert default_pipeline_db(isolated_imx_home) == \
         isolated_imx_home.state_db.parent / "pipeline.sqlite3"
     assert default_pipeline_db(isolated_imx_home) != isolated_imx_home.state_db

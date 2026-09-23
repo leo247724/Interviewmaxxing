@@ -10,8 +10,9 @@ site-confirmed submission.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
-from typing import Literal, Self
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -23,6 +24,12 @@ from .fields import TrackingFields
 
 _SHA256 = r"^[0-9a-f]{64}$"
 ImportFormat = Literal["json", "csv"]
+SourceIdOrigin = Literal["explicit", "declared", "workbook-path", "file-path", "legacy"]
+
+
+def legacy_source_id(source_name: str) -> str:
+    """Source id given to cards imported before source scoping (schema 1)."""
+    return "legacy-" + hashlib.sha256(source_name.encode()).hexdigest()[:24]
 
 
 def _check_url(value: str | None) -> str | None:
@@ -36,10 +43,16 @@ def _check_url(value: str | None) -> str | None:
 
 
 class ImportProvenance(Contract):
-    """Where an imported card came from. ``original`` is the latest imported row,
-    verbatim; the card's editable ``tracking`` may since differ from it."""
+    """Where an imported card came from.
+
+    ``initial`` is the row as first imported and never changes. ``latest`` is the
+    row as most recently imported, the base for merging later imports with the
+    user's edits. Every imported version is also kept (``PipelineStore.source_versions``).
+    The card's editable ``tracking`` may differ from both."""
 
     import_key: NonEmptyStr
+    source_id: NonEmptyStr
+    """The logical source the key belongs to (see ``importer``)."""
     source_name: NonEmptyStr
     """The imported file's name (or the workbook name the export declares)."""
     source_format: ImportFormat
@@ -51,10 +64,22 @@ class ImportProvenance(Contract):
     """Row number in the source table (the header is row 1)."""
     first_imported_at: UtcDatetime
     last_imported_at: UtcDatetime
-    original: TrackingFields
+    initial: TrackingFields
+    latest: TrackingFields
     suggested_lane: str
     lane_rule: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_schema_1(cls, data: Any) -> Any:
+        """Schema-1 bodies had one ``original`` snapshot and no source id."""
+        if isinstance(data, dict) and "original" in data:
+            data = dict(data)
+            original = data.pop("original")
+            data.setdefault("initial", original)
+            data.setdefault("latest", original)
+            data.setdefault("source_id", legacy_source_id(str(data.get("source_name", ""))))
+        return data
 
 class PipelineItem(Contract):
     """One card on a candidate's board."""
@@ -239,6 +264,9 @@ class RowPlan(Contract):
 class SourceInfo(Contract):
     name: str
     format: ImportFormat
+    source_id: str | None = None
+    """Logical source identity; None only when the document has an issue for it."""
+    source_id_origin: SourceIdOrigin | None = None
     document_sha256: str
     source_sha256: str | None = None
     sheet: str | None = None
@@ -264,6 +292,21 @@ class ImportPreview(Contract):
         for row in self.rows:
             result[row.action] += 1
         return result
+
+
+class SourceVersion(Contract):
+    """One imported version of a card's source row (append-only)."""
+
+    sequence: int = Field(ge=1)
+    candidate_id: NonEmptyStr
+    item_id: NonEmptyStr
+    source_id: NonEmptyStr
+    import_id: NonEmptyStr
+    """The ``ImportReceipt`` that brought this version (``legacy-v1`` for migrated rows)."""
+    document_sha256: str | None = Field(default=None, pattern=_SHA256)
+    source_row: int | None = None
+    imported_at: UtcDatetime
+    values: TrackingFields
 
 
 class ImportReceipt(Contract):
