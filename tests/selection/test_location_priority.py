@@ -321,3 +321,46 @@ def test_onsite_without_a_locality_is_reviewed_not_skipped(
     bot = new_bot()
     out = make_service(bot).select(minnesota, prefs, candidate)
     assert out.selection.effective_choice is SelectionChoice.SKIP and bot.calls == []
+
+
+@pytest.mark.parametrize("eligibility", [
+    "United States (except California)", "United States, excluding TX",
+    "United States; Texas only", "United States (selected locations)",
+])
+def test_compound_remote_restrictions_override_provider_apply(
+    listing: Listing, prefs: SelectionPreferences, candidate: CandidateEvidence,
+    new_bot: Callable[..., Any], make_service: MakeService, eligibility: str,
+) -> None:
+    item = listing("remote_manager").model_copy(update={"remote_eligibility": eligibility})
+    out = make_service(new_bot()).select(item, prefs, candidate)
+    assert out.location is LocationStatus.REMOTE_ELIGIBILITY_AMBIGUOUS
+    assert out.selection.effective_choice is SelectionChoice.REVIEW
+    assert HoldReason.ELIGIBILITY_AMBIGUOUS in {h.reason for h in out.holds}
+
+
+@pytest.mark.parametrize("location", [
+    "Multiple locations in Texas", "Various locations in United States",
+    "Location: United States", "Flexible location",
+])
+def test_contextual_incomplete_onsite_location_is_unknown(
+    listing: Listing, prefs: SelectionPreferences, candidate: CandidateEvidence,
+    new_bot: Callable[..., Any], make_service: MakeService, location: str,
+) -> None:
+    item = listing("austin_onsite_manager").model_copy(update={"location": location})
+    out = make_service(new_bot()).select(item, prefs, candidate)
+    assert out.location is LocationStatus.UNKNOWN
+    assert out.selection.effective_choice is SelectionChoice.REVIEW
+    assert HoldReason.LOCATION_UNKNOWN in {h.reason for h in out.holds}
+
+
+@pytest.mark.parametrize("location", ["Austin, ON, Canada", "Austin, Manitoba, Canada"])
+def test_foreign_austin_cannot_be_recommended_as_texas(
+    listing: Listing, prefs: SelectionPreferences, candidate: CandidateEvidence,
+    new_bot: Callable[..., Any], make_service: MakeService, location: str,
+) -> None:
+    item = listing("austin_onsite_manager").model_copy(update={"location": location})
+    bot = new_bot()
+    out = make_service(bot).select(item, prefs, candidate)
+    assert out.location is LocationStatus.ONSITE_MISMATCH
+    assert out.selection.effective_choice is SelectionChoice.SKIP
+    assert bot.calls == []

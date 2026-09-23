@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -250,3 +253,30 @@ def test_nearby_thresholds_do_not_share_fingerprints(
     assert a.cache_key(item, prefs, candidate) != b.cache_key(item, prefs, candidate)
     decision = a.select(item, prefs, candidate).selection
     assert not b.is_current(decision, item, prefs, candidate)
+
+
+def test_concurrent_first_open_serializes_legacy_schema_inspection(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-concurrent.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(OLD_SCHEMA)
+    barrier = Barrier(2)
+
+    class ConcurrentStore(SelectionStore):
+        @contextmanager
+        def _tx(self) -> Iterator[sqlite3.Connection]:
+            # Both stores reach their migration before either obtains its lock.
+            barrier.wait(timeout=5)
+            with super()._tx() as connection:
+                yield connection
+
+    def open_store() -> list[str]:
+        store = ConcurrentStore(path)
+        try:
+            return [row["name"] for row in store._conn.execute("PRAGMA table_info(selection_decisions)")]
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: open_store(), range(2)))
+    assert all(columns.count("candidate_id") == 1 for columns in results)
+    SelectionStore(path).close()
