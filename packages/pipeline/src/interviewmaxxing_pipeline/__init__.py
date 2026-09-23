@@ -4,6 +4,7 @@ See the package README for the API. Pipeline cards are manual tracking only: mov
 a card never submits, records or confirms an application.
 """
 
+from .entry import EntryUnavailable, imported_cells, to_pipeline_entry
 from .fields import (
     FIELD_HEADERS,
     FIELD_KEYS,
@@ -19,6 +20,7 @@ from .importer import (
     ImportFileError,
     ParsedRow,
     derive_import_key,
+    derive_source_id,
     load_import,
     parse_import,
 )
@@ -35,11 +37,16 @@ from .models import (
     PipelineUpdate,
     RowIssue,
     RowPlan,
+    SourceIdOrigin,
     SourceInfo,
+    SourceVersion,
     StageChange,
+    legacy_source_id,
 )
 from .store import (
+    LEGACY_IMPORT_ID,
     PIPELINE_DB_NAME,
+    SCHEMA_VERSION,
     ImportRejected,
     ItemNotFound,
     LaneError,
@@ -55,13 +62,16 @@ __all__ = [
     "FIELD_HEADERS",
     "FIELD_KEYS",
     "FIELD_NAMES",
+    "LEGACY_IMPORT_ID",
     "MAX_IMPORT_BYTES",
     "MAX_IMPORT_ROWS",
     "PIPELINE_DB_NAME",
     "REFERENCE_FIELDS",
+    "SCHEMA_VERSION",
     "BoardLane",
     "BoardLanes",
     "BoardView",
+    "EntryUnavailable",
     "ImportDocument",
     "ImportFileError",
     "ImportPreview",
@@ -83,13 +93,19 @@ __all__ = [
     "RevisionConflict",
     "RowIssue",
     "RowPlan",
+    "SourceIdOrigin",
     "SourceInfo",
+    "SourceVersion",
     "StageChange",
     "TrackingFields",
     "default_pipeline_db",
     "derive_import_key",
+    "derive_source_id",
+    "imported_cells",
     "imported_item_id",
+    "legacy_source_id",
     "load_import",
     "parse_import",
     "suggest_lane",
+    "to_pipeline_entry",
 ]

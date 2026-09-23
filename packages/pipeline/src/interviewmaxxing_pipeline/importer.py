@@ -20,6 +20,16 @@ Two formats are accepted:
 The whole document is validated. Any issue is reported with its row and column, and
 ``apply_import`` then refuses the document: there are no partial imports.
 
+**Source identity.** Every import belongs to one logical source (``source_id``), and
+cards are keyed by (candidate, source, import key), so rows from two different files
+never overwrite each other. The source id is, in order: the ``source_id`` argument;
+``source.sourceId`` in a JSON export; an opaque hash of the export's declared workbook
+path, sheet and table; an opaque hash of the resolved file path (``load_import``).
+None of these is a content digest, so editing the workbook keeps its identity, and
+two files with the same name in different folders stay distinct. Full paths are
+never stored. Without any of them the document gets an issue asking for a
+``source_id``.
+
 **Import keys** make re-imports idempotent. A supplied key (``importKey`` or the
 ``Import key`` column) is used as is. Otherwise the key is derived from the row's
 Company and Role (case-insensitive), so it stays stable as long as those stay the
@@ -33,7 +43,7 @@ import hashlib
 import io
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Final
@@ -49,7 +59,7 @@ from .fields import (
     REFERENCE_FIELDS,
     TrackingFields,
 )
-from .models import ImportFormat, RowIssue, SourceInfo
+from .models import ImportFormat, RowIssue, SourceIdOrigin, SourceInfo
 
 MAX_IMPORT_BYTES: Final = 5 * 1024 * 1024
 MAX_IMPORT_ROWS: Final = 5000
@@ -57,6 +67,7 @@ IMPORT_KEY_HEADER: Final = "Import key"
 SUPPORTED_SCHEMA_VERSION: Final = 1
 _IMPORT_KEY: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 _NUMBER_FIELDS: Final = frozenset({"fit_score", "compensation_low", "compensation_high"})
 _DATE_FIELDS: Final = frozenset(
@@ -92,19 +103,25 @@ class ImportDocument:
 # --- public entry points ----------------------------------------------------------------
 
 
-def load_import(path: Path | str, *, format: ImportFormat | None = None) -> ImportDocument:
-    """Read and parse an import file. Only the file name (not its path) is recorded."""
-    file = Path(path).expanduser()
+def load_import(
+    path: Path | str, *, format: ImportFormat | None = None, source_id: str | None = None
+) -> ImportDocument:
+    """Read and parse an import file. Only the file name (not its path) is recorded;
+    the resolved path only feeds an opaque source id when nothing better is given."""
+    file = Path(path).expanduser().resolve()
     size = file.stat().st_size
     if size > MAX_IMPORT_BYTES:
         raise ImportFileError(f"{file.name} is {size} bytes; the limit is {MAX_IMPORT_BYTES}")
-    return parse_import(file.read_bytes(), name=file.name, format=format)
+    return parse_import(file.read_bytes(), name=file.name, format=format, source_id=source_id,
+                        _file_identity=str(file))
 
 
 def parse_import(
-    data: bytes, *, name: str, format: ImportFormat | None = None
+    data: bytes, *, name: str, format: ImportFormat | None = None,
+    source_id: str | None = None, _file_identity: str | None = None,
 ) -> ImportDocument:
-    """Parse import bytes. ``format`` defaults from the name's extension."""
+    """Parse import bytes. ``format`` defaults from the name's extension. Give
+    ``source_id`` for bytes that do not declare their own source (see above)."""
     if len(data) > MAX_IMPORT_BYTES:
         raise ImportFileError(f"import is {len(data)} bytes; the limit is {MAX_IMPORT_BYTES}")
     fmt = format or _format_from_name(name)
@@ -113,9 +130,40 @@ def parse_import(
     except UnicodeDecodeError as exc:
         raise ImportFileError(f"{name} is not UTF-8 text: {exc.reason} at byte {exc.start}") from exc
     digest = hashlib.sha256(data).hexdigest()
+    if source_id is not None and not _SOURCE_ID.fullmatch(source_id):
+        raise ImportFileError(
+            "source_id must be 1-128 characters of letters, digits and . _ : -")
     if fmt == "json":
-        return _parse_json(text, name=name, digest=digest)
-    return _parse_csv(text, name=name, digest=digest)
+        document = _parse_json(text, name=name, digest=digest)
+    else:
+        document = _parse_csv(text, name=name, digest=digest)
+    return _with_source_id(document, explicit=source_id, file_identity=_file_identity)
+
+
+def derive_source_id(kind: str, *parts: str) -> str:
+    """Opaque, stable source id from identifying parts (never stored in clear)."""
+    basis = "\x1f".join((kind, *parts))
+    return "src-" + hashlib.sha256(basis.encode()).hexdigest()[:24]
+
+
+def _with_source_id(
+    document: ImportDocument, *, explicit: str | None, file_identity: str | None
+) -> ImportDocument:
+    source = document.source
+    origin: SourceIdOrigin | None
+    if explicit is not None:
+        source_id, origin = explicit, "explicit"
+    elif source.source_id is not None:
+        source_id, origin = source.source_id, source.source_id_origin
+    elif file_identity is not None:
+        source_id, origin = derive_source_id("file", file_identity), "file-path"
+    else:
+        issue = RowIssue(row=None, message=(
+            "the import has no source identity; pass a source_id (or declare "
+            "source.sourceId) so rows from different files never overwrite each other"))
+        return replace(document, issues=(*document.issues, issue))
+    return replace(document, source=source.model_copy(
+        update={"source_id": source_id, "source_id_origin": origin}))
 
 
 def derive_import_key(company: str | None, role: str | None) -> str:
@@ -242,6 +290,17 @@ def _json_source(raw: Any, source: SourceInfo, issues: list[RowIssue]) -> Source
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             update[attr] = value
+    declared_id = raw.get("sourceId")
+    if declared_id is not None:
+        if isinstance(declared_id, str) and _SOURCE_ID.fullmatch(declared_id):
+            update["source_id"], update["source_id_origin"] = declared_id, "declared"
+        else:
+            issues.append(RowIssue(row=None, column="source.sourceId", message=(
+                "must be 1-128 characters of letters, digits and . _ : -")))
+    elif isinstance(path, str) and path.strip():
+        update["source_id"] = derive_source_id(
+            "workbook", path.strip(), str(raw.get("sheet") or ""), str(raw.get("table") or ""))
+        update["source_id_origin"] = "workbook-path"
     return source.model_copy(update=update)
 
 
@@ -271,6 +330,7 @@ def _parse_csv(text: str, *, name: str, digest: str) -> ImportDocument:
     if issues:
         return ImportDocument(source=source, rows=(), issues=tuple(issues))
     column = {h: i for i, h in enumerate(headers) if h}
+    blank_columns = [i for i, h in enumerate(headers) if not h]
     data_rows = table[1:]
     if len(data_rows) > MAX_IMPORT_ROWS:
         return _failed(source, f"{len(data_rows)} rows; the limit is {MAX_IMPORT_ROWS}")
@@ -287,7 +347,12 @@ def _parse_csv(text: str, *, name: str, digest: str) -> ImportDocument:
                                    message=f"{len(cells)} cells but {len(headers)} headers"))
             continue
         cells = cells + [""] * (len(headers) - len(cells))
-        row_issues: list[RowIssue] = []
+        row_issues = [
+            RowIssue(row=row_number, column=f"column {_column_letter(i)} (blank header)",
+                     message="a value under a blank header would be dropped; name the "
+                             "column or clear the cell")
+            for i in blank_columns if cells[i].strip()
+        ]
         values: dict[str, Any] = {}
         for field in REFERENCE_FIELDS:
             cell = cells[column[field.header]]
@@ -304,6 +369,16 @@ def _parse_csv(text: str, *, name: str, digest: str) -> ImportDocument:
         if tracking is not None and key is not None and not row_issues:
             rows.append(ParsedRow(source_row=row_number, import_key=key, tracking=tracking))
     return _finish(source, rows, issues, skipped)
+
+
+def _column_letter(index: int) -> str:
+    """Spreadsheet column letter for a zero-based index (0 -> A, 26 -> AA)."""
+    letters = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
 
 
 class _Invalid:

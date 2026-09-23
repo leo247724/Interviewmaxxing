@@ -1,7 +1,7 @@
 """Package-local command line: preview/apply a pipeline import and show the board.
 
-    interviewmaxxing-pipeline preview FILE                 # validate; writes nothing
-    interviewmaxxing-pipeline import FILE --expect-sha256 HEX
+    interviewmaxxing-pipeline preview FILE [--source-id ID]   # validate; writes nothing
+    interviewmaxxing-pipeline import FILE --expect-sha256 HEX [--source-id ID]
     interviewmaxxing-pipeline board
     interviewmaxxing-pipeline lanes
 
@@ -9,7 +9,9 @@
 ``IMX_CANDIDATE_ID``. Preview and import output lists row numbers, import keys,
 actions, lanes and field *names* only, never cell values, so it is safe to share.
 ``import`` requires the digest printed by ``preview``, so exactly the previewed file
-is applied. Exit status: 0 success, 1 issues/rejected, 2 usage error.
+is applied. ``--source-id`` names the logical source explicitly (otherwise it is
+derived; see ``importer``); use the same id for every file that updates the same
+cards. Exit status: 0 success, 1 issues/rejected, 2 usage error.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ def _summary(result: ImportPreview | ImportReceipt) -> dict[str, Any]:
     return {
         "candidateId": result.candidate_id,
         "source": {"name": source.name, "format": source.format,
+                   "sourceId": source.source_id, "sourceIdOrigin": source.source_id_origin,
                    "documentSha256": source.document_sha256,
                    "sourceSha256": source.source_sha256, "sheet": source.sheet,
                    "table": source.table},
@@ -58,9 +61,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     preview = commands.add_parser("preview", help="validate an import; writes nothing")
     preview.add_argument("file", type=Path)
     preview.add_argument("--format", choices=["json", "csv"])
+    preview.add_argument("--source-id", help="logical source id (see README)")
     apply = commands.add_parser("import", help="apply a previewed import")
     apply.add_argument("file", type=Path)
     apply.add_argument("--format", choices=["json", "csv"])
+    apply.add_argument("--source-id", help="logical source id (see README)")
     apply.add_argument("--expect-sha256", required=True,
                        help="documentSha256 printed by preview")
     commands.add_parser("board", help="print the board as JSON")
@@ -73,7 +78,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with PipelineStore.open(db) as store:
             if args.command in ("preview", "import"):
-                document = load_import(args.file, format=args.format)
+                document = load_import(args.file, format=args.format,
+                                       source_id=args.source_id)
                 if args.command == "preview":
                     result = store.preview_import(args.candidate, document)
                     out = {**_summary(result), "ok": result.ok,

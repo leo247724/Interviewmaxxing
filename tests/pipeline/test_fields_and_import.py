@@ -235,7 +235,7 @@ def test_csv_headers_must_be_the_reference_headers():
     dupes = parse_import(_csv([], headers=[*REFERENCE_HEADERS, "Company"]), name="x.csv")
     assert "duplicate headers" in dupes.issues[0].message
     reordered = parse_import(_csv([_csv_row()[::-1]], headers=REFERENCE_HEADERS[::-1]),
-                             name="x.csv")
+                             name="x.csv", source_id="test-source")
     assert reordered.ok and reordered.rows[0].tracking.company == "Fictional Co"
 
 
