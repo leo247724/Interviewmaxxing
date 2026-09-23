@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from interviewmaxxing_core import ApplicationStore, JobListing, normalize_application_url
+from interviewmaxxing_core import (
+    ApplicationStore,
+    ClaimUnavailable,
+    IdentityConflict,
+    JobListing,
+    SubmissionBlocked,
+    normalize_application_url,
+)
 from interviewmaxxing_pipeline import ItemNotFound, PipelineItem, PipelineUpdate, RevisionConflict
 
 from . import errors
@@ -19,6 +26,7 @@ class ApplicationLink:
     entry_id: str | None
     listing_id: str | None
     url: str
+    expected_identity: str | None = None
 
 
 class ApplicationLinks:
@@ -53,7 +61,9 @@ class ApplicationLinks:
                     for url in (source.application_url, source.posting_url))
         return {normalize_application_url(url) for url in urls if url}
 
-    def _validate(self, link: ApplicationLink, apps: ApplicationStore) -> PipelineItem | None:
+    def _validate(
+        self, link: ApplicationLink, apps: ApplicationStore
+    ) -> tuple[PipelineItem | None, str | None]:
         item = self._entry(link.entry_id) if link.entry_id is not None else None
         listing = self._listing(link.listing_id) if link.listing_id is not None else None
         item_listing = self._listing(item.listing_id) if item and item.listing_id else None
@@ -74,11 +84,20 @@ class ApplicationLinks:
         if item_url and requested != item_url and not (item_url in known and requested in known):
             raise errors.invalid("The application URL doesn't match this pipeline entry.",
                                  {"applicationUrl": "Use this entry's saved application URL."})
+        expected = {source.employer_job_key.strip().lower() for source in listing.provenance
+                    if source.employer_job_key} if listing else set()
+        if len(expected) > 1:
+            raise errors.invalid("This listing has conflicting job identity evidence.",
+                                 {"listingId": "Resolve the saved job identity before applying."})
+        expected_identity = next(iter(expected), None)
         existing = apps.find_application(self.pipeline.candidate_id, link.url)
         if listing is not None and existing is not None:
+            pinned = apps.expected_job_identity(existing.id)
+            if expected_identity and pinned and pinned != expected_identity:
+                field = "listingId" if link.listing_id is not None else "pipelineEntryId"
+                raise errors.conflict("This application is pinned to a different saved job.",
+                                      {field: "The expected identity was kept; nothing was started."})
             job = apps.get_job(existing.job_id)
-            expected = {source.employer_job_key.strip().lower() for source in listing.provenance
-                        if source.employer_job_key}
             if job.identity_key and expected and expected != {job.identity_key.strip().lower()}:
                 field = "listingId" if link.listing_id is not None else "pipelineEntryId"
                 raise errors.conflict(
@@ -89,26 +108,50 @@ class ApplicationLinks:
         if item and item.application_id and (existing is None or existing.id != item.application_id):
             raise errors.conflict("This entry already links to another application.",
                                   {"pipelineEntryId": "The existing application link was kept."})
-        return item
+        return item, expected_identity
 
     def prepare(self, body: StartApplicationInput, apps: ApplicationStore) -> ApplicationLink | None:
         if body.pipeline_entry_id is None and body.listing_id is None:
             return None
         link = ApplicationLink(body.pipeline_entry_id, body.listing_id, body.application_url.strip())
-        self._validate(link, apps)
+        _item, expected = self._validate(link, apps)
         if link.entry_id is None and link.listing_id is not None:
             listing = self._listing(link.listing_id)
             item = self.pipeline.item_for_listing(listing.id)
             if item is not None:
                 link = ApplicationLink(item.id, listing.id, link.url)
-                self._validate(link, apps)
-        return link
+                _item, expected = self._validate(link, apps)
+        return replace(link, expected_identity=expected)
+
+    def pin_identity(self, link: ApplicationLink, application_id: str, apps: ApplicationStore) -> None:
+        if link.expected_identity is None:
+            return
+        field = "listingId" if link.listing_id is not None else "pipelineEntryId"
+        try:
+            apps.pin_expected_job_identity(application_id, link.expected_identity)
+        except SubmissionBlocked as exc:
+            app = apps.get_application(application_id)
+            observed = apps.get_job(app.job_id).identity_key
+            if observed and observed.strip().lower() == link.expected_identity:
+                return  # no late pin: an existing protected app is already identified
+            raise errors.conflict(
+                "The existing application cannot be verified as this saved job.",
+                {field: "Its protected state was kept; nothing was linked or started."},
+            ) from exc
+        except (IdentityConflict, ClaimUnavailable) as exc:
+            raise errors.conflict(
+                "The application's expected job identity cannot be changed or pinned while busy.",
+                {field: "The existing application was kept; nothing was linked or started."},
+            ) from exc
 
     def bind(self, link: ApplicationLink, application_id: str, apps: ApplicationStore) -> None:
         if link.entry_id is None:
             assert link.listing_id is not None
-            link = ApplicationLink(self.track_listing(link.listing_id), link.listing_id, link.url)
-        item = self._validate(link, apps)
+            link = replace(link, entry_id=self.track_listing(link.listing_id))
+        item, expected = self._validate(link, apps)
+        if expected != link.expected_identity:
+            raise errors.conflict("The saved job identity changed before the application was linked.",
+                                  {"listingId": "Reload the listing and try again. Nothing was started."})
         assert item is not None
         if item.application_id == application_id:
             return
