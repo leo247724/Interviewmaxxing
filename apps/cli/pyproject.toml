@@ -1,15 +1,23 @@
 [project]
 name = "interviewmaxxing-cli"
 version = "0.1.0"
-description = "The interviewmaxxing command-line interface."
+description = "The interviewmaxxing command-line interface and the reusable local application runner."
 requires-python = ">=3.12"
-dependencies = ["interviewmaxxing-core"]
+dependencies = [
+    "interviewmaxxing-core",
+    "interviewmaxxing-candidate",
+    "interviewmaxxing-generation",
+    "interviewmaxxing-browser",
+]
 
 [project.scripts]
 interviewmaxxing = "interviewmaxxing_cli.main:main"
 
 [tool.uv.sources]
 interviewmaxxing-core = { workspace = true }
+interviewmaxxing-candidate = { workspace = true }
+interviewmaxxing-generation = { workspace = true }
+interviewmaxxing-browser = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

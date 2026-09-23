@@ -12,10 +12,10 @@ The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/w
 | Directory | Distribution | Import package | Owner | Status |
 | --- | --- | --- | --- | --- |
 | `packages/core` | `interviewmaxxing-core` | `interviewmaxxing_core` | core-contracts | implemented |
-| `apps/cli` | `interviewmaxxing-cli` | `interviewmaxxing_cli` (script `interviewmaxxing`) | core-contracts | skeleton; I1 integrates |
-| `packages/candidate` | `interviewmaxxing-candidate` | `interviewmaxxing_candidate` | candidate-brain | reserved |
-| `packages/generation` | `interviewmaxxing-generation` | `interviewmaxxing_generation` | application-packets | reserved |
-| `packages/browser` | `interviewmaxxing-browser` | `interviewmaxxing_browser` | browser-ats | reserved |
+| `apps/cli` | `interviewmaxxing-cli` | `interviewmaxxing_cli` (script `interviewmaxxing`; runner `interviewmaxxing_cli.runner`) | core-contracts | implemented (I1) |
+| `packages/candidate` | `interviewmaxxing-candidate` | `interviewmaxxing_candidate` | candidate-brain | implemented |
+| `packages/generation` | `interviewmaxxing-generation` | `interviewmaxxing_generation` | application-packets | implemented |
+| `packages/browser` | `interviewmaxxing-browser` | `interviewmaxxing_browser` | browser-ats | implemented |
 | `packages/ats` | `interviewmaxxing-ats` | `interviewmaxxing_ats` | browser-ats | reserved (optional; adapters may live in `browser`) |
 
 Tests live in `tests/<package>/` (e.g. `tests/candidate/`), fixtures in `tests/fixtures/<package>/`. `tests/conftest.py` (core-owned) is shared by all.
@@ -156,7 +156,7 @@ Validation, all returning `list[str]` (empty means valid):
 
 `MissingInput(id, field_id, form_url, form_step, field_fingerprint, label, reason, prompt, semantic_type, control_type, options, required, candidates)`. Build field items with `MissingInput.for_field(form, field, reason=, prompt=)`. A field item must carry `form_url`, `form_step` and `field_fingerprint`; only `USER_ACTION` (sign-in/CAPTCHA) may omit the field and its scope. `reason` ∈ `NO_ANSWER`, `EXPLICIT_ANSWER_REQUIRED`, `UNCOVERED_ATTESTATION`, `AMBIGUOUS`, `UNSUPPORTED_CONTROL`, `USER_ACTION`.
 
-`UserInput(id, form_url, form_step, field_id, field_fingerprint, question, semantic_type, value, reuse, provided_at)` — the user's answer to one question on one step. Create it with `UserInput.answering(missing_input, value)` (checked against the item's options) or `UserInput.for_field(form, field_id, value)` (checked with `answer_problems`). `matches(form)` is true only for the same scope, field id and fingerprint.
+`UserInput(id, form_url, form_step, field_id, field_fingerprint, question, semantic_type, value, reuse, provided_at)` — the user's answer to one question on one step. Create it with `UserInput.answering(missing_input, value)` (checked against the item's options) or `UserInput.for_field(form, field_id, value)` (checked with `answer_problems`). `matches(form)` is true only for the same step index, field id and fingerprint. `form_url` is recorded but not compared, because multistep and session forms put per-session draft ids in step URLs (I1 found this on restart). User inputs belong to one application, so they never reach another application's form. `question_key` is `(form_step, field_id, field_fingerprint)`.
 
 `reuse: AnswerReuse` defaults to **`APPLICATION`: the answer stays local to this application.** Only `JOB` or `GLOBAL`, chosen by the user, produce a `SavedAnswer` via `to_saved_answer(job=)`. `JOB` binds it to that job's identity key (or its normalized URL when unbound). The candidate package persists it through `SavedAnswerWriter`. File answers are never saved.
 
@@ -275,9 +275,11 @@ transition(claim, to_state, *, reason=None, failure_reason=None, metadata=None) 
 bind_job_identity(claim, observation: JobIdentityObservation) -> BindResult
     # BindResult(job, application, merged_from_job_id, duplicate_of, moved_application_ids)
 save_packet(claim, packet) -> Application;  latest_packet(app_id);  get_packet(packet_id)
-save_user_inputs(claim, inputs)            # stored under (form scope, field id, fingerprint)
-get_user_inputs(app_id, form) -> list[UserInput]   # latest per question on this form, fingerprint-checked
-list_user_inputs(app_id) -> list[UserInput]        # latest per (scope, field id), all steps; display only
+save_user_inputs(claim, inputs)            # stored with form scope, step, field id, fingerprint
+get_user_inputs(app_id, form) -> list[UserInput]   # latest per (step, field id) that matches(form)
+list_user_inputs(app_id) -> list[UserInput]        # latest per (step, field id), all steps; display only
+pin_resume(app_id, resume: ResumeArtifact) -> ResumeArtifact   # first writer wins; no claim needed
+pinned_resume(app_id) -> ResumeArtifact | None
 append_event(claim, event, metadata=None) -> ApplicationEvent    # e.g. form.discovered
 add_evidence(claim, evidence, *, attempt_id=None)
 begin_submission(claim, *, packet_id=None, lease=10min) -> SubmissionAttempt
@@ -294,35 +296,51 @@ Guarantees (each operation is one `BEGIN IMMEDIATE` transaction; WAL, `synchrono
 - **URL normalization** (`normalize_application_url`) lower-cases scheme/host, drops default ports, one trailing slash and known tracking parameters (`utm_*`, `gclid`, `fbclid`, `gh_src`, `lever-source`, …); **all other query parameters are preserved** and sorted by name; fragments are kept only for client routes (`#/…`). Navigation always uses the URL exactly as supplied.
 - **Identity binding** (`bind_job_identity`): binding an ATS identity already bound to another job merges this job into that canonical job, repoints its URL aliases and moves its applications; if the candidate already has an application there, this pre-submission application becomes `DUPLICATE` (`duplicate_of` = survivor). A job cannot take a second, different identity, and a merge never rewrites an application whose submission started (`IdentityConflict`).
 - **Claims**: mutating operations need the current, unexpired `Claim` (`ClaimLost` otherwise). Terminal transitions release the claim.
-- **Events**: every transition writes exactly one event in the same transaction (`application.<state>`), plus `job.identity_bound`, `job.merged`, `packet.saved`, `input.received`, `evidence.recorded`, `application.request_repeated`. Events are append-only (SQL triggers). Prefixes `application.`, `job.`, `submission.`, `packet.`, `input.` are reserved for the store; `append_event` accepts others (`form.discovered`, `field.unresolved`, `page.completed`, `validation.failed`).
+- **Events**: every transition writes exactly one event in the same transaction (`application.<state>`), plus `job.identity_bound`, `job.merged`, `packet.saved`, `input.received`, `evidence.recorded`, `application.request_repeated`. Events are append-only (SQL triggers). Also `document.resume_pinned`. Prefixes `application.`, `job.`, `submission.`, `packet.`, `input.`, `document.` are reserved for the store; `append_event` accepts others (`form.discovered`, `field.unresolved`, `page.completed`, `validation.failed`).
 - **Submission**: `begin_submission` requires `FILLING`, durably writes `SUBMITTING` plus an open attempt and extends the claim ≥ 10 min, **before** the caller clicks. At most one open attempt per application (partial unique index). `SUBMITTED` is only reachable via an `ACCEPTED` observation or reconciliation, writes a `Receipt`, and is final (SQL trigger).
-- **User inputs** are keyed by (form scope, field id). The latest answer per key wins; `get_user_inputs(app_id, form)` returns only answers whose scope is `form.scope` and whose fingerprint still matches the field. An answer to a changed question is never reused (the question is asked again). Schema v2 migrates a v1 database by adding the scope/fingerprint columns; unscoped v1 rows are ignored. The C1 skeleton never wrote inputs or packets.
+- **User inputs** are keyed by (form step, field id); the latest answer per key wins. `get_user_inputs(app_id, form)` returns only answers whose step and question fingerprint still match the field (`UserInput.matches`). An answer to a changed question is never reused (the question is asked again). Schema v2 migrated v1 by adding scope/fingerprint columns; unscoped v1 rows are ignored.
+- **Pinned resume** (schema v3, `application_documents`): `pin_resume(app_id, resume)` binds the resume an application uses, once. The first writer wins, later calls return the existing pin, and a SQL trigger rejects any change. The runner pins the profile's resume on an application's first run and afterwards always uses the pinned file. If that file is missing or its digest changed, the run stops with `FAILED_RETRYABLE` and another resume is never substituted. A service may pin the user's selection right after `record_request`.
 - **Crash / uncertainty**: if the owner of a `SUBMITTING` application disappears (claim lapses or is released), the next `claim()` or `recover_interrupted_submissions()` marks it `SUBMISSION_UNKNOWN` (attempt outcome `INTERRUPTED`). `SUBMISSION_UNKNOWN` blocks every retry until `reconcile_submission` records `ACCEPTED` (→ `SUBMITTED`, receipt with `reconciliation_method`) or definite `NOT_SUBMITTED` (→ `FAILED_RETRYABLE`, which may then be retried as a new attempt).
 
-### Runner recipe (for I1)
+### Runner (I1): `interviewmaxxing_cli.runner`
 
-```
-r = store.record_request(candidate_id, url);  stop unless r.may_proceed
-claim = store.claim(r.application.id, owner)
-page = await browser.open(url);  store.transition(claim, INSPECTING)
-  if page.kind in USER_ACTION_PAGES: await user.request_action(...); page = await browser.wait_for_user(...)
-  if page.job_identity: b = store.bind_job_identity(claim, page.job_identity); stop if b.duplicate_of
-ctx = PacketContext(app, job, page.form, candidate, store.get_user_inputs(app_id, page.form))
-packet = await resolver.resolve(ctx);  reject unless ctx.problems(packet) == []
-store.save_packet(claim, packet)
-  if not packet.is_complete: store.transition(claim, NEEDS_INPUT)
-      inputs = [UserInput.answering(m, value) for each missing field item]   # user chooses reuse
-      store.save_user_inputs(claim, inputs); save to_saved_answer(job=) results via SavedAnswerWriter
-      resume: re-inspect the current page, then resolve again
-store.transition(claim, PACKET_READY); store.transition(claim, FILLING); await browser.fill(form, packet)
-  more steps: nav = await browser.advance(); store.transition(claim, INSPECTING); loop
-attempt = store.begin_submission(claim, packet_id=packet.id)      # durable BEFORE the click
-await browser.submit()
-store.record_submission_outcome(claim, attempt.id, await browser.confirm())
-report store.get_receipt(app_id) only if state is SUBMITTED
+The concrete runner lives in the `interviewmaxxing-cli` package (core-owned; core itself never depends on Playwright). The CLI and the local service (S1) both use it; S1 imports it directly.
+
+```python
+from interviewmaxxing_cli.runner import (
+    LocalApplicationRunner, NoninteractiveInteraction, RunLimits, RunnerBusy,
+    browser_profile_lock, create_runner, pending_inputs,
+)
+
+create_runner(paths: LocalPaths, *, headless: bool, interaction: UserInteraction,
+              limits: RunLimits | None = None) -> LocalApplicationRunner
+    # production wiring: LocalCandidateStore.from_paths(paths), FactualPacketResolver(),
+    # PlaywrightSessionFactory(); persistent browser profile at paths.browser_dir
+
+LocalApplicationRunner(*, paths, interaction, headless=False, browser_factory=None,
+                       candidates=None, resolver=None, limits=None, owner=None)
+    async apply(application_url: str, *, candidate_id: str) -> ApplyOutcome
+    async resume(application_id: str) -> ApplyOutcome
+    async reconcile(application_id: str) -> ApplyOutcome
+
+RunLimits(max_steps=12, max_same_form=3, user_action_timeout_s=600.0, claim_ttl_s=300.0)
+NoninteractiveInteraction(*, allow_browser_action: bool = False)   # asks nothing
+pending_inputs(store, application_id) -> list[MissingInput]        # what NEEDS_INPUT waits for
 ```
 
-Renew the claim (`store.renew`) during long waits such as user sign-in.
+- **Construction** opens nothing (no database, browser or terminal), so a runner can be built and used on any thread. Each call opens its own store connection on the calling thread and closes it before returning. This matches S1's one-loop background thread and its per-thread SQLite connections.
+- **`apply`** calls `record_request` (idempotent; S1 may already have called it). It runs only for `NEW` or `RESUMABLE` dispositions. Any other disposition (submitted, in progress, unknown, closed) returns the stored state without opening a browser.
+- **`resume`** continues `REQUESTED`, `NEEDS_INPUT`, `FAILED_RETRYABLE` or an interrupted pre-submission state from a fresh inspection. Blocking and terminal states are returned unchanged.
+- **`reconcile`** handles only `SUBMISSION_UNKNOWN`. It calls the browser's `reconcile(job.application_url, tie=ConfirmationTie.from_job(job), lookup_email=profile email)` and records `reconcile_submission` only for an ACCEPTED observation tied to the job. If the job's id or title was never observed, nothing is attempted. It never resubmits, and a user report is never turned into acceptance.
+- **Questions** go to `interaction.request_inputs(...)`. S1 returns `[]`, so the run records `NEEDS_INPUT`. The exact questions are durable in the latest packet and in the `application.needs_input` event (`metadata.missing_inputs`); `pending_inputs` re-presents them after a restart. Answers are saved with `store.save_user_inputs(claim, [UserInput.answering(item, value, reuse=...)])`, then `resume` runs again. JOB/GLOBAL reuse is persisted through the candidate store's `save_answer`.
+- **Browser actions** (sign-in, CAPTCHA, custom controls) go to `interaction.request_action(message)`. Declining records `NEEDS_INPUT` with fieldless `USER_ACTION` / `UNSUPPORTED_CONTROL` items. Accepting makes the runner call `wait_for_user` (visible window, claim renewed) and continue.
+- **Safety**:
+  - `SUBMITTING` is durable before the click. Any exception, cancellation, Ctrl-C or SIGTERM during submit/confirm records `SUBMISSION_UNKNOWN` before it propagates.
+  - A run stops (`FAILED_RETRYABLE`, nothing submitted) after `max_steps` pages, when the same form comes back `max_same_form` times, on an ambiguous next/submit control, or on a browser error before submit.
+  - Answers the site rejects (field validation messages) become questions again.
+  - One run per browser profile (`browser_profile_lock`, an OS lock released with the process; otherwise `RunnerBusy`, reported as an outcome message) and one run per application (store claim).
+- **Resume pinning**: see "Pinned resume" above. The run uses `store.pin_resume(app_id, profile.resume)`: the pinned resume wins over the profile's current one.
+- **Outcome**: `ApplyOutcome(application_id, state, receipt, missing_inputs, message)`. `receipt` is present only when the state is `SUBMITTED`.
 
 ## 8. Local data conventions
 
@@ -359,7 +377,8 @@ Artifact paths in fixtures are relative to the fixtures directory. Shared pytest
 ## 10. Verification
 
 ```bash
-scripts/verify.sh          # uv sync --locked --all-packages, ruff, mypy --strict, pytest, CLI smoke
+scripts/verify.sh          # uv sync --locked --all-packages, ruff, mypy --strict, pytest, CLI smoke,
+                           # playwright install chromium, pytest e2e (IMX_SKIP_E2E=1 skips e2e)
 ```
 
 ## 11. Discovery, Jev selection and pipeline (D0)

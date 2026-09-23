@@ -53,6 +53,7 @@ from .applications import (
     event_name_for,
 )
 from .artifacts import EvidenceRef
+from .candidate import ResumeArtifact
 from .errors import (
     ClaimLost,
     ClaimUnavailable,
@@ -73,10 +74,12 @@ from .packets import ApplicationPacket, UserInput
 from .urls import normalize_application_url
 
 S = ApplicationState
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_CLAIM_TTL = timedelta(minutes=5)
 SUBMISSION_LEASE = timedelta(minutes=10)
-RESERVED_EVENT_PREFIXES = ("application.", "job.", "submission.", "packet.", "input.")
+RESERVED_EVENT_PREFIXES = (
+    "application.", "job.", "submission.", "packet.", "input.", "document.",
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -201,6 +204,16 @@ BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS submitted_is_final BEFORE UPDATE OF state ON applications
 WHEN OLD.state = 'SUBMITTED' AND NEW.state <> 'SUBMITTED'
 BEGIN SELECT RAISE(ABORT, 'SUBMITTED is final'); END;
+CREATE TABLE IF NOT EXISTS application_documents (
+    application_id TEXT NOT NULL REFERENCES applications(id),
+    role TEXT NOT NULL,
+    pinned_at TEXT NOT NULL,
+    body TEXT NOT NULL,
+    PRIMARY KEY (application_id, role)
+);
+CREATE TRIGGER IF NOT EXISTS application_documents_are_final
+BEFORE UPDATE ON application_documents
+BEGIN SELECT RAISE(ABORT, 'pinned application documents are final'); END;
 CREATE TRIGGER IF NOT EXISTS receipts_are_final BEFORE UPDATE ON receipts
 BEGIN SELECT RAISE(ABORT, 'receipts are final'); END;
 """
@@ -1285,28 +1298,25 @@ class ApplicationStore:
 
     def list_user_inputs(self, application_id: str) -> list[UserInput]:
         """Effective user inputs across all form steps: the most recently saved answer
-        per (form scope, field id). For display; resolution uses ``get_user_inputs``."""
-        latest: dict[tuple[str, str], UserInput] = {}
+        per (form step, field id). For display; resolution uses ``get_user_inputs``."""
+        latest: dict[tuple[int, str], UserInput] = {}
         for r in self._conn.execute(
-            "SELECT body, form_scope, field_id FROM user_inputs"
+            "SELECT body FROM user_inputs"
             " WHERE application_id = ? AND form_scope IS NOT NULL ORDER BY rowid",
             (application_id,),
         ).fetchall():
-            key = (r["form_scope"], r["field_id"])
+            item = UserInput.model_validate_json(r["body"])
+            key = (item.form_step, item.field_id)
             latest.pop(key, None)
-            latest[key] = UserInput.model_validate_json(r["body"])
+            latest[key] = item
         return list(latest.values())
 
     def get_user_inputs(self, application_id: str, form: ApplicationForm) -> list[UserInput]:
-        """User inputs that answer questions on ``form`` as currently inspected: same
-        form scope, and the latest answer for each field id whose question
-        fingerprint still matches. Answers to a changed question are not returned."""
-        scope = form.scope.key
-        return [
-            item
-            for item in self.list_user_inputs(application_id)
-            if item.scope.key == scope and item.matches(form)
-        ]
+        """User inputs that answer questions on ``form`` as currently inspected: the
+        latest answer per (step, field id) whose step and question fingerprint still
+        match (``UserInput.matches``). Answers to a changed question are not returned.
+        The step URL may differ (e.g. a new draft id after a restart)."""
+        return [item for item in self.list_user_inputs(application_id) if item.matches(form)]
 
     def list_evidence(self, application_id: str) -> list[EvidenceRef]:
         return [
@@ -1316,6 +1326,39 @@ class ApplicationStore:
                 (application_id,),
             ).fetchall()
         ]
+
+    # --- application documents -------------------------------------------------------------
+
+    def pin_resume(self, application_id: str, resume: ResumeArtifact) -> ResumeArtifact:
+        """Bind the resume this application uses, once. First writer wins and the pin
+        can never change (a SQL trigger rejects updates): later calls return the
+        already pinned resume unchanged, whatever the candidate profile says now.
+
+        Needs no claim, so a service can pin the resume the user selected right after
+        ``record_request``. The runner pins the profile's resume on the first run of an
+        application that has none, and afterwards always uses the pinned one."""
+        now = self._now()
+        with self._tx() as c:
+            self._app_row(c, application_id)
+            inserted = c.execute(
+                "INSERT OR IGNORE INTO application_documents (application_id, role, pinned_at, body)"
+                " VALUES (?, 'resume', ?, ?)",
+                (application_id, _ts(now), resume.model_dump_json()),
+            ).rowcount
+            if inserted:
+                self._event(c, application_id, "document.resume_pinned", now=now, metadata={
+                    "resume_id": resume.id, "filename": resume.filename, "sha256": resume.sha256,
+                })
+        pinned = self.pinned_resume(application_id)
+        assert pinned is not None
+        return pinned
+
+    def pinned_resume(self, application_id: str) -> ResumeArtifact | None:
+        row = self._conn.execute(
+            "SELECT body FROM application_documents WHERE application_id = ? AND role = 'resume'",
+            (application_id,),
+        ).fetchone()
+        return ResumeArtifact.model_validate_json(row["body"]) if row else None
 
     def get_receipt(self, application_id: str) -> Receipt | None:
         row = self._conn.execute(
