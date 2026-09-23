@@ -165,12 +165,13 @@ test.describe("restoring the application this page was following", () => {
 
   test("a delayed restore never replaces a newly started application", async ({ page }) => {
     await seedActiveId(page);
+    await page.route("**/api/imx/healthz", (route) => route.fulfill({ json: { status: "ok", executor: "idle", runner: "available", applicationMode: "TEST_ONLY" } }));
     await page.route("**/api/imx/candidate", (route) => route.fulfill({ json: candidate }));
     const newView = {
       ...submittingView,
       id: "app_new_fixture",
       state: "INSPECTING",
-      applicationUrl: "https://jobs.example.test/halcyon/apply",
+      applicationUrl: "http://127.0.0.1:4876/halcyon/apply",
       job: { title: "Growth Operations Lead", company: "Halcyon Freight", ats: "Workday" },
       events: [],
     };

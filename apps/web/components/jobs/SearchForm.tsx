@@ -18,6 +18,7 @@ export type PreferencesInput = Omit<SearchPreferencesView, "fingerprint">;
 
 interface Draft {
   titles: string;
+  roleFocus: string;
   keywords: string;
   excludedKeywords: string;
   excludedCompanies: string;
@@ -39,6 +40,7 @@ function toDraft(prefs: PreferencesInput): Draft {
   const onsite = prefs.onsite[0];
   return {
     titles: prefs.titlePhrases.join("\n"),
+    roleFocus: prefs.roleFocus ?? DEFAULT_PREFERENCES.roleFocus,
     keywords: prefs.keywords.join(", "),
     excludedKeywords: prefs.excludedKeywords.join(", "),
     excludedCompanies: prefs.excludedCompanies.join(", "),
@@ -68,6 +70,7 @@ function fromDraft(draft: Draft): PreferencesInput {
   const minimum = draft.minimum.replace(/[$,\s]/g, "");
   return {
     titlePhrases: list(draft.titles, /\n/),
+    roleFocus: draft.roleFocus.trim(),
     keywords: list(draft.keywords, /,/),
     excludedKeywords: list(draft.excludedKeywords, /,/),
     excludedCompanies: list(draft.excludedCompanies, /,/),
@@ -111,6 +114,7 @@ export function SearchForm({
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
 
   const order = [
+    "roleFocus",
     "titlePhrases",
     "onsite",
     "remote",
@@ -120,6 +124,7 @@ export function SearchForm({
     "maxResultsPerSource",
   ];
   const targets: Record<string, string> = {
+    roleFocus: "js-role-focus",
     titlePhrases: "js-titles",
     onsite: "js-onsite-location",
     remote: "js-remote-region",
@@ -159,6 +164,20 @@ export function SearchForm({
       </h2>
       <ErrorSummary title="Check the search settings" items={summary} attempt={attempt} />
 
+      <div className={`field field--wide${shown.roleFocus ? " is-invalid" : ""}`}>
+        <label htmlFor="js-role-focus" className="field__label">Role focus</label>
+        <textarea
+          id="js-role-focus"
+          className="input"
+          rows={4}
+          value={draft.roleFocus}
+          aria-invalid={shown.roleFocus ? true : undefined}
+          aria-describedby={describedBy("js-role-focus", "hint", shown.roleFocus)}
+          onChange={(event) => set("roleFocus", event.target.value)}
+        />
+        <FieldMessages id="js-role-focus" hint="Jev evaluates actual responsibilities and ownership. Equivalent acquisition, lead and director titles can fit." error={shown.roleFocus} />
+      </div>
+
       <div className={`field${shown.titlePhrases ? " is-invalid" : ""}`}>
         <label htmlFor="js-titles" className="field__label">
           Job titles
@@ -166,13 +185,13 @@ export function SearchForm({
         <textarea
           id="js-titles"
           className="input"
-          rows={3}
+          rows={8}
           value={draft.titles}
           aria-invalid={shown.titlePhrases ? true : undefined}
           aria-describedby={describedBy("js-titles", "hint", shown.titlePhrases)}
           onChange={(event) => set("titles", event.target.value)}
         />
-        <FieldMessages id="js-titles" hint="One per line. Each is searched as a phrase." error={shown.titlePhrases} />
+        <FieldMessages id="js-titles" hint="One search seed per line. These are examples, not an exact-title requirement." error={shown.titlePhrases} />
       </div>
 
       <div className="field">

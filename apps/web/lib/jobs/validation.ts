@@ -5,6 +5,7 @@ type PreferencesInput = Omit<SearchPreferencesView, "fingerprint">;
 /** Check search preferences before sending them. Missing pay floor means no floor. */
 export function validatePreferences(input: PreferencesInput): Record<string, string> {
   const errors: Record<string, string> = {};
+  if (!input.roleFocus?.trim()) errors.roleFocus = "Describe the responsibilities you want Jev to look for.";
   if (input.titlePhrases.filter((phrase) => phrase.trim()).length === 0) {
     errors.titlePhrases = "Add at least one job title to search for.";
   }

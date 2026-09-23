@@ -34,6 +34,9 @@ export type LocationTier =
   /** Location or arrangement isn't stated well enough to place it. */
   | "UNRESOLVED";
 
+/** Service ordering, separate from a listing's observed location match. */
+export type PriorityTier = "PREFERRED" | "EQUAL" | "SECONDARY" | "UNRANKED";
+
 export interface OnsiteTargetView {
   location: string;
   arrangements: ("ONSITE" | "HYBRID")[];
@@ -52,6 +55,8 @@ export interface CompensationFloorView {
 
 export interface SearchPreferencesView {
   titlePhrases: string[];
+  /** Responsibilities Jev should look for; search titles are examples, not an allowlist. */
+  roleFocus: string;
   keywords: string[];
   excludedKeywords: string[];
   excludedCompanies: string[];
@@ -99,6 +104,8 @@ export interface CompensationView {
 export interface ListingSourceView {
   source: SourceName;
   sourceUrl: string;
+  /** Job-specific posting; sourceUrl may instead be the search page. */
+  postingUrl?: string | null;
   applicationUrl: string | null;
   observedAt: string;
 }
@@ -148,6 +155,16 @@ export interface ListingView {
   applicationId: string | null;
   /** Optional service-computed tier; absent until S1 provides it. */
   locationTier?: LocationTier | null;
+  priorityTier?: PriorityTier | null;
+  rankReason?: string | null;
+  /** HTTP-only progress marker for a 202 decision response. Never a decision. */
+  decisionPending?: boolean;
+  decisionTask?: {
+    id: string;
+    state: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "INTERRUPTED";
+    error: string | { code?: string; message: string } | null;
+    resultId?: string | null;
+  } | null;
 }
 
 export interface ListingsView {
@@ -162,6 +179,7 @@ export interface JobsService {
   startSearch(input: Omit<SearchPreferencesView, "fingerprint">): Promise<SearchRunView>;
   searchStatus(runId: string): Promise<SearchRunView>;
   listings(): Promise<ListingsView>;
+  listing(listingId: string): Promise<ListingView>;
   /** Ask Jev for a decision on one listing. Never applies. */
   decide(listingId: string): Promise<ListingView>;
   /** Add the listing to the pipeline tracker. */
@@ -169,7 +187,17 @@ export interface JobsService {
 }
 
 export const DEFAULT_PREFERENCES: Omit<SearchPreferencesView, "fingerprint"> = {
-  titlePhrases: ["marketing manager", "marketing director"],
+  titlePhrases: [
+    "paid media manager", "senior paid media manager", "performance marketing manager",
+    "growth marketing manager", "demand generation manager", "digital marketing manager",
+    "marketing manager", "marketing director",
+  ],
+  roleFocus: "Performance marketing operator: hands-on paid acquisition, paid media, " +
+    "performance and growth marketing, demand generation, and digital marketing leadership. " +
+    "Judge actual responsibilities and ownership, not an exact job-title match. " +
+    "Semantically similar acquisition, lead and director roles are eligible. " +
+    "Pure data, software or platform engineering and unrelated marketing specialties " +
+    "are outside this focus.",
   keywords: [],
   excludedKeywords: [],
   excludedCompanies: [],

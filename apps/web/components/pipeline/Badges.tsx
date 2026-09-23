@@ -7,11 +7,13 @@ import { formatDate } from "@/lib/format";
  */
 export function EntryBadges({ entry }: { entry: PipelineEntryView }) {
   const application = entry.application;
+  const reported = application?.confirmationAuthority === "user" || application?.confirmationMethod === "USER_CONFIRMED";
+  const confirmed = !reported && (application?.confirmationAuthority === "site" || ["SUBMISSION_OBSERVED", "SITE_CONFIRMATION", "ATS_CANDIDATE_PORTAL", "CONFIRMATION_EMAIL"].includes(application?.confirmationMethod ?? ""));
   return (
     <ul className="marks" aria-label="Record details">
       {application?.state === "SUBMITTED" ? (
-        <li className="mark mark--receipt">
-          Receipt confirmed
+        <li className={`mark ${confirmed ? "mark--receipt" : "mark--application"}`}>
+          {reported ? "Submitted · your report" : confirmed ? "Receipt confirmed" : "Submitted · confirmation type not recorded"}
           {application.submittedAt ? ` · ${formatDate(application.submittedAt)}` : ""}
         </li>
       ) : application ? (

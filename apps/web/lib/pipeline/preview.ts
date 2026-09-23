@@ -29,7 +29,7 @@ export const PREVIEW_LANES: PipelineLaneView[] = [
   { id: "scheduling", label: "Scheduling" },
   { id: "interviewing", label: "Interviewing" },
   { id: "assessment", label: "Assessment" },
-  { id: "follow_up", label: "Follow-up" },
+  { id: "follow-up", label: "Follow-up" },
   { id: "decision", label: "Decision" },
   { id: "offer", label: "Offer" },
   { id: "closed", label: "Closed" },
@@ -158,7 +158,7 @@ const SEEDS: Seed[] = [
   },
   {
     id: "pipe_pv_cinder",
-    lane: "follow_up",
+    lane: "follow-up",
     origin: "import",
     imported: true,
     applicationUrl: null,
@@ -212,6 +212,8 @@ const SEEDS: Seed[] = [
       state: "SUBMITTED",
       submittedAt: "2026-09-20T18:42:00Z",
       confirmationReference: "JV-2026-0412",
+      confirmationAuthority: "site",
+      confirmationMethod: "SUBMISSION_OBSERVED",
     },
     selection: { selectionId: "sel_pv_juniper", effectiveChoice: "APPLY", decidedAt: "2026-09-20T18:30:00Z" },
     fields: fields({
@@ -277,7 +279,8 @@ function importKey(values: PipelineFields) {
 
 interface PendingImport {
   preview: ImportPreviewView;
-  rows: { rowNumber: number; values: PipelineFields; raw: Record<string, string> }[];
+  sourceId: string;
+  rows: { rowNumber: number; values: PipelineFields; raw: Record<string, string>; entryId?: string }[];
 }
 
 export class PreviewPipelineService implements PipelineService {
@@ -304,6 +307,10 @@ export class PreviewPipelineService implements PipelineService {
               sourceRow: SEEDS.indexOf(seed) + 2,
               importedAt: created,
               importedValues: headerValues(rest.fields),
+              sourceId: "fixture-workbook",
+              latestImportedValues: headerValues(rest.fields),
+              firstImportedAt: created,
+              versionCount: 1,
             }
           : null,
         history: [
@@ -389,6 +396,7 @@ export class PreviewPipelineService implements PipelineService {
   }
 
   async previewImport(input: ImportInput): Promise<ImportPreviewView> {
+    const sourceId = input.sourceId ?? "preview-default";
     let records: Record<string, string>[];
     try {
       records = input.format === "csv" ? csvRecords(input.content) : jsonRecords(input.content);
@@ -427,17 +435,18 @@ export class PreviewPipelineService implements PipelineService {
       if (!errors.length && seen.has(key))
         errors.push({ field: "Company", message: "Duplicates an earlier row in this file." });
       seen.add(key);
-      const existing = [...this.entries.values()].find((entry) => entry.provenance && importKey(entry.fields) === key);
+      const existing = [...this.entries.values()].find((entry) => entry.provenance?.sourceId === sourceId &&
+        `${(entry.provenance.importedValues.Company ?? "").trim().toLowerCase()}|${(entry.provenance.importedValues.Role ?? "").trim().toLowerCase()}` === key);
       const raw = headerValues(values);
       const action: ImportPreviewRow["action"] = errors.length
         ? "error"
         : !existing
           ? "create"
-          : JSON.stringify(existing.provenance?.importedValues) === JSON.stringify(raw)
+          : JSON.stringify(existing.provenance?.latestImportedValues ?? existing.provenance?.importedValues) === JSON.stringify(raw)
             ? "unchanged"
             : "update";
       previewRows.push({ rowNumber, action, company: values.company, role: values.role, errors });
-      rows.push({ rowNumber, values, raw });
+      rows.push({ rowNumber, values, raw, entryId: existing?.id });
     });
 
     const counts = { create: 0, update: 0, unchanged: 0, error: 0 };
@@ -449,7 +458,7 @@ export class PreviewPipelineService implements PipelineService {
       rows: previewRows,
       counts,
     };
-    this.pending.set(preview.previewId, { preview, rows });
+    this.pending.set(preview.previewId, { preview, rows, sourceId });
     return structuredClone(preview);
   }
 
@@ -471,6 +480,10 @@ export class PreviewPipelineService implements PipelineService {
         sourceRow: row.rowNumber,
         importedAt,
         importedValues: row.raw,
+        latestImportedValues: row.raw,
+        sourceId: pending.sourceId,
+        firstImportedAt: importedAt,
+        versionCount: 1,
       };
       if (action === "create") {
         const lane = laneForImported(row.values.stage, row.values.status);
@@ -499,17 +512,20 @@ export class PreviewPipelineService implements PipelineService {
         };
         this.entries.set(entry.id, entry);
       } else if (action === "update") {
-        const entry = [...this.entries.values()].find(
-          (item) => item.provenance && importKey(item.fields) === importKey(row.values),
-        )!;
-        const previous = entry.provenance!.importedValues;
+        const entry = this.find(row.entryId!);
+        const previous = entry.provenance!.latestImportedValues ?? entry.provenance!.importedValues;
         // Only fields the user hasn't edited since the last import take the new value.
         for (const { header, field } of REFERENCE_COLUMNS) {
           const current = entry.fields[field] === null ? "" : String(entry.fields[field]);
           if (current === (previous[header] ?? ""))
             (entry.fields as unknown as Record<string, unknown>)[field] = row.values[field];
         }
-        entry.provenance = provenance;
+        entry.provenance = {
+          ...provenance,
+          importedValues: entry.provenance!.importedValues,
+          firstImportedAt: entry.provenance!.firstImportedAt ?? entry.provenance!.importedAt,
+          versionCount: (entry.provenance!.versionCount ?? 1) + 1,
+        };
         this.touch(entry, {
           kind: "imported",
           summary: `Updated from ${pending.preview.fileName}`,

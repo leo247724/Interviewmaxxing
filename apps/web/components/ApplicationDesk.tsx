@@ -22,6 +22,8 @@ import { ServiceNotice } from "./ServiceNotice";
 import { RestoreNotice } from "./RestoreNotice";
 import { AppShell, type Connection } from "./shell/AppShell";
 import { takeHandoff, type DeskHandoff } from "@/lib/handoff";
+import { executionProblem } from "@/lib/service/readiness";
+import { useReadiness } from "./useReadiness";
 
 const EMPTY_PROFILE: CandidateProfileInput = {
   firstName: "",
@@ -45,6 +47,7 @@ export interface DeskActions {
 }
 
 export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "preview"; initialScenario?: string }) {
+  const { readiness, refresh: refreshReadiness } = useReadiness(mode);
   const service = useMemo<ApplicationService>(
     () =>
       mode === "preview"
@@ -214,6 +217,13 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     setFormErrors(errors);
     setSubmitCount((count) => count + 1);
     if (Object.keys(errors).length > 0 || !resumeId) return;
+    if (mode === "live") {
+      const problem = executionProblem(readiness, applicationUrl);
+      if (problem) {
+        setFormAlert(`Couldn't start the application. ${problem}`);
+        return;
+      }
+    }
 
     setStarting(true);
     try {
@@ -299,10 +309,22 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
           setActionError("The site didn't accept some answers. They're marked below; nothing was submitted.");
           return false;
         }
-        return runAction(() => service.resume(viewId!));
+        return runAction(() => {
+          const problem = mode === "live" ? executionProblem(readiness, view?.applicationUrl ?? "") : null;
+          if (problem) throw new ServiceError("invalid", problem);
+          return service.resume(viewId!);
+        });
       },
-      resume: () => runAction(() => service.resume(viewId!)),
-      reconcile: (input) => runAction(() => service.reconcile(viewId!, input)),
+      resume: () => runAction(() => {
+        const problem = mode === "live" ? executionProblem(readiness, view?.applicationUrl ?? "") : null;
+        if (problem) throw new ServiceError("invalid", problem);
+        return service.resume(viewId!);
+      }),
+      reconcile: (input) => runAction(() => {
+        const problem = mode === "live" && input.kind === "recheck" ? executionProblem(readiness, view?.applicationUrl ?? "") : null;
+        if (problem) throw new ServiceError("invalid", problem);
+        return service.reconcile(viewId!, input);
+      }),
       checkNow: () => {
         failuresRef.current = 0;
         setPollNonce((nonce) => nonce + 1);
@@ -319,7 +341,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
         setSubmitCount(0);
       },
     }),
-    [runAction, service, viewId],
+    [runAction, service, viewId, view?.applicationUrl, mode, readiness],
   );
 
   function handleScenario(scenario: PreviewScenarioId) {
@@ -337,6 +359,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       mode={mode}
       section="desk"
       connection={connection}
+      readiness={readiness}
       skipLabel="Skip to the application"
       previewBar={
         service instanceof PreviewApplicationService && (
@@ -369,7 +392,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
             />
           )}
           {connection === "unavailable" && (
-            <ServiceNotice mode={mode} message={serviceMessage} onRetry={loadCandidate} />
+            <ServiceNotice mode={mode} message={serviceMessage} onRetry={async () => { await Promise.all([loadCandidate(), refreshReadiness()]); }} />
           )}
           {handoff && (
             <section className="notice notice--handoff" aria-labelledby="handoff-title">
@@ -411,6 +434,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
             alert={formAlert}
             starting={starting}
             candidateLoaded={candidateLoaded || connection !== "checking"}
+            testMode={mode === "live"}
             onSubmit={handleApply}
           />
         </>

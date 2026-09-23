@@ -64,6 +64,12 @@ describe("location tiers", () => {
     );
   });
 
+  it("keeps results from an older service that sent priority enums as location tiers", () => {
+    const older = { ...austinHybrid, locationTier: "PREFERRED" } as unknown as ListingView;
+    expect(locationTier(older, DEFAULT_PREFERENCES)).toBe("ONSITE_HYBRID_TARGET");
+    expect(rankListings([older], DEFAULT_PREFERENCES).flatMap((group) => group.listings)).toHaveLength(1);
+  });
+
   it("only counts arrangements the target asks for", () => {
     const onsiteOnly = {
       ...DEFAULT_PREFERENCES,

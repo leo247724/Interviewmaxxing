@@ -12,18 +12,21 @@ export function ImportPanel({ service, onImported }: { service: PipelineService;
   const [receipt, setReceipt] = useState<ImportReceiptView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sourceId, setSourceId] = useState("my-pipeline");
 
   async function choose(file: File) {
     setError(null);
     setPreview(null);
     setReceipt(null);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sourceId.trim()))
+      return setError("Give this tracker a name using letters, digits, dots, dashes or underscores.");
     const lower = file.name.toLowerCase();
     const format = lower.endsWith(".csv") ? "csv" : lower.endsWith(".json") ? "json" : null;
     if (!format) return setError("Choose a CSV or JSON file.");
     if (file.size > MAX_IMPORT_BYTES) return setError("Import files must be 2 MB or smaller.");
     setBusy(true);
     try {
-      setPreview(await service.previewImport({ format, fileName: file.name, content: await file.text() }));
+      setPreview(await service.previewImport({ format, fileName: file.name, content: await file.text(), sourceId: sourceId.trim() }));
     } catch (caught) {
       setError(asServiceError(caught).message);
     } finally {
@@ -54,6 +57,15 @@ export function ImportPanel({ service, onImported }: { service: PipelineService;
         Bring rows in from a CSV or JSON export that uses the tracker&rsquo;s column names. You&rsquo;ll see every row
         before anything is saved. Importing the same file again doesn&rsquo;t duplicate cards or undo your edits.
       </p>
+      <div className="field">
+        <label htmlFor="import-source" className="field__label">Tracker name</label>
+        <input id="import-source" className="input" value={sourceId} disabled={busy} aria-describedby="import-source-hint" onChange={(event) => {
+          setSourceId(event.target.value);
+          setPreview(null);
+          setReceipt(null);
+        }} />
+        <p id="import-source-hint" className="field__hint">Reuse this name for updated exports of the same tracker, even if the file name changes. Use a different name for a separate tracker.</p>
+      </div>
       <div className="upload">
         <input
           id="import-file"

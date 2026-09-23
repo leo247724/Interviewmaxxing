@@ -48,6 +48,10 @@ export function EntryCard({
         <span className="card__company">{fields.company ?? "Company not recorded"}</span>
         <span className="card__role">{fields.role ?? "Role not recorded"}</span>
       </h3>
+      {(fields.workArrangement || fields.locationCommute) && <p className="card__location">
+        {fields.workArrangement && <span>{fields.workArrangement}</span>}
+        {fields.locationCommute && <span>{fields.locationCommute}</span>}
+      </p>}
       {(fields.stage || fields.status) && (
         <p className="card__stage">
           {fields.stage && <span className="card__stage-text">{fields.stage}</span>}
@@ -76,6 +80,7 @@ export function EntryCard({
       </dl>
       {(fields.nextAction || due) && (
         <p className="card__next">
+          <span className="card__next-label">Next step</span>
           {fields.nextAction && <span>{fields.nextAction}</span>}
           {due && <span className="card__due">{due}</span>}
         </p>

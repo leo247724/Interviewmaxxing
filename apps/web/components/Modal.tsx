@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 /** Native modal dialog: focus trapping, Escape and inert background come from the browser. */
 export function Modal({
@@ -18,6 +18,7 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const dialog = ref.current;
@@ -41,7 +42,7 @@ export function Modal({
     <dialog
       ref={ref}
       className={`modal${wide ? " modal--wide" : ""}`}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
       onClose={() => {
         onClose();
         returnFocus.current?.focus?.();
@@ -54,7 +55,7 @@ export function Modal({
       {open && (
         <div className="modal__frame">
           <header className="modal__head">
-            <h2 id="modal-title" className="modal__title">
+            <h2 id={titleId} className="modal__title">
               {title}
             </h2>
             <button type="button" className="modal__close" onClick={onClose}>

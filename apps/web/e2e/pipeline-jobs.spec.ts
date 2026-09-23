@@ -195,7 +195,10 @@ test.describe("pipeline preview", () => {
 test.describe("jobs preview", () => {
   test("starts from the user's defaults with nationwide remote", async ({ page }) => {
     await page.goto("/preview/jobs");
-    await expect(page.getByLabel("Job titles")).toHaveValue("marketing manager\nmarketing director");
+    await expect(page.getByRole("region", { name: "Current search preferences" })).toContainText("Performance marketing operator");
+    await page.getByRole("button", { name: "Edit preferences" }).click();
+    await expect(page.getByLabel("Job titles")).toHaveValue("paid media manager\nsenior paid media manager\nperformance marketing manager\ngrowth marketing manager\ndemand generation manager\ndigital marketing manager\nmarketing manager\nmarketing director");
+    await expect(page.getByLabel("Role focus", { exact: true })).toContainText("Judge actual responsibilities");
     await expect(page.getByLabel("City for onsite and hybrid roles")).toHaveValue("Austin, TX");
     await expect(page.getByLabel("Onsite", { exact: true })).toBeChecked();
     await expect(page.getByLabel("Hybrid", { exact: true })).toBeChecked();
@@ -209,12 +212,14 @@ test.describe("jobs preview", () => {
     page,
   }) => {
     await page.goto("/preview/jobs");
+    await page.getByRole("button", { name: "Edit preferences" }).click();
     await expect(page.getByRole("radio", { name: /Strongly prefer onsite or hybrid/ })).toBeChecked();
     await expect(
       page.getByText(
         "Austin onsite and hybrid roles come first. Remote roles open to United States are still included",
       ),
     ).toBeVisible();
+    await page.getByRole("button", { name: "Close Search preferences" }).click();
 
     const tiers = page.locator(".tier__title");
     await expect(tiers.first()).toContainText("Austin onsite or hybrid");
@@ -231,6 +236,7 @@ test.describe("jobs preview", () => {
     const order = await page.locator("article.listing .listing__company").allInnerTexts();
     expect(order.indexOf("Meridian Loop Software")).toBeLessThan(order.indexOf("Copperline Credit"));
 
+    await page.getByRole("button", { name: "Edit preferences" }).click();
     await page.getByRole("radio", { name: /Prefer remote/ }).check();
     await page.getByRole("button", { name: "Save preferences" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Preferences saved" })).toBeVisible();
@@ -253,10 +259,11 @@ test.describe("jobs preview", () => {
 
   test("validates search settings before running", async ({ page }) => {
     await page.goto("/preview/jobs");
+    await page.getByRole("button", { name: "Edit preferences" }).click();
     await page.getByLabel("Job titles").fill("");
     await page.getByLabel("Include remote roles open to").uncheck();
     await page.getByLabel("Include roles in a city").uncheck();
-    await page.getByRole("button", { name: "Search", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Search", exact: true }).click();
     await expect(page.locator(".error-summary")).toBeFocused();
     await expect(page.locator(".error-summary li")).toHaveCount(2);
     await expect(page.locator(".sources")).toHaveCount(0);
@@ -299,6 +306,7 @@ test.describe("jobs preview", () => {
 
   test("changed preferences mark decisions out of date", async ({ page }) => {
     await page.goto("/preview/jobs");
+    await page.getByRole("button", { name: "Edit preferences" }).click();
     await page.getByLabel("Extra keywords").fill("lifecycle");
     await page.getByRole("button", { name: "Save preferences" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Preferences saved" })).toBeVisible();

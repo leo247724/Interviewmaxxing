@@ -21,12 +21,15 @@ import { SearchForm, type PreferencesInput } from "./SearchForm";
 import { SourceStatus } from "./SourceStatus";
 import { ListingCard, applicationUrlOf } from "./ListingCard";
 import { rankListings, tierHeading } from "@/lib/jobs/ranking";
+import { useReadiness } from "../useReadiness";
 
 type Filter = "all" | SelectionChoice | "undecided";
+type PendingDecision = { previous: string | null; taskId: string | null; requestedAt: number };
 
 let previewJobs: PreviewJobsService | null = null;
 
 export function JobsView({ mode }: { mode: "live" | "preview" }) {
+  const { readiness } = useReadiness(mode);
   const service = useMemo<JobsService>(() => {
     if (mode === "live") return new HttpJobsService();
     previewJobs ??= new PreviewJobsService();
@@ -41,11 +44,14 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
   const [formBusy, setFormBusy] = useState<"search" | "save" | null>(null);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
-  const [busy, setBusy] = useState<{ id: string; kind: "decide" | "track" } | null>(null);
+  const [busy, setBusy] = useState<Record<string, "decide" | "track">>({});
   const [filter, setFilter] = useState<Filter>("all");
   const [hideClosed, setHideClosed] = useState(true);
   const [applying, setApplying] = useState<ListingView | null>(null);
   const [formKey, setFormKey] = useState(0);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [pendingDecisions, setPendingDecisions] = useState<Record<string, PendingDecision>>({});
+  const [decisionPoll, setDecisionPoll] = useState(0);
   const pollFailures = useRef(0);
 
   const load = useCallback(async () => {
@@ -67,6 +73,61 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A 202 means the service accepted the decision request, not that Jev finished.
+  // Keep watching by GET after reload; never re-POST merely to refresh progress.
+  useEffect(() => {
+    if (mode !== "live") return;
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem("imx.pending-decisions") ?? "{}");
+      if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+        setPendingDecisions(Object.fromEntries(Object.entries(saved).filter(([, value]) => value && typeof value === "object" && typeof (value as PendingDecision).requestedAt === "number")) as Record<string, PendingDecision>);
+      }
+    } catch { /* No pending request can be recovered from a damaged local marker. */ }
+  }, [mode]);
+
+  useEffect(() => {
+    if (Object.keys(pendingDecisions).length === 0) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const results = await Promise.allSettled(Object.entries(pendingDecisions).map(async ([id, pending]) => {
+        const next = await service.listing(id);
+        const task = next.decisionTask;
+        const applies = task && (!pending.taskId || task.id === pending.taskId);
+        const failed = applies && (task.state === "FAILED" || task.state === "INTERRUPTED");
+        const completed = applies && task.state === "SUCCEEDED";
+        const timedOut = Date.now() - pending.requestedAt > 120_000;
+        const error = failed ? (typeof task.error === "string" ? task.error : task.error?.message) || "The decision stopped before it completed. You can ask Jev again."
+          : timedOut && !completed ? "This decision is taking longer than expected. Refresh listings to check its status; another request is not needed." : null;
+        return { id, next, error, done: Boolean(failed || completed || timedOut || (!task && next.selection && !next.selection.stale && next.selection.id !== pending.previous)) };
+      }));
+      if (cancelled) return;
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          const { id, next, done, error } = result.value;
+          setListings((items) => items.map((item) => item.id === id ? next : item));
+          if (error) setNotice({ tone: "error", text: error });
+          if (done) setPendingDecisions((current) => {
+            const remaining = { ...current };
+            delete remaining[id];
+            if (mode === "live") window.sessionStorage.setItem("imx.pending-decisions", JSON.stringify(remaining));
+            return remaining;
+          });
+        } else {
+          setNotice({ tone: "error", text: `The decision is still pending. ${asServiceError(result.reason).message} Checking again shortly.` });
+        }
+      }
+      if (Object.values(pendingDecisions).some((pending) => Date.now() - pending.requestedAt > 120_000)) {
+        setPendingDecisions((current) => {
+          const remaining = Object.fromEntries(Object.entries(current).filter(([, pending]) => Date.now() - pending.requestedAt <= 120_000));
+          if (mode === "live") window.sessionStorage.setItem("imx.pending-decisions", JSON.stringify(remaining));
+          return remaining;
+        });
+      }
+      setDecisionPoll((current) => current + 1);
+    }, 1800);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [pendingDecisions, decisionPoll, service, mode]);
 
   // Poll the running search until every source has finished.
   useEffect(() => {
@@ -109,6 +170,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
       setPrefs(await service.savePreferences(input));
       setRun(await service.startSearch(input));
       setListings((await service.listings()).listings);
+      setPreferencesOpen(false);
     } catch (error) {
       const serviceError = asServiceError(error);
       setFormErrors(serviceError.fieldErrors);
@@ -130,6 +192,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
         tone: "ok",
         text: "Preferences saved. Decisions made with earlier preferences are marked as out of date.",
       });
+      setPreferencesOpen(false);
     } catch (error) {
       const serviceError = asServiceError(error);
       setFormErrors(serviceError.fieldErrors);
@@ -140,17 +203,29 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
   }
 
   async function act(listing: ListingView, kind: "decide" | "track") {
-    setBusy({ id: listing.id, kind });
+    if (busy[listing.id] || Object.prototype.hasOwnProperty.call(pendingDecisions, listing.id)) return;
+    setBusy((current) => ({ ...current, [listing.id]: kind }));
     setNotice(null);
     try {
       const updated = kind === "decide" ? await service.decide(listing.id) : await service.track(listing.id);
       setListings((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      if (kind === "decide" && updated.decisionPending) {
+        setPendingDecisions((current) => {
+          const next = { ...current, [listing.id]: { previous: updated.selection?.id ?? null, taskId: updated.decisionTask?.id ?? null, requestedAt: Date.now() } };
+          if (mode === "live") window.sessionStorage.setItem("imx.pending-decisions", JSON.stringify(next));
+          return next;
+        });
+      }
       if (kind === "track")
         setNotice({ tone: "ok", text: `Added ${updated.company ?? updated.title} to your pipeline.` });
     } catch (error) {
       setNotice({ tone: "error", text: asServiceError(error).message });
     } finally {
-      setBusy(null);
+      setBusy((current) => {
+        const next = { ...current };
+        delete next[listing.id];
+        return next;
+      });
     }
   }
 
@@ -197,6 +272,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
       mode={mode}
       section="jobs"
       connection={mode === "preview" ? "connected" : connection}
+      readiness={readiness}
       skipLabel="Skip to job search"
       previewBar={
         <PreviewStrip note="Fictional listings, sources and Jev decisions. No site is searched and no decision service is called." />
@@ -204,10 +280,10 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
       colophon="Searching and deciding never apply to a job. Applying always goes through the desk, one job at a time."
     >
       <header className="page-head">
+        <p className="eyebrow">Discover opportunities</p>
         <h1 className="display">Jobs</h1>
         <p className="lede">
-          Search your sources, see what each listing actually says, and ask Jev whether it&rsquo;s worth applying.
-          Anything a listing doesn&rsquo;t state stays marked as unknown.
+          Roles matched to your experience. Compare the facts, then choose your next move.
         </p>
       </header>
 
@@ -238,16 +314,33 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
         <p className="lede">Loading your search preferences…</p>
       ) : (
         <div className="jobs">
-          <aside className="jobs__search">
-            <SearchForm
-              key={formKey}
-              initial={prefs ?? { ...DEFAULT_PREFERENCES }}
-              busy={formBusy}
-              serverErrors={formErrors}
-              onSearch={(input) => void search(input)}
-              onSave={(input) => void save(input)}
-            />
-          </aside>
+          <section className="search-brief" aria-label="Current search preferences">
+            <div className="search-brief__scope">
+              <span className="eyebrow">Role focus</span>
+              <strong>{prefs.roleFocus?.split(":")[0] || "Performance marketing operator"}</strong>
+              <span>{prefs.titlePhrases.length} search seeds · matched by responsibilities</span>
+            </div>
+            <div>
+              <span className="eyebrow">Location</span>
+              <strong>{prefs.onsite[0]?.location ?? "Remote"}{prefs.locationPriority === "STRONGLY_PREFER_ONSITE_HYBRID" && prefs.onsite.length > 0 ? " first" : ""}</strong>
+              <span>{prefs.remote ? `Remote in ${prefs.remote.eligibleRegion} included` : "Onsite and hybrid targets"}</span>
+            </div>
+            <div>
+              <span className="eyebrow">Minimum pay</span>
+              <strong>{prefs.minimumCompensation ? `${prefs.minimumCompensation.currency === "USD" ? "$" : `${prefs.minimumCompensation.currency} `}${prefs.minimumCompensation.amount.toLocaleString("en-US")} / ${prefs.minimumCompensation.period.toLowerCase()}` : "No minimum"}</strong>
+              <span>Unstated pay stays unresolved</span>
+            </div>
+            <div className="search-brief__actions">
+              <button type="button" className="button button--secondary" onClick={() => setPreferencesOpen(true)}>Edit preferences</button>
+              <button type="button" className="button button--primary" disabled={formBusy !== null || Boolean(run && !run.finishedAt)} onClick={() => {
+                const { fingerprint: _fingerprint, ...input } = prefs;
+                void search(input);
+              }}>
+                {formBusy === "search" ? "Starting…" : run && !run.finishedAt ? "Searching…" : "Search"}
+                <span aria-hidden="true">↗</span>
+              </button>
+            </div>
+          </section>
 
           <section className="jobs__results" aria-labelledby="results-title">
             {notice && (
@@ -264,6 +357,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
               <h2 id="results-title" className="results__title">
                 Listings
               </h2>
+              <button type="button" className="text-button results__refresh" onClick={() => void load()}>Refresh listings</button>
               <fieldset className="segmented segmented--wrap">
                 <legend className="visually-hidden">Show</legend>
                 {(
@@ -324,7 +418,7 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
                           listing={listing}
                           tierLabel={heading}
                           tierUnknown={group.tiers.includes("UNRESOLVED") || group.tiers.includes("REMOTE_UNCONFIRMED")}
-                          busy={busy?.id === listing.id ? busy.kind : null}
+                          busy={Object.prototype.hasOwnProperty.call(pendingDecisions, listing.id) ? "decide" : busy[listing.id] ?? null}
                           pipelineHref={mode === "preview" ? "/preview/pipeline" : "/pipeline"}
                           onDecide={() => void act(listing, "decide")}
                           onTrack={() => void act(listing, "track")}
@@ -339,6 +433,17 @@ export function JobsView({ mode }: { mode: "live" | "preview" }) {
           </section>
         </div>
       )}
+
+      <Modal open={preferencesOpen} wide title="Search preferences" onClose={() => setPreferencesOpen(false)}>
+        {prefs && <SearchForm
+          key={formKey}
+          initial={prefs}
+          busy={formBusy}
+          serverErrors={formErrors}
+          onSearch={(input) => void search(input)}
+          onSave={(input) => void save(input)}
+        />}
+      </Modal>
 
       <Modal
         open={applying !== null}

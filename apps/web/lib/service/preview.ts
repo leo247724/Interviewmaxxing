@@ -364,20 +364,16 @@ export class PreviewApplicationService implements ApplicationService {
         "USER_CONFIRMED",
       );
     } else {
-      view.uncertain = null;
-      view.failure = {
-        reason: "You confirmed the employer has no record of this application.",
-        detail: "The earlier attempt did not reach the employer, so applying again will not create a duplicate.",
-        retryable: true,
-        evidence: [],
-      };
+      if (view.uncertain) {
+        view.uncertain.lastCheckedAt = this.iso();
+        view.uncertain.lastCheckResult = "You reported that the employer has no record of this application. The outcome is still unconfirmed; a site check must establish that nothing was submitted before another attempt is allowed.";
+      }
       this.event(
         record,
         "reconcile.not_received",
-        "Marked as not received on your confirmation. Applying again is unlocked.",
+        "Recorded your report of non-receipt. The application remains locked while the site outcome is unconfirmed.",
         "attention",
       );
-      this.transition(record, "FAILED_RETRYABLE");
     }
     return this.snapshot(record);
   }

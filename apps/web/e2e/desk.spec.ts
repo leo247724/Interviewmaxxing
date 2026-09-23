@@ -44,7 +44,7 @@ test.describe("live desk without a backend", () => {
     expect(new URL(page.url()).search).toBe("");
   });
 
-  test("the apply action itself reports the outage", async ({ page }) => {
+  test("a candidate response cannot authorize execution while readiness is unavailable", async ({ page }) => {
     await page.route("**/api/imx/candidate", (route) =>
       route.fulfill({
         json: {
@@ -66,7 +66,7 @@ test.describe("live desk without a backend", () => {
     await expect(page.getByText("Service connected")).toBeVisible();
     await applyTo(page);
     await expect(page.getByRole("alert").filter({ hasText: "Couldn't start the application" })).toBeVisible();
-    await expect(page.getByText("Service not connected")).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "Application readiness could not be checked" })).toBeVisible();
     await expect(heading(page)).toHaveCount(0);
   });
 });
@@ -235,7 +235,7 @@ test.describe("preview desk", () => {
     await expect(page.getByText("JV-2026-44")).toBeVisible();
   });
 
-  test("not-received requires an explicit check before applying again is unlocked", async ({ page }) => {
+  test("a user report of non-receipt keeps an uncertain application locked", async ({ page }) => {
     await openPreview(page, "uncertain");
     await applyTo(page);
     await expect(heading(page)).toHaveText("Submission not confirmed", { timeout: 15_000 });
@@ -246,9 +246,9 @@ test.describe("preview desk", () => {
 
     await page.getByLabel(/this application was not received/).check();
     await page.getByRole("button", { name: "Record as not received" }).click();
-    await expect(heading(page)).toHaveText("Stopped before submitting");
-    await page.getByRole("button", { name: "Try again" }).click();
-    await expect(heading(page)).toHaveText("Submitted and confirmed", { timeout: 15_000 });
+    await expect(heading(page)).toHaveText("Submission not confirmed");
+    await expect(page.getByRole("status").filter({ hasText: "You reported" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
   });
 
   for (const [scenario, title, button] of [

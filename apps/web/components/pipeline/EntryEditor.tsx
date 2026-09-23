@@ -274,6 +274,7 @@ export function EntryEditor({
             Imported from {entry.provenance.fileName ?? "a file"}, row {entry.provenance.sourceRow}
           </summary>
           <p className="field__hint">
+            {entry.provenance.sourceId && <>Tracker <strong>{entry.provenance.sourceId}</strong> · </>}
             Imported {formatDateTime(entry.provenance.importedAt)} · file digest{" "}
             <span className="mono">{entry.provenance.sourceDigest.slice(0, 12)}…</span>. Original values, kept as
             imported:
@@ -288,6 +289,15 @@ export function EntryEditor({
                 </div>
               ))}
           </dl>
+          {entry.provenance.latestImportedValues && (entry.provenance.versionCount ?? 1) > 1 && (
+            <details className="editor__details">
+              <summary>Latest source values · {entry.provenance.versionCount} imports</summary>
+              <p className="field__hint">Your later manual edits remain separate. These are the most recently imported cells.</p>
+              <dl className="provenance">{Object.entries(entry.provenance.latestImportedValues).filter(([, value]) => value !== "").map(([name, value]) => (
+                <div key={name}><dt>{name}</dt><dd>{value}</dd></div>
+              ))}</dl>
+            </details>
+          )}
         </details>
       )}
 

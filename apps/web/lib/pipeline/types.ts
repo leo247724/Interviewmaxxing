@@ -65,6 +65,10 @@ export interface PipelineProvenanceView {
   importedAt: string;
   /** Original cell text by reference header, verbatim. */
   importedValues: Record<string, string>;
+  sourceId?: string;
+  latestImportedValues?: Record<string, string>;
+  firstImportedAt?: string;
+  versionCount?: number;
 }
 
 /** Summary of a linked canonical application. Only this can show a receipt. */
@@ -73,6 +77,8 @@ export interface LinkedApplicationView {
   state: string;
   submittedAt: string | null;
   confirmationReference: string | null;
+  confirmationAuthority?: "site" | "user";
+  confirmationMethod?: string;
 }
 
 export interface LinkedSelectionView {
@@ -157,6 +163,8 @@ export interface ImportInput {
   format: "csv" | "json";
   fileName: string;
   content: string;
+  /** Stable name for the tracker; reuse across revised exports. */
+  sourceId?: string;
 }
 
 export interface PipelineService {

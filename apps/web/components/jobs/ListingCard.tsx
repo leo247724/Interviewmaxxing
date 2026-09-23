@@ -39,7 +39,8 @@ function payText(listing: ListingView): { text: string; unknown: boolean } {
 }
 
 export function applicationUrlOf(listing: ListingView) {
-  return listing.provenance.find((source) => source.applicationUrl)?.applicationUrl ?? null;
+  return listing.provenance.find((source) => source.applicationUrl)?.applicationUrl
+    ?? listing.provenance.find((source) => source.postingUrl)?.postingUrl ?? null;
 }
 
 export function ListingCard({
@@ -73,7 +74,7 @@ export function ListingCard({
           {listing.title}
         </h3>
         <p className="listing__company">{listing.company ?? "Company not stated"}</p>
-        <p className={`listing__tier${tierUnknown ? " is-unknown" : ""}`}>Location match: {tierLabel}</p>
+        <p className={`listing__tier${tierUnknown ? " is-unknown" : ""}${listing.rankReason ? "" : " listing__tier--repeated"}`}>{listing.rankReason ?? `Location match: ${tierLabel}`}</p>
         {closed && <p className="listing__closed">Closed on the source · no longer accepting applications</p>}
       </header>
 
@@ -122,9 +123,9 @@ export function ListingCard({
         <ul>
           {listing.provenance.map((source, index) => (
             <li key={`${source.source}-${index}`}>
-              <a href={source.sourceUrl} target="_blank" rel="noreferrer noopener">
+              <a href={source.postingUrl ?? source.sourceUrl} target="_blank" rel="noreferrer noopener">
                 {SOURCE_LABELS[source.source] ?? source.source}
-                <span className="visually-hidden"> listing (opens in a new tab)</span>
+                <span className="visually-hidden"> {source.postingUrl ? "listing" : "source"} (opens in a new tab)</span>
               </a>
             </li>
           ))}
@@ -139,7 +140,7 @@ export function ListingCard({
         <p className="listing__observed">Observed {formatDateTime(listing.observedAt)}</p>
       </div>
 
-      <Decision selection={listing.selection} />
+      <Decision selection={listing.selection} pending={busy === "decide"} task={listing.decisionTask} />
 
       <div className="listing__actions">
         {!closed && (
@@ -173,9 +174,15 @@ export function ListingCard({
   );
 }
 
-function Decision({ selection }: { selection: SelectionView | null }) {
+function Decision({ selection, pending, task }: { selection: SelectionView | null; pending: boolean; task: ListingView["decisionTask"] }) {
+  if (pending) return <section className="decision decision--pending" role="status"><span className="eyebrow">Jev is reviewing</span><p>Comparing this role with your experience and preferences.</p><span className="field__hint">The decision will appear here. You can keep browsing.</span></section>;
+  if (task?.state === "FAILED" || task?.state === "INTERRUPTED") return <section className="decision choice-review" aria-label="Jev decision">
+    <span className="decision__choice">NOT COMPLETED</span>
+    <p>{typeof task.error === "string" ? task.error : task.error?.message || "The decision stopped before a result was recorded."}</p>
+    <span className="field__hint">Ask Jev again when the decision service is available.</span>
+  </section>;
   if (!selection) {
-    return <p className="decision decision--none">No Jev decision yet.</p>;
+    return <section className="decision decision--none"><span className="eyebrow">Not reviewed yet</span><p>Ask Jev to compare this role with your experience and preferences.</p></section>;
   }
   const effective = selection.effectiveChoice;
   const overridden = selection.modelChoice !== null && selection.modelChoice !== effective;
@@ -238,7 +245,7 @@ function Decision({ selection }: { selection: SelectionView | null }) {
           {selection.providerError.retryable ? " You can ask again." : ""}
         </p>
       )}
-      <p className="decision__meta">
+      <details className="decision__audit"><summary>Decision details</summary><p className="decision__meta">
         {selection.probabilities &&
           (["APPLY", "REVIEW", "SKIP"] as const)
             .filter((choice) => selection.probabilities?.[choice] !== undefined)
@@ -248,6 +255,7 @@ function Decision({ selection }: { selection: SelectionView | null }) {
         {selection.returnedModel ?? selection.requestedModel} · rubric {selection.rubricVersion} ·{" "}
         {formatDateTime(selection.decidedAt)}
       </p>
+      <p className="field__hint">Confidence describes Jev&rsquo;s choice, not your chance of an interview.</p></details>
     </section>
   );
 }

@@ -11,7 +11,10 @@ function cityOf(location: string) {
  * A missing location or arrangement is UNRESOLVED, never assumed to be Austin.
  */
 export function locationTier(listing: ListingView, targets: Targets): LocationTier {
-  if (listing.locationTier) return listing.locationTier;
+  // Older services sent a priority enum here. Never drop those listings from
+  // every group: derive the observed match until the corrected DTO arrives.
+  const known: string[] = ["ONSITE_HYBRID_TARGET", "REMOTE_ELIGIBLE", "REMOTE_UNCONFIRMED", "OUTSIDE_TARGET", "UNRESOLVED"];
+  if (listing.locationTier && known.includes(listing.locationTier)) return listing.locationTier;
   const arrangement = listing.workArrangement;
   if (arrangement === "REMOTE") {
     if (!targets.remote) return "REMOTE_UNCONFIRMED";

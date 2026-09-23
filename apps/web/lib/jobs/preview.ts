@@ -98,7 +98,7 @@ const LISTINGS: ListingView[] = [
       probabilities: { APPLY: 0.81, REVIEW: 0.15, SKIP: 0.04 },
       confidence: 0.81,
       reasons: [
-        "Title and scope match a senior marketing manager target.",
+        "Hands-on ownership of paid search, paid social and pipeline growth matches your role focus.",
         "Hybrid in Austin matches the onsite preference.",
         "Posted pay ($125,000–$145,000 a year) is above the $100,000 floor.",
       ],
@@ -207,20 +207,20 @@ const LISTINGS: ListingView[] = [
   }),
   listing({
     id: "lst_pv_tessera",
-    title: "Product Marketing Manager",
+    title: "Performance Marketing Manager",
     company: "Tessera Robotics",
     location: "Austin, TX",
     workArrangement: "HYBRID",
     compensation: { rawText: "$140K - $160K", minimum: 140000, maximum: 160000, currency: "USD", period: "YEAR" },
     description:
-      "Launch and position warehouse robotics products. Partner with sales on enablement. Three days a week in the Austin office.",
+      "Own paid search and paid social acquisition for warehouse robotics. Build the testing roadmap and improve qualified pipeline efficiency. Three days a week in the Austin office.",
     descriptionCompleteness: "FULL",
     status: "OPEN",
     postedText: "Posted 2 days ago",
     provenance: [
       {
         source: "builtin",
-        sourceUrl: "https://builtin.example.test/job/tessera-robotics/product-marketing-manager/77120",
+        sourceUrl: "https://builtin.example.test/job/tessera-robotics/performance-marketing-manager/77120",
         applicationUrl: "https://tessera.example.test/careers/pmm/apply",
         observedAt: OBSERVED,
       },
@@ -259,12 +259,12 @@ const LISTINGS: ListingView[] = [
   }),
   listing({
     id: "lst_pv_larkloom",
-    title: "Senior Manager, Brand Marketing",
+    title: "Senior Manager, Growth Marketing",
     company: "Lark & Loom",
     location: "United States",
     workArrangement: "UNKNOWN",
     compensation: null,
-    description: "Guide brand campaigns for a home goods label.",
+    description: "Own paid acquisition and growth experiments for a home goods label.",
     descriptionCompleteness: "PARTIAL",
     status: "OPEN",
     postedText: null,
@@ -392,6 +392,10 @@ export class PreviewJobsService implements JobsService {
 
   async listings(): Promise<ListingsView> {
     return structuredClone({ listings: this.listingsState, lastRun: this.run ? this.snapshotRun() : null });
+  }
+
+  async listing(listingId: string): Promise<ListingView> {
+    return structuredClone(this.find(listingId));
   }
 
   async decide(listingId: string): Promise<ListingView> {

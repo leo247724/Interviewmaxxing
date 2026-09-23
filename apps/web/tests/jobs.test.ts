@@ -6,7 +6,12 @@ import { previewPipeline } from "@/lib/pipeline/previewStore";
 
 describe("search defaults", () => {
   it("are the user's confirmed targets, with nationwide remote", () => {
-    expect(DEFAULT_PREFERENCES.titlePhrases).toEqual(["marketing manager", "marketing director"]);
+    expect(DEFAULT_PREFERENCES.titlePhrases).toEqual([
+      "paid media manager", "senior paid media manager", "performance marketing manager",
+      "growth marketing manager", "demand generation manager", "digital marketing manager",
+      "marketing manager", "marketing director",
+    ]);
+    expect(DEFAULT_PREFERENCES.roleFocus).toContain("Judge actual responsibilities and ownership");
     expect(DEFAULT_PREFERENCES.onsite).toEqual([{ location: "Austin, TX", arrangements: ["ONSITE", "HYBRID"] }]);
     expect(DEFAULT_PREFERENCES.remote).toEqual({ eligibleRegion: "United States" });
     expect(DEFAULT_PREFERENCES.minimumCompensation).toEqual({ amount: 100000, currency: "USD", period: "YEAR" });
@@ -89,6 +94,14 @@ describe("PreviewJobsService", () => {
     expect(changed.fingerprint).not.toBe(before.fingerprint);
     const { listings } = await service.listings();
     expect(listings.filter((item) => item.selection).every((item) => item.selection!.stale)).toBe(true);
+  });
+
+  it("persists an edited semantic focus and marks earlier decisions stale", async () => {
+    const service = new PreviewJobsService();
+    const next = { ...DEFAULT_PREFERENCES, roleFocus: "Own paid acquisition and growth as a hands-on leader." };
+    await service.savePreferences(next);
+    expect((await service.preferences()).roleFocus).toBe(next.roleFocus);
+    expect((await service.listings()).listings.filter((item) => item.selection).every((item) => item.selection!.stale)).toBe(true);
   });
 
   it("tracks a listing as a pipeline card without applying", async () => {

@@ -1,4 +1,4 @@
-import { requestJson } from "../service/request";
+import { requestJson, requestJsonResponse } from "../service/request";
 import type { JobsService, ListingView, ListingsView, SearchPreferencesView, SearchRunView } from "./types";
 
 type PreferencesInput = Omit<SearchPreferencesView, "fingerprint">;
@@ -29,8 +29,13 @@ export class HttpJobsService implements JobsService {
     return requestJson(this.baseUrl, "GET", "/jobs");
   }
 
-  decide(listingId: string): Promise<ListingView> {
-    return requestJson(this.baseUrl, "POST", `/selection/jobs/${encodeURIComponent(listingId)}`, {});
+  listing(listingId: string): Promise<ListingView> {
+    return requestJson(this.baseUrl, "GET", `/jobs/${encodeURIComponent(listingId)}`);
+  }
+
+  async decide(listingId: string): Promise<ListingView> {
+    const result = await requestJsonResponse<ListingView>(this.baseUrl, "POST", `/selection/jobs/${encodeURIComponent(listingId)}`, {});
+    return { ...result.value, decisionPending: result.status === 202 };
   }
 
   track(listingId: string): Promise<ListingView> {

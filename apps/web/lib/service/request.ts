@@ -10,6 +10,16 @@ export async function requestJson<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  return (await requestJsonResponse<T>(baseUrl, method, path, body)).value;
+}
+
+/** Keep 202 distinguishable from a completed mutation without changing its DTO. */
+export async function requestJsonResponse<T>(
+  baseUrl: string,
+  method: "GET" | "POST",
+  path: string,
+  body?: unknown,
+): Promise<{ value: T; status: number }> {
   let response: Response;
   try {
     const init: RequestInit = { method, cache: "no-store", headers: { Accept: "application/json" } };
@@ -25,7 +35,7 @@ export async function requestJson<T>(
   }
 
   const payload: unknown = await response.json().catch(() => null);
-  if (response.ok) return payload as T;
+  if (response.ok) return { value: payload as T, status: response.status };
   throw errorFromResponse(response.status, payload);
 }
 

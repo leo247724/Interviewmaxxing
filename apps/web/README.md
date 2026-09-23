@@ -2,7 +2,7 @@
 
 Next.js 16 / React 19 / TypeScript frontend for Interviewmaxxing. It has three views:
 
-- **Desk:** the supplied-URL application flow (`ARCHITECTURE.md` §2 and §17). The user pastes an application link, confirms their details and resume, and presses **Apply and submit**. That press authorizes submission. The desk shows progress, asks only for missing required answers, statements only the user can make or a sign-in/CAPTCHA, and ends with a receipt or an accurate blocked/uncertain state.
+- **Desk:** the supplied-URL application flow (`ARCHITECTURE.md` §2 and §17). This development build requires verified `TEST_ONLY` readiness and a loopback application URL before starting or resuming browser execution. The desk shows progress, asks for missing required answers or direct user statements, and ends with a receipt or an accurate blocked/uncertain state.
 - **Pipeline:** the user's own tracker, using the 23-column reference workbook schema.
 - **Jobs:** search across job sources, with Jev APPLY/SKIP/REVIEW decisions.
 
@@ -14,7 +14,7 @@ Recommendations and tracked cards never apply by themselves. Applying always goe
 | --- | --- |
 | `/` | Live desk. Talks to the application service through `/api/imx/*`. With no service configured it says so and never simulates a result. |
 | `/preview` | Fixture mode, clearly labelled. It uses an in-memory fictional candidate and fictional job sites. It makes no network calls and sends nothing. `?scenario=` selects a fixture (see below). |
-| `/pipeline`, `/jobs` | Live pipeline board and jobs browser, through the same gateway. They show an honest "not available" state until S1 serves those routes. |
+| `/pipeline`, `/jobs` | Live pipeline board and jobs browser through the same gateway. Missing service routes and connection failures stay explicit. |
 | `/preview/pipeline`, `/preview/jobs` | Labelled fixture versions with fictional records shaped like the reference workbook. |
 | `/api/imx/[...path]` | Same-origin gateway (`lib/gateway.ts`), described below. It never invents a result and never logs bodies. |
 
@@ -97,14 +97,14 @@ Error responses use `{"error": {"code", "message", "fieldErrors"?}}`. Status cod
 - **Receipt confirmation fields:** `receipt.confirmationMethod` is one of `SUBMISSION_OBSERVED`, `SITE_CONFIRMATION`, `ATS_CANDIDATE_PORTAL`, `CONFIRMATION_EMAIL` or `USER_CONFIRMED`. `receipt.confirmationAuthority` is `"site"` or `"user"`, and is `"user"` exactly when the method is `USER_CONFIRMED`, even if older site screenshots from the uncertain attempt are also listed.
 - **How the desk uses them:** a user-confirmed receipt is headed "Submitted, on your report", stamped "Reported" and carries a caveat. Both fields are optional for backward compatibility. Without them, any user statement in the evidence makes the receipt user-reported (`lib/receipt.ts`).
 - **Profile location:** `profile.location` is sent exactly as typed in "City and region", e.g. `Austin, TX` (city, then state/region; a country only if the user adds one). The service must map it to city and region and must not infer a country from the region.
-- An ambiguous outcome is `SUBMISSION_UNKNOWN` with `uncertain` populated. `resume` must refuse it with a 409, and only `reconcile` settles it. `user_confirmed_not_received` may move it to `FAILED_RETRYABLE`.
+- An ambiguous outcome is `SUBMISSION_UNKNOWN` with `uncertain` populated. `resume` refuses it with a 409. `user_confirmed_not_received` records a user report and keeps it locked; only site proof of non-submission permits another attempt. The preview follows the same rule.
 - `needs.kind === "questions"` carries the site's own options verbatim. Attestations arrive with `accepted: false` unless the user already accepted them. Nothing is prefilled from unrelated data.
 - `needs.kind === "interaction"` covers sign-in, CAPTCHA and verification. The user acts in the visible browser, then calls `resume`.
 - A `DUPLICATE` response includes `prior`, the earlier confirmed submission. Nothing is sent.
 - `failure.retryable` controls whether **Try again** is offered.
 - Events are shown verbatim in the docket (the event timeline).
 
-## Proposed S1 routes: pipeline, jobs and selection (F3)
+## Pipeline, jobs and selection routes (S2/S3)
 
 These are the contracts the Pipeline and Jobs views call today. The presentation types are in `lib/pipeline/types.ts` and `lib/jobs/types.ts`, and they mirror core D0 (`PipelineEntry`, `JobSearchQuery`, `JobListing`, `SourceSearchResult`, `SelectionPreferences`, `JobSelection`) and P1's tracker fields. All bodies are JSON, all mutations are `POST`, and errors use the structured shape above. `404` means a record is genuinely absent. Until S1 serves a route group, the view shows it as not available.
 
@@ -116,16 +116,16 @@ These are the contracts the Pipeline and Jobs views call today. The presentation
 | create | `POST /pipeline/entries` | `PipelineEntryInput {lane, fields, applicationUrl, listingId?}` | 201 `PipelineEntryView` |
 | update | `POST /pipeline/entries/{id}` | `PipelineUpdateInput {revision, fields?: Partial<PipelineFields>, applicationUrl?}` | `PipelineEntryView` |
 | move | `POST /pipeline/entries/{id}/move` | `{revision, lane}` | `PipelineEntryView` |
-| import preview | `POST /pipeline/import/preview` | `{format: "csv" \| "json", fileName, content}` (≤ 2 MiB) | `ImportPreviewView` |
+| import preview | `POST /pipeline/import/preview` | `{format: "csv" \| "json", fileName, content, sourceId}` (≤ 2 MiB) | `ImportPreviewView` |
 | import commit | `POST /pipeline/import/{previewId}/commit` | `{}` | `ImportReceiptView` |
 
 Semantics the UI relies on:
 
 - **Fields:** `PipelineFields` is the 23 reference fields in workbook order (the table below). Blank is `null`, never `0` or `""`. Dates are `YYYY-MM-DD`, `interviewTimeCT` is text in America/Chicago, and `decisionDueText` stays free text. `fitScore` is the user's 0–10 score, never Jev confidence. Compensation is USD per year and `compensationLow ≤ compensationHigh`.
-- **Lanes:** `lane` is a lane `id` from `lanes`, the user's tracking category. The proposed initial lanes are `saved, applied, scheduling, interviewing, assessment, follow_up, decision, offer, closed`. `stage`/`status` stay verbatim, separately editable text. Moving a card never submits anything or changes an application state.
+- **Lanes:** `lane` is a lane `id` from `GET /pipeline`. Initial ids are `saved, applied, scheduling, interviewing, assessment, follow-up, decision, offer, closed`. `stage`/`status` stay verbatim, separately editable text. Moving a card never submits anything or changes an application state.
 - **Updates:** in an update body, an omitted `fields` key or `applicationUrl` means unchanged. `applicationUrl: null` clears the link.
 - **Concurrency:** `revision` increments on every write. A stale `revision` answers 409 `conflict`, and the UI reloads the entry instead of overwriting it.
-- **History and provenance:** `history` records creation, import, moves and edits. `provenance.importedValues` keeps the original cell text by header, plus the source digest, row and import time.
+- **History and provenance:** `history` records creation, import, moves and edits. `provenance.importedValues` keeps the immutable original cells. Additive `latestImportedValues`, `sourceId`, `firstImportedAt` and `versionCount` expose later imports separately. The import's editable tracker name is a stable `sourceId`, reused for revised exports of the same tracker; it is never a content digest.
 - **Linked records:** `application` (a canonical application summary) is the only thing that may show a receipt or submitted state. `selection` shows a linked Jev decision. `applicationUrl` may be `null`; the UI asks for it before applying and never invents one.
 - **Import:** preview validates every row and reports `errors[{field, message}]` by `rowNumber`. Commit is refused (409 or 400) while any row has errors, so there is never a partial silent import. Reimporting unchanged data reports `unchanged` and never duplicates cards or overwrites later manual edits.
 
@@ -138,16 +138,27 @@ Semantics the UI relies on:
 | start search | `POST /jobs/search` | the same preferences body (the search query) | 202 `SearchRunView` |
 | search status | `GET /jobs/search/{runId}` | — | `SearchRunView` (polled until `finishedAt`) |
 | listings | `GET /jobs` | — | `ListingsView {listings, lastRun}` |
-| decide | `POST /selection/jobs/{listingId}` | `{}` | `ListingView` with `selection` |
+| listing | `GET /jobs/{listingId}` | — | `ListingView` with current decision task |
+| decide | `POST /selection/jobs/{listingId}` | `{}` | 200 completed `ListingView`, or 202 accepted and still deciding |
 | track | `POST /jobs/{listingId}/track` | `{}` | `ListingView` with `pipelineEntryId` |
 
-- **Search defaults:** the defaults (see `DEFAULT_PREFERENCES`) are title phrases "marketing manager" and "marketing director", onsite `Austin, TX` with `ONSITE`/`HYBRID`, and remote `{eligibleRegion: "United States"}`, which is nationwide, not Texas-only. The pay floor is `{amount: 100000, currency: "USD", period: "YEAR"}` with unknown pay kept (`unknownCompensation: "KEEP"`).
+- **Search defaults:** Paid Media Manager, Senior Paid Media Manager, Performance Marketing Manager, Growth Marketing Manager, Demand Generation Manager and Digital Marketing Manager are representative seeds, followed by the broader Marketing Manager and Marketing Director. `roleFocus` explains hands-on paid acquisition and growth ownership and is editable, persisted and sent with both saves and searches. Jev evaluates responsibilities; exact title matches are not required. Onsite/hybrid targets default to Austin, TX; remote eligibility is United States, nationwide. The floor is USD100000/year, with unstated pay kept visibly unresolved.
 - **Location priority:** `locationPriority` is D0 `LocationPriority`: `STRONGLY_PREFER_ONSITE_HYBRID` (default), `BALANCED` or `PREFER_REMOTE`. It is part of the preferences body for both save and search, and of the preferences fingerprint, so changing it marks decisions stale. It only orders results; eligible remote roles are never dropped. A preferences response without the field is treated as the default.
 - **Location tier:** each listing may carry an optional `locationTier`: `ONSITE_HYBRID_TARGET`, `REMOTE_ELIGIBLE`, `REMOTE_UNCONFIRMED`, `OUTSIDE_TARGET` or `UNRESOLVED`. When it's absent, the UI derives the tier from the listing's stated `workArrangement`, `location` and `remoteEligibility` (`lib/jobs/ranking.ts`). A missing location or arrangement is `UNRESOLVED`, never assumed to be Austin. Results are grouped by tier in priority order: under the default, target-city onsite/hybrid comes first, then remote open to the region, then remote with unstated eligibility, then unresolved, then elsewhere.
 - **Per-source state:** each source reports one of `QUEUED`, `RUNNING`, `OK`, `PARTIAL`, `NEEDS_USER`, `BLOCKED`, `ERROR` or `SKIPPED`, with `message`, `userAction` and `sessionName`. `NEEDS_USER` and `BLOCKED` are never shown as empty success.
 - **Listings:** listings carry only observed facts. `workArrangement: "UNKNOWN"`, `compensation: null` and absent fields stay visibly unknown. `status: "CLOSED"` listings are marked and never recommended. `provenance` lists every source URL and application URL seen.
+- **Posting links:** `provenance[].postingUrl` is the job-specific posting. `sourceUrl` may be a search page. Navigation prefers `postingUrl`, and the Apply handoff uses an actual `applicationUrl`, then `postingUrl`; it never substitutes a search URL.
+- **Delayed decisions:** a 202 is pending, not a decision. The UI polls `GET /jobs/{id}` and remembers the pending task across a page reload without re-POSTing. Additive `decisionTask` has `{id,state,error,resultId?}`; `SUCCEEDED` finishes even for a cached unchanged selection id, while `FAILED`/`INTERRUPTED` stops with an actionable message. An older service without task state has a bounded wait and a manual Refresh listings action. Final S3R field agreement and real service integration remain to verify.
 - **Decisions:** `SelectionView` separates Jev's `modelChoice`, `probabilities` and `confidence` from the `effectiveChoice` after `holds`. It also carries `reasons`, `unresolved` facts, `providerError`, the requested and returned models, `rubricVersion` and `stale`. A provider failure or missing evidence can never produce an effective `APPLY`.
 - **Applying:** "Apply" from a listing or card only prefills the desk. The user's press of **Apply and submit** starts the normal `POST /applications`, where S1's duplicate check applies.
+
+### Development readiness and visual checkpoint
+
+`GET /healthz` reports `executor: "idle" | "busy"`, `runner: "available" | "unavailable"` and `applicationMode: "TEST_ONLY" | "LIVE"`. The desk requires `TEST_ONLY`, an available runner and a loopback target; an absent health response fails closed. The same gate covers resume, answer-and-continue and site recheck. User-reported reconciliation involves no browser execution and remains available. Jobs and pipeline show the test-mode notice independently of read-only discovery. This frontend intentionally does not enable real employer dispatch in this development deployment.
+
+The workspace uses Newsreader for page titles, Schibsted Grotesk for controls/data and restrained forest accents. Jobs shows an editable search brief above result rows, with evidence and decision reasoning side by side. Pipeline includes actionable filters, readable dates/pay, separate arrangement/commute, and both board and list layouts. Upcoming interviews includes dates today or later in America/Chicago; historical follow-up suggestions are not appointments. Linked pipeline receipts require explicit site confirmation authority; user reports and missing authority remain labelled separately.
+
+The current automated suite covers preview interactions, same-origin transport, recovery races, 202/cached/interrupted decision handling, source-vs-posting links and the local-test dispatch boundary. It does not by itself establish frontend → real runner → Chromium → localhost ATS acceptance; that is a separate integration receipt.
 
 ### Reference field mapping
 

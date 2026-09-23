@@ -58,6 +58,7 @@ function submitted(receipt: Record<string, unknown>) {
 
 async function startWith(page: Page, receipt: Record<string, unknown>) {
   const bodies: unknown[] = [];
+  await page.route("**/api/imx/healthz", (route) => route.fulfill({ json: { status: "ok", executor: "idle", runner: "available", applicationMode: "TEST_ONLY" } }));
   await page.route("**/api/imx/candidate", (route) => route.fulfill({ json: candidate }));
   await page.route("**/api/imx/applications", (route: Route) => {
     bodies.push(route.request().postDataJSON());
@@ -65,7 +66,7 @@ async function startWith(page: Page, receipt: Record<string, unknown>) {
   });
   await page.goto("/");
   await expect(page.getByText("Service connected")).toBeVisible();
-  await page.getByLabel("Application link").fill("https://jobs.example.test/fictional/apply");
+  await page.getByLabel("Application link").fill("http://127.0.0.1:4876/fictional/apply");
   await page.getByRole("button", { name: "Apply and submit" }).click();
   return bodies;
 }

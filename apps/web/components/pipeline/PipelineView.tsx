@@ -16,6 +16,7 @@ import { ImportPanel } from "./ImportPanel";
 import { ApplyPrompt } from "./ApplyPrompt";
 import { EntryBadges } from "./Badges";
 import { formatShortDate } from "./dates";
+import { useReadiness } from "../useReadiness";
 
 type Dialog =
   | { kind: "edit"; entryId: string }
@@ -25,6 +26,7 @@ type Dialog =
   | null;
 
 export function PipelineView({ mode }: { mode: "live" | "preview" }) {
+  const { readiness } = useReadiness(mode);
   const service = useMemo<PipelineService>(
     () => (mode === "preview" ? previewPipeline() : new HttpPipelineService()),
     [mode],
@@ -35,6 +37,7 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
   const [connection, setConnection] = useState<Connection>("checking");
   const [layout, setLayout] = useState<"board" | "list">("board");
   const [filter, setFilter] = useState("");
+  const [focus, setFocus] = useState<"all" | "actions" | "interviews">("all");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [editorKey, setEditorKey] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -148,14 +151,17 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
   }
 
   const entries = board?.entries ?? [];
+  const todayCT = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const upcoming = (entry: PipelineEntryView) => Boolean(entry.fields.nextInterviewDate && entry.fields.nextInterviewDate >= todayCT);
   const query = filter.trim().toLowerCase();
-  const visible = query
+  const searched = query
     ? entries.filter((entry) =>
         [entry.fields.company, entry.fields.role, entry.fields.stage, entry.fields.status]
           .filter(Boolean)
           .some((value) => value!.toLowerCase().includes(query)),
       )
     : entries;
+  const visible = searched.filter((entry) => focus === "all" || (focus === "actions" ? Boolean(entry.fields.nextAction) : upcoming(entry)));
   const editing =
     dialog?.kind === "edit" || dialog?.kind === "apply" ? entries.find((item) => item.id === dialog.entryId) : null;
 
@@ -164,6 +170,7 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
       mode={mode}
       section="pipeline"
       connection={mode === "preview" ? "connected" : connection}
+      readiness={readiness}
       skipLabel="Skip to the pipeline"
       previewBar={
         <PreviewStrip note="Fictional companies and notes, shaped like the tracker workbook. Changes last until you reload." />
@@ -171,11 +178,10 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
       colophon="Your tracker. Moving or editing a card never applies, messages anyone or changes an application's state."
     >
       <header className="page-head">
+        <p className="eyebrow">Keep the next step in sight</p>
         <h1 className="display">Pipeline</h1>
         <p className="lede">
-          Every job you&rsquo;re tracking, in your own words. Applications are only sent from the desk; a
-          <span className="mark mark--receipt mark--inline">Receipt confirmed</span> mark appears only when the site
-          confirmed one.
+          Track your conversations and keep the next step in sight.
         </p>
       </header>
 
@@ -210,6 +216,16 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
         <p className="lede">Loading your pipeline…</p>
       ) : (
         <>
+          <div className="pipeline-focus" aria-label="Focus the pipeline">
+            {([
+              ["all", "All tracked", entries.length],
+              ["actions", "With next actions", entries.filter((entry) => entry.fields.nextAction).length],
+              ["interviews", "Upcoming interviews", entries.filter(upcoming).length],
+            ] as const).map(([id, label, count]) => <button key={id} type="button" aria-pressed={focus === id} onClick={() => setFocus(id)}>
+              <span className="pipeline-focus__count">{count}</span><span>{label}</span><span className="pipeline-focus__arrow" aria-hidden="true">↗</span>
+            </button>)}
+            <p>Your tracking stages. Confirmed applications keep a separate receipt.</p>
+          </div>
           <div className="toolbar">
             <fieldset className="segmented">
               <legend className="visually-hidden">Layout</legend>
@@ -261,12 +277,13 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
               {moveError}
             </p>
           )}
-          {query && (
+          {(query || focus !== "all") && (
             <p className="field__hint" role="status">
               Showing {visible.length} of {entries.length}.
             </p>
           )}
 
+          {visible.length === 0 && (query || focus !== "all") && <p className="empty-note">No roles match this view. Choose All tracked or clear the search to see the rest.</p>}
           {layout === "board" ? (
             <div className="board">
               {board.lanes.map((lane) => {
