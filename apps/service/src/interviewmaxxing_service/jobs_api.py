@@ -606,7 +606,7 @@ class JobsApi:
         listings.sort(key=lambda x: self._sort_key(x, ranks[x.id], prefs))
         ids = [x.id for x in listings]
         records = self._records(ids)
-        tasks = self.state.latest_by_subject(self.candidate_id, "decision", ids)
+        tasks = self._tasks(ids)
         apps = ApplicationStore.open(self.state_db)
         try:
             lookup = self._application_lookup(apps, items)
@@ -624,7 +624,27 @@ class JobsApi:
     def _records(self, listing_ids: Sequence[str]) -> dict[str, DecisionRecord]:
         if self.decisions is None or not listing_ids:
             return {}
-        return self.decisions.latest_for(listing_ids, candidate_id=self.candidate_id)
+        aliases = self.pipeline.aliases(listing_ids)
+        found = self.decisions.latest_for(
+            [alias for ids in aliases.values() for alias in ids], candidate_id=self.candidate_id
+        )
+        out: dict[str, DecisionRecord] = {}
+        for canonical, ids in aliases.items():
+            records = [found[alias] for alias in ids if alias in found]
+            if records:
+                out[canonical] = max(records, key=lambda record: record.selection.decided_at)
+        return out
+
+    def _tasks(self, listing_ids: Sequence[str]) -> dict[str, Task]:
+        aliases = self.pipeline.aliases(listing_ids)
+        found = self.state.latest_by_subject(
+            self.candidate_id, "decision", [alias for ids in aliases.values() for alias in ids]
+        )
+        return {
+            canonical: max((found[alias] for alias in ids if alias in found),
+                           key=lambda task: task.created_at)
+            for canonical, ids in aliases.items() if any(alias in found for alias in ids)
+        }
 
     def _listing(self, listing_id: str) -> JobListing:
         if not SAFE_ID.match(listing_id):
@@ -644,7 +664,7 @@ class JobsApi:
                 listing, prefs=prefs, profile=self.profile_loader(),
                 items=items, lookup=self._application_lookup(apps, items),
                 rank=self._rank(listing, prefs), record=self._records([listing.id]).get(listing.id),
-                task=self.state.latest(self.candidate_id, "decision", listing.id),
+                task=self._tasks([listing.id]).get(listing.id),
             )
         finally:
             apps.close()
@@ -662,14 +682,20 @@ class JobsApi:
         key = snapshot_hash({"listing": listing.id, "preferences": prefs.fingerprint})
         with self._lock:
             active = self.state.active(self.candidate_id, "decision")
-            if len(active) >= MAX_ACTIVE_DECISIONS and all(t.dedupe_key != key for t in active):
+            aliases = self.pipeline.aliases([listing.id]).get(listing.id, [listing.id])
+            joined = next((task for task in active if task.subject in aliases
+                           and task.request.get("preferences") == prefs.model_dump(mode="json")), None)
+            if len(active) >= MAX_ACTIVE_DECISIONS and joined is None:
                 raise errors.conflict("Several decisions are already queued. Try again shortly.")
-            task, created = self.state.create_or_join(
-                candidate_id=self.candidate_id, kind="decision", dedupe_key=key,
-                subject=listing.id, request={"listing_id": listing.id,
-                                             "preferences": prefs.model_dump(mode="json")},
-                prefix="dec",
-            )
+            if joined is not None:
+                task, created = joined, False
+            else:
+                task, created = self.state.create_or_join(
+                    candidate_id=self.candidate_id, kind="decision", dedupe_key=key,
+                    subject=listing.id, request={"listing_id": listing.id,
+                                                "preferences": prefs.model_dump(mode="json")},
+                    prefix="dec",
+                )
             done = self._done.setdefault(task.id, threading.Event())
             if created:
                 self._decision_pool.submit(self._run_decision, task.id, listing.id, prefs, done)

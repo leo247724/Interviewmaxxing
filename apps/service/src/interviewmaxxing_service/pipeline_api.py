@@ -114,11 +114,13 @@ class PipelineApi:
         *,
         selection_lookup: SelectionLookup | None = None,
         listing_exists: Callable[[str], bool | None] | None = None,
+        listing_aliases: Callable[[Sequence[str]], dict[str, list[str]]] | None = None,
     ) -> None:
         self.paths = paths
         self.candidate_id = candidate_id
         self.selection_lookup = selection_lookup
         self.listing_exists = listing_exists
+        self.listing_aliases = listing_aliases
         self._previews: dict[str, _Preview] = {}
         self._previews_lock = threading.Lock()
         self.track_lock = threading.Lock()
@@ -473,27 +475,36 @@ class PipelineApi:
 
     # --- links from jobs ------------------------------------------------------------------
 
+    def aliases(self, listing_ids: Sequence[str]) -> dict[str, list[str]]:
+        if self.listing_aliases is not None:
+            return self.listing_aliases(listing_ids)
+        return {listing_id: [listing_id] for listing_id in listing_ids}
+
+    def _canonical_items(self, items: Sequence[PipelineItem]) -> dict[str, PipelineItem]:
+        aliases = self.aliases([item.listing_id for item in items if item.listing_id])
+        canonical = {alias: key for key, ids in aliases.items() for alias in ids}
+        out: dict[str, PipelineItem] = {}
+        for item in items:
+            if item.listing_id:
+                # Keep existing candidate-owned rows intact. Old duplicate cards are
+                # not deleted or silently combined; the earliest is the tracking link.
+                out.setdefault(canonical.get(item.listing_id, item.listing_id), item)
+        return out
+
     def item_for_listing(self, listing_id: str) -> PipelineItem | None:
-        with self.store() as store:
-            return next(
-                (i for i in store.list_items(self.candidate_id) if i.listing_id == listing_id),
-                None,
-            )
+        canonical = next(iter(self.aliases([listing_id])), listing_id)
+        return self.items_by_listing().get(canonical)
 
     def items_by_listing(self) -> dict[str, PipelineItem]:
         with self.store() as store:
-            return {
-                i.listing_id: i for i in store.list_items(self.candidate_id) if i.listing_id
-            }
+            return self._canonical_items(store.list_items(self.candidate_id))
 
     def track(self, new: NewPipelineItem) -> tuple[PipelineItem, bool]:
-        """Create a card for a listing unless one exists. Returns ``(item, created)``."""
+        """Create a card unless this accepted listing identity already has one."""
         assert new.listing_id is not None
+        canonical = next(iter(self.aliases([new.listing_id])), new.listing_id)
         with self.track_lock, self.store() as store:
-            existing = next(
-                (i for i in store.list_items(self.candidate_id) if i.listing_id == new.listing_id),
-                None,
-            )
+            existing = self._canonical_items(store.list_items(self.candidate_id)).get(canonical)
             if existing is not None:
                 return existing, False
             return store.create_item(self.candidate_id, new), True

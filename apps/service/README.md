@@ -270,6 +270,16 @@ These implement the routes proposed in `apps/web/README.md` (dashboard `816afa1`
 
   Tracking, deciding and searching never create an application. Applying still goes through `POST /applications`, with its duplicate check.
 
+### Accepted listing aliases
+
+J1's persisted alias map keeps service joins intact when a stronger direct-source
+observation becomes a listing's canonical ID. Pipeline card lookup/tracking, latest
+candidate decisions and decision-task polling include those accepted historical IDs.
+A queued decision requested before the merge stays pollable and repeat requests join
+it. Existing card IDs and stored listing provenance remain intact; tracking does not
+create another card for the new canonical ID. Similar titles, companies or shared
+search URLs are never treated as aliases by the service.
+
 ### Decision task (S3R)
 
 `ListingView.decisionTask` (+) is the latest explicit decision request for this listing and candidate, from the service's durable task record (`$IMX_HOME/state/service.sqlite3`). It is `null` when no decision was ever requested. It uses the service's existing task vocabulary:

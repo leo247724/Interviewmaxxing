@@ -196,6 +196,10 @@ class LocalJobsBackend:
         listing: JobListing | None = self.store.get_listing(listing_id)
         return listing
 
+    def listing_aliases(self, listing_ids: Sequence[str]) -> dict[str, list[str]]:
+        aliases: dict[str, list[str]] = self.store.listing_aliases(listing_ids)
+        return aliases
+
     def list_listings(
         self, *, limit: int | None = None, rank_for: SelectionPreferences | None = None
     ) -> list[JobListing]:
