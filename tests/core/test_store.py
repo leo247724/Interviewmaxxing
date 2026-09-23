@@ -676,6 +676,31 @@ def test_answers_survive_a_new_draft_url_for_the_same_step(store, multistep_form
     assert store.get_user_inputs(app.id, changed) == []
 
 
+def test_a_new_database_is_private_and_existing_files_keep_their_mode(tmp_path):
+    """I1R (S3 report): a new state database was created with the umask (0644).
+    The store creates its own file 0600 and never chmods an existing one."""
+    import stat
+
+    path = tmp_path / "state" / "imx.sqlite3"
+    with ApplicationStore.open(path) as s:
+        s.record_request(CAND, URL)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        wal = path.with_name(path.name + "-wal")
+        assert wal.exists() and stat.S_IMODE(wal.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    with ApplicationStore.open(path) as s:  # reopening changes nothing
+        assert len(s.list_applications()) == 1
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    shared = tmp_path / "shared.sqlite3"
+    with ApplicationStore.open(shared):
+        pass
+    shared.chmod(0o644)  # the user's own choice for this file
+    with ApplicationStore.open(shared) as s:
+        s.record_request(CAND, URL)
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o644
+
+
 def test_resume_pin_is_first_writer_wins_and_immutable(store, store_path, fictional_candidate):
     """I1: an application keeps the resume it started with, whatever the profile says later."""
     app = store.record_request(CAND, URL).application

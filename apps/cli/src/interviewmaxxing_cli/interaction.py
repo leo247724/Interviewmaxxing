@@ -9,7 +9,9 @@ is asked and the run stops with a recorded NEEDS_INPUT result instead.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
+import threading
 from collections.abc import Sequence
 from typing import TextIO
 
@@ -18,16 +20,49 @@ from interviewmaxxing_core import AnswerReuse, MissingInput, UserInput
 from .answers import AnswerError, describe, user_input_for
 
 
+def read_line_async(stream: TextIO) -> asyncio.Future[str]:
+    """Read one line from ``stream`` on a daemon thread, delivered as a future.
+
+    Not ``asyncio.to_thread``: that uses the loop's default executor, which
+    ``asyncio.Runner.close()`` waits for, so a Ctrl-C or SIGTERM while a prompt was
+    open would hang the process until the user pressed Enter. A daemon thread is
+    simply abandoned; the process exits, and a late line is dropped."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+
+    def deliver(line: str | None, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(line or "")
+
+    def read() -> None:
+        result: str | None = None
+        error: BaseException | None = None
+        try:
+            result = stream.readline()
+        except BaseException as exc:  # delivered to the awaiting coroutine
+            error = exc
+        with contextlib.suppress(RuntimeError):  # the loop is already closed
+            loop.call_soon_threadsafe(deliver, result, error)
+
+    threading.Thread(target=read, name="interviewmaxxing-stdin", daemon=True).start()
+    return future
+
+
 class TerminalInteraction:
     def __init__(self, *, reuse: AnswerReuse = AnswerReuse.APPLICATION,
-                 out: TextIO | None = None) -> None:
+                 out: TextIO | None = None, stdin: TextIO | None = None) -> None:
         self.reuse = reuse
         self.out = out or sys.stderr
+        self.stdin = stdin or sys.stdin
 
     async def _ask(self, prompt: str) -> str:
         self.out.write(prompt)
         self.out.flush()
-        line: str = await asyncio.to_thread(sys.stdin.readline)
+        line = await read_line_async(self.stdin)
         return line.rstrip("\n")
 
     async def request_inputs(self, missing: Sequence[MissingInput]) -> Sequence[UserInput]:

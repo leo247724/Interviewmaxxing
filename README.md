@@ -51,7 +51,7 @@ Asking to apply authorizes the submission; there is no extra confirmation step. 
 | `NEEDS_INPUT` | 3 | Required questions your profile cannot answer, or an action in the browser (sign-in, CAPTCHA, a custom control). Nothing was submitted. |
 | `FAILED_RETRYABLE` | 3 | Stopped safely (browser error, ambiguous next/submit button, a loop). Nothing was submitted; `resume` retries. |
 | `SUBMISSION_UNKNOWN` | 5 | The submit may have reached the employer but no confirmation tied to this job was seen. It is never retried; `reconcile` it. |
-| already submitted / duplicate / in progress | 4 | Nothing was done. |
+| already submitted / duplicate / in progress | 4 | Nothing was done. A submit interrupted by a crash becomes `SUBMISSION_UNKNOWN` once its lease lapses (ten minutes at most); `reconcile` it. It is never repeated. |
 
 ### Missing answers (across restarts)
 
@@ -62,9 +62,9 @@ interviewmaxxing answer APP --answers answers.json   # {"field_id": "value", ...
 interviewmaxxing resume APP
 ```
 
-Choices can be given by option label or value; several choices are separated by `;`; checkboxes take `yes` or `no`. Answers stay with that application unless you pass `--reuse job` or `--reuse global`. Questions are recorded durably, so `answer` and `resume` work in later sessions. If a question changes on the site, it is asked again.
+Choices can be given by option label or value; several choices are separated by `;`; checkboxes take `yes` or `no`. Answers stay with that application unless you pass `--reuse job` or `--reuse global`. Questions are recorded durably, so `answer` and `resume` work in later sessions. If a question changes on the site, it is asked again. If the site rejects an answer, that question is asked again, also after a restart; an answer the site rejects a second time is asked again too, never resubmitted unchanged.
 
-Instead of stopping, `apply --interactive` (or `resume --interactive`) asks on the terminal. For sign-in, CAPTCHA or custom controls, run `resume APP --act` without `--headless`, complete the step in the browser window, and the run continues.
+Instead of stopping, `apply --interactive` (or `resume --interactive`) asks on the terminal. For sign-in, CAPTCHA or custom controls, run `resume APP --act` without `--headless` (the two cannot be combined), complete the step in the browser window, and the run continues; if you have not finished when the wait ends, the run stops as `NEEDS_INPUT` and `resume --act` picks it up again. Take your time: the run keeps its hold on the application while it waits for you.
 
 ### Receipts and uncertain outcomes
 
@@ -92,7 +92,7 @@ Instead of stopping, `apply --interactive` (or `resume --interactive`) asks on t
 | `interviewmaxxing receipt APP [--json]` | Receipt of a confirmed submission |
 | `interviewmaxxing paths [--json]` | Where local data lives |
 
-Exit status: `0` submitted/ok, `1` error, `2` usage, `3` not submitted (input needed or stopped), `4` blocked by stored state, `5` submission uncertain, `130` interrupted. Ctrl-C or SIGTERM during a submit records `SUBMISSION_UNKNOWN`.
+Exit status: `0` submitted/ok, `1` error, `2` usage (also `--act` with `--headless`, or `--interactive` without a terminal), `3` not submitted (input needed or stopped), `4` blocked by stored state, `5` submission uncertain, `130` interrupted. Ctrl-C or SIGTERM during a submit records `SUBMISSION_UNKNOWN`; during a question or a browser wait it stops at once with nothing submitted. A browser that cannot start is reported as a retryable stop, not an error trace.
 
 ## Local data
 
@@ -105,7 +105,7 @@ $IMX_HOME/artifacts/<app-id>/  confirmation screenshots and other evidence
 $IMX_HOME/browser/             persistent browser profile (sign-ins)
 ```
 
-Each location can be overridden (`IMX_PROFILE_DIR`, `IMX_STATE_DB`, `IMX_ARTIFACTS_DIR`, `IMX_BROWSER_DIR`); `IMX_CANDIDATE_ID` selects the candidate (default `default`). For development, use `IMX_HOME=$PWD/.imx`, which is git-ignored.
+Each location can be overridden (`IMX_PROFILE_DIR`, `IMX_STATE_DB`, `IMX_ARTIFACTS_DIR`, `IMX_BROWSER_DIR`); `IMX_CANDIDATE_ID` selects the candidate (default `default`). Directories are created owner-only (`0700`) and a new state database is created `0600`; files that already exist keep the permissions you gave them. For development, use `IMX_HOME=$PWD/.imx`, which is git-ignored.
 
 ## Development
 
