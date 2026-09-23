@@ -56,14 +56,8 @@
   {
     "default": 0.5,
     "field": "t_jev_call_s",
-    "label": "external",
-    "note": "vendor triage benchmark p50 0.194 s; J2 README 0.5-2 s per two-call select"
-  },
-  {
-    "default": 1.5,
-    "field": "t_jev_call_p95_s",
-    "label": "external",
-    "note": "vendor triage p95 0.633 s plus network; guess"
+    "label": "modeled",
+    "note": "fictional per-attempt lognormal median; fixed sigma .35; no live latency or configurable p95"
   },
   {
     "default": 0.05,

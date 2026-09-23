@@ -10,10 +10,12 @@ From `benchmarks/performance`:
 python3 -m unittest discover -s tests -t .
 python3 -m imx_perf all --seed 42 --population 2000
 python3 -m imx_perf chaos --seed 42  # rerun after cross-kind admission fix
+python3 -m imx_perf fixtures --seed 42 --population 2000
+python3 -m imx_perf selection --seed 42 --population 2000  # rerun after cache-admission correction
 /Users/leo/.superset/worktrees/Interviewmaxxing/build/queue-runtime/.venv-task/bin/python -m imx_perf measure --tag queue-runtime
 ```
 
-27 unit tests pass. The seeded suite runs 2,000 fictional listings, three 40-item worker-abandonment variants and 12 virtual pipeline scenarios. Local worker scheduling is nondeterministic. Each result JSON records argv, interpreter, platform, base checkout and harness module SHA-256; repo_head is the pre-commit base, not a claim the generated files already existed at that commit.
+29 unit tests pass. The seeded suite runs 2,000 fictional listings, three 40-item worker-abandonment variants and 12 virtual pipeline scenarios. Local worker scheduling is nondeterministic. Each result JSON records argv, interpreter, platform, base checkout and harness module SHA-256; repo_head is the pre-commit base, not a claim the generated files already existed at that commit.
 
 Offline suite interpreter: 3.14.2; macOS-15.7.4-arm64-arm-64bit-Mach-O. Optional package timing interpreter: 3.12.13; imported packages from queue-runtime checkout `05c87b6`. This is not a timing of every sibling's latest source.
 
@@ -27,7 +29,7 @@ Offline suite interpreter: 3.14.2; macOS-15.7.4-arm64-arm-64bit-Mach-O. Optional
 
 Each run ended with 40 DONE scheduler dispositions, zero live leases, zero duplicate ledger effects and zero sampled lane violations. DONE may mean routed/reconciled with no fictional effect; it does not mean an accepted application. Without heartbeat, long work is fenced and routes to uncertainty rather than being counted as successful throughput. The local effect ledger cannot prove exactly-once remote delivery. Worker abandonment is cooperative, not an OS process kill or power-loss test.
 
-Tests also exercise cross-kind application admission coalescing, seven-field task identity, stale-owner/token/expiry fencing, retry timing and dead letters, high-water admission, restart-visible uncertainty, aged reconciliation priority, conservative reservations before paid attempts, timeout charges, and shared hour-long Retry-After that a shorter cooldown cannot overwrite. Same-call independent final answers cannot read sibling answers; failed attempts still consume modeled bytes/time; exhausted submit failures never become acceptance.
+Tests also exercise cross-kind application admission coalescing, seven-field task identity, stale-owner/token/expiry fencing, retry timing and dead letters, high-water admission, restart-visible uncertainty, aged reconciliation priority, conservative reservations before paid attempts, timeout charges, and shared hour-long Retry-After that a shorter cooldown cannot overwrite. Cache admission requires a completed final decision and excludes final-request provider failures even when the first request succeeded (regression: 31 valid caches rather than 66 partial/complete flows). Same-call independent final answers cannot read sibling answers; failed attempts still consume modeled bytes/time; exhausted submit failures never become acceptance.
 
 ## Local real-package microbenchmarks
 
@@ -62,7 +64,7 @@ Lane counts are arithmetic requirements. They do not authorize opening those lan
 | gate_combined_selective | 186 | 189 | 599058 | 0.798 / 1.5 |
 | gate_single_request | 124 | 125 | 452376 | 0.513 / 0.923 |
 
-These are seeded assumptions, not model quality results. Hold-gating defers 1,245 listings; call savings do not imply an increased qualified supply. Byte/4 token estimates charge all failed/retried attempts. Separate queue tests enforce conservative provider reservation/cooldown; that budget prototype is not integrated into the virtual throughput provider. Keep the two-stage production decision until an authorized held-out quality comparison supports changing it.
+These are seeded assumptions, not model quality results. Per-attempt latency uses a fictional lognormal median `t_jev_call_s` with fixed sigma .35; p95 is a sampled output, not a supported configurable parameter. Hold-gating defers 1,245 listings; call savings do not imply an increased qualified supply. Byte/4 token estimates charge all failed/retried attempts. Separate queue tests enforce conservative provider reservation/cooldown; that budget prototype is not integrated into the virtual throughput provider. Keep the two-stage production decision until an authorized held-out quality comparison supports changing it.
 
 The twelve pipeline scenarios report observations, unique listings, APPLY, attempts, simulated direct acceptance, reconciliation, human/browser hours, resource utilization and stage p50/p95. `unresolved_at_horizon` includes work left queued, blocked, failed or uncertain. The highest utilization is only the busiest resource under this scenario, not proof of a real bottleneck.
 

@@ -29,23 +29,23 @@
   "metadata": {
     "argv": [
       "/Users/leo/.superset/worktrees/Interviewmaxxing/build/performance-runtime/benchmarks/performance/imx_perf/__main__.py",
-      "all",
+      "selection",
       "--seed",
       "42",
       "--population",
       "2000"
     ],
-    "generated_at": "2026-09-22T20:00:57-0500",
-    "harness_sha256": "19415044afe7a637e7efe183252dfa34b2fb2fd9d27e5727bb2d8392f67a86dd",
+    "generated_at": "2026-09-22T20:11:02-0500",
+    "harness_sha256": "d0e7aa9795a62bd8bb27ab84840ec7f8af0aff2a006d4c32d725f15b34ba07b4",
     "load_average_1_5_15": [
-      5.51025390625,
-      4.25732421875,
-      4.115234375
+      3.5537109375,
+      4.68798828125,
+      4.56298828125
     ],
     "machine": "arm64",
     "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
     "python": "3.14.2",
-    "repo_head": "457d8ca"
+    "repo_head": "053ef03"
   },
   "population": 2000,
   "strategies": {

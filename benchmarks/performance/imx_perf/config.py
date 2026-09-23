@@ -80,7 +80,6 @@ class Assumptions:
 
     # --- service times, seconds ---
     t_jev_call_s: float = 0.5
-    t_jev_call_p95_s: float = 1.5
     t_packet_s: float = 0.05
     t_submit_s: float = 90.0
     t_submit_multistep_s: float = 240.0
@@ -179,8 +178,7 @@ PROVENANCE: dict[str, tuple[str, str]] = {
     "p_retryable_failure": (MODELED, "runs ending FAILED_RETRYABLE before submit; guess"),
     "p_multistep": (MODELED, "share of multi-step (e.g. Workday) forms; guess"),
     "p_global_reuse": (MODELED, "user chooses GLOBAL reuse for an answer; guess"),
-    "t_jev_call_s": (EXTERNAL, "vendor triage benchmark p50 0.194 s; J2 README 0.5-2 s per two-call select"),
-    "t_jev_call_p95_s": (EXTERNAL, "vendor triage p95 0.633 s plus network; guess"),
+    "t_jev_call_s": (MODELED, "fictional per-attempt lognormal median; fixed sigma .35; no live latency or configurable p95"),
     "t_packet_s": (MODELED, "FactualPacketResolver is CPU-bound; sub-50 ms guess"),
     "t_submit_s": (MODELED, "single-page application incl. Chromium launch (session.py:76-110); unmeasured"),
     "t_submit_multistep_s": (MODELED, "multi-step form; unmeasured; RunLimits.max_steps=12"),

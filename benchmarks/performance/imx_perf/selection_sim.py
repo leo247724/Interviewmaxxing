@@ -275,7 +275,11 @@ class Decision:
 
 @dataclass
 class Provider:
-    """Counts attempts (billed or not, unknown) separately from successful calls."""
+    """Counts attempts (billed or not, unknown) separately from successful calls.
+
+    Fictional latency is lognormal with median t_jev_call_s and fixed sigma .35;
+    report percentiles are sampled outputs, not a configurable or measured p95.
+    """
 
     a: Assumptions
     rng: random.Random
@@ -465,7 +469,9 @@ def cache_scenarios(fixtures: list[Fixture], a: Assumptions, seed: int = 11,
     judge = StubJudge(seed)
     provider = Provider(a, random.Random(seed + 1))
     decided = {fx.id: decide(fx, "gate_then_two_call", a, judge, provider) for fx in fixtures}
-    cached = {fx.id: fx for fx in fixtures if decided[fx.id].calls > 0}
+    cached = {fx.id: fx for fx in fixtures
+              if decided[fx.id].model_choice is not None
+              and "PROVIDER_ERROR" not in decided[fx.id].holds}
     n = len(cached)
 
     # (a) re-observation changes only posted_text

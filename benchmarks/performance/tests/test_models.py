@@ -127,3 +127,16 @@ class RegressionTests(unittest.TestCase):
                          {'p_unknown': .5, 'p_retryable_failure': .5}):
             with self.assertRaises(ValueError):
                 Assumptions(**override)
+
+    def test_failed_final_request_never_enters_cache(self):
+        a = Assumptions(p_transient_provider_failure=.5, jev_max_attempts=1)
+        fixtures = generate(a, 2000, seed=42)
+        report = selection_sim.cache_scenarios(fixtures, a, seed=42)
+        # This fixture set has 66 partial-or-complete provider flows: 35 fail
+        # after a successful first request, only 31 have a final decision.
+        self.assertEqual(report['cached_decisions'], 31)
+        self.assertEqual(report['reobservation_posted_text_only']['of'], 31)
+
+    def test_removed_unsupported_latency_p95_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'unknown assumption fields'):
+            Assumptions.from_json('{"t_jev_call_p95_s": 30}')

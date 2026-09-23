@@ -120,6 +120,10 @@ state, independent one-call final, and independent first-pass final with selecti
 second-call escalation. The stub's independent final reads fixture truth, not focused
 answers. Stable per-listing random seeds reduce accidental disagreement from gating.
 These numbers compare mechanics and invented noise; they measure no Jev accuracy.
+Per-attempt latency uses fictional lognormal median `t_jev_call_s`, fixed sigma .35;
+reported p95 is sampled, not a configurable or measured provider tail. Cache admission
+requires a completed final decision; a successful first call followed by provider
+failure is never cached.
 
 Before changing the two-stage semantics: freeze a held-out, candidate-labeled fixture
 set with evidence completeness, role match, qualifications, ambiguity and injection

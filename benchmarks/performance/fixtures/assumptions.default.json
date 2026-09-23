@@ -91,7 +91,6 @@
     }
   ],
   "t_human_block_min": 5.0,
-  "t_jev_call_p95_s": 1.5,
   "t_jev_call_s": 0.5,
   "t_packet_s": 0.05,
   "t_reconcile_s": 45.0,
