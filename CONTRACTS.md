@@ -459,6 +459,12 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 {
   "id": "qry_example",
   "title_phrases": [
+    "paid media manager",
+    "senior paid media manager",
+    "performance marketing manager",
+    "growth marketing manager",
+    "demand generation manager",
+    "digital marketing manager",
     "marketing manager",
     "marketing director"
   ],
@@ -491,7 +497,8 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
   "max_results_per_source": 50,
   "posted_within_days": null,
   "created_at": "2026-09-22T21:00:00Z",
-  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID"
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID",
+  "role_focus": "Performance marketing operator: hands-on paid acquisition, paid media, performance and growth marketing, demand generation, and digital marketing leadership. Judge actual responsibilities and ownership, not an exact job-title match. Semantically similar acquisition, lead and director roles are eligible. Pure data, software or platform engineering and unrelated marketing specialties are outside this focus."
 }
 ```
 
@@ -569,6 +576,12 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 ```json
 {
   "target_titles": [
+    "paid media manager",
+    "senior paid media manager",
+    "performance marketing manager",
+    "growth marketing manager",
+    "demand generation manager",
+    "digital marketing manager",
     "marketing manager",
     "marketing director"
   ],
@@ -594,7 +607,8 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
   "excluded_keywords": [],
   "excluded_companies": [],
   "notes": null,
-  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID"
+  "location_priority": "STRONGLY_PREFER_ONSITE_HYBRID",
+  "role_focus": "Performance marketing operator: hands-on paid acquisition, paid media, performance and growth marketing, demand generation, and digital marketing leadership. Judge actual responsibilities and ownership, not an exact job-title match. Semantically similar acquisition, lead and director roles are eligible. Pure data, software or platform engineering and unrelated marketing specialties are outside this focus."
 }
 ```
 
@@ -670,3 +684,7 @@ Send the coordinator: the contract/type, the exact field or signature change, wh
 `JobSearchQuery.location_priority` and `SelectionPreferences.location_priority` use `LocationPriority`: `STRONGLY_PREFER_ONSITE_HYBRID` (default), `BALANCED`, or `PREFER_REMOTE`. The user strongly prefers Austin onsite/hybrid over US-wide remote. Remote remains eligible; USD100000 annual minimum is unchanged. Preserve this field through the frontend/service boundary, include it in Jev evidence/rubric and cache fingerprints, and order eligible matching Austin onsite/hybrid results well above remote. Do not infer Austin eligibility from a missing location or confuse this preference with a mandatory remote exclusion.
 
 Repeated observations of the same source posting retain newly verified employer identity and its evidence. `PipelineEntry.next_action_due` accepts a date or an aware timestamp; date-only input must stay a date. `imported_values` includes all original nonblank cells, especially raw Stage and Status; the board column does not overwrite their imported wording.
+
+### Semantic role fit clarification
+
+The supplied titles are search seeds and representative roles, never an exact-title allowlist. Both query and selection preferences carry editable `role_focus`, defaulting to performance marketing operator duties. Jev judges actual paid acquisition/performance/growth/demand-generation/digital marketing responsibilities and level, including similar lead/director/acquisition roles. A pure data-platform engineering role is a semantic mismatch. Do not manufacture fit from a title keyword, filter only to literal titles, or treat a marketing description mentioning software engineers as an engineering job. No default exact-title exclusions are added. Changing role_focus changes the preferences fingerprint and invalidates earlier decisions.

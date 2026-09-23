@@ -73,7 +73,13 @@ def _listing(source: str, source_id: str | None, posting_url: str | None = None,
 
 def test_default_search_is_the_users_stated_targets():
     query = JobSearchQuery()
-    assert query.title_phrases == ["marketing manager", "marketing director"]
+    assert query.title_phrases[:6] == [
+        "paid media manager", "senior paid media manager", "performance marketing manager",
+        "growth marketing manager", "demand generation manager", "digital marketing manager",
+    ]
+    assert "marketing director" in query.title_phrases
+    assert "not an exact job-title match" in query.role_focus
+    assert "Semantically similar" in query.role_focus
     [austin] = query.onsite
     assert austin.location == "Austin, TX"
     assert austin.arrangements == [WorkArrangement.ONSITE, WorkArrangement.HYBRID]
@@ -121,6 +127,14 @@ def test_location_priority_is_explicit_editable_and_invalidates_decisions():
     assert JobSearchQuery.from_preferences(balanced).location_priority is LocationPriority.BALANCED
 
 
+def test_semantic_role_focus_is_editable_and_part_of_query_and_decision_inputs():
+    original = SelectionPreferences()
+    assert original.excluded_keywords == []
+    changed = SelectionPreferences(role_focus="Paid acquisition leadership and growth operations")
+    assert changed.fingerprint != original.fingerprint
+    assert JobSearchQuery.from_preferences(changed).role_focus == changed.role_focus
+
+
 def test_repeat_observation_retains_new_employer_identity_and_evidence():
     first = _listing("linkedin", "4001")
     enriched = _listing("linkedin", "4001", employer_key=employer_job_key("greenhouse", "demo", "7001"))
@@ -153,6 +167,25 @@ def test_pipeline_due_timestamp_remains_aware_and_naive_is_rejected():
     with pytest.raises(ValidationError):
         PipelineEntry(candidate_id="candidate", title="Fictional role", stage="Saved",
                       next_action_due="2026-09-29T10:30:00")
+
+
+@pytest.mark.parametrize("due", ["2026-09-29T00:00:00", datetime(2026, 9, 29)])
+def test_naive_midnight_is_never_silently_changed_to_a_date(due):
+    with pytest.raises(ValidationError):
+        PipelineEntry(candidate_id="candidate", title="Fictional role", stage="Saved",
+                      next_action_due=due)
+    text_due = due.isoformat() if isinstance(due, datetime) else due
+    with pytest.raises(ValidationError):
+        PipelineEntry.model_validate_json(json.dumps({"candidate_id": "candidate",
+            "title": "Fictional role", "stage": "Saved", "next_action_due": text_due}))
+
+
+def test_aware_midnight_keeps_its_timestamp_through_dict_and_json():
+    raw = {"candidate_id": "candidate", "title": "Fictional role", "stage": "Saved",
+           "next_action_due": "2026-09-29T00:00:00-05:00"}
+    expected = datetime(2026, 9, 29, 5, tzinfo=UTC)
+    assert PipelineEntry.model_validate(raw).next_action_due == expected
+    assert PipelineEntry.model_validate_json(json.dumps(raw)).next_action_due == expected
 
 
 # --- source results ------------------------------------------------------------------------
