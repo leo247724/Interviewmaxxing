@@ -1,23 +1,55 @@
 # Interviewmaxxing
 
-An open-source job-search system that optimizes for interviews and offers, not application count. See [ARCHITECTURE.md](ARCHITECTURE.md).
+A local job-search workspace with a jobs browser, pipeline tracker and application desk. See [ARCHITECTURE.md](ARCHITECTURE.md) for the product design and [INTEGRATION_STATUS.md](INTEGRATION_STATUS.md) for exact build checkpoints.
 
-**Current milestone:** you give it the URL of a job application you chose; it fills and submits that application with your verified profile and resume, verifies the site's confirmation, and saves a receipt. Asking to apply authorizes the submission. You are asked only for missing required information or for actions such as sign-in or CAPTCHA.
+- **Jobs:** OpenCLI reads LinkedIn, Built In, Indeed and Google job results. Jev through OpenRouter evaluates semantic performance-marketing fit, prioritizing Austin onsite/hybrid roles over eligible US-wide remote work and retaining unresolved compensation or location evidence for review.
+- **Pipeline:** track interviews, follow-ups and decisions; edit all 23 reference-workbook fields; import CSV/JSON without duplicating prior rows; retain original source records and link application receipts.
+- **Desk:** provide a URL, confirmed details and a selected resume. The Python runner fills accessible HTML forms, asks for missing information, submits once and records observed confirmation. Uncertain submissions remain locked for reconciliation.
 
-> **Status:** the supplied-URL flow works end to end on accessible, native HTML application forms: the CLI inspects the live form in Chromium, answers from your verified profile, asks only for what is missing, submits once and saves a receipt when the site confirms it. It is verified against a local mock applicant tracking system; live use against a real employer site is a separate, explicitly authorized step.
+The dashboard currently runs in **TEST_ONLY** mode. Its application flows are verified with fictional profiles and a localhost applicant-tracking site. Real job discovery and Jev decisions are separate from application execution. No employer acceptance or thousands-of-applications-per-day capacity is claimed.
 
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 automatically from `.python-version`)
 - Chromium for Playwright: `uv run playwright install chromium` (once)
+- Node.js 20.9 or newer for the dashboard
+- Installed OpenCLI and a connected Chrome Browser Bridge for live job discovery
 
 ## Install
 
 ```bash
-uv sync --all-packages
+uv sync --locked --all-packages
 uv run playwright install chromium
 uv run interviewmaxxing --help
 ```
+
+## Run the dashboard
+
+Start the local service from the repository root:
+
+```bash
+IMX_SERVICE_ORIGIN=http://127.0.0.1:4317 \
+IMX_SERVICE_APPLICATION_MODE=TEST_ONLY \
+IMX_OPENROUTER_ENV_FILE="$PWD/env.local" \
+  uv run --no-sync interviewmaxxing-service --port 8765
+```
+
+The service uses `~/.interviewmaxxing` by default. To exercise applications, use a separate fictional home by setting `IMX_HOME=/path/to/fictional-home`; keep personal profiles out of test runs. The ignored OpenRouter env file is optional: without a configured key, Jev reports a provider hold. Credentials stay in the Python service.
+
+In another terminal:
+
+```bash
+cd apps/web
+npm ci
+npm run build
+IMX_BACKEND_URL=http://127.0.0.1:8765 \
+IMX_WEB_ORIGIN=http://127.0.0.1:4317 \
+  npm start -- --hostname 127.0.0.1 --port 4317
+```
+
+Open [Jobs](http://127.0.0.1:4317/jobs), [Pipeline](http://127.0.0.1:4317/pipeline) or [Desk](http://127.0.0.1:4317/). Both processes must use the same frontend origin. Search results and recommendations never submit applications automatically. Labelled fixture previews are available at `/preview`, `/preview/jobs` and `/preview/pipeline`.
+
+The [service guide](apps/service/README.md) documents configuration, local control boundaries and recovery. The [frontend guide](apps/web/README.md) documents its routes and test harnesses. Email/calendar connections remain a [design](docs/integrations/README.md); tailored documents and cover letters have an [offline factual prototype](docs/documents/README.md). The [performance report](docs/performance/benchmarks.md) distinguishes local measurements from modeled capacity.
 
 ## Set up your profile
 
@@ -117,7 +149,12 @@ The repository is a uv workspace:
 | `packages/candidate` | profile loading and saved answers |
 | `packages/generation` | factual form answers |
 | `packages/browser` | the Playwright runtime and the local mock ATS (`scripts/mock_ats.py`) |
+| `packages/jobs` | OpenCLI discovery, source evidence and listing deduplication |
+| `packages/selection` | Jev decisions, preference gates and candidate-scoped caching |
+| `packages/pipeline` | tracker, source-preserving imports and revision checks |
 | `apps/cli` | the CLI and the reusable runner (`interviewmaxxing_cli.runner`, also used by the local service) |
+| `apps/service` | local HTTP bridge, durable tasks and presentation contracts |
+| `apps/web` | Next.js jobs browser, pipeline and application desk |
 
 Contracts, import paths and service interfaces are documented in [CONTRACTS.md](CONTRACTS.md); worktree ownership is in [WORKTREES.md](WORKTREES.md).
 
@@ -129,3 +166,13 @@ uv run pytest e2e              # the end-to-end suite alone
 ```
 
 Tests only use fictional data and a temporary `IMX_HOME`. On an end-to-end failure, CLI logs, screenshots, HTML and page text are copied to the ignored `e2e/.artifacts/<test>/`.
+
+Verify the dashboard separately from `apps/web`:
+
+```bash
+npm run typecheck
+npm test
+npm run test:e2e
+```
+
+The browser suite builds and serves the production frontend on an available local port. The separate frontend-to-Python acceptance harness is documented in [apps/web/README.md](apps/web/README.md). Offline performance prototype tests run with `python3 -m unittest discover -s tests -t .` from `benchmarks/performance`.

@@ -1,10 +1,12 @@
 # Interviewmaxxing worktrees
 
-Eight worktrees are active for Opus 5.5 workers, coordinated by Astra. The user expanded the MVP to include OpenCLI job discovery, Jev selection through OpenRouter, and a pipeline tracker. Every worktree has a bounded implementation package; reviewed workers move to their next dependency-ready package.
+Eight implementation worktrees and one performance worktree are coordinated by Astra. The user expanded the MVP to include OpenCLI job discovery, Jev selection through OpenRouter, and a pipeline tracker. Every worker receives a bounded implementation or review package.
+
+Current ownership is in [INTEGRATION_STATUS.md](INTEGRATION_STATUS.md). After Claude reached its September 22 usage limit, the user assigned Astra High implementation workers and Astra Max reviewers; the frontend uses Astra Max. Native workers communicate through the agent mailbox while editing their assigned worktrees. Historical Superset terminal sessions are idle and remain available for inspection. A return to Claude requires a clean task-boundary handoff so there is only one writer for each file.
 
 ## Workspace scope
 
-All eight isolated local worktrees have been created in the Interviewmaxxing Superset project. They initially branched from `j-workspace` at `c68643a`. Refresh the shared documentation from the coordinator before dispatching a task. Workers remain unassigned until Astra sends a bounded task.
+All eight isolated implementation worktrees have been created in the Interviewmaxxing Superset project. They initially branched from `j-workspace` at `c68643a`. A separate `build/performance-runtime` worktree contains the reviewed design and offline benchmark prototype. Refresh the shared documentation from the coordinator before dispatching a task.
 
 | Workspace name | Branch | MVP status | Ownership |
 | --- | --- | --- | --- |
@@ -31,6 +33,8 @@ In parallel, the browser worker can build an independent localhost fixture serve
 The user's request to apply supplies job choice and submission authorization. Ask only for information or interactions required to complete that request. Keep the parked worktrees available without starting their roadmap tasks. Active workers use separate SQLite databases, browser profiles, artifacts and mock-server ports for their tests.
 
 ## Superset control protocol
+
+This is the verified terminal control path for Claude sessions. During the Astra takeover, use the native owner's mailbox; do not start another writer in these terminals. A completed native agent needs a follow-up task to start a new turn; a message alone does not reactivate it.
 
 Superset provides terminal transport. Astra tracks dependencies, task ownership and completion. The command families are documented in the [Superset CLI reference](https://docs.superset.sh/cli/cli-reference) and [orchestration guide](https://docs.superset.sh/orchestration).
 

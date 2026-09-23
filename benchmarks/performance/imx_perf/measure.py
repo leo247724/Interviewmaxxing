@@ -151,9 +151,8 @@ def measure_store(tmp: Path, n: int = 100) -> dict[str, Any]:
 
 
 def measure_jobs(tmp: Path, a: Assumptions, sizes: tuple[int, ...] = (1000, 5000)) -> dict[str, Any]:
-    from interviewmaxxing_jobs import JobStore
-
     from interviewmaxxing_core import JobListing, SelectionPreferences, snapshot_hash
+    from interviewmaxxing_jobs import JobStore
 
     out: dict[str, Any] = {}
     pop = Population(a, seed=42)
@@ -218,6 +217,7 @@ class _Bot:
 
 
 def measure_selection(tmp: Path, a: Assumptions, n: int = 60) -> dict[str, Any]:
+    from interviewmaxxing_core import JobListing, SelectionPreferences
     from interviewmaxxing_selection import (
         ApiKey,
         CandidateEvidence,
@@ -225,8 +225,6 @@ def measure_selection(tmp: Path, a: Assumptions, n: int = 60) -> dict[str, Any]:
         SelectionService,
         SelectionStore,
     )
-
-    from interviewmaxxing_core import JobListing, SelectionPreferences
     try:
         from interviewmaxxing_selection.rubric import RUBRIC_VERSION
     except Exception:  # pragma: no cover
