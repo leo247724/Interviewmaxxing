@@ -33,3 +33,6 @@ env.local
 .env.*
 !.env.example
 .venv-task/
+
+# End-to-end failure artifacts (screenshots, HTML, CLI logs)
+/e2e/.artifacts/
