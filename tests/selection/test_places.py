@@ -129,3 +129,25 @@ def test_remote_eligibility_status(
     stated: str | None, preferred: str, expected: RemoteRegionStatus
 ) -> None:
     assert remote_eligibility_status(stated, preferred) is expected
+
+
+@pytest.mark.parametrize("stated", [
+    "United States (except California)", "United States, excluding TX",
+    "United States; Texas only", "United States; Canada only",
+    "United States, subject to state approval", "United States (selected locations)",
+    "United States, California", "Worldwide except the United States",
+])
+def test_compound_restrictions_never_disappear_behind_country(stated: str) -> None:
+    assert remote_eligibility_status(stated, "United States") is RemoteRegionStatus.AMBIGUOUS
+
+
+@pytest.mark.parametrize("stated", ["US", "United States", "US only", "US and Canada", "United States, Canada"])
+def test_explicit_whole_country_eligibility_remains_positive(stated: str) -> None:
+    assert remote_eligibility_status(stated, "United States") is RemoteRegionStatus.MATCH
+
+
+@pytest.mark.parametrize("stated", ["Austin, ON, Canada", "Austin, Manitoba, Canada", "Austin, CA, Canada"])
+def test_foreign_country_is_not_detached_from_locality(stated: str) -> None:
+    places = parse_places(stated)
+    assert places and all(p.country == "CA" for p in places)
+    assert not any(same_place(p, AUSTIN) for p in places)

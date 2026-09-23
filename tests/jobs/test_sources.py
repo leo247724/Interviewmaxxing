@@ -4,7 +4,10 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+import pytest
+
 from interviewmaxxing_core import (
+    CompensationFloor,
     CompensationPeriod,
     DescriptionCompleteness,
     JobListing,
@@ -13,6 +16,7 @@ from interviewmaxxing_core import (
     LocationPriority,
     SourceSearchState,
     WorkArrangement,
+    meets_floor,
 )
 from interviewmaxxing_jobs.sources import (
     BuiltInAdapter,
@@ -502,3 +506,33 @@ def test_remote_cards_preserve_restrictions_before_ranking(clock: Clock) -> None
         for observation in observations:
             assert observation.listing.remote_eligibility == region
             assert remote_eligibility(observation.listing, query) == expected
+
+
+@pytest.mark.parametrize("source", ["indeed", "builtin"])
+@pytest.mark.parametrize(("visible", "comparable"), [
+    ("Est. $110,000 - $130,000 per year", False),
+    ("CAD $110,000 - $130,000 per year", False),
+    ("EUR 110,000 - 130,000 per year", False),
+    ("USD $110,000 - $130,000 per year", True),
+    ("$110,000 - $130,000 per year", True),
+])
+def test_schema_pay_cannot_bypass_visible_qualifiers(
+    source: str, visible: str, comparable: bool, clock: Clock
+) -> None:
+    payload = {"posting": {"title": "Acquisition Lead", "baseSalary": {
+        "currency": "USD", "value": {"minValue": 110000, "maxValue": 130000,
+                                        "unitText": "YEAR"}}},
+        "header_lines": ["Acquisition Lead", visible]}
+    if source == "indeed":
+        observed = indeed.detail_observation(payload, "aaaaaaaaaaaaaaaa", observed_at=clock(),
+                                             query_id=None, leg="fictional")
+    else:
+        card = builtin.Card(id="9000099", title="Acquisition Lead",
+            url="https://builtin.com/job/acquisition-lead/9000099", salary=visible)
+        observed = builtin.detail_observation(payload, card, observed_at=clock(),
+                                              query_id=None, leg="fictional")
+    pay = observed.listing.compensation
+    assert pay is not None and pay.raw_text == visible
+    assert pay.is_comparable is comparable
+    floor = CompensationFloor(amount=100_000, currency="USD", period=CompensationPeriod.YEAR)
+    assert meets_floor(pay, floor) is (True if comparable else None)

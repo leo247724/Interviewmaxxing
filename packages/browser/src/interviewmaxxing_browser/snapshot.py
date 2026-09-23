@@ -12,7 +12,7 @@ from __future__ import annotations
 from functools import cache
 from importlib.resources import files
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Raw(BaseModel):
@@ -141,10 +141,16 @@ class DomCaptchaToken(_Raw):
 
 class DomRecord(_Raw):
     group: int
-    """Sibling group this element belongs to (same parent, tag and role)."""
+    """Sibling group this element belongs to (same parent, possibly mixed tags/roles)."""
     text: str
     ancestors: list[int]
     """Indexes of enclosing record candidates, nearest first."""
+
+
+class DomConfirmationScope(_Raw):
+    heading: str | None
+    text: str
+    """One heading-delimited section, or one ungrouped leaf statement."""
 
 
 class DomSnapshot(_Raw):
@@ -155,6 +161,8 @@ class DomSnapshot(_Raw):
     body_text: str
     record_members: list[DomRecord]
     """Members of repeated sibling groups of block elements (record candidates)."""
+    confirmation_scopes: list[DomConfirmationScope] = Field(default_factory=list)
+    """Local scopes only; missing scope evidence never implies a single-record page."""
     ld_json: list[str]
     meta: DomMeta
     forms: list[DomForm]

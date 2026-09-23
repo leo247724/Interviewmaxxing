@@ -73,9 +73,17 @@ def build_app(
         def listing_exists(listing_id: str) -> bool | None:
             return None if listings is None else listings.get_listing(listing_id) is not None
 
+        def listing_aliases(ids: Any) -> dict[str, list[str]]:
+            read = getattr(listings, "listing_aliases", None)
+            if read is None:
+                return {listing_id: [listing_id] for listing_id in ids}
+            result: dict[str, list[str]] = read(ids)
+            return result
+
         pipeline = PipelineApi(
             config.paths, config.candidate_id,
             selection_lookup=selection_lookup, listing_exists=listing_exists,
+            listing_aliases=listing_aliases,
         )
         jobs = JobsApi(
             state=state, candidate_id=config.candidate_id, state_db=config.paths.state_db,
