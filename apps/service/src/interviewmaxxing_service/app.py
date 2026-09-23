@@ -8,6 +8,7 @@ from typing import Any
 
 from interviewmaxxing_core import CandidateProfile
 
+from .application_links import ApplicationLinks
 from .candidate import CandidateGateway
 from .config import ServiceConfig
 from .executor import Dispatcher
@@ -82,6 +83,16 @@ def build_app(
             decisions=decisions, unavailable=unavailable,
         )
         jobs_ref["jobs"] = jobs
+
+        def track_listing(listing_id: str) -> str:
+            view, _created = jobs.track(listing_id)
+            assert view.pipeline_entry_id is not None
+            return view.pipeline_entry_id
+
+        service.application_links = ApplicationLinks(
+            pipeline, get_listing=lambda lid: listings.get_listing(lid) if listings else None,
+            track_listing=track_listing,
+        )
         return ServiceApp(config=config, service=service, pipeline=pipeline, jobs=jobs, state=state,
                           ownership=ownership)
     except BaseException:

@@ -171,9 +171,11 @@ def wait_for(h: Harness, app_id: str, states: set[str], timeout: float = 120.0) 
         time.sleep(0.2)
 
 
-def start(h: Harness, url: str, resume_id: str = "resume_supplied") -> Any:
+def start(h: Harness, url: str, resume_id: str = "resume_supplied",
+          pipeline_entry_id: str | None = None) -> Any:
     return h.client.post(
-        "/applications", {"applicationUrl": url, "profile": PROFILE, "resumeId": resume_id}
+        "/applications", {"applicationUrl": url, "profile": PROFILE, "resumeId": resume_id,
+                          "pipelineEntryId": pipeline_entry_id}
     )
 
 
@@ -186,7 +188,12 @@ def test_standard_application_submits_once_with_receipt_and_upload(
 ) -> None:
     with real_service(home, fictional_site) as h:
         assert h.client.get("/healthz").json["runner"] == "available"
-        r = start(h, ats.url("standard"))
+        entry = h.client.post("/pipeline/entries", {
+            "lane": "saved",
+            "fields": {"company": "Brambleway Analytics", "role": "Senior Data Platform Engineer"},
+            "applicationUrl": ats.url("standard"),
+        }).json
+        r = start(h, ats.url("standard"), pipeline_entry_id=entry["id"])
         assert r.status == 201, r.json
         app_id = r.json["id"]
         view = wait_for(h, app_id, STATES_DONE)
@@ -203,7 +210,12 @@ def test_standard_application_submits_once_with_receipt_and_upload(
         assert view["job"]["title"] == "Senior Data Platform Engineer"
 
         # Asking again is the same application; nothing is sent twice.
-        again = start(h, ats.url("standard"))
+        [linked] = h.client.get("/pipeline").json["entries"]
+        assert linked["application"]["applicationId"] == app_id
+        assert linked["application"]["state"] == "SUBMITTED"
+        assert linked["application"]["confirmationAuthority"] == "site"
+        assert linked["application"]["confirmationReference"] == receipt["confirmationReference"]
+        again = start(h, ats.url("standard"), pipeline_entry_id=entry["id"])
         assert again.status == 200 and again.json["id"] == app_id
         assert again.json["state"] == "SUBMITTED"
         assert ats.submissions("standard")["accepted_count"] == 1
@@ -264,10 +276,18 @@ def test_uncertain_submission_is_locked_then_reconciled_from_the_site(
     home: LocalPaths, ats: MockAts, fictional_site: FictionalSite
 ) -> None:
     with real_service(home, fictional_site) as h:
-        app_id = start(h, ats.posting("uncertain")).json["id"]
+        entry = h.client.post("/pipeline/entries", {
+            "lane": "saved",
+            "fields": {"company": "Brambleway Analytics", "role": "Senior Data Platform Engineer"},
+            "applicationUrl": ats.posting("uncertain"),
+        }).json
+        app_id = start(h, ats.posting("uncertain"), pipeline_entry_id=entry["id"]).json["id"]
         view = wait_for(h, app_id, STATES_DONE)
         assert view["state"] == "SUBMISSION_UNKNOWN", view["events"][-5:]
         assert view["receipt"] is None and view["uncertain"]["reason"]
+        [linked] = h.client.get("/pipeline").json["entries"]
+        assert linked["application"]["state"] == "SUBMISSION_UNKNOWN"
+        assert linked["application"]["confirmationAuthority"] is None
         assert ats.submissions("uncertain")["accepted_count"] == 1
 
         assert h.client.post(f"/applications/{app_id}/resume", {}).status == 409
@@ -286,6 +306,10 @@ def test_uncertain_submission_is_locked_then_reconciled_from_the_site(
         h.client.post(f"/applications/{app_id}/reconcile", {"kind": "recheck"})
         view = wait_for(h, app_id, STATES_DONE)
         assert view["state"] == "SUBMITTED", view["events"][-5:]
+        [linked] = h.client.get("/pipeline").json["entries"]
+        assert linked["application"]["state"] == "SUBMITTED"
+        assert linked["application"]["confirmationMethod"] == "SITE_CONFIRMATION"
+        assert linked["application"]["confirmationAuthority"] == "site"
         assert view["receipt"]["confirmationMethod"] == "SITE_CONFIRMATION"
         assert view["receipt"]["confirmationAuthority"] == "site"
         assert view["receipt"]["confirmationReference"] == record["confirmation_reference"]
