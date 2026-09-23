@@ -13,6 +13,10 @@ members = [
     "interviewmaxxing-cli",
     "interviewmaxxing-core",
     "interviewmaxxing-generation",
+    "interviewmaxxing-jobs",
+    "interviewmaxxing-pipeline",
+    "interviewmaxxing-selection",
+    "interviewmaxxing-service",
 ]
 
 [manifest.dependency-groups]
@@ -252,6 +256,72 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "interviewmaxxing-core", editable = "packages/core" }]
+
+[[package]]
+name = "interviewmaxxing-jobs"
+version = "0.1.0"
+source = { editable = "packages/jobs" }
+dependencies = [
+    { name = "interviewmaxxing-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "interviewmaxxing-core", editable = "packages/core" },
+    { name = "pydantic", specifier = ">=2.8,<3" },
+]
+
+[[package]]
+name = "interviewmaxxing-pipeline"
+version = "0.1.0"
+source = { editable = "packages/pipeline" }
+dependencies = [
+    { name = "interviewmaxxing-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "interviewmaxxing-core", editable = "packages/core" }]
+
+[[package]]
+name = "interviewmaxxing-selection"
+version = "0.1.0"
+source = { editable = "packages/selection" }
+dependencies = [
+    { name = "interviewmaxxing-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "interviewmaxxing-core", editable = "packages/core" },
+    { name = "pydantic", specifier = ">=2.8,<3" },
+]
+
+[[package]]
+name = "interviewmaxxing-service"
+version = "0.1.0"
+source = { editable = "apps/service" }
+dependencies = [
+    { name = "interviewmaxxing-candidate" },
+    { name = "interviewmaxxing-cli" },
+    { name = "interviewmaxxing-core" },
+    { name = "interviewmaxxing-jobs" },
+    { name = "interviewmaxxing-pipeline" },
+    { name = "interviewmaxxing-selection" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "interviewmaxxing-candidate", editable = "packages/candidate" },
+    { name = "interviewmaxxing-cli", editable = "apps/cli" },
+    { name = "interviewmaxxing-core", editable = "packages/core" },
+    { name = "interviewmaxxing-jobs", editable = "packages/jobs" },
+    { name = "interviewmaxxing-pipeline", editable = "packages/pipeline" },
+    { name = "interviewmaxxing-selection", editable = "packages/selection" },
+    { name = "pydantic", specifier = ">=2.8,<3" },
+]
 
 [[package]]
 name = "librt"
