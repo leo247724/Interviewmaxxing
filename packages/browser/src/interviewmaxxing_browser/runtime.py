@@ -72,6 +72,7 @@ from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page
 from .signals import (
     APPLY_LINK,
+    CONFIRMATION_LINK,
     NOT_SUBMITTED_STATUS,
     PENDING,
     STATUS_LINK,
@@ -709,25 +710,42 @@ class GenericApplicationBrowser:
         rows carrying status or job identity) is read one record at a time: a status
         counts only with identity inside the same *outermost* record, never with text
         from another record or from the page around them, and a record that also
-        shows a not-submitted status is ambiguous. A page without such records is one
-        record. The acceptance statement must be affirmative, and a job id or title
+        shows a not-submitted status is ambiguous. Without record wrappers, only
+        heading-delimited receipt/job sections or a single leaf statement can tie facts. The acceptance statement must be affirmative, and a job id or title
         must tie it to this application; a reference seen for the first time counts
         only immediately after our own submit (``fresh_reference_ties``)."""
         snapshot = model.snapshot
         candidates: list[tuple[str, str]] = []  # (statement, record text)
         records = application_records(snapshot)
+        single_receipt = False
         if records is None:
-            # One record, or records whose boundaries could not be established: the
-            # whole page must then be unambiguous. A not-submitted status anywhere, or
-            # several different job ids, means statuses and identities may belong to
-            # different applications, so nothing is tied.
-            page = f"{snapshot.title}\n{snapshot.body_text}"
-            statement = affirmative_acceptance(snapshot.title) or affirmative_acceptance(
-                snapshot.body_text[:3000]
-            )
-            ambiguous = NOT_SUBMITTED_STATUS.search(page) or len({i.lower() for i in job_ids(page)}) > 1
-            if statement and not ambiguous:
-                candidates.append((statement, page))
+            # No known repeated group is NOT evidence that the entire page is one
+            # application. Use explicit local boundaries, never title + whole body.
+            scopes = snapshot.confirmation_scopes
+            for scope in scopes:
+                heading = scope.heading
+                if heading is not None:
+                    receipt = affirmative_acceptance(heading)
+                    names_job = (
+                        bool(tie.job_title and normalize_text(tie.job_title) == normalize_text(heading))
+                        or bool(tie.external_job_id and tie.external_job_id.lower() in
+                                {i.lower() for i in job_ids(heading)})
+                    )
+                    status_heading = normalize_text(heading) in {
+                        "status", "application status", "submission status", "confirmation", "thank you",
+                    }
+                    if not (receipt or names_job or status_heading):
+                        continue  # e.g. "My applications" is a collection, not a job record
+                statement = affirmative_acceptance(scope.text)
+                ambiguous = (NOT_SUBMITTED_STATUS.search(scope.text)
+                             or len({i.lower() for i in job_ids(scope.text)}) > 1)
+                if statement and not ambiguous:
+                    # An ungrouped paragraph is not automatically one record either:
+                    # its identity and reference must be in the acceptance clause.
+                    candidates.append((statement, scope.text if heading is not None else statement))
+                    single_receipt = bool(
+                        len(scopes) == 1 and heading and affirmative_acceptance(heading)
+                    )
         else:
             for record in records:
                 statement = affirmative_acceptance(record)
@@ -745,7 +763,7 @@ class GenericApplicationBrowser:
                 ties.append(f"job title {tie.job_title!r} shown with it")
             refs = [r for r in confirmation_references(record) if r not in tie.known_references]
             # A new reference ties only a single-record result page, never one of several.
-            if refs and fresh_reference_ties and records is None:
+            if refs and fresh_reference_ties and single_receipt:
                 ties.append(f"confirmation reference {refs[0]!r} appeared after the submit")
             if ties:
                 return [f"acceptance text {statement!r}", *ties], (refs[0] if refs else None)
@@ -883,7 +901,13 @@ class GenericApplicationBrowser:
                 notes.append(f"site says {pending.group(0)!r}")
             if hop == max_hops:
                 break
-            link = next((lk for lk in model.snapshot.links if STATUS_LINK.search(lk.text)), None)
+            origin = urlsplit(model.snapshot.url)
+            link = next((lk for lk in model.snapshot.links if (
+                STATUS_LINK.search(lk.text) or (
+                    CONFIRMATION_LINK.search(lk.text)
+                    and (urlsplit(lk.href).scheme, urlsplit(lk.href).netloc) == (origin.scheme, origin.netloc)
+                )
+            )), None)
             if link is not None and link.href.split("#")[0] != model.snapshot.url.split("#")[0]:
                 await self.driver.goto(link.href)
                 continue
