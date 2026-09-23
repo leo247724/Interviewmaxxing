@@ -1,0 +1,19 @@
+[project]
+name = "interviewmaxxing-pipeline"
+version = "0.1.0"
+description = "Local job pipeline tracker: candidate-scoped board, history and validated workbook import."
+requires-python = ">=3.12"
+dependencies = ["interviewmaxxing-core"]
+
+[project.scripts]
+interviewmaxxing-pipeline = "interviewmaxxing_pipeline.cli:main"
+
+[tool.uv.sources]
+interviewmaxxing-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interviewmaxxing_pipeline"]
