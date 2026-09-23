@@ -101,3 +101,20 @@ def test_unknown_source_is_skipped_and_excluded_titles_are_counted(tmp_path: Pat
     assert results["ziprecruiter"].state is SourceSearchState.SKIPPED
     assert results["builtin"].result_count == 1
     assert results["builtin"].message and "1 titles matched excluded keywords" in results["builtin"].message
+
+
+def test_run_id_and_per_source_callbacks_for_the_service(tmp_path: Path, clock: Clock) -> None:
+    events: list[tuple[str, str]] = []
+    svc = service(tmp_path, FakeTransport(fixture_routes({"linkedin": "login_wall"})), clock)
+    q = query(sources=["linkedin", "builtin"], role_focus="Fictional paid acquisition focus.")
+    run = svc.run(q, run_id="task_fictional_1",
+                  on_source_start=lambda s: events.append(("start", s)),
+                  on_source=lambda r: events.append((r.state.value, r.source)))
+    assert run.id == "task_fictional_1"
+    assert events == [("start", "linkedin"), ("NEEDS_USER", "linkedin"),
+                      ("start", "builtin"), ("OK", "builtin")]
+    stored = svc.store.get_run("task_fictional_1")
+    assert stored is not None and stored.results == run.results
+    assert stored.query.role_focus == "Fictional paid acquisition focus."
+    # Listings are stored before the callback reports the finished source.
+    assert svc.store.list_listings(ids=run.results[1].listing_ids)

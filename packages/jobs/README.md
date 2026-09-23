@@ -22,6 +22,10 @@ service = JobSearchService(
     max_pages_per_leg=3,
 )
 run = service.run(JobSearchQuery())    # -> JobSearchRun (saved); one SourceSearchResult per source
+run = service.run(query, run_id="task_123",               # optional: name the run (e.g. S2 task id)
+                  on_source_start=lambda source: ...,     # optional: before each source starts
+                  on_source=lambda result: ...)           # optional: canonical SourceSearchResult
+                                                          # as soon as that source's listings are stored
 
 store.get_run(run_id) -> JobSearchRun | None
 store.latest_run() -> JobSearchRun | None
@@ -35,10 +39,12 @@ rank_listings(listings, query_or_preferences) -> list[JobListing]
 location_tier(listing, query_or_preferences) -> int
 ```
 
-`JobSearchService.run` is synchronous (minutes for a full search). S1 should run it in
-its background dispatcher and poll `store.get_run`. Per-source results are only
-available when the run finishes; to show progress per source, run one source per
-call (`JobSearchQuery(sources=["linkedin"], ...)`).
+`JobSearchService.run` is synchronous (minutes for a full search) and runs sources one
+after another, each in its own session; it never runs concurrent actions on one
+session. S2 should run it in its background dispatcher. With `on_source_start` /
+`on_source` one run can report per-source progress under the service's own `run_id`
+(callbacks run on the search thread; an exception from one ends the run unsaved).
+One-source-per-call queries also still work.
 
 ### Per-source states (never an empty "success" when blocked)
 
@@ -63,6 +69,23 @@ call (`JobSearchQuery(sources=["linkedin"], ...)`).
   with unstated arrangement, then eligible remote, then the rest; closed last.
 * `BALANCED` alternates legs 1:1; `PREFER_REMOTE` reverses the order and weights.
 * The run stores the query, including `location_priority`.
+
+### Title seeds and role focus
+
+`JobSearchQuery.title_phrases` are search seeds in preferred order (default: paid media
+manager, senior paid media manager, performance marketing manager, growth marketing
+manager, demand generation manager, digital marketing manager, marketing manager,
+marketing director), not an eligibility allowlist. Nothing is filtered by title: a
+"Head of Growth" or "Director of Marketing" a source returns is stored like any other
+listing, and `role_focus` (stored with the query and run) is what selection judges
+semantically. Only the user's explicit `excluded_keywords` drop titles.
+
+To keep searches bounded, LinkedIn combines up to 4 seeds per search as
+`(a) OR (b) ...` (unquoted: quoted phrases act as exact-title filters there) and
+Google up to 3 as `a OR b ...`; Indeed and Built In showed no reliable OR, so they
+search one seed per search. At most 8 searches per location target are planned;
+extra seeds are named in the source `message`. Austin searches still come first and
+the per-source result limit is split 4:1 in their favour, most preferred seeds first.
 
 ### Identity and dedupe (D0R2)
 
@@ -94,10 +117,10 @@ IMX_JOBS_LIVE=1 pytest tests/jobs/test_cli.py -k live
 
 | source | search | detail | notes |
 | --- | --- | --- | --- |
-| LinkedIn | `/jobs/search/?keywords&location&f_WT` (1 onsite, 2 remote, 3 hybrid) | `/jobs/view/<id>/` top card | The installed `opencli linkedin search` replays the internal Voyager API and is not used. Background tabs are `document.hidden`: only ~7 of 25 cards render and descriptions do not render, so the rest are read from job pages (budgeted) and descriptions stay `NONE`. External apply links are decoded from LinkedIn's redirect. |
+| LinkedIn | `/jobs/search/?keywords=(seed) OR (seed)&location&f_WT` (1 onsite, 2 remote, 3 hybrid) | `/jobs/view/<id>/` top card | The installed `opencli linkedin search` replays the internal Voyager API and is not used. Background tabs are `document.hidden`: only ~7 of 25 cards render and descriptions do not render, so the rest are read from job pages (budgeted) and descriptions stay `NONE`. External apply links are decoded from LinkedIn's redirect. |
 | Built In | `/jobs/<remote\|hybrid\|office>?search&city&state&country=USA&allLocations=true&page` | schema.org JobPosting | Explicit salary bounds, `validThrough`, remote country. Mixed labels ("In-Office or Remote") stay `UNKNOWN`. APPLY is a Built In redirect and is not followed. |
 | Indeed | `/jobs?q&l` (`l=Remote` for US-wide remote), `start` | `/viewjob?jk=` JobPosting | Commute estimates are stripped from locations; "Estimated" pay has no bounds; "Apply now" is Indeed-hosted, not an employer URL. |
-| Google Jobs | `/search?q=<title> jobs in <place>&udm=8` | detail pane after a structured click on the result | First results page only; descriptions are usually truncated (`PARTIAL`). |
+| Google Jobs | `/search?q=<seed OR seed> jobs in <place>&udm=8` | detail pane after a structured click on the result | First results page only; descriptions are usually truncated (`PARTIAL`). A pane whose heading does not match the selected result is skipped and reported; the card is still stored. |
 
 Extraction scripts in `src/interviewmaxxing_jobs/js/` are read-only (enforced by a
 test). Sessions are restricted to `imx-jobs-<source>`; the transport never binds a

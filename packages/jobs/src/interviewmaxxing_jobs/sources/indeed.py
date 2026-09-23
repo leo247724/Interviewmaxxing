@@ -29,6 +29,7 @@ from ..text import (
     split_indeed_location,
 )
 from .base import (
+    PLAIN,
     AccessProblem,
     BudgetPlan,
     Observation,
@@ -40,6 +41,7 @@ from .base import (
     expired,
     is_telecommute,
     make_listing,
+    plan_note,
     posting_address,
     posting_org,
     posting_remote_region,
@@ -179,7 +181,7 @@ class IndeedAdapter:
         seen: set[str] = set()
         pages = 0
         more_available = False
-        notes: list[str] = []
+        notes: list[str] = [n for n in (plan_note(ctx.query, PLAIN),) if n]
         plan = BudgetPlan(ctx.limit, legs, ctx.query.location_priority)
         for index, leg in enumerate(legs):
             budget = plan.budget(index)

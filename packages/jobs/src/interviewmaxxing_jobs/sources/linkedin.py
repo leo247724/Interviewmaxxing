@@ -37,18 +37,22 @@ from .base import (
     AccessProblem,
     BudgetPlan,
     Observation,
+    PhraseSyntax,
     SearchContext,
     SearchLeg,
     SourceOutcome,
     build_legs,
     check_access,
     make_listing,
+    plan_note,
 )
 
 NAME = "linkedin"
 HOME = "https://www.linkedin.com/jobs/"
 PAGE_SIZE = 25
 LOGIN_PATHS = ("/authwall", "/login", "/checkpoint", "/uas/", "/signup")
+SYNTAX = PhraseSyntax(batch_size=4, style="grouped_or")
+"""LinkedIn honours ``(a) OR (b)`` in the keyword box and stays semantic."""
 _WORK_TYPE = {WorkArrangement.ONSITE: "1", WorkArrangement.REMOTE: "2", WorkArrangement.HYBRID: "3"}
 _TOP_STOP = {
     "Apply", "Easy Apply", "Save", "Saved", "Unsave", "Take the next step in your job search",
@@ -211,7 +215,7 @@ class LinkedInAdapter:
     name = NAME
 
     def search(self, ctx: SearchContext) -> SourceOutcome:
-        legs = build_legs(ctx.query)
+        legs = build_legs(ctx.query, SYNTAX)
         planned: list[tuple[Card, SearchLeg]] = []
         seen: set[str] = set()
         reserved = 0
@@ -277,7 +281,7 @@ class LinkedInAdapter:
             elif card.rendered:
                 observations.append(card_observation(card, observed_at=ctx.clock(),
                                                      query_id=ctx.query.id, leg=leg.label))
-        notes = []
+        notes = [n for n in (plan_note(ctx.query, SYNTAX),) if n]
         if skipped_unrendered:
             notes.append(f"{skipped_unrendered} result cards were not rendered in the background "
                          "window and exceeded the detail budget")

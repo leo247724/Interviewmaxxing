@@ -34,16 +34,20 @@ from .base import (
     AccessProblem,
     BudgetPlan,
     Observation,
+    PhraseSyntax,
     SearchContext,
     SearchLeg,
     SourceOutcome,
     build_legs,
     check_access,
     make_listing,
+    plan_note,
 )
 
 NAME = "google"
 HOME = "https://www.google.com/"
+SYNTAX = PhraseSyntax(batch_size=3, style="or")
+"""Google honours ``a OR b`` in an ordinary query."""
 _POSTED = re.compile(r"\b(?:ago|yesterday|today|just posted)\b", re.I)
 _DESCRIPTION_END = ("Show full description", "Report this listing", "Show less")
 
@@ -163,7 +167,7 @@ class GoogleAdapter:
     name = NAME
 
     def search(self, ctx: SearchContext) -> SourceOutcome:
-        legs = build_legs(ctx.query)
+        legs = build_legs(ctx.query, SYNTAX)
         observations: list[Observation] = []
         seen: set[str] = set()
         pages = 0
@@ -205,7 +209,8 @@ class GoogleAdapter:
                     item, text, observed_at=ctx.clock(), query_id=ctx.query.id,
                     leg=leg.label, detail=detail))
             plan.spent(index, taken)
-        notes = ["Google shows only its first results page here"]
+        notes = ["Google shows only its first results page here",
+                 *[n for n in (plan_note(ctx.query, SYNTAX),) if n]]
         if ctx.query.posted_within_days:
             notes.append("posted_within_days is not applied on Google")
         if problems:

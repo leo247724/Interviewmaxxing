@@ -27,11 +27,12 @@ from ..opencli import BrowserTransport, extraction_script
 
 @dataclass(frozen=True)
 class SearchLeg:
-    """One search the source runs: a title phrase in one place."""
+    """One search the source runs: one batch of title seeds in one place."""
 
     text: str
-    """Text typed into the source's keyword box (title phrase plus custom keywords)."""
-    title_phrase: str
+    """Text typed into the source's keyword box (seed phrases plus custom keywords)."""
+    title_phrases: tuple[str, ...]
+    """The query's seed phrases this leg covers (search seeds, not a title filter)."""
     target: Literal["onsite", "remote"]
     location: str
     """Onsite city, or the remote eligibility region."""
@@ -44,32 +45,80 @@ class SearchLeg:
         return f"{self.text!r} {kinds} in {self.location}"
 
 
-def build_legs(query: JobSearchQuery) -> list[SearchLeg]:
+@dataclass(frozen=True)
+class PhraseSyntax:
+    """How a source's keyword box combines several seed phrases in one search.
+
+    Observed 2026-09-22: LinkedIn honours ``(a) OR (b)`` and stays semantic (quoted
+    phrases would turn into exact-phrase filters, so they are not used); Google
+    honours ``a OR b``; Indeed and Built In showed no reliable OR, so they search one
+    seed per leg."""
+
+    batch_size: int = 1
+    style: Literal["plain", "grouped_or", "or"] = "plain"
+
+
+PLAIN = PhraseSyntax()
+MAX_BATCHES_PER_TARGET = 8
+"""Upper bound on searches per location target, however many seeds are configured."""
+
+
+def search_text(phrases: Sequence[str], keywords: Sequence[str], syntax: PhraseSyntax) -> str:
+    extra = " ".join(keywords)
+    if len(phrases) == 1:
+        return f"{phrases[0]} {extra}".strip()
+    if syntax.style == "grouped_or":
+        core = " OR ".join(f"({p})" for p in phrases)
+    else:
+        core = " OR ".join(phrases)
+    return f"({core}) {extra}" if extra else core
+
+
+def phrase_batches(phrases: Sequence[str], syntax: PhraseSyntax) -> tuple[list[tuple[str, ...]], list[str]]:
+    """Seeds in their configured (preferred) order, grouped per search, and the seeds
+    left out by ``MAX_BATCHES_PER_TARGET``."""
+    size = max(1, syntax.batch_size if syntax.style != "plain" else 1)
+    batches = [tuple(phrases[i:i + size]) for i in range(0, len(phrases), size)]
+    kept = batches[:MAX_BATCHES_PER_TARGET]
+    return kept, [p for batch in batches[MAX_BATCHES_PER_TARGET:] for p in batch]
+
+
+def build_legs(query: JobSearchQuery, syntax: PhraseSyntax = PLAIN) -> list[SearchLeg]:
     """Search legs in priority order. With the default
     ``STRONGLY_PREFER_ONSITE_HYBRID`` every onsite/hybrid leg (e.g. Austin) runs
     before any remote leg; ``PREFER_REMOTE`` reverses that; ``BALANCED`` alternates
-    per title phrase. Remote legs are always kept when a remote target is set."""
-    extra = " ".join(query.keywords)
+    per seed batch. Remote legs are always kept when a remote target is set. Seeds
+    keep their configured order, so the most preferred titles are searched first."""
+    batches, _ = phrase_batches(query.title_phrases, syntax)
     onsite: list[SearchLeg] = []
     remote: list[SearchLeg] = []
-    per_phrase: list[SearchLeg] = []
-    for phrase in query.title_phrases:
-        text = f"{phrase} {extra}".strip()
+    per_batch: list[SearchLeg] = []
+    for batch in batches:
+        text = search_text(batch, query.keywords, syntax)
         for target in query.onsite:
-            leg = SearchLeg(text, phrase, "onsite", target.location, tuple(target.arrangements),
+            leg = SearchLeg(text, batch, "onsite", target.location, tuple(target.arrangements),
                             target.radius_miles)
             onsite.append(leg)
-            per_phrase.append(leg)
+            per_batch.append(leg)
         if query.remote is not None:
-            leg = SearchLeg(text, phrase, "remote", query.remote.eligible_region,
+            leg = SearchLeg(text, batch, "remote", query.remote.eligible_region,
                             (WorkArrangement.REMOTE,))
             remote.append(leg)
-            per_phrase.append(leg)
+            per_batch.append(leg)
     if query.location_priority is LocationPriority.BALANCED:
-        return per_phrase
+        return per_batch
     if query.location_priority is LocationPriority.PREFER_REMOTE:
         return remote + onsite
     return onsite + remote
+
+
+def plan_note(query: JobSearchQuery, syntax: PhraseSyntax) -> str | None:
+    """A message naming seeds beyond the search bound, if any."""
+    _, dropped = phrase_batches(query.title_phrases, syntax)
+    if not dropped:
+        return None
+    return (f"{len(dropped)} title seeds beyond the first {MAX_BATCHES_PER_TARGET} searches "
+            f"were not searched: {', '.join(dropped)}")
 
 
 _WEIGHTS = {

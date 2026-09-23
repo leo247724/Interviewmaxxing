@@ -28,7 +28,15 @@ from interviewmaxxing_jobs.sources import (
     indeed,
     linkedin,
 )
-from interviewmaxxing_jobs.sources.base import BudgetPlan, SearchLeg, build_legs, leg_budgets
+from interviewmaxxing_jobs.sources.base import (
+    MAX_BATCHES_PER_TARGET,
+    PLAIN,
+    BudgetPlan,
+    SearchLeg,
+    build_legs,
+    leg_budgets,
+    plan_note,
+)
 
 from .conftest import FakeTransport, fixture_routes
 
@@ -60,39 +68,87 @@ def by_title(listings: list[JobListing]) -> dict[str, JobListing]:
 # --- search plans -------------------------------------------------------------------
 
 
-def test_default_query_searches_austin_onsite_hybrid_before_us_wide_remote() -> None:
+SEEDS = ["paid media manager", "senior paid media manager", "performance marketing manager",
+         "growth marketing manager", "demand generation manager", "digital marketing manager",
+         "marketing manager", "marketing director"]
+
+
+def test_default_seeds_are_the_performance_marketing_titles_in_preferred_order() -> None:
     query = JobSearchQuery()
+    assert query.title_phrases == SEEDS
+    assert "not an exact job-title match" in query.role_focus
     assert query.location_priority is LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID
-    legs = build_legs(query)
-    assert [(leg.text, leg.target, leg.location) for leg in legs] == [
-        ("marketing manager", "onsite", "Austin, TX"),
-        ("marketing director", "onsite", "Austin, TX"),
-        ("marketing manager", "remote", "United States"),
-        ("marketing director", "remote", "United States"),
-    ]
+
+
+def test_plain_sources_search_each_seed_austin_first_within_a_bounded_budget() -> None:
+    query = JobSearchQuery()
+    legs = build_legs(query)  # Indeed / Built In: one seed per search
+    assert len(legs) == 16
+    assert [(leg.text, leg.target) for leg in legs[:8]] == [(s, "onsite") for s in SEEDS]
+    assert [(leg.text, leg.target) for leg in legs[8:]] == [(s, "remote") for s in SEEDS]
     assert legs[0].arrangements == (WorkArrangement.ONSITE, WorkArrangement.HYBRID)
-    assert legs[2].arrangements == (WorkArrangement.REMOTE,)
-    # Austin gets four times the remote share of a bounded limit; remote stays in.
-    assert BudgetPlan(50, legs, query.location_priority).budgets == [20, 20, 5, 5]
-    assert BudgetPlan(3, legs, query.location_priority).budgets == [2, 1, 0, 0]
+    assert legs[8].arrangements == (WorkArrangement.REMOTE,)
+    budgets = BudgetPlan(50, legs, query.location_priority).budgets
+    assert sum(budgets) == 50 and budgets[:8] == [6, 6, 5, 5, 5, 5, 5, 5] and budgets[8:] == [1] * 8
+    # A small limit reaches the most preferred Austin seeds first; remote only by carry.
+    assert BudgetPlan(3, legs, query.location_priority).budgets == [1, 1, 1] + [0] * 13
+
+
+def test_linkedin_and_google_batch_seeds_with_or() -> None:
+    query = JobSearchQuery()
+    li = build_legs(query, linkedin.SYNTAX)
+    assert [leg.target for leg in li] == ["onsite", "onsite", "remote", "remote"]
+    assert li[0].title_phrases == tuple(SEEDS[:4])
+    assert li[0].text == ("(paid media manager) OR (senior paid media manager) OR "
+                          "(performance marketing manager) OR (growth marketing manager)")
+    assert '"' not in li[0].text  # quoted phrases act as exact-title filters on LinkedIn
+    g = build_legs(query, google.SYNTAX)
+    assert len(g) == 6
+    assert google.search_text(g[0]) == (
+        "paid media manager OR senior paid media manager OR performance marketing manager "
+        "jobs in Austin, TX")
+    assert google.search_text(g[3]).startswith("remote paid media manager OR ")
+    keyed = build_legs(JobSearchQuery(title_phrases=SEEDS[:2], keywords=["B2B"], remote=None),
+                       linkedin.SYNTAX)
+    assert keyed[0].text == "((paid media manager) OR (senior paid media manager)) B2B"
+
+
+def test_many_seeds_stay_bounded_and_the_rest_are_reported() -> None:
+    seeds = [f"fictional seed {i}" for i in range(12)]
+    query = JobSearchQuery(title_phrases=seeds, remote=None)
+    assert len(build_legs(query)) == MAX_BATCHES_PER_TARGET
+    note = plan_note(query, PLAIN)
+    assert note and "4 title seeds" in note and "fictional seed 11" in note
+    assert len(build_legs(query, linkedin.SYNTAX)) == 3
+    assert plan_note(query, linkedin.SYNTAX) is None
 
 
 def test_other_location_priorities_reorder_but_keep_every_leg() -> None:
-    balanced = build_legs(JobSearchQuery(location_priority=LocationPriority.BALANCED))
+    seeds = ["marketing manager", "marketing director"]
+    balanced = build_legs(JobSearchQuery(title_phrases=seeds, location_priority=LocationPriority.BALANCED))
     assert [leg.target for leg in balanced] == ["onsite", "remote", "onsite", "remote"]
-    remote_first = build_legs(JobSearchQuery(location_priority=LocationPriority.PREFER_REMOTE))
+    remote_first = build_legs(JobSearchQuery(title_phrases=seeds,
+                                             location_priority=LocationPriority.PREFER_REMOTE))
     assert [leg.target for leg in remote_first] == ["remote", "remote", "onsite", "onsite"]
     assert leg_budgets(50, 4) == [13, 13, 12, 12]
 
 
 def test_unused_austin_budget_carries_forward_to_remote() -> None:
-    legs = build_legs(JobSearchQuery())
+    legs = build_legs(JobSearchQuery(title_phrases=["marketing manager", "marketing director"]))
     plan = BudgetPlan(10, legs, LocationPriority.STRONGLY_PREFER_ONSITE_HYBRID)
     assert plan.budgets == [4, 4, 1, 1]
-    plan.spent(0, 1)  # thin Austin market for the first title
+    plan.spent(0, 1)  # thin Austin market for the first seed
     assert plan.budget(1) == 7
     plan.spent(1, 7)
     assert plan.budget(2) == 1
+
+
+def test_results_are_not_filtered_to_seed_titles(clock: Clock) -> None:
+    # A paid-media search keeps every role the source returned, e.g. a "Director of
+    # Marketing" or "Growth Marketing Manager": eligibility is judged semantically later.
+    query = austin_manager_query(title_phrases=["paid media manager"])
+    listings, _, _, _ = run(BuiltInAdapter(), clock, query=query)
+    assert {x.title for x in listings} == {"Growth Marketing Manager", "Marketing Director"}
 
 
 def test_custom_keywords_join_the_search_text() -> None:
@@ -124,7 +180,7 @@ def test_source_search_urls_follow_the_observed_ui() -> None:
 
 
 def test_remote_outside_the_us_is_not_rewritten_as_a_us_search() -> None:
-    leg = SearchLeg("marketing manager", "marketing manager", "remote", "Canada",
+    leg = SearchLeg("marketing manager", ("marketing manager",), "remote", "Canada",
                     (WorkArrangement.REMOTE,))
     assert builtin.search_url(leg) is None
     assert indeed.search_url(leg) is None
