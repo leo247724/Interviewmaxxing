@@ -20,6 +20,10 @@ import { ApplicationWorkspace } from "./ApplicationWorkspace";
 import { PreviewBar } from "./PreviewBar";
 import { ServiceNotice } from "./ServiceNotice";
 import { RestoreNotice } from "./RestoreNotice";
+import { AppShell, type Connection } from "./shell/AppShell";
+import { takeHandoff, applicationLinks, type DeskHandoff } from "@/lib/handoff";
+import { executionProblem } from "@/lib/service/readiness";
+import { useReadiness } from "./useReadiness";
 
 const EMPTY_PROFILE: CandidateProfileInput = {
   firstName: "",
@@ -31,7 +35,7 @@ const EMPTY_PROFILE: CandidateProfileInput = {
   websiteUrl: "",
 };
 
-export type Connection = "checking" | "connected" | "unavailable";
+export type { Connection };
 
 export interface DeskActions {
   answer(input: AnswerInput): Promise<boolean>;
@@ -43,6 +47,7 @@ export interface DeskActions {
 }
 
 export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "preview"; initialScenario?: string }) {
+  const { readiness, refresh: refreshReadiness } = useReadiness(mode);
   const service = useMemo<ApplicationService>(
     () =>
       mode === "preview"
@@ -69,6 +74,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
   const [uploading, setUploading] = useState(false);
 
   const [view, setView] = useState<ApplicationView | null>(null);
+  const [handoff, setHandoff] = useState<DeskHandoff | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lostContact, setLostContact] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
@@ -154,6 +160,15 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     void loadCandidate();
   }, [loadCandidate]);
 
+  // A job chosen in the Pipeline or Jobs view only prefills the link.
+  useEffect(() => {
+    const incoming = takeHandoff();
+    if (incoming) {
+      setHandoff(incoming);
+      setApplicationUrl(incoming.applicationUrl);
+    }
+  }, []);
+
   // Poll while the service is working on the application.
   useEffect(() => {
     if (!view || !isActive(view.state)) return;
@@ -202,10 +217,16 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     setFormErrors(errors);
     setSubmitCount((count) => count + 1);
     if (Object.keys(errors).length > 0 || !resumeId) return;
-
     setStarting(true);
     try {
-      const started = await service.start({ applicationUrl: applicationUrl.trim(), profile, resumeId });
+      if (mode === "live") {
+        const problem = executionProblem(await refreshReadiness(), applicationUrl);
+        if (problem) {
+          setFormAlert(`Couldn't start the application. ${problem}`);
+          return;
+        }
+      }
+      const started = await service.start({ applicationUrl: applicationUrl.trim(), profile, resumeId, ...applicationLinks(handoff, applicationUrl) });
       setConnection("connected");
       failuresRef.current = 0;
       setLostContact(null);
@@ -216,6 +237,8 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       if (Object.keys(serviceError.fieldErrors).length > 0) {
         setFormErrors(serviceError.fieldErrors);
         setSubmitCount((count) => count + 1);
+        const sourceErrors = [serviceError.fieldErrors.pipelineEntryId, serviceError.fieldErrors.listingId].filter(Boolean);
+        if (sourceErrors.length) setFormAlert(`${sourceErrors.join(" ")} Return to Jobs or Pipeline and choose the current card before starting.`);
       } else {
         setFormAlert(
           serviceError.code === "unavailable"
@@ -287,16 +310,29 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
           setActionError("The site didn't accept some answers. They're marked below; nothing was submitted.");
           return false;
         }
-        return runAction(() => service.resume(viewId!));
+        return runAction(async () => {
+          const problem = mode === "live" ? executionProblem(await refreshReadiness(), view?.applicationUrl ?? "") : null;
+          if (problem) throw new ServiceError("invalid", problem);
+          return service.resume(viewId!);
+        });
       },
-      resume: () => runAction(() => service.resume(viewId!)),
-      reconcile: (input) => runAction(() => service.reconcile(viewId!, input)),
+      resume: () => runAction(async () => {
+        const problem = mode === "live" ? executionProblem(await refreshReadiness(), view?.applicationUrl ?? "") : null;
+        if (problem) throw new ServiceError("invalid", problem);
+        return service.resume(viewId!);
+      }),
+      reconcile: (input) => runAction(async () => {
+        const problem = mode === "live" && input.kind === "recheck" ? executionProblem(await refreshReadiness(), view?.applicationUrl ?? "") : null;
+        if (problem) throw new ServiceError("invalid", problem);
+        return service.reconcile(viewId!, input);
+      }),
       checkNow: () => {
         failuresRef.current = 0;
         setPollNonce((nonce) => nonce + 1);
       },
       startAnother: () => {
         restoreGeneration.current += 1;
+        setHandoff(null);
         if (service.mode === "live") window.sessionStorage.removeItem(ACTIVE_ID_KEY);
         setView(null);
         setActionError(null);
@@ -306,7 +342,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
         setSubmitCount(0);
       },
     }),
-    [runAction, service, viewId],
+    [runAction, service, viewId, view?.applicationUrl, mode, refreshReadiness],
   );
 
   function handleScenario(scenario: PreviewScenarioId) {
@@ -320,108 +356,90 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
   }
 
   return (
-    <>
-      <a className="skip-link" href="#main">
-        Skip to the application
-      </a>
-      {service instanceof PreviewApplicationService && (
-        <PreviewBar initial={service.scenario} onChange={handleScenario} applicationOpen={view !== null} />
-      )}
-      <div className="desk">
-        <header className="masthead">
-          <div className="masthead__brand">
-            <span className="wordmark">Interviewmaxxing</span>
-            <span className="masthead__desk">Application desk</span>
-          </div>
-          <ConnectionBadge mode={mode} connection={connection} />
-        </header>
-
-        <main id="main" className="desk__main" tabIndex={-1}>
-          {view ? (
-            <ApplicationWorkspace
-              view={view}
-              mode={mode}
-              profile={profile}
-              actions={actions}
-              actionError={actionError}
-              lostContact={lostContact}
+    <AppShell
+      mode={mode}
+      section="desk"
+      connection={connection}
+      readiness={readiness}
+      skipLabel="Skip to the application"
+      previewBar={
+        service instanceof PreviewApplicationService && (
+          <PreviewBar initial={service.scenario} onChange={handleScenario} applicationOpen={view !== null} />
+        )
+      }
+      colophon={
+        mode === "preview"
+          ? "Preview mode uses a fictional candidate and fictional job sites. Nothing is sent anywhere."
+          : "Runs on this computer. Receipts and event history are kept by your local application service."
+      }
+    >
+      {view ? (
+        <ApplicationWorkspace
+          view={view}
+          mode={mode}
+          profile={profile}
+          actions={actions}
+          actionError={actionError}
+          lostContact={lostContact}
+        />
+      ) : (
+        <>
+          {restoreProblem && (
+            <RestoreNotice
+              problem={restoreProblem}
+              onRetry={loadCandidate}
+              onStopFollowing={stopFollowing}
+              onDismiss={() => setRestoreProblem(null)}
             />
-          ) : (
-            <>
-              {restoreProblem && (
-                <RestoreNotice
-                  problem={restoreProblem}
-                  onRetry={loadCandidate}
-                  onStopFollowing={stopFollowing}
-                  onDismiss={() => setRestoreProblem(null)}
-                />
-              )}
-              {connection === "unavailable" && (
-                <ServiceNotice mode={mode} message={serviceMessage} onRetry={loadCandidate} />
-              )}
-              <ComposeForm
-                applicationUrl={applicationUrl}
-                onApplicationUrl={(value) => {
-                  clearErrors(["applicationUrl"]);
-                  setApplicationUrl(value);
-                }}
-                profile={profile}
-                onProfile={(next) => {
-                  clearErrors(
-                    (Object.keys(next) as (keyof CandidateProfileInput)[]).filter((key) => next[key] !== profile[key]),
-                  );
-                  setProfile(next);
-                }}
-                resumes={resumes}
-                resumeId={resumeId}
-                onResumeId={(id) => {
-                  clearErrors(["resumeId", "resumeFile"]);
-                  setResumeId(id);
-                }}
-                onUpload={handleUpload}
-                uploading={uploading}
-                errors={formErrors}
-                submitCount={submitCount}
-                alert={formAlert}
-                starting={starting}
-                candidateLoaded={candidateLoaded || connection !== "checking"}
-                onSubmit={handleApply}
-              />
-            </>
           )}
-        </main>
-
-        <footer className="colophon">
-          <p>
-            {mode === "preview"
-              ? "Preview mode uses a fictional candidate and fictional job sites. Nothing is sent anywhere."
-              : "Runs on this computer. Receipts and event history are kept by your local application service."}
-          </p>
-        </footer>
-      </div>
-    </>
-  );
-}
-
-function ConnectionBadge({ mode, connection }: { mode: "live" | "preview"; connection: Connection }) {
-  if (mode === "preview") {
-    return (
-      <p className="badge badge--preview">
-        <span className="badge__dot" aria-hidden="true" />
-        Preview · nothing is sent
-      </p>
-    );
-  }
-  const label =
-    connection === "connected"
-      ? "Service connected"
-      : connection === "checking"
-        ? "Checking service…"
-        : "Service not connected";
-  return (
-    <p className={`badge badge--${connection}`} role="status">
-      <span className="badge__dot" aria-hidden="true" />
-      {label}
-    </p>
+          {connection === "unavailable" && (
+            <ServiceNotice mode={mode} message={serviceMessage} onRetry={async () => { await Promise.all([loadCandidate(), refreshReadiness()]); }} />
+          )}
+          {handoff && (
+            <section className="notice notice--handoff" aria-labelledby="handoff-title">
+              <h2 id="handoff-title" className="notice__title">
+                {handoff.from === "jobs" ? "From your job search" : "From your pipeline"}
+                {handoff.company || handoff.role
+                  ? `: ${[handoff.company, handoff.role].filter(Boolean).join(" — ")}`
+                  : ""}
+              </h2>
+              <p>
+                The application link is filled in below. Nothing has been sent. Check your details and resume, then
+                press <strong>Apply and submit</strong> if you want to apply.
+              </p>
+            </section>
+          )}
+          <ComposeForm
+            applicationUrl={applicationUrl}
+            onApplicationUrl={(value) => {
+              clearErrors(["applicationUrl"]);
+              setApplicationUrl(value);
+            }}
+            profile={profile}
+            onProfile={(next) => {
+              clearErrors(
+                (Object.keys(next) as (keyof CandidateProfileInput)[]).filter((key) => next[key] !== profile[key]),
+              );
+              setProfile(next);
+            }}
+            resumes={resumes}
+            resumeId={resumeId}
+            onResumeId={(id) => {
+              clearErrors(["resumeId", "resumeFile"]);
+              setResumeId(id);
+            }}
+            onUpload={handleUpload}
+            uploading={uploading}
+            errors={formErrors}
+            submitCount={submitCount}
+            alert={formAlert}
+            starting={starting}
+            candidateLoaded={candidateLoaded || connection !== "checking"}
+            testMode={mode === "live"}
+            onSubmit={handleApply}
+          />
+        </>
+      )}
+    </AppShell>
   );
 }

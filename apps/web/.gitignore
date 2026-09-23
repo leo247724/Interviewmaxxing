@@ -7,4 +7,5 @@ test-results/
 playwright-report/
 blob-report/
 output/
+.playwright-cli/
 .env*.local

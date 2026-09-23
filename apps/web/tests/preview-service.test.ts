@@ -100,10 +100,9 @@ describe("PreviewApplicationService", () => {
     expect(view.uncertain?.lastCheckResult).toMatch(/No confirmation/);
 
     view = await svc.reconcile(view.id, { kind: "user_confirmed_not_received" });
-    expect(view.state).toBe("FAILED_RETRYABLE");
-    view = await svc.resume(view.id);
-    ({ view } = await runUntilIdle(svc, view));
-    expect(view.state).toBe("SUBMITTED");
+    expect(view.state).toBe("SUBMISSION_UNKNOWN");
+    expect(view.uncertain?.lastCheckResult).toContain("You reported");
+    await expect(svc.resume(view.id)).rejects.toMatchObject({ code: "conflict" });
   });
 
   it("records a user-reported confirmation as user evidence", async () => {
@@ -117,7 +116,8 @@ describe("PreviewApplicationService", () => {
     });
     expect(settled.state).toBe("SUBMITTED");
     expect(settled.receipt?.confirmationReference).toBe("JV-1");
-    expect(settled.receipt?.evidence[0].source).toBe("user");
+    expect(settled.receipt?.evidence.some((item) => item.source === "user" && item.kind === "user_report")).toBe(true);
+    expect(settled.receipt).toMatchObject({ confirmationMethod: "USER_CONFIRMED", confirmationAuthority: "user" });
   });
 
   it("reports a prior submission without sending", async () => {

@@ -49,6 +49,9 @@ export interface StartApplicationInput {
   /** The profile the user confirmed on screen for this request. */
   profile: CandidateProfileInput;
   resumeId: string;
+  /** Optional source links; the service validates candidate ownership and job URL. */
+  pipelineEntryId?: string | null;
+  listingId?: string | null;
 }
 
 export interface JobIdentityView {
@@ -133,11 +136,25 @@ export interface EvidenceView {
   source: "site" | "user";
 }
 
+/** How acceptance was established (S1 `ConfirmationMethod`). */
+export type ConfirmationMethod =
+  "SUBMISSION_OBSERVED" | "SITE_CONFIRMATION" | "ATS_CANDIDATE_PORTAL" | "CONFIRMATION_EMAIL" | "USER_CONFIRMED";
+
 export interface SubmissionReceiptView {
   receiptId: string;
   submittedAt: string;
   confirmationReference: string | null;
   evidence: EvidenceView[];
+  /**
+   * How acceptance was established. Optional until every service version sends it;
+   * when present it outranks anything inferred from the evidence list.
+   */
+  confirmationMethod?: ConfirmationMethod;
+  /**
+   * Who established it: "user" exactly when the method is USER_CONFIRMED, even if
+   * older site artifacts (e.g. a screenshot of the uncertain page) are listed.
+   */
+  confirmationAuthority?: "site" | "user";
 }
 
 export interface PriorSubmissionView {

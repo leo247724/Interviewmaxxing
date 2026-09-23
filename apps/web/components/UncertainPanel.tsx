@@ -47,7 +47,7 @@ export function UncertainPanel({ view, actions }: { view: ApplicationView; actio
     event.preventDefault();
     if (!checked) {
       setErrors({
-        notReceived: "Confirm you've checked. Unlocking a second attempt without checking could send a duplicate.",
+        notReceived: "Confirm you've checked with the employer or their applicant portal before recording this report.",
       });
       return;
     }
@@ -198,6 +198,7 @@ export function UncertainPanel({ view, actions }: { view: ApplicationView; actio
               <button type="submit" className="button button--primary" disabled={pending !== null}>
                 {pending === "not_received" ? "Recording…" : "Record as not received"}
               </button>
+              <p className="field__hint">This records your report. The application stays locked until a site check establishes that nothing was submitted.</p>
             </form>
           )}
         </div>

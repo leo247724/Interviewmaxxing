@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import type { ApplicationView, CandidateProfileInput } from "@/lib/service/types";
 import { describe, isActive, type Mood } from "@/lib/state";
+import { receiptAuthority } from "@/lib/receipt";
 import { formatDateTime } from "@/lib/format";
 import type { DeskActions } from "./ApplicationDesk";
 import { ProgressRail } from "./ProgressRail";
@@ -54,13 +55,13 @@ export function ApplicationWorkspace({
   }, [phase, view.state]);
 
   const jobLine =
-    view.job.title && view.job.company ? (
+    view.job.title || view.job.company ? (
       <>
-        <span className="case__role">{view.job.title}</span>
-        <span className="case__company">{view.job.company}</span>
+        {view.job.title && <span className="case__role">{view.job.title}</span>}
+        {view.job.company && <span className="case__company">{view.job.company}</span>}
       </>
     ) : (
-      <span className="case__company case__company--pending">Identifying the job…</span>
+      <span className="case__company case__company--pending">{isActive(view.state) ? "Identifying the job…" : "Job details not reported"}</span>
     );
 
   return (
@@ -139,7 +140,11 @@ export function ApplicationWorkspace({
 function StateStamp({ view, mood }: { view: ApplicationView; mood: Mood }) {
   switch (view.state) {
     case "SUBMITTED":
-      return <Stamp tone="success" word="Received" date={view.receipt?.submittedAt ?? view.updatedAt} />;
+      return view.receipt && receiptAuthority(view.receipt).byUser ? (
+        <Stamp tone="caution" word="Reported" date={view.receipt.submittedAt} />
+      ) : (
+        <Stamp tone="success" word="Received" date={view.receipt?.submittedAt ?? view.updatedAt} />
+      );
     case "SUBMISSION_UNKNOWN":
       return <Stamp tone="caution" word="Unconfirmed" date={view.uncertain?.attemptedAt ?? view.updatedAt} />;
     case "DUPLICATE":

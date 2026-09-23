@@ -2,6 +2,7 @@ import { validateAnswers, validateApplyForm } from "../validation";
 import { ServiceError } from "./errors";
 import type {
   AnswerInput,
+  ConfirmationMethod,
   ApplicationService,
   ApplicationState,
   ApplicationView,
@@ -320,16 +321,21 @@ export class PreviewApplicationService implements ApplicationService {
           "Checked the application page and the applicant portal. No confirmation or application record yet. Sites can take a few minutes to list new applications.";
         this.event(record, "reconcile.inconclusive", "Still unconfirmed. Resubmission stays locked.", "warning");
       } else {
-        this.confirm(record, null, [
-          {
-            kind: "portal",
-            label: "Applicant portal record",
-            value: "The applicant portal lists this application with status “Received”.",
-            href: null,
-            observedAt: now,
-            source: "site",
-          },
-        ]);
+        this.confirm(
+          record,
+          null,
+          [
+            {
+              kind: "portal",
+              label: "Applicant portal record",
+              value: "The applicant portal lists this application with status “Received”.",
+              href: null,
+              observedAt: now,
+              source: "site",
+            },
+          ],
+          "ATS_CANDIDATE_PORTAL",
+        );
       }
     } else if (input.kind === "user_found_confirmation") {
       const where =
@@ -338,31 +344,36 @@ export class PreviewApplicationService implements ApplicationService {
           : input.foundIn === "portal"
             ? "the applicant portal"
             : "another source";
-      this.confirm(record, input.reference?.trim() || null, [
-        {
-          kind: "user_report",
-          label: `You reported a confirmation in ${where}`,
-          value: input.note?.trim() || null,
-          href: null,
-          observedAt: now,
-          source: "user",
-        },
-      ]);
+      // Like the service, keep the site artifacts from the uncertain attempt alongside
+      // the user's statement; the receipt's authority says who confirmed it.
+      const earlier = view.uncertain.evidence;
+      this.confirm(
+        record,
+        input.reference?.trim() || null,
+        [
+          ...earlier,
+          {
+            kind: "user_report",
+            label: `You reported a confirmation in ${where}`,
+            value: input.note?.trim() || null,
+            href: null,
+            observedAt: now,
+            source: "user",
+          },
+        ],
+        "USER_CONFIRMED",
+      );
     } else {
-      view.uncertain = null;
-      view.failure = {
-        reason: "You confirmed the employer has no record of this application.",
-        detail: "The earlier attempt did not reach the employer, so applying again will not create a duplicate.",
-        retryable: true,
-        evidence: [],
-      };
+      if (view.uncertain) {
+        view.uncertain.lastCheckedAt = this.iso();
+        view.uncertain.lastCheckResult = "You reported that the employer has no record of this application. The outcome is still unconfirmed; a site check must establish that nothing was submitted before another attempt is allowed.";
+      }
       this.event(
         record,
         "reconcile.not_received",
-        "Marked as not received on your confirmation. Applying again is unlocked.",
+        "Recorded your report of non-receipt. The application remains locked while the site outcome is unconfirmed.",
         "attention",
       );
-      this.transition(record, "FAILED_RETRYABLE");
     }
     return this.snapshot(record);
   }
@@ -385,16 +396,29 @@ export class PreviewApplicationService implements ApplicationService {
     record.view.updatedAt = this.iso();
   }
 
-  confirm(record: PreviewRecord, reference: string | null, evidence: EvidenceView[]) {
+  confirm(
+    record: PreviewRecord,
+    reference: string | null,
+    evidence: EvidenceView[],
+    method: ConfirmationMethod = "SUBMISSION_OBSERVED",
+  ) {
     const { view } = record;
     view.uncertain = null;
+    const byUser = method === "USER_CONFIRMED";
     view.receipt = {
       receiptId: `rcpt_${view.id}`,
       submittedAt: this.iso(),
       confirmationReference: reference,
       evidence,
+      confirmationMethod: method,
+      confirmationAuthority: byUser ? "user" : "site",
     };
-    this.event(record, "application.submitted", "Submission confirmed. Receipt saved.", "success");
+    this.event(
+      record,
+      "application.submitted",
+      byUser ? "Marked submitted on your report. Receipt saved." : "Submission confirmed. Receipt saved.",
+      "success",
+    );
     this.transition(record, "SUBMITTED");
   }
 

@@ -37,6 +37,7 @@ export interface ComposeFormProps {
   alert: string | null;
   starting: boolean;
   candidateLoaded: boolean;
+  testMode?: boolean;
   onSubmit: () => void;
 }
 
@@ -66,8 +67,7 @@ export function ComposeForm(props: ComposeFormProps) {
             Apply to a job you&rsquo;ve chosen.
           </h1>
           <p className="lede">
-            Paste the application page. The desk reads the form, fills it with your details and resume, submits it, and
-            keeps the site&rsquo;s confirmation as your receipt.
+            {props.testMode ? "Use a local test application page and fictional details to verify the flow. Real employer submissions are disabled in this development workspace." : "Paste the application page. The desk reads the form, fills it with your details and resume, submits it, and keeps the site’s confirmation as your receipt."}
           </p>
         </header>
 
@@ -90,7 +90,7 @@ export function ComposeForm(props: ComposeFormProps) {
             inputMode="url"
             autoComplete="off"
             spellCheck={false}
-            placeholder="https://jobs.example.com/company/role/apply"
+            placeholder={props.testMode ? "http://127.0.0.1:8766/apply" : "https://jobs.example.com/company/role/apply"}
             hint="The page where the application form starts, copied from your browser."
             variant="hero"
           />
@@ -156,6 +156,7 @@ export function ComposeForm(props: ComposeFormProps) {
               onChange={setField("location")}
               error={errors.location}
               autoComplete="address-level2"
+              hint="City, then state or region, e.g. Austin, TX. Add a country only if you want one on the form."
             />
             <TextField
               id="linkedinUrl"
@@ -262,7 +263,7 @@ export function ComposeForm(props: ComposeFormProps) {
             Apply
           </h2>
           <p className="dispatch__terms">
-            Applying submits this application to the employer with the details above. You&rsquo;ll be stopped only if
+            {props.testMode ? "This runs a test submission on the local page with the details above. " : "Applying submits this application to the employer with the details above. "}You&rsquo;ll be stopped only if
             the site asks something your profile doesn&rsquo;t answer, needs a statement only you can make, or needs you
             to sign in.
           </p>
