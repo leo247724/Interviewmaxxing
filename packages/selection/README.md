@@ -72,7 +72,7 @@ service.is_current(
 )  # False after any input/pref/model/threshold change
 ```
 
-`candidate=None` (no profile yet) is allowed. The decision is then held with `MISSING_PROFILE` and can never be an effective APPLY.
+`candidate=None` (no profile yet) is allowed when `candidate_id` is supplied to the service or call. The decision is then held with `MISSING_PROFILE` and can never be an effective APPLY.
 
 ### Steps
 
@@ -85,7 +85,7 @@ service.is_current(
    - the role is remote but remote work is disabled;
    - the title contains an excluded keyword;
    - the company is excluded.
-3. **Cache.** An identical earlier Jev decision is reused. The cache key covers the model, the rubric/threshold version, `job_evidence_hash`, `candidate_evidence_hash` and `preferences.fingerprint`. Provider failures are never cached.
+3. **Cache.** An identical earlier Jev decision for the same candidate is reused. The cache key covers the candidate ID, model, the rubric/threshold version, `job_evidence_hash`, `candidate_evidence_hash` and `preferences.fingerprint`. Provider failures are never cached.
 4. **Jev calls.** Two calls are made:
    - **Focused questions:** `role_match`, `seniority_match`, `qualification_match`, `location_eligibility`, `preference_match` and `listing_consistency`.
    - **Final question:** `selection` (APPLY/SKIP/REVIEW), given those assessments and the statuses computed by code.
@@ -117,7 +117,7 @@ Each fine-grained `HoldReason` is recorded as a core `PolicyHold`, with the reas
 
   If Jev skips an eligible remote role despite strong focused answers, the decision becomes REVIEW (contradictory evidence).
 - **Record.** `selection.reasons` starts with the ranking reason, and `SelectionOutcome.location_tier` stores the tier.
-- **Cache.** The priority is part of `preferences.fingerprint`, so changing it invalidates earlier decisions. The rubric version is `jev-selection-rubric/2026-09-22.5`.
+- **Cache.** The priority is part of `preferences.fingerprint`, so changing it invalidates earlier decisions. The rubric version is `jev-selection-rubric/2026-09-22.6`.
 - **Ranking.** `rank_outcomes(outcomes)` orders results as follows:
   1. every SKIP last;
   2. then by tier, with PREFERRED and EQUAL first, then SECONDARY, then UNRANKED;
@@ -150,7 +150,7 @@ Each fine-grained `HoldReason` is recorded as a core `PolicyHold`, with the reas
 - **Candidate:** verified facts, plus experience and education entries backed by verified facts. Contact details, identity, protected attributes, pay history, employer names, saved answers and generated answers are excluded.
 - **Preferences:** role focus, representative titles, onsite targets, remote region, location priority, excluded keywords and notes.
 - **Code results:** the pay status, location status, location tier and ranking reason, and hold names.
-- **Candidate identity:** never sent. `CandidateEvidence.from_profile` drops any fact whose value contains the candidate's name, email, phone, address or profile URLs, or any email, phone or URL. `CandidateEvidence` itself also rejects email, phone and URL values.
+- **Candidate identity:** never sent. `CandidateEvidence.from_profile` drops contact-bearing values and excluded identity/employer/pay-history/protected-attribute fact keys. Known first, last, full and preferred names, employers (including names from employer facts), and institutions are replaced inside free-text keys/values with neutral placeholders, preserving qualification claims. Education text and experience titles/dates are scrubbed too. `CandidateEvidence` itself rejects recognizable email, phone and URL values or keys; callers constructing it directly must supply already minimized evidence. This is a projection of known profile identifiers, not general-purpose anonymization of arbitrary prose.
 
 URLs, IDs and numeric pay bounds are never sent.
 
@@ -200,12 +200,17 @@ service.is_current(outcome.selection, listing, preferences, candidate)  # stale-
 ordered = rank_outcomes(outcomes)
 [ranking_reason(o) for o in ordered]
 store = service.store
-store.latest(listing.id)
-store.history(listing.id)
-store.get(selection_id)
-store.audit(selection_id)  # snapshots and raw provider exchange; local only, not for the frontend
+store.latest(listing.id, candidate_id=paths.candidate_id)
+store.latest_many([listing.id, another_listing.id], candidate_id=paths.candidate_id)
+store.history(listing.id, candidate_id=paths.candidate_id)
+store.get(selection_id, candidate_id=paths.candidate_id)
+store.audit(selection_id, candidate_id=paths.candidate_id)  # snapshots and raw provider exchange; local only, not for the frontend
 ```
 
+- **Candidate scope.** `select`, `cache_key` and `is_current` accept an optional keyword `candidate_id`. Evidence supplies its own ID; an explicit ID must agree. Without evidence, the call ID overrides the service default; no ID raises `ValueError`. `is_current` rejects another candidate's decision even when qualifications match. All store retrieval methods require candidate scope; `find_cached(listing_id, candidate_id, cache_key)` also scopes its SQL. Legacy rows migrate their owner from the persisted core selection record. The rubric bump invalidates decisions created before these policy/projection changes; custom threshold fingerprints retain full float precision.
+- **Batch reads.** `latest_many(listing_ids: Iterable[str], *, candidate_id: str) -> dict[str, SelectionOutcome]` returns found listing IDs only. Empty input returns `{}`. It deduplicates inputs and issues one indexed latest-row query per 400 IDs. `latest` loads one row; both break timestamp ties by insertion order. `history` remains oldest-first.
+- **Location uncertainty.** State/country-only onsite text such as `Texas, United States` is UNKNOWN/REVIEW; `Austin TX` parses on either side, and `Austin, MN` does not match Austin, Texas. Canada-only remote eligibility cannot produce APPLY, even if Jev says eligible; Texas-only or unrecognized eligibility is held for REVIEW and never treated as US-wide. Missing remote eligibility still uses Jev's focused eligibility assessment from the observed description.
+- **Injection holds.** Direct select/choose/rate decision commands and text addressed to an AI reviewer trigger a hold, while normal instructions such as `Select 'Apply' to start the application` remain ordinary job text. Listing text stays exclusively in untrusted state; detection is a conservative supplementary heuristic, not a guarantee against every possible prompt attack.
 - **Threads.** `select` blocks for about 0.5–2 s when it calls Jev, and returns immediately for hard-constraint SKIPs and cache hits. `SelectionStore` holds one SQLite connection, so give each worker thread its own store.
 - **Preferences.** Preferences come from the user, including `location_priority`, and persist unchanged. Never return `store.audit` or the API key to the frontend.
 
