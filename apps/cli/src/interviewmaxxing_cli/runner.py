@@ -201,7 +201,15 @@ def rejection_epochs(
     ``(form step, field id, field fingerprint)`` and the ``input.received`` event
     sequence of every stored user input. A rejected answer is asked again only while
     its rejection is newer than the user's answer to that question."""
-    rejections: dict[tuple[int, str, str], int] = {}
+    rejections, received = _rejection_history(store, application_id)
+    return {key: epoch for key, (epoch, _) in rejections.items()}, received
+
+
+def _rejection_history(
+    store: ApplicationStore, application_id: str
+) -> tuple[dict[tuple[int, str, str], tuple[int, str]], dict[str, int]]:
+    """Keep each rejection's message with its epoch even after the DOM clears it."""
+    rejections: dict[tuple[int, str, str], tuple[int, str]] = {}
     received: dict[str, int] = {}
     for event in store.list_events(application_id):
         if event.event == REJECTION_EVENT:
@@ -209,7 +217,8 @@ def rejection_epochs(
             if step is None:
                 continue
             for item in event.metadata.get("fields", []):
-                rejections[(int(step), item["field_id"], item["field_fingerprint"])] = event.sequence
+                rejections[(int(step), item["field_id"], item["field_fingerprint"])] = (
+                    event.sequence, item["message"])
         elif event.event == INPUT_EVENT:
             for item in event.metadata.get("inputs", []):
                 received[item["id"]] = event.sequence
@@ -664,27 +673,27 @@ class _Run:
     def _with_rejections(self, form: ApplicationForm, packet: ApplicationPacket) -> ApplicationPacket:
         """Turn answers the site rejected into questions for the user.
 
-        A field's validation message counts only if a rejection epoch was recorded for
-        that question (``_note_rejections``), and only while that epoch is newer than
-        the user's answer: an input stored after it, in this run or by another process,
-        is the correction and is used even if the page still shows the old message. If
+        A persisted rejection applies to the same question even if a fresh page no
+        longer displays its message. Only a scoped user input stored after its epoch
+        is a correction; it is used even if the page still shows the old message. If
         the site rejects the correction too, the newer epoch asks again."""
-        flagged = [f for f in form.fields if f.validation_error and packet.answer_for(f.id) is not None]
+        flagged = [f for f in form.fields if packet.answer_for(f.id) is not None]
         if not flagged:
             return packet
-        rejections, received = rejection_epochs(self.store, self.app_id)
+        rejections, received = _rejection_history(self.store, self.app_id)
         rejected: list[Any] = []
         for f in flagged:
-            epoch = rejections.get((form.step, f.id, f.fingerprint))
-            if epoch is None:
+            rejection = rejections.get((form.step, f.id, f.fingerprint))
+            if rejection is None:
                 continue  # never rejected after one of our actions: a stale message
+            epoch, message = rejection
             answer = packet.answer_for(f.id)
             assert answer is not None
             if answer.provenance.source is AnswerSource.USER_INPUT and any(
                 received.get(ref, -1) > epoch for ref in answer.provenance.reference_ids
             ):
                 continue  # corrected after the rejection
-            rejected.append(f)
+            rejected.append(f.model_copy(update={"validation_error": message}))
         if not rejected:
             return packet
         ids = {f.id for f in rejected}
