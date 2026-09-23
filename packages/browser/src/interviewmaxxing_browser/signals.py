@@ -102,6 +102,9 @@ STATUS_LINK = _rx(
     r"application status|check (?:your )?status|already applied|my applications|candidate (?:home|portal)"
 )
 
+CONFIRMATION_LINK = _rx(r"^\s*view (?:your )?(?:confirmation|receipt)\s*$")
+"""An explicit read-only receipt link; reconciliation also requires the same origin."""
+
 _REFERENCE = _rx(
     r"\b(?:confirmation|reference|application|submission)"
     r"(?:\s+(?:number|no\.?|code|id|reference|#))?\s*[:#]\s*([A-Z0-9][A-Z0-9-]{2,38}[A-Z0-9])\b"
@@ -178,8 +181,8 @@ def _record_like(text: str) -> bool:
 
 def application_records(snapshot: Any) -> list[str] | None:
     """The texts of the outermost application records on the page, or None when the
-    page is a single record (no repeated group has two or more members that carry an
-    application status or job identity)."""
+    no repeated group has two or more status/identity-bearing members. None does
+    not prove a single record: flat pages need separate local scope evidence."""
     members = snapshot.record_members
     counts: dict[int, int] = {}
     for member in members:

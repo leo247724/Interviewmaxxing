@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from interviewmaxxing_browser import ConfirmationTie, PlaywrightSessionFactory
+from interviewmaxxing_browser import ConfirmationTie, PlaywrightSessionFactory, SubmissionRefused
 from interviewmaxxing_core import (
     AnswerSource,
     BrowserOptions,
@@ -289,3 +289,83 @@ def test_3_target_record_still_confirms_across_mixed_tags(
     observation = _reconcile(kit, server, options, body)
     assert observation.outcome is SubmissionOutcome.ACCEPTED, observation.signals
     assert observation.confirmation_reference == reference
+
+
+@pytest.mark.parametrize("body", [
+    '<h1>My applications</h1><h2>Widget Engineer</h2><p>Job ID ABC-123</p>'
+    '<p>Action required: finish your application</p><h2>Graphic Designer</h2>'
+    '<p>Application submitted.</p><p>Reference: APP-9876</p>',
+    '<h1>My applications</h1><h2>Widget Engineer</h2><p>Job ID ABC-123</p>'
+    '<p>Awaiting your response</p><h2>Graphic Designer</h2>'
+    '<p>Application submitted.</p><p>Reference: APP-9876</p>',
+    '<p>Widget Engineer</p><p>Job ID ABC-123</p><p>Awaiting your response</p>'
+    '<p>Graphic Designer</p><p>Application submitted.</p><p>Reference: APP-9876</p>',
+    '<p>Widget Engineer (Job ID ABC-123) awaits your response. '
+    'Graphic Designer: Application submitted. Reference: APP-9876</p>',
+    '<h1>My applications</h1><p>Widget Engineer</p><p>Job ID ABC-123</p>'
+    '<p>Awaiting your response</p><p>Graphic Designer</p><p>Application submitted.</p>',
+])
+def test_flat_portals_require_local_acceptance_and_identity_scope(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, body: str,
+) -> None:
+    observed = _reconcile(kit, server, options, body)
+    assert observed.outcome is SubmissionOutcome.UNKNOWN, observed.signals
+    assert observed.confirmation_reference is None
+    assert server.submissions()["accepted_count"] == 0
+
+
+@pytest.mark.parametrize("body", [
+    '<h1>My applications</h1><h2>Graphic Designer</h2><p>Awaiting your response</p>'
+    '<h2>Widget Engineer</h2><p>Job ID ABC-123</p><p>Application submitted.</p>'
+    '<p>Reference: APP-1111</p>',
+    '<p>Application submitted for Widget Engineer (Job ID ABC-123), Reference: APP-1111.</p>',
+])
+def test_flat_own_heading_section_or_single_statement_can_confirm(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, body: str,
+) -> None:
+    observed = _reconcile(kit, server, options, body)
+    assert observed.outcome is SubmissionOutcome.ACCEPTED, observed.signals
+    assert observed.confirmation_reference == "APP-1111"
+
+
+def test_flat_other_application_after_submit_stays_unknown_and_cannot_retry(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions,
+) -> None:
+    form = _html('''<h1>Widget Engineer</h1><p>Job ID ABC-123</p>
+<form method="post" action="/c4r2/apply"><label for="e">Email</label>
+<input id="e" name="email" type="email"><button type="submit">Submit application</button></form>''')
+    flat = ('<h1>My applications</h1><h2>Widget Engineer</h2><p>Job ID ABC-123</p>'
+            '<p>Action required: finish your application</p><h2>Graphic Designer</h2>'
+            '<p>Application submitted.</p><p>Reference: APP-9876</p>')
+    site = Site({"GET /c4r2/form": (200, form), "POST /c4r2/apply": (200, _html(flat))})
+
+    async def steps(browser: Any) -> Any:
+        page = (await browser.open(server.url("/c4r2/form"))).form
+        await browser.fill(page, kit.build(page, {"email": kit.CORE["email"]}).packet)
+        assert (await browser.submit()).dispatched
+        observed = await browser.confirm()
+        with pytest.raises(SubmissionRefused):
+            await browser.submit()
+        return observed
+
+    observed = _run(kit, options, server.origin, site, steps)
+    assert observed.outcome is SubmissionOutcome.UNKNOWN, observed.signals
+    assert len(site.posts()) == 1
+
+
+@pytest.mark.parametrize("target", ["wrong_job", "cross_origin"])
+def test_confirmation_link_cannot_supply_unrelated_or_cross_origin_evidence(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, target: str,
+) -> None:
+    href = "/c4r2/receipt" if target == "wrong_job" else "https://unrelated.example.test/receipt"
+    portal = _html(f'<h1>My applications</h1><p>Widget Engineer · Job ID ABC-123</p>'
+                   f'<p>Application submitted</p><a href="{href}">View confirmation</a>')
+    site = Site({"/c4r2/portal": (200, portal), "/c4r2/receipt": (200, _html(
+        '<h1>Application submitted</h1><p>Graphic Designer · Job ID OTHER-999</p>'
+        '<p>Reference: APP-9876</p>'))})
+    observed = _run(kit, options, server.origin, site,
+                    lambda b: b.reconcile(server.url("/c4r2/portal"), tie=TIE))
+    assert observed.outcome is SubmissionOutcome.UNKNOWN, observed.signals
+    assert not site.posts()
+    paths = [path for _, path, _ in site.requests]
+    assert paths == (["/c4r2/portal", "/c4r2/receipt"] if target == "wrong_job" else ["/c4r2/portal"])

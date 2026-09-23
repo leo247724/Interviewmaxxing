@@ -388,6 +388,35 @@
     return { group: m.group, text: m.text, ancestors };
   });
 
+  // Positive local boundaries for flat receipts/portals without record wrappers.
+  // A heading scope ends before ANY following heading (also nested in a sibling).
+  // We never merge the document title, separate sections, or ungrouped paragraphs.
+  const HEADING = "h1,h2,h3,h4,h5,h6";
+  const confirmationScopes = [];
+  const covered = new Set();
+  for (const heading of document.querySelectorAll(HEADING)) {
+    if (!visible(heading)) continue;
+    const parts = [textOf(heading)];
+    covered.add(heading);
+    for (let sibling = heading.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
+      if (sibling.matches(HEADING) || sibling.querySelector(HEADING)) break;
+      if (!visible(sibling)) continue;
+      // A collection/table/form cannot become one receipt by sitting below a heading.
+      if (sibling.matches("ul,ol,table,form") || sibling.querySelector("ul,ol,table,form")) break;
+      parts.push(textOf(sibling));
+      covered.add(sibling);
+    }
+    confirmationScopes.push({ heading: textOf(heading), text: parts.join("\n").slice(0, 4000) });
+  }
+  for (const el of document.querySelectorAll("p,div,li,td,dd,[role=status],[role=alert]")) {
+    if (!visible(el) || el.querySelector("p,div,li,td,dd,h1,h2,h3,h4,h5,h6")) continue;
+    let inside = false;
+    for (let node = el; node; node = node.parentElement) {
+      if (covered.has(node)) { inside = true; break; }
+    }
+    if (!inside) confirmationScopes.push({ heading: null, text: textOf(el).slice(0, 4000) });
+  }
+
   let step = null;
   const current = document.querySelector('[aria-current="step"]');
   if (current && current.parentElement) {
@@ -411,6 +440,7 @@
     regions,
     body_text: (document.body ? document.body.innerText || "" : "").slice(0, MAX_TEXT),
     record_members: recordMembers,
+    confirmation_scopes: confirmationScopes.slice(0, 600),
     ld_json: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((s) => s.textContent || ""),
     meta: {
       og_site_name: (document.querySelector('meta[property="og:site_name"]') || {}).content || "",
