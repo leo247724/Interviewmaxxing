@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -75,7 +76,7 @@ from .packets import ApplicationPacket, UserInput
 from .urls import normalize_application_url
 
 S = ApplicationState
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_CLAIM_TTL = timedelta(minutes=5)
 SUBMISSION_LEASE = timedelta(minutes=10)
 RESERVED_EVENT_PREFIXES = (
@@ -215,6 +216,17 @@ CREATE TABLE IF NOT EXISTS application_documents (
 CREATE TRIGGER IF NOT EXISTS application_documents_are_final
 BEFORE UPDATE ON application_documents
 BEGIN SELECT RAISE(ABORT, 'pinned application documents are final'); END;
+CREATE TABLE IF NOT EXISTS application_expected_job_identities (
+    application_id TEXT PRIMARY KEY REFERENCES applications(id),
+    identity_key TEXT NOT NULL,
+    pinned_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS expected_job_identities_are_final_u
+BEFORE UPDATE ON application_expected_job_identities
+BEGIN SELECT RAISE(ABORT, 'expected job identities are final'); END;
+CREATE TRIGGER IF NOT EXISTS expected_job_identities_are_final_d
+BEFORE DELETE ON application_expected_job_identities
+BEGIN SELECT RAISE(ABORT, 'expected job identities are final'); END;
 CREATE TRIGGER IF NOT EXISTS receipts_are_final BEFORE UPDATE ON receipts
 BEGIN SELECT RAISE(ABORT, 'receipts are final'); END;
 """
@@ -675,6 +687,9 @@ class ApplicationStore:
         with self._tx() as c:
             row = self._check_claim(c, claim, now)
             job_id = row["job_id"]
+            expected = self.expected_job_identity(claim.application_id)
+            if expected is not None and expected != key:
+                raise IdentityConflict("the observed job does not match the selected job")
             job_row = self._job_row(c, job_id)
             if job_row["identity_key"] not in (None, key):
                 raise IdentityConflict(
@@ -1340,6 +1355,48 @@ class ApplicationStore:
                 (application_id,),
             ).fetchall()
         ]
+
+    # --- expected job identity --------------------------------------------------------------
+
+    def pin_expected_job_identity(self, application_id: str, identity_key: str) -> str:
+        """Persist the selected listing's proven ATS key before dispatch, without
+        treating it as browser evidence or binding a canonical job. The first pin is
+        immutable; a different pin or conflicting observed identity raises
+        ``IdentityConflict``. A new pin requires a pre-submission state and no live
+        claim (``SubmissionBlocked`` / ``ClaimUnavailable`` otherwise)."""
+        key = identity_key.strip().lower()
+        if re.fullmatch(r"ats:[^:\s]+:[^:\s]+:\S+", key) is None:
+            raise ValueError("expected job identity must be an ats:type:tenant:job key")
+        now = self._now()
+        with self._tx() as c:
+            app = self._app_row(c, application_id)
+            existing = self.expected_job_identity(application_id)
+            observed = self._job_row(c, app["job_id"])["identity_key"]
+            if existing not in (None, key) or observed not in (None, key):
+                raise IdentityConflict("the application belongs to a different selected job")
+            if existing is not None:
+                return existing
+            if S(app["state"]) not in PRE_SUBMISSION_STATES:
+                raise SubmissionBlocked("cannot select a job after submission or completion")
+            expires = _dt(app["claim_expires_at"])
+            if app["claim_token"] and expires is not None and expires > now:
+                raise ClaimUnavailable("cannot select a job while the application is running")
+            c.execute(
+                "INSERT INTO application_expected_job_identities"
+                " (application_id, identity_key, pinned_at) VALUES (?, ?, ?)",
+                (application_id, key, _ts(now)),
+            )
+            self._event(c, application_id, "application.expected_job_identity_pinned", now=now,
+                        metadata={"identity_key": key})
+        return key
+
+    def expected_job_identity(self, application_id: str) -> str | None:
+        """The selected listing's expected key, never evidence observed by the browser."""
+        row = self._conn.execute(
+            "SELECT identity_key FROM application_expected_job_identities WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()
+        return str(row["identity_key"]) if row else None
 
     # --- application documents -------------------------------------------------------------
 
