@@ -72,7 +72,8 @@ def test_apply_without_a_profile_explains_and_never_opens_a_browser(capsys, isol
     assert "SUBMITTED" not in out
     with _store(isolated_imx_home) as store:
         [app] = store.list_applications()
-        assert app.state is S.REQUESTED and app.candidate_id == "default"
+        assert app.state is S.FAILED_RETRYABLE and app.candidate_id == "default"
+        assert "Candidate profile unavailable" in app.failure_reason
         assert store.pinned_resume(app.id) is None
     assert not isolated_imx_home.browser_dir.joinpath("Default").exists()
 
