@@ -117,7 +117,7 @@ Each fine-grained `HoldReason` is recorded as a core `PolicyHold`, with the reas
 
   If Jev skips an eligible remote role despite strong focused answers, the decision becomes REVIEW (contradictory evidence).
 - **Record.** `selection.reasons` starts with the ranking reason, and `SelectionOutcome.location_tier` stores the tier.
-- **Cache.** The priority is part of `preferences.fingerprint`, so changing it invalidates earlier decisions. The rubric version is `jev-selection-rubric/2026-09-22.4`.
+- **Cache.** The priority is part of `preferences.fingerprint`, so changing it invalidates earlier decisions. The rubric version is `jev-selection-rubric/2026-09-22.5`.
 - **Ranking.** `rank_outcomes(outcomes)` orders results as follows:
   1. every SKIP last;
   2. then by tier, with PREFERRED and EQUAL first, then SECONDARY, then UNRANKED;
@@ -126,11 +126,29 @@ Each fine-grained `HoldReason` is recorded as a core `PolicyHold`, with the reas
 
   An Austin REVIEW therefore ranks above a remote APPLY. `ranking_reason(outcome)` explains the position.
 
+### Role focus (semantic, not title matching)
+
+`SelectionPreferences.role_focus` describes the target work. The default is the user's own description: a performance marketing operator doing paid acquisition, paid media, growth, demand generation and digital marketing leadership. `target_titles` (for example Paid Media Manager, Performance Marketing Manager, Growth Marketing Manager, Demand Generation Manager and Digital Marketing Manager) are search seeds, never an exact-title allowlist. No default title exclusions exist.
+
+- **Jev state.** Jev receives `preferences.role_focus` and `preferences.representative_titles`.
+- **`role_match`.** This question judges actual duties and ownership:
+  - paid acquisition budget or channel ownership;
+  - experimentation;
+  - measurement and attribution;
+  - funnel, pipeline or revenue outcomes;
+  - team or channel leadership.
+
+  A differently titled role with those duties is a match (for example Acquisition Lead). A similar-sounding title with other duties is not. Title keywords are never proof. Pure data, software or platform engineering is a mismatch. Technical tools inside marketing work (APIs, SQL, automation), whether in the listing or in the candidate's verified facts, are not held against a marketing fit.
+- **Holds.** Jev APPLY with `role_match=adjacent` becomes REVIEW (`ROLE_FOCUS_UNCONFIRMED`). APPLY with `mismatch` becomes REVIEW (contradictory evidence).
+- **Code.** No code path gates on titles; only the user's explicit `excluded_keywords` do.
+- **Reasons and ranking.** `selection.reasons` includes a role-focus reason. `rank_outcomes` orders duty match before adjacent within the same tier and decision, and `ranking_reason` says so.
+- **Cache.** `role_focus` is part of `preferences.fingerprint`, so editing it invalidates cached decisions.
+
 ### What is sent to Jev
 
 - **Listing:** title, company, location text, work arrangement, stated remote eligibility, pay as raw text, and the description (at most 12,000 characters).
 - **Candidate:** verified facts, plus experience and education entries backed by verified facts. Contact details, identity, protected attributes, pay history, employer names, saved answers and generated answers are excluded.
-- **Preferences:** titles, onsite targets, remote region, location priority, excluded keywords and notes.
+- **Preferences:** role focus, representative titles, onsite targets, remote region, location priority, excluded keywords and notes.
 - **Code results:** the pay status, location status, location tier and ranking reason, and hold names.
 - **Candidate identity:** never sent. `CandidateEvidence.from_profile` drops any fact whose value contains the candidate's name, email, phone, address or profile URLs, or any email, phone or URL. `CandidateEvidence` itself also rejects email, phone and URL values.
 
@@ -142,7 +160,9 @@ URLs, IDs and numeric pay bounds are never sent.
 python -m interviewmaxxing_selection.smoke --live --env-file /path/to/ignored/env.local
 ```
 
-The smoke runs 5 fictional selections with 10 calls, costing about USD 0.0007. The receipt includes each location tier and the ranked order. Offline tests never touch the network.
+The smoke runs 5 fictional selections with 10 calls, costing about USD 0.0007. The receipt includes each location tier and the ranked order.
+
+Add `--semantic` to run 3 role-focus cases for a fictional performance marketer instead: an Acquisition Lead, a pure Senior Data Platform Engineer, and a Marketing Manager with events-only duties. That is 6 calls, about USD 0.0005. Offline tests never touch the network.
 
 ## API for S2 (local service)
 

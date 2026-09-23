@@ -54,7 +54,17 @@ def pay(
 
 
 def test_defaults_are_the_users_targets(prefs: SelectionPreferences) -> None:
-    assert prefs.target_titles == ["marketing manager", "marketing director"]
+    # Representative titles are search seeds; selection judges duties against role_focus.
+    assert prefs.target_titles[:6] == [
+        "paid media manager",
+        "senior paid media manager",
+        "performance marketing manager",
+        "growth marketing manager",
+        "demand generation manager",
+        "digital marketing manager",
+    ]
+    assert "Performance marketing operator" in prefs.role_focus
+    assert prefs.excluded_keywords == []  # no default literal title exclusions
     assert [t.location for t in prefs.onsite] == ["Austin, TX"]
     assert set(prefs.onsite[0].arrangements) == {WorkArrangement.ONSITE, WorkArrangement.HYBRID}
     assert prefs.remote == RemoteTarget(eligible_region="United States")

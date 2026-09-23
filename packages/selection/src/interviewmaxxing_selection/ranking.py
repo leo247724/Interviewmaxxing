@@ -8,7 +8,9 @@ Ordinal only, with no numeric preference weights:
    above every eligible remote role. EQUAL (BALANCED) ranks with PREFERRED, and an
    unknown location never counts as preferred.
 3. Then APPLY before REVIEW.
-4. Then Jev's own APPLY probability, highest first, and the listing id for stability.
+4. Then Jev's semantic role-focus answer: duties that match the focus, then adjacent,
+   then the rest. Titles never decide this.
+5. Then Jev's own APPLY probability, highest first, and the listing id for stability.
 
 Remote roles stay in the list: the tier orders them and never removes them.
 """
@@ -29,9 +31,15 @@ _TIER_ORDER = {
     LocationTier.UNRANKED: 2,
 }
 _CHOICE_ORDER = {SelectionChoice.APPLY: 0, SelectionChoice.REVIEW: 1, SelectionChoice.SKIP: 2}
+_ROLE_ORDER = {"match": 0, "adjacent": 1}
 
 
-def rank_key(outcome: SelectionOutcome) -> tuple[bool, int, int, float, str]:
+def _role_fit(outcome: SelectionOutcome) -> str | None:
+    answer = outcome.assessments.get("role_match")
+    return answer.choice if answer else None
+
+
+def rank_key(outcome: SelectionOutcome) -> tuple[bool, int, int, int, float, str]:
     selection = outcome.selection
     model = selection.model_decision
     apply_probability = model.probabilities.get(SelectionChoice.APPLY, 0.0) if model else 0.0
@@ -39,6 +47,7 @@ def rank_key(outcome: SelectionOutcome) -> tuple[bool, int, int, float, str]:
         selection.effective_choice is SelectionChoice.SKIP,
         _TIER_ORDER[outcome.location_tier],
         _CHOICE_ORDER[selection.effective_choice],
+        _ROLE_ORDER.get(_role_fit(outcome) or "", 2),
         -apply_probability,
         selection.listing_id,
     )
@@ -61,4 +70,11 @@ def ranking_reason(outcome: SelectionOutcome) -> str:
         group = "eligible secondary location tier, below preferred-tier roles"
     else:
         group = "location unknown or unranked, after ranked roles"
-    return f"{choice} in the {group}"
+    role = _role_fit(outcome)
+    focus = {
+        "match": "; duties match the role focus",
+        "adjacent": "; duties only adjacent to the role focus",
+        "mismatch": "; duties outside the role focus",
+        "insufficient_evidence": "; role focus not established from the duties",
+    }.get(role or "", "")
+    return f"{choice} in the {group}{focus}"
