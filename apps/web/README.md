@@ -162,7 +162,7 @@ The default automated suite covers preview interactions, same-origin transport, 
 
 ### Fictional local acceptance
 
-`scripts/fictional-service.py` starts the actual service, candidate/pipeline/jobs/selection stores and I1 runner over a newly created temporary home. The application site is the backend's separate localhost mock ATS. Only job discovery and Jev's HTTP transport are fixtures. It reads the committed backend's fictional Avery Quill test profile; it never loads the default user home or real provider credentials.
+`scripts/fictional-service.py` starts the actual service, candidate/pipeline/jobs/selection stores and I1 runner over a newly created temporary home. The application site is the backend's localhost mock ATS, with matching fictional marketing titles, company and job codes configured by `scripts/fictional_ats.py`. Its form handling, uploads, submission records and uncertain-outcome behavior are unchanged. Job discovery and Jev's HTTP transport are fixtures. The candidate starts from the backend's fictional Avery Quill test profile with fictional marketing answers; the harness never loads the default user home or real provider credentials.
 
 Use a Python environment with the backend dependencies and a committed backend integration checkout. Keep the frontend origin and backend port aligned:
 

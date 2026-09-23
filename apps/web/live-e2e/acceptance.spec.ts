@@ -8,7 +8,7 @@ import { REFERENCE_COLUMNS } from "../lib/pipeline/types";
 const ready = JSON.parse(readFileSync("output/live-acceptance/fictional-ready.json", "utf8"));
 const ats = ready.atsOrigin as string;
 const card = (page: Page, company: string) => page.locator("article.card", { hasText: company });
-const listing = (page: Page, company: string) => page.locator("article.listing", { hasText: company });
+const listing = (page: Page, role: string) => page.locator("article.listing", { hasText: role });
 const digest = (data: Buffer) => createHash("sha256").update(data).digest("hex");
 const api = async (request: APIRequestContext, path: string) => (await request.get(`/api/imx${path}`)).json();
 const submissions = async (request: APIRequestContext, job: string) => (await request.get(`${ats}/__test__/submissions?job_id=${job}`)).json();
@@ -31,7 +31,7 @@ test("real J1 search, J2 decision, preferences and pipeline tracking", async ({ 
   await page.locator(".sources__summary").click();
   const data: ListingsView = await api(request, "/jobs");
   expect(data.listings.map((item) => item.locationTier)).toEqual(["ONSITE_HYBRID_TARGET", "REMOTE_ELIGIBLE"]);
-  const austin = listing(page, "Fictional Austin Marketing");
+  const austin = listing(page, "Paid Acquisition Lead");
   await austin.getByRole("button", { name: "Ask Jev", exact: true }).click();
   await expect(austin.getByRole("button", { name: "Ask Jev again", exact: true })).toBeEnabled();
   const before = await api(request, `/jobs/${data.listings[0].id}`);
@@ -42,7 +42,7 @@ test("real J1 search, J2 decision, preferences and pipeline tracking", async ({ 
   const cached = await api(request, `/jobs/${data.listings[0].id}`);
   expect(cached.decisionTask.state).toBe("DONE");
   expect(cached.selection.id).toBe(before.selection.id);
-  const remote = listing(page, "Fictional Remote Marketing");
+  const remote = listing(page, "Performance Marketing Manager");
   await remote.getByRole("button", { name: "Ask Jev", exact: true }).click();
   await expect(remote.getByText("Not established", { exact: true })).toBeVisible();
   await expect(remote).toContainText("Pay isn't stated");
@@ -75,6 +75,9 @@ test("frontend to real runner submits once, links receipt and protects duplicate
   const view: ApplicationView = await api(request, `/applications/${started.id}`);
   const receipt = await submissions(request, "standard");
   expect(receipt.accepted_count).toBe(1);
+  expect(view.job.title).toBe(ready.fixtureJobs.standard.title);
+  expect(receipt.submissions[0].job_title).toBe("Paid Acquisition Lead");
+  expect(receipt.submissions[0].company).toBe("Fictional Austin Marketing");
   expect(view.receipt?.confirmationReference).toBe(receipt.submissions[0].confirmation_reference);
   expect(view.receipt?.confirmationAuthority).toBe("site");
   expect(receipt.submissions[0].files.resume.sha256).toBe(digest(readFileSync(`${ready.home}/profile/default/resume.pdf`)));
