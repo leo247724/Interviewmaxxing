@@ -139,16 +139,22 @@ class DomCaptchaToken(_Raw):
     filled: bool
 
 
+class DomRecord(_Raw):
+    group: int
+    """Sibling group this element belongs to (same parent, tag and role)."""
+    text: str
+    ancestors: list[int]
+    """Indexes of enclosing record candidates, nearest first."""
+
+
 class DomSnapshot(_Raw):
     url: str
     title: str
     headings: list[DomHeading]
     regions: list[DomRegion]
     body_text: str
-    records: list[str]
-    """Visible text of each innermost record block (li, tr, article, listitem, row)."""
-    context_text: str
-    """Visible page text outside all record blocks (headings, page-level context)."""
+    record_members: list[DomRecord]
+    """Members of repeated sibling groups of block elements (record candidates)."""
     ld_json: list[str]
     meta: DomMeta
     forms: list[DomForm]

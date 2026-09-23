@@ -71,11 +71,13 @@ from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page
 from .signals import (
     APPLY_LINK,
+    NOT_SUBMITTED_STATUS,
     PENDING,
     STATUS_LINK,
     UNCERTAIN,
     ButtonIntent,
     affirmative_acceptance,
+    application_records,
     confirmation_references,
     job_ids,
 )
@@ -615,36 +617,42 @@ class GenericApplicationBrowser:
     ) -> tuple[list[str], str | None]:
         """Signals proving acceptance of *this* application, or [] if not proven.
 
-        Each record block (list item, row, article) is judged on its own, with only the
-        page-level text outside all records as shared context, so text from different
-        applications on one page is never combined. The acceptance statement must be
-        affirmative. A job id or title must tie it to this application; a reference seen
-        for the first time counts as a tie only immediately after our own submit
-        (``fresh_reference_ties``), never on a later status page."""
+        A page listing several applications (repeated cards, articles, list items or
+        rows carrying status or job identity) is read one record at a time: a status
+        counts only with identity inside the same *outermost* record, never with text
+        from another record or from the page around them, and a record that also
+        shows a not-submitted status is ambiguous. A page without such records is one
+        record. The acceptance statement must be affirmative, and a job id or title
+        must tie it to this application; a reference seen for the first time counts
+        only immediately after our own submit (``fresh_reference_ties``)."""
         snapshot = model.snapshot
-        context = f"{snapshot.title}\n{snapshot.context_text}"
-        candidates: list[tuple[str, str, str]] = []  # (statement, statement's own text, tie text)
-        for record in snapshot.records:
-            statement = affirmative_acceptance(record)
+        candidates: list[tuple[str, str]] = []  # (statement, record text)
+        records = application_records(snapshot)
+        if records is None:
+            page = f"{snapshot.title}\n{snapshot.body_text}"
+            statement = affirmative_acceptance(snapshot.title) or affirmative_acceptance(
+                snapshot.body_text[:3000]
+            )
             if statement:
-                candidates.append((statement, record, f"{record}\n{context}"))
-        statement = affirmative_acceptance(snapshot.title) or affirmative_acceptance(
-            snapshot.context_text[:3000]
-        )
-        if statement:
-            candidates.append((statement, context, context))
-        for statement, own, tie_text in candidates:
+                candidates.append((statement, page))
+        else:
+            for record in records:
+                statement = affirmative_acceptance(record)
+                if statement and not NOT_SUBMITTED_STATUS.search(record):
+                    candidates.append((statement, record))
+        for statement, record in candidates:
             ties: list[str] = []
             if tie.external_job_id:
-                shown = job_ids(tie_text)
+                shown = job_ids(record)
                 if shown and all(i.lower() != tie.external_job_id.lower() for i in shown):
-                    continue  # this record or page names a different job
-                if tie.external_job_id.lower() in tie_text.lower():
+                    continue  # this record names a different job
+                if tie.external_job_id.lower() in record.lower():
                     ties.append(f"job id {tie.external_job_id!r} shown with it")
-            if tie.job_title and normalize_text(tie.job_title) in normalize_text(tie_text):
+            if tie.job_title and normalize_text(tie.job_title) in normalize_text(record):
                 ties.append(f"job title {tie.job_title!r} shown with it")
-            refs = [r for r in confirmation_references(own) if r not in tie.known_references]
-            if refs and fresh_reference_ties:
+            refs = [r for r in confirmation_references(record) if r not in tie.known_references]
+            # A new reference ties only a single-record result page, never one of several.
+            if refs and fresh_reference_ties and records is None:
                 ties.append(f"confirmation reference {refs[0]!r} appeared after the submit")
             if ties:
                 return [f"acceptance text {statement!r}", *ties], (refs[0] if refs else None)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from typing import Any
 
 
 def _rx(pattern: str) -> re.Pattern[str]:
@@ -57,6 +58,20 @@ def affirmative_acceptance(text: str) -> str | None:
                 continue
             return stripped
     return None
+
+
+APPLICATION_STATUS = _rx(
+    r"\b(?:draft|submitted|received|in review|under review|reviewing|not submitted|incomplete|"
+    r"rejected|declined|withdrawn|applied|pending|processing|interview(?:ing)?|offer(?:ed)?|"
+    r"hired|in progress|started)\b"
+)
+"""Words that describe an application's state in a status list or portal."""
+
+NOT_SUBMITTED_STATUS = _rx(
+    r"\bdraft\b|not (?:yet )?submitted|unsubmitted|\bincomplete\b|\bwithdrawn\b|"
+    r"\bcancel+ed\b|\bin progress\b|\bstarted\b"
+)
+"""A record showing one of these cannot also prove that the application was submitted."""
 
 
 UNCERTAIN = _rx(
@@ -155,3 +170,29 @@ def button_intent(text: str, *, submits_form: bool) -> ButtonIntent:
     if _OTHER.search(text):
         return ButtonIntent.OTHER
     return ButtonIntent.AMBIGUOUS if submits_form else ButtonIntent.OTHER
+
+
+def _record_like(text: str) -> bool:
+    return bool(APPLICATION_STATUS.search(text) or ACCEPTANCE.search(text) or job_ids(text))
+
+
+def application_records(snapshot: Any) -> list[str] | None:
+    """The texts of the outermost application records on the page, or None when the
+    page is a single record (no repeated group has two or more members that carry an
+    application status or job identity)."""
+    members = snapshot.record_members
+    counts: dict[int, int] = {}
+    for member in members:
+        if _record_like(member.text):
+            counts[member.group] = counts.get(member.group, 0) + 1
+    qualifying = {group for group, n in counts.items() if n >= 2}
+    if not qualifying:
+        return None
+    records: list[str] = []
+    for member in members:
+        if member.group not in qualifying:
+            continue
+        if any(members[a].group in qualifying for a in member.ancestors):
+            continue  # judged as part of its enclosing record
+        records.append(member.text)
+    return records

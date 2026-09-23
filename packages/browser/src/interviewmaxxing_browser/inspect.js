@@ -355,14 +355,42 @@
   const regions = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live]'))
     .filter(visible).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r) })).filter((r) => r.text);
 
-  // Record blocks (list items, rows, articles) so status portals listing several
-  // applications are read one record at a time, plus the page text outside them.
-  const RECORD = "li, tr, article, [role=listitem], [role=row], [role=article]";
-  const records = Array.from(document.querySelectorAll(RECORD))
-    .filter((r) => visible(r) && !r.querySelector(RECORD))
-    .slice(0, 300);
-  const recordTexts = records.map((r) => textOf(r)).filter(Boolean);
-  const contextText = textOf(document.body, new Set(records)).slice(0, MAX_TEXT);
+  // Record candidates: members of repeated sibling groups of block elements (cards,
+  // articles, list items, rows). Python decides which groups are application records
+  // and ties a status only to the outermost record that contains it.
+  const RECORD_TAGS = new Set(["LI", "TR", "ARTICLE", "SECTION", "DIV", "ASIDE", "DD"]);
+  const RECORD_ROLES = new Set(["listitem", "row", "article", "group"]);
+  const recordish = (el) => RECORD_TAGS.has(el.tagName) || RECORD_ROLES.has(el.getAttribute("role") || "");
+  const memberIndex = new Map();
+  const members = [];
+  let groupCount = 0;
+  for (const parent of [document.body, ...document.body.querySelectorAll("*")]) {
+    if (members.length >= 600) break;
+    const byKey = new Map();
+    for (const child of parent.children) {
+      if (!recordish(child) || !visible(child)) continue;
+      const key = child.tagName + "|" + (child.getAttribute("role") || "");
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(child);
+    }
+    for (const group of byKey.values()) {
+      if (group.length < 2) continue;
+      const g = groupCount++;
+      for (const el of group) {
+        const text = textOf(el).slice(0, 4000);
+        if (!text) continue;
+        memberIndex.set(el, members.length);
+        members.push({ el, group: g, text });
+      }
+    }
+  }
+  const recordMembers = members.map((m) => {
+    const ancestors = [];
+    for (let n = m.el.parentElement; n; n = n.parentElement) {
+      if (memberIndex.has(n)) ancestors.push(memberIndex.get(n));
+    }
+    return { group: m.group, text: m.text, ancestors };
+  });
 
   let step = null;
   const current = document.querySelector('[aria-current="step"]');
@@ -386,8 +414,7 @@
     headings,
     regions,
     body_text: (document.body ? document.body.innerText || "" : "").slice(0, MAX_TEXT),
-    records: recordTexts,
-    context_text: contextText,
+    record_members: recordMembers,
     ld_json: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((s) => s.textContent || ""),
     meta: {
       og_site_name: (document.querySelector('meta[property="og:site_name"]') || {}).content || "",

@@ -101,8 +101,16 @@ _TEXT_ATTESTATION = _rx(
     r"i acknowledge|i declare|to the best of my knowledge"
 )
 _TEXT_CONSENT = _rx(r"\bconsent\b")
+# Help text that turns an ordinary-looking text box into a signature or sworn
+# statement: "By typing your name, you certify all information is true and complete".
+_SIGNING_HELP = _rx(
+    r"\bby (?:typing|entering|providing|signing|submitting|writing)\b[^.]{0,120}?\b(certif|attest|"
+    r"declar|swear|affirm|confirm|agree|consent|acknowledg)"
+)
 
-_STATEMENT_CONTROLS = frozenset({ControlType.RADIO, ControlType.SELECT})
+_STATEMENT_CONTROLS = frozenset(
+    {ControlType.RADIO, ControlType.SELECT, ControlType.CHECKBOX_GROUP, ControlType.MULTISELECT}
+)
 
 
 def _tokens(*parts: str) -> str:
@@ -166,9 +174,13 @@ def classify(
         if _ATTESTATION.search(statement):
             return SemanticType.ATTESTATION
     if control_type in (ControlType.TEXT, ControlType.TEXTAREA):
+        signing = _SIGNING_HELP.search(help_text)
+        if signing:
+            verb = signing.group(1).lower()
+            return SemanticType.CONSENT if verb.startswith("consent") else SemanticType.ATTESTATION
         if _TEXT_CONSENT.search(label):
             return SemanticType.CONSENT
-        if _TEXT_ATTESTATION.search(label):
+        if _TEXT_ATTESTATION.search(label) or _TEXT_ATTESTATION.search(help_text):
             return SemanticType.ATTESTATION
 
     auto = autocomplete.split()[-1] if autocomplete else ""
