@@ -7,6 +7,7 @@ dependencies = [
     "interviewmaxxing-core==0.1.0",
     "interviewmaxxing-candidate==0.1.0",
     "interviewmaxxing-cli==0.1.0",
+    "interviewmaxxing-pipeline==0.1.0",
     "pydantic>=2.8,<3",
 ]
 
@@ -17,6 +18,7 @@ interviewmaxxing-service = "interviewmaxxing_service.__main__:main"
 interviewmaxxing-core = { workspace = true }
 interviewmaxxing-candidate = { workspace = true }
 interviewmaxxing-cli = { workspace = true }
+interviewmaxxing-pipeline = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

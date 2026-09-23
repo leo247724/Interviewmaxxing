@@ -49,7 +49,8 @@ def test_health_has_no_private_data(harness: Harness) -> None:
     assert r.status == 200
     assert r.json == {
         "status": "ok", "service": "interviewmaxxing-service", "contractVersion": "2",
-        "executor": "idle",
+        "executor": "idle", "runner": "available", "pipeline": "available",
+        "jobs": "unavailable", "selection": "unavailable",
     }
     assert "access-control-allow-origin" not in r.headers
     assert r.headers["cache-control"] == "no-store"

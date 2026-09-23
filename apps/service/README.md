@@ -1,10 +1,15 @@
-# interviewmaxxing-service (S1)
+# interviewmaxxing-service (S1 + S2)
 
 Loopback-only HTTP service between the frontend's same-origin gateway (`apps/web`, F2) and the local executor. It maps canonical store state to the frontend's presentation models (`apps/web/lib/service/types.ts`) and hands all execution to the I1 runner. It is not a second executor or state machine. The canonical `ApplicationStore` is the only state authority.
 
 Owner: queue-runtime. Package `interviewmaxxing-service`, import `interviewmaxxing_service`, script `interviewmaxxing-service`. Standard library HTTP only; no hosted platform, queue or extra dependency.
 
-**Status: checkpoint.** The HTTP boundary, view mapping, answer validation, background dispatch and recovery are implemented and tested against the real store. A scripted runner performs the runner recipe's store operations. The candidate side runs against the real **C2P** `LocalCandidateStore` (candidate-brain `4d0d421`). The remaining dependency is the **I1** reusable runner: final acceptance against the real runner, Chromium and the localhost mock ATS is still to run. `integration.py` is the only module that names either API. See [Integration needs](#integration-needs).
+**Status: checkpoint.**
+- **S1 (applications).** The HTTP boundary, view mapping, answer validation, background dispatch and recovery are tested against the real store with a scripted runner. The candidate side runs on the real C2P `LocalCandidateStore`.
+- **S2 (pipeline, jobs, preferences, Jev selection).** Pipeline routes run on the real P1 `PipelineStore`. Jobs and selection run on the real J1 `JobStore`/`JobSearchService` and J2 `SelectionService`, with fixture source adapters and a fixture Jev transport in tests.
+- **Still to do.** Final acceptance against the real I1 runner, Chromium, the localhost mock ATS and the UI. Until I1 is installed, application routes answer `503` and record nothing.
+
+`integration.py` is the only module that names the C2P, J1, J2 and I1 APIs. See [Integration needs](#integration-needs).
 
 ## Run
 
@@ -23,6 +28,10 @@ IMX_HOME=$PWD/.imx IMX_SERVICE_ORIGIN=http://127.0.0.1:4317 \
 | `IMX_SERVICE_HEADLESS` | `0` | `1` runs the runner's browser headless (tests); the default shows it for sign-in/CAPTCHA |
 | `IMX_SERVICE_MAX_UPLOAD` | `10485760` | Resume upload limit (bytes) |
 | `IMX_HOME`, `IMX_CANDIDATE_ID`, ... | see CONTRACTS.md §8 | Local data paths and the configured stable candidate id |
+| `IMX_OPENROUTER_ENV_FILE` | unset | Explicit path to an ignored env file holding `OPENROUTER_API_KEY` (J2 `load_api_key`); otherwise the server's own environment. Never sent to the browser or logged. |
+| `IMX_JOBS_DB` | `$IMX_HOME/jobs/jobs.sqlite3` | J1 listing store |
+
+The service's own state (saved preferences and background tasks) is `$IMX_HOME/state/service.sqlite3` (mode `0600`). The pipeline is P1's `$IMX_HOME/state/pipeline.sqlite3`, and selection is J2's store.
 
 On start the service marks submissions interrupted by an earlier process as `SUBMISSION_UNKNOWN` (`recover_interrupted_submissions`). Stop it with Ctrl-C or SIGTERM. A run still in progress is cancelled. The executor loop keeps running until the cancelled run's `finally` blocks finish (bounded), so the runner can await browser cleanup and release its claim. Only then does the loop stop. An interrupted submit stays durable `SUBMITTING`/`SUBMISSION_UNKNOWN` through the store's claim lease, so it is never retried.
 
@@ -98,6 +107,70 @@ confirmationAuthority: "site" | "user";
 
 The frontend must label a receipt from these fields, not from its evidence list. A user-confirmed receipt can still list site artifacts (for example, screenshots of the uncertain page, `source: "site"`). They did not confirm anything, so the receipt stays user-reported.
 
+## Pipeline, jobs and selection routes (S2, for F3)
+
+These implement the routes proposed in `apps/web/README.md` (dashboard `816afa1`). The DTOs match `apps/web/lib/pipeline/types.ts` and `lib/jobs/types.ts` field for field, plus the additive fields marked **(+)**. All transport rules above apply unchanged: loopback `Host`, exact `Origin` on every `POST`, JSON only, no query strings, and bounded bodies. The import preview body may be up to 4 MiB; every other body is limited to 64 KiB.
+
+| Operation | Method and path | Body | Success | Notes |
+| --- | --- | --- | --- | --- |
+| board | `GET /pipeline` | — | `PipelineBoardView` | P1 lanes in order; entries in creation order |
+| create | `POST /pipeline/entries` | `PipelineEntryInput` | `201 PipelineEntryView` | `fields` keys must be reference keys; `422` per field |
+| update | `POST /pipeline/entries/{id}` | `PipelineUpdateInput` | `PipelineEntryView` | partial; stale `revision` → `409` |
+| move | `POST /pipeline/entries/{id}/move` | `{revision, lane}` | `PipelineEntryView` | unknown lane → `422 {lane}`; stale → `409` |
+| import preview | `POST /pipeline/import/preview` | `{format, fileName, content}` | `ImportPreviewView` | parsed by P1; kept in memory 30 min under `previewId` |
+| import commit | `POST /pipeline/import/{previewId}/commit` | `{}` | `ImportReceiptView` | rows with errors → `409`, nothing imported; expired/used preview → `404` |
+| preferences | `GET /selection/preferences` | — | `SearchPreferencesView` | defaults until saved |
+| save preferences | `POST /selection/preferences` | preferences without `fingerprint` | `SearchPreferencesView` | persisted as canonical `SelectionPreferences` |
+| start search | `POST /jobs/search` | preferences without `fingerprint` (the query) | `202 SearchRunView` | id recorded before queuing |
+| search status | `GET /jobs/search/{runId}` | — | `SearchRunView` | poll until `finishedAt` |
+| listings | `GET /jobs` | — | `ListingsView` | ranked (see below); `lastRun` is the latest search |
+| listing **(+)** | `GET /jobs/{listingId}` | — | `ListingView` | |
+| decide | `POST /selection/jobs/{listingId}` | `{}` | `200 ListingView` (done) or `202 ListingView` (still deciding) | explicit user action only |
+| track | `POST /jobs/{listingId}/track` | `{}` | `201`/`200 ListingView` with `pipelineEntryId` | one card per listing |
+
+### Additive DTO fields (+) and mapping notes
+
+- `SearchPreferencesView.locationPriority` (+) takes `"STRONGLY_PREFER_ONSITE_HYBRID" | "BALANCED" | "PREFER_REMOTE"`. It is the canonical D0 `LocationPriority` and defaults to strongly preferring onsite/hybrid.
+  - In request bodies it is optional. Leaving it out keeps the saved value.
+  - It is part of `SelectionPreferences`, so it changes `fingerprint` (earlier decisions become `stale`), reaches Jev and J2's decision cache, and sets the J1 search leg order and budget.
+- `ListingView.locationTier` (+) takes `"PREFERRED" | "EQUAL" | "SECONDARY" | "UNRANKED" | null`, and `ListingView.rankReason` (+) is a string or `null`.
+  - Both come from J2's `check_location` + `location_tier`.
+  - They are `null` when the selection package isn't installed.
+- **Listing order:**
+  1. Closed listings last.
+  2. Then location tier. With the default priority, Austin onsite/hybrid is `PREFERRED` and eligible US-wide remote is `SECONDARY`, so remote roles are still listed, never excluded.
+  3. Then stated pay against the floor: meets, unknown, below. Unknown pay is not demoted below pay that misses the floor.
+  4. Then most recently observed.
+- `PipelineEntryView.fields` holds the 23 P1 reference keys, and blank is `null`.
+  - `origin` is `import` when P1 has provenance, `jobs` when linked to a listing, and `manual` otherwise.
+  - `history` maps P1 kinds `created`, `imported`, `moved` and `stage_edited`; `stage_edited` becomes `edited`, with a readable summary.
+  - `provenance.importedValues` is P1's `original`, keyed by workbook header. `provenance.importId` is the receipt id of that document, and `sourceDigest` is the workbook digest (else the document digest).
+- **Lane ids** are P1's: `saved, applied, scheduling, interviewing, assessment, follow-up, decision, offer, closed`.
+  - **Incompatibility:** the frontend README proposed `follow_up`, but P1 uses `follow-up`. Use the ids from `GET /pipeline`.
+- `PipelineEntryView.application` is the only submission state shown on a card, read from the canonical `ApplicationStore` by the linked `application_id`. Moving a card to "Applied" or "Offer" creates or changes no application.
+- **Import preview.** Rows with issues become `action: "error"` with `errors[{field, message}]`, where `field` is the reference key or `row`. File-level issues appear as row `0`. An unreadable file answers `422 {content}`.
+- **Search.**
+  - `SearchRunView.results` covers every requested source, in order. Sources show `QUEUED`, then `RUNNING`, then J1's final state.
+  - `NEEDS_USER` carries `userAction` and `sessionName` (`imx-jobs-<source>`). `BLOCKED` and `ERROR` carry a message and are never an empty success.
+  - A search interrupted by a restart shows its unfinished sources as `ERROR`.
+  - Searches run one at a time, on their own worker, independent of the application browser. Repeating an identical query while it runs returns the same run. A different query while one runs gets `409`.
+- **Decisions.**
+  - Decisions run on their own single worker, with at most 10 queued. Concurrent requests for the same listing and preferences join one decision; the provider is called once.
+  - The call waits up to 20 s for the decision (the gateway allows 30 s). `202` means it is still running; poll `GET /jobs/{id}`.
+  - `selection.unresolved` lists facts J2 could not establish: pay, location or remote eligibility, missing profile, and insufficient evidence.
+  - A missing key, or a provider failure, is recorded as J2's `PROVIDER_ERROR` hold (for example `NOT_CONFIGURED`), never an APPLY.
+  - Jev receives only J2's minimal `CandidateEvidence.from_profile` projection of the complete candidate profile, or nothing, which is held as `MISSING_PROFILE`.
+- **Track** creates one P1 card per listing, in the first lane. It copies only observed facts:
+  - company and title;
+  - the arrangement as text;
+  - location into Location/commute;
+  - pay bounds only when stated in USD per year (the raw text goes into Comp basis);
+  - the source names;
+  - the listing's application URL, else its posting URL;
+  - the current selection id.
+
+  Tracking, deciding and searching never create an application. Applying still goes through `POST /applications`, with its duplicate check.
+
 ## Public Python API
 
 ```python
@@ -157,20 +230,39 @@ class Runner:
 - `reconcile(application_id)` re-inspects the site for this application in the browser and calls `store.reconcile_submission` only with concrete proof (ACCEPTED signals or definite NOT_SUBMITTED). It never submits. It returns the stored state otherwise.
 - Release the claim before returning. Record evidence under `<artifacts>/<application_id>/` with `EvidenceRef.path`.
 
+**I1 (current `LocalApplicationRunner`).** `runner_factory` uses `create_runner(...)` when it is published, else `LocalApplicationRunner(paths=, interaction=, headless=)`. `runner_problem()` makes application start, resume and recheck answer `503` without recording anything while the runner is not installed. Pending I1 seam: **per-application resume pinning**. Application A's selected resume must stay pinned across profile changes made for B and across a restart. When core publishes where that pin lives (on the request or application record, or a runner argument), the service will pass `StartApplicationInput.resumeId` for the new application. It will never let the runner reread the global profile's current resume.
+
+**J1 (job-ingestion, working tree read at this checkpoint).** Uses `JobStore(path)`, `.get_listing`, `.list_listings(limit=)`, `JobSearchService(store, transport, adapters=).run(query, detail_limit=)` with a single-source query per call for per-source progress, `OpenCliTransport()` and `default_db_path()`. Requested seam, optional: `run(query, *, run_id=None, on_source=callback)`. That would let one J1 run carry the service task id instead of one J1 run per source.
+
+**J2 (jev-selection, working tree read at this checkpoint).** Uses `SelectionService(client=, store=, application_lookup=, candidate_id=)`, `.select`, `.is_current`, `SelectionStore(default_store_path(paths))`, `.latest`, `.get`, `CandidateEvidence.from_profile`, `JevClient(load_api_key())`, `check_location`, `location_tier` and `location_priority_reason`.
+
+**P1 (application-packets `da97188`, merged).** Uses `PipelineStore.from_paths` and `list_items`, `create_item`, `update_item`, `move_item`, `history`, `lanes`, `list_imports`, `preview_import` and `apply_import`, plus `parse_import`, `TrackingFields` and `REFERENCE_FIELDS`. P1R (source-scoped imports, immutable originals) is consumed at its checkpoint without service changes, unless its import identity API changes.
+
 **C2P (candidate-brain `4d0d421`): integrated.** `tests/service/test_candidate_integration.py` runs the service over the real `LocalCandidateStore`. It covers upload before a profile exists, private permissions, setup and reload, preserved facts/answers/resume on update, resume selection, a reused answer written to `answers.json`, an unreadable profile left untouched and the shared upload bound. It is skipped when the package is not installed.
 
-**Dependencies.** `pyproject.toml` pins `interviewmaxxing-core==0.1.0`, `interviewmaxxing-candidate==0.1.0` and `interviewmaxxing-cli==0.1.0` (workspace sources). No third-party dependency beyond `pydantic` (already in core). The root lock needs regenerating by core/coordinator to include this member.
+**Dependencies.** `pyproject.toml` pins `interviewmaxxing-core==0.1.0`, `interviewmaxxing-candidate==0.1.0`, `interviewmaxxing-pipeline==0.1.0` and `interviewmaxxing-cli==0.1.0` (workspace sources). J1 (`interviewmaxxing-jobs`) and J2 (`interviewmaxxing-selection`) are imported dynamically and are optional until they land; add them as pinned dependencies once they are workspace members. No third-party dependency beyond `pydantic` (already in core). The root lock needs regenerating by core/coordinator to include this member.
 
 ## Tests
 
 ```bash
 uv venv .venv-task --python 3.12
-uv pip install --python .venv-task/bin/python -e packages/core -e apps/cli pytest ruff mypy
+uv pip install --python .venv-task/bin/python --no-sources -e packages/core -e packages/candidate \
+    -e packages/pipeline -e packages/generation -e apps/cli pytest ruff mypy
 uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/service
-# until the coordinator merges C2P here, install it read-only from its worktree:
-uv pip install --python .venv-task/bin/python --no-deps --no-sources ../candidate-brain/packages/candidate
+# optional until J1/J2 are merged: install their current trees read-only (non-editable copies)
+uv pip install --python .venv-task/bin/python --no-deps --no-sources \
+    ../job-ingestion/packages/jobs ../jev-selection/packages/selection
 .venv-task/bin/python -m pytest tests/service
 .venv-task/bin/ruff check apps/service tests/service && .venv-task/bin/mypy --strict apps/service/src
 ```
 
-`tests/service` starts the real server on an ephemeral loopback port over a real SQLite store in a temporary `IMX_HOME`. It uses a scripted runner that performs the runner recipe's store operations against a fictional site, with either an in-memory candidate gateway or the real C2P store. Everything is fictional and local.
+`tests/service` starts the real server on an ephemeral loopback port over real SQLite stores in a temporary `IMX_HOME`:
+
+- `test_http_flow`, `test_http_boundary`, `test_mapping`: the S1 application routes, with a scripted runner that performs the runner recipe's store operations against a fictional site.
+- `test_executor`: the executor waits for a cancelled run's awaited cleanup before stopping.
+- `test_candidate_integration`: the real C2P store.
+- `test_pipeline_routes`: the real P1 store, including CSV import preview, commit and reimport.
+- `test_jobs_routes`: the jobs/selection orchestration over protocol fakes that produce canonical D0 records.
+- `test_package_integration`: the real J1 store and search service with fixture source adapters, and the real J2 selection service with a fixture Jev transport. It is skipped when J1/J2 are not installed.
+
+Everything is fictional and local. No live source is browsed, no Jev credit is spent, and nothing is submitted.

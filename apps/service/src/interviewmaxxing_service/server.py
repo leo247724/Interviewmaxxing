@@ -23,13 +23,20 @@ import re
 import socket
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from . import errors
 from .config import ServiceConfig
+from .discovery_models import (
+    ImportInput,
+    PipelineEntryInput,
+    PipelineMoveInput,
+    PipelineUpdateInput,
+    SearchPreferencesInput,
+)
 from .models import (
     AnswerInput,
     EmptyBody,
@@ -41,9 +48,16 @@ from .models import (
 )
 from .service import PresentationService
 
+if TYPE_CHECKING:
+    from .jobs_api import JobsApi
+    from .pipeline_api import PipelineApi
+
 log = logging.getLogger("interviewmaxxing.service.http")
 
 FILENAME_HEADER = "X-Imx-Filename"
+MAX_IMPORT_BODY_BYTES = 4 * 1024 * 1024
+"""Pipeline import preview body: the frontend sends up to 2 MiB of file text, which
+grows when JSON-escaped; P1 itself caps the parsed file at 5 MiB."""
 _RECONCILE: TypeAdapter[
     RecheckInput | UserFoundConfirmationInput | UserConfirmedNotReceivedInput
 ] = TypeAdapter(ReconcileInput)
@@ -59,6 +73,20 @@ ROUTES: list[Route] = [
     ("POST", re.compile(rf"^/applications/{_APP}/resume$"), "resume"),
     ("POST", re.compile(rf"^/applications/{_APP}/reconcile$"), "reconcile"),
     ("GET", re.compile(rf"^/applications/{_APP}/evidence/(?P<evidence>[^/]+)$"), "evidence"),
+    ("GET", re.compile(r"^/pipeline$"), "board"),
+    ("POST", re.compile(r"^/pipeline/entries$"), "entry_create"),
+    ("POST", re.compile(r"^/pipeline/entries/(?P<entry>[^/]+)$"), "entry_update"),
+    ("POST", re.compile(r"^/pipeline/entries/(?P<entry>[^/]+)/move$"), "entry_move"),
+    ("POST", re.compile(r"^/pipeline/import/preview$"), "import_preview"),
+    ("POST", re.compile(r"^/pipeline/import/(?P<preview>[^/]+)/commit$"), "import_commit"),
+    ("GET", re.compile(r"^/selection/preferences$"), "prefs_get"),
+    ("POST", re.compile(r"^/selection/preferences$"), "prefs_save"),
+    ("POST", re.compile(r"^/selection/jobs/(?P<listing>[^/]+)$"), "decide"),
+    ("POST", re.compile(r"^/jobs/search$"), "search_start"),
+    ("GET", re.compile(r"^/jobs/search/(?P<run>[^/]+)$"), "search_status"),
+    ("GET", re.compile(r"^/jobs$"), "listings"),
+    ("GET", re.compile(r"^/jobs/(?P<listing>[^/]+)$"), "listing"),
+    ("POST", re.compile(r"^/jobs/(?P<listing>[^/]+)/track$"), "track"),
 ]
 _TEMPLATES = {
     "health": "/healthz",
@@ -70,6 +98,20 @@ _TEMPLATES = {
     "resume": "/applications/{id}/resume",
     "reconcile": "/applications/{id}/reconcile",
     "evidence": "/applications/{id}/evidence/{id}",
+    "board": "/pipeline",
+    "entry_create": "/pipeline/entries",
+    "entry_update": "/pipeline/entries/{id}",
+    "entry_move": "/pipeline/entries/{id}/move",
+    "import_preview": "/pipeline/import/preview",
+    "import_commit": "/pipeline/import/{id}/commit",
+    "prefs_get": "/selection/preferences",
+    "prefs_save": "/selection/preferences",
+    "decide": "/selection/jobs/{id}",
+    "search_start": "/jobs/search",
+    "search_status": "/jobs/search/{id}",
+    "listings": "/jobs",
+    "listing": "/jobs/{id}",
+    "track": "/jobs/{id}/track",
 }
 
 
@@ -107,6 +149,8 @@ class ServiceHandler(BaseHTTPRequestHandler):
 
     service: PresentationService  # set on the subclass by make_server
     config: ServiceConfig
+    pipeline: PipelineApi | None
+    jobs: JobsApi | None
 
     # --- logging --------------------------------------------------------------------
 
@@ -216,10 +260,10 @@ class ServiceHandler(BaseHTTPRequestHandler):
             raise errors.invalid("The request body was cut short.")
         return body
 
-    def _json(self, model: type[BaseModel] | TypeAdapter[Any]) -> Any:
+    def _json(self, model: type[BaseModel] | TypeAdapter[Any], *, limit: int | None = None) -> Any:
         if self._content_type() != "application/json":
             raise errors.ApiError(415, "invalid", "Send JSON with Content-Type: application/json.")
-        body = self._read_body(self.config.max_json_bytes)
+        body = self._read_body(limit or self.config.max_json_bytes)
         try:
             data = json.loads(
                 body.decode("utf-8"),
@@ -267,7 +311,11 @@ class ServiceHandler(BaseHTTPRequestHandler):
     # --- routes ---------------------------------------------------------------------------
 
     def _r_health(self) -> None:
-        self._send_json(200, self.service.health())
+        health = self.service.health()
+        health["pipeline"] = "available" if self.pipeline is not None else "unavailable"
+        health.update(self.jobs.status() if self.jobs is not None
+                      else {"jobs": "unavailable", "selection": "unavailable"})
+        self._send_json(200, health)
 
     def _r_candidate(self) -> None:
         self._send_json(200, self.service.get_candidate().dump())
@@ -328,6 +376,73 @@ class ServiceHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+    # --- pipeline, jobs and selection (S2) --------------------------------------------------
+
+    def _pipeline(self) -> PipelineApi:
+        if self.pipeline is None:
+            raise errors.unavailable("The pipeline tracker isn't installed in this service.")
+        return self.pipeline
+
+    def _jobs(self) -> JobsApi:
+        if self.jobs is None:
+            raise errors.unavailable("Job search and selection aren't installed in this service.")
+        return self.jobs
+
+    def _r_board(self) -> None:
+        self._send_json(200, self._pipeline().board().dump())
+
+    def _r_entry_create(self) -> None:
+        body = self._json(PipelineEntryInput)
+        self._send_json(201, self._pipeline().create(body).dump())
+
+    def _r_entry_update(self, entry: str) -> None:
+        body = self._json(PipelineUpdateInput)
+        self._send_json(200, self._pipeline().update(entry, body).dump())
+
+    def _r_entry_move(self, entry: str) -> None:
+        body = self._json(PipelineMoveInput)
+        self._send_json(200, self._pipeline().move(entry, body).dump())
+
+    def _r_import_preview(self) -> None:
+        body = self._json(ImportInput, limit=MAX_IMPORT_BODY_BYTES)
+        self._send_json(200, self._pipeline().preview_import(body).dump())
+
+    def _r_import_commit(self, preview: str) -> None:
+        self._json(EmptyBody)
+        self._send_json(200, self._pipeline().commit_import(preview).dump())
+
+    def _r_prefs_get(self) -> None:
+        self._send_json(200, self._jobs().get_preferences().dump())
+
+    def _r_prefs_save(self) -> None:
+        body = self._json(SearchPreferencesInput)
+        self._send_json(200, self._jobs().save_preferences(body).dump())
+
+    def _r_decide(self, listing: str) -> None:
+        self._json(EmptyBody)
+        view, finished = self._jobs().decide(listing)
+        self._send_json(200 if finished else 202, view.dump())
+
+    def _r_search_start(self) -> None:
+        body = self._json(SearchPreferencesInput)
+        run, _created = self._jobs().start_search(body)
+        self._send_json(202, run.dump())
+
+    def _r_search_status(self, run: str) -> None:
+        self._send_json(200, self._jobs().search_status(run).dump())
+
+    def _r_listings(self) -> None:
+        self._send_json(200, self._jobs().list_listings().dump())
+
+    def _r_listing(self, listing: str) -> None:
+        self._send_json(200, self._jobs().listing(listing).dump())
+
+    def _r_track(self, listing: str) -> None:
+        self._json(EmptyBody)
+        view, created = self._jobs().track(listing)
+        self._send_json(201 if created else 200, view.dump())
+
+
 class LoopbackHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -339,10 +454,15 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
         super().__init__((host, config.port), handler)
 
 
-def make_server(service: PresentationService) -> LoopbackHTTPServer:
+def make_server(
+    service: PresentationService,
+    *,
+    pipeline: PipelineApi | None = None,
+    jobs: JobsApi | None = None,
+) -> LoopbackHTTPServer:
     handler = type(
         "BoundServiceHandler",
         (ServiceHandler,),
-        {"service": service, "config": service.config},
+        {"service": service, "config": service.config, "pipeline": pipeline, "jobs": jobs},
     )
     return LoopbackHTTPServer(service.config, handler)

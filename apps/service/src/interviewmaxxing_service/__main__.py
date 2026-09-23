@@ -14,12 +14,18 @@ import signal
 import sys
 import threading
 from types import FrameType
+from typing import Any
 
+from .app import build_app
 from .config import ConfigError, ServiceConfig
 from .executor import Dispatcher
-from .integration import LocalCandidateGateway, runner_factory
-from .server import make_server
-from .service import PresentationService
+from .integration import (
+    LocalCandidateGateway,
+    LocalJobsBackend,
+    LocalSelectionBackend,
+    runner_factory,
+    runner_problem,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,13 +48,30 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"interviewmaxxing-service: {exc}", file=sys.stderr)
         return 2
-    config.paths.ensure()
-    dispatcher = Dispatcher(runner_factory(config))
-    service = PresentationService(
-        config, candidates=LocalCandidateGateway(config), dispatcher=dispatcher
+    candidates = LocalCandidateGateway(config)
+    backends: dict[str, Any] = {}
+    unavailable: dict[str, str] = {}
+    try:
+        jobs_backend = LocalJobsBackend()
+        backends.update(listings=jobs_backend, search=jobs_backend)
+    except ImportError:
+        unavailable["jobs"] = "Job search (interviewmaxxing-jobs) isn't installed in this service."
+    try:
+        backends["decisions"] = LocalSelectionBackend(config.paths)
+    except ImportError:
+        unavailable["selection"] = (
+            "Jev selection (interviewmaxxing-selection) isn't installed in this service."
+        )
+    app = build_app(
+        config,
+        candidates=candidates,
+        dispatcher=Dispatcher(runner_factory(config)),
+        profile_loader=lambda: candidates.profile(config.candidate_id),
+        runner_problem=runner_problem,
+        unavailable=unavailable,
+        **backends,
     )
-    service.recover()
-    server = make_server(service)
+    server = app.server()
 
     def _stop(signum: int, frame: FrameType | None) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -63,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         server.serve_forever(poll_interval=0.2)
     finally:
         server.server_close()
-        dispatcher.shutdown()
+        app.close()
     return 0
 
 

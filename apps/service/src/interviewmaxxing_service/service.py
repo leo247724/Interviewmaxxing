@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -114,8 +114,10 @@ class PresentationService:
         *,
         candidates: CandidateGateway,
         dispatcher: Dispatcher,
+        runner_problem: Callable[[], str | None] | None = None,
     ) -> None:
         self.config = config
+        self.runner_problem = runner_problem
         self.candidates = candidates
         self.dispatcher = dispatcher
         self.owner = f"service:{os.getpid()}"
@@ -228,7 +230,17 @@ class PresentationService:
             "service": "interviewmaxxing-service",
             "contractVersion": CONTRACT_VERSION,
             "executor": "busy" if self.dispatcher.busy else "idle",
+            "runner": "unavailable" if self._runner_unavailable() else "available",
         }
+
+    def _runner_unavailable(self) -> str | None:
+        return self.runner_problem() if self.runner_problem is not None else None
+
+    def _require_runner(self) -> None:
+        """Refuse before recording anything when the I1 runner cannot run."""
+        problem = self._runner_unavailable()
+        if problem:
+            raise errors.unavailable(problem)
 
     # --- candidate --------------------------------------------------------------------
 
@@ -267,6 +279,7 @@ class PresentationService:
     def start(self, body: StartApplicationInput) -> tuple[ApplicationView, bool]:
         cid = self.config.candidate_id
         url = body.application_url.strip()
+        self._require_runner()
         url_error = _url_problem(url)
         if url_error:
             raise errors.invalid(url_error, {"applicationUrl": url_error})
@@ -387,6 +400,7 @@ class PresentationService:
                 )
             if self.dispatcher.busy:
                 raise errors.conflict(BUSY_MESSAGE)
+            self._require_runner()
             before = app.state
             if before is S.REQUESTED:
                 url = store.list_requests(app.id)[0].application_url
@@ -425,6 +439,8 @@ class PresentationService:
                 self._settle(app.id)
                 running = self.dispatcher.status(app.id)
             if isinstance(body, RecheckInput):
+                if running is None:
+                    self._require_runner()
                 with self.dispatcher.lock:
                     current = self.dispatcher.current
                     if current is not None and current.application_id == app.id:

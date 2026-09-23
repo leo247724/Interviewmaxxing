@@ -53,8 +53,8 @@ from interviewmaxxing_service import (
     ResumeEntry,
     ServiceConfig,
     ServiceInteraction,
-    make_server,
 )
+from interviewmaxxing_service.app import build_app
 from interviewmaxxing_service.candidate import CandidateSetupError, CandidateSetupState
 
 ORIGIN = "http://127.0.0.1:4317"
@@ -332,6 +332,7 @@ class Harness:
     site: FictionalSite
     paths: LocalPaths
     runs: list[ServiceInteraction]
+    app: Any = None
 
     def wait_idle(self, timeout: float = 10.0) -> None:
         run = self.service.dispatcher.current
@@ -374,9 +375,18 @@ def _site(mock_form: ApplicationForm) -> FictionalSite:
 
 @contextmanager
 def serve(
-    paths: LocalPaths, site: FictionalSite, candidates: Any, **config: Any
+    paths: LocalPaths,
+    site: FictionalSite,
+    candidates: Any,
+    *,
+    listings: Any = None,
+    search: Any = None,
+    decisions: Any = None,
+    runner_problem: Any = None,
+    **config: Any,
 ) -> Iterator[Harness]:
-    """A running service over ``paths`` with the scripted runner and ``candidates``."""
+    """A running service over ``paths`` with the scripted runner, ``candidates`` and
+    optional jobs/selection backends."""
     paths.ensure()
     runs: list[ServiceInteraction] = []
 
@@ -386,25 +396,28 @@ def serve(
 
     settings: dict[str, Any] = {"allowed_origin": ORIGIN, "port": 0, "reconcile_wait_s": 5.0}
     settings.update(config)
-    dispatcher = Dispatcher(factory)
-    service = PresentationService(
-        ServiceConfig(paths=paths, **settings), candidates=candidates, dispatcher=dispatcher
+    app = build_app(
+        ServiceConfig(paths=paths, **settings),
+        candidates=candidates,
+        dispatcher=Dispatcher(factory),
+        profile_loader=lambda: getattr(candidates, "profiles", {}).get(paths.candidate_id),
+        listings=listings, search=search, decisions=decisions,
+        runner_problem=runner_problem,
     )
-    service.recover()
-    server = make_server(service)
+    server = app.server()
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
         yield Harness(
-            client=Client(server.server_address[1]), service=service, candidates=candidates,
-            site=site, paths=paths, runs=runs,
+            client=Client(server.server_address[1]), service=app.service, candidates=candidates,
+            site=site, paths=paths, runs=runs, app=app,
         )
     finally:
         site.hold.set()
         server.shutdown()
         server.server_close()
         thread.join(5)
-        dispatcher.shutdown()
+        app.close()
 
 
 @pytest.fixture
