@@ -292,3 +292,12 @@ def test_google_unusual_traffic_page_is_needs_user(clock: Clock) -> None:
     with pytest.raises(AccessProblem) as err:
         run(GoogleAdapter(), clock, overrides={"google": "sorry"})
     assert err.value.state is SourceSearchState.NEEDS_USER
+
+
+def test_google_logo_initial_is_not_taken_as_the_title() -> None:
+    items = google.parse_items({"page": {"url": "https://www.google.com/search?q=x&udm=8"}, "items": [
+        {"index": 0, "doc_id": "RmljdGlvbmFs==",
+         "lines": ["S", "Senior Marketing Director", "Sample Coffee Roasters",
+                   "Austin, TX • via Example Jobs Board", "3 days ago"]}]})
+    assert (items[0].title, items[0].company, items[0].location) == (
+        "Senior Marketing Director", "Sample Coffee Roasters", "Austin, TX")

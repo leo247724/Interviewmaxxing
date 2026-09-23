@@ -84,6 +84,9 @@ def parse_items(payload: dict[str, Any]) -> list[Item]:
     items: list[Item] = []
     for raw in payload.get("items") or []:
         lines = [x for x in (clean(v) for v in raw.get("lines") or []) if x]
+        if len(lines) > 2 and len(lines[0]) <= 2:
+            # A result without a logo shows the company's initial as its first line.
+            lines = lines[1:]
         doc_id = clean(raw.get("doc_id"))
         if not doc_id or len(lines) < 2:
             continue
