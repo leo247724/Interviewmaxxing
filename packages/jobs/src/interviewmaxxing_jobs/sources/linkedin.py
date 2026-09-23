@@ -23,17 +23,19 @@ from interviewmaxxing_core import ListingStatus, SourceSearchState, WorkArrangem
 
 from ..text import (
     clean,
-    country_level_region,
     decode_linkedin_redirect,
     employer_key_from_url,
     is_host,
+    known_source_ref,
     linkedin_job_url,
     parse_arrangement,
     parse_compensation,
     pay_segment,
     split_linkedin_caption,
+    stated_remote_region,
 )
 from .base import (
+    AccessGuard,
     AccessProblem,
     BudgetPlan,
     Observation,
@@ -43,6 +45,7 @@ from .base import (
     SourceOutcome,
     build_legs,
     check_access,
+    interrupted,
     make_listing,
     plan_note,
 )
@@ -121,7 +124,7 @@ def card_observation(card: Card, *, observed_at: datetime, query_id: str | None,
         source=NAME, source_listing_id=card.id, posting_url=linkedin_job_url(card.id),
         source_url=card.seen_on, title=card.title, company=card.company, location=card.location,
         work_arrangement=card.arrangement,
-        remote_eligibility=country_level_region(card.location)
+        remote_eligibility=stated_remote_region(card.location)
         if card.arrangement is WorkArrangement.REMOTE else None,
         compensation=parse_compensation(card.pay_text, dollar_currency="USD"),
         observed_at=observed_at, query_id=query_id,
@@ -196,7 +199,7 @@ def detail_observation(payload: dict[str, Any], job_id: str, *, observed_at: dat
     listing = make_listing(
         source=NAME, source_listing_id=job_id, posting_url=linkedin_job_url(job_id),
         source_url=linkedin_job_url(job_id), title=title, company=company, location=location, work_arrangement=arrangement,
-        remote_eligibility=country_level_region(location)
+        remote_eligibility=stated_remote_region(location)
         if arrangement is WorkArrangement.REMOTE else None,
         compensation=parse_compensation(pay, dollar_currency="USD"),
         description=description if isinstance(description, str) else None,
@@ -223,41 +226,43 @@ class LinkedInAdapter:
         more_available = False
         skipped_unrendered = 0
         plan = BudgetPlan(ctx.limit, legs, ctx.query.location_priority)
-        for index, leg in enumerate(legs):
-            budget = plan.budget(index)
-            taken = 0
-            for page in range(ctx.max_pages_per_leg):
-                if taken >= budget:
-                    more_available = True
-                    break
-                payload = self._open(ctx, search_url(
-                    leg, start=page * PAGE_SIZE, posted_within_days=ctx.query.posted_within_days))
-                pages += 1
-                cards = parse_cards(payload)
-                if not cards:
-                    if payload.get("no_results") or page > 0:
-                        break
-                    raise ValueError(f"no LinkedIn result list for {leg.label}")
-                for card in cards:
-                    if card.id in seen:
-                        continue
+        guard = AccessGuard()
+        with guard:
+            for index, leg in enumerate(legs):
+                budget = plan.budget(index)
+                taken = 0
+                for page in range(ctx.max_pages_per_leg):
                     if taken >= budget:
                         more_available = True
                         break
-                    if not card.rendered:
-                        if reserved >= ctx.detail_limit:
-                            skipped_unrendered += 1
-                            more_available = True
+                    payload = self._open(ctx, search_url(
+                        leg, start=page * PAGE_SIZE, posted_within_days=ctx.query.posted_within_days))
+                    pages += 1
+                    cards = parse_cards(payload)
+                    if not cards:
+                        if payload.get("no_results") or page > 0:
+                            break
+                        raise ValueError(f"no LinkedIn result list for {leg.label}")
+                    for card in cards:
+                        if card.id in seen:
                             continue
-                        reserved += 1
-                    seen.add(card.id)
-                    planned.append((card, leg))
-                    taken += 1
-                if not payload.get("has_next"):
-                    break
-            else:
-                more_available = True
-            plan.spent(index, taken)
+                        if taken >= budget:
+                            more_available = True
+                            break
+                        if not card.rendered:
+                            if reserved >= ctx.detail_limit:
+                                skipped_unrendered += 1
+                                more_available = True
+                                continue
+                            reserved += 1
+                        seen.add(card.id)
+                        planned.append((card, leg))
+                        taken += 1
+                    if not payload.get("has_next"):
+                        break
+                else:
+                    more_available = True
+                plan.spent(index, taken)
 
         observations: list[Observation] = []
         problems: list[str] = []
@@ -265,14 +270,15 @@ class LinkedInAdapter:
         ordered = [p for p in planned if not p[0].rendered] + [p for p in planned if p[0].rendered]
         details: dict[str, Observation] = {}
         for card, leg in ordered:
-            if detail_slots <= 0:
+            if detail_slots <= 0 or guard.problem is not None:
                 break
             detail_slots -= 1
             try:
                 details[card.id] = self._detail(ctx, card, leg)
                 pages += 1
-            except AccessProblem:
-                raise
+            except AccessProblem as problem:
+                guard.problem = problem  # job pages now need the user; keep the cards
+                break
             except Exception as exc:  # one broken page should not lose the search
                 problems.append(f"job {card.id}: {exc}")
         for card, leg in planned:
@@ -291,7 +297,8 @@ class LinkedInAdapter:
             notes.append(f"stopped at the limit of {ctx.limit} listings")
         state = SourceSearchState.PARTIAL if (more_available or problems or skipped_unrendered) \
             else SourceSearchState.OK
-        return SourceOutcome(state, observations, pages, "; ".join(notes) or None)
+        outcome = SourceOutcome(state, observations, pages, "; ".join(notes) or None)
+        return interrupted(outcome, guard.problem) if guard.problem else outcome
 
     def _open(self, ctx: SearchContext, url: str) -> dict[str, Any]:
         ctx.transport.open(ctx.session, url)
@@ -310,5 +317,11 @@ class LinkedInAdapter:
             check_access("LinkedIn", payload, ctx, login_paths=LOGIN_PATHS, home_url=HOME)
             if len(payload.get("top_lines") or []) >= 2:
                 break
+        # The page must be this job: a redirect or a stale tab would otherwise enrich
+        # the card with another posting's company, description and apply link.
+        ref = known_source_ref(str((payload.get("page") or {}).get("url") or ""))
+        if ref is None or ref[0] != NAME or ref[1] != card.id:
+            shown = ref[1] if ref else "no job id"
+            raise ValueError(f"job page showed {shown} instead; kept the search card only")
         return detail_observation(payload, card.id, observed_at=ctx.clock(),
                                   query_id=ctx.query.id, leg=leg.label, card=card)

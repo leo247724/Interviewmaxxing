@@ -18,14 +18,17 @@ from urllib.parse import urlencode, urlsplit
 from interviewmaxxing_core import ListingStatus, SourceSearchState, WorkArrangement
 
 from ..text import (
+    US_STATES,
     clean,
     compensation_from_schema,
     html_to_text,
     parse_arrangement,
     parse_compensation,
+    stated_remote_region,
 )
 from .base import (
     PLAIN,
+    AccessGuard,
     AccessProblem,
     BudgetPlan,
     Observation,
@@ -35,6 +38,7 @@ from .base import (
     build_legs,
     check_access,
     expired,
+    interrupted,
     is_telecommute,
     make_listing,
     plan_note,
@@ -49,19 +53,6 @@ PAGE_SIZE = 25
 LOGIN_PATHS = ("/auth/login", "/user/login")
 _PATH_SEGMENT = {WorkArrangement.REMOTE: "remote", WorkArrangement.HYBRID: "hybrid",
                  WorkArrangement.ONSITE: "office"}
-_US_STATES = {
-    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
-    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "DC": "District of Columbia",
-    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
-    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
-    "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
-    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
-    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
-    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon",
-    "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
-    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia",
-    "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
-}
 _US_NAMES = {"united states", "united states of america", "usa", "us"}
 
 
@@ -81,8 +72,8 @@ def search_url(leg: SearchLeg, *, page: int = 1) -> str | None:
         if not m:
             return None
         state = m.group("state").strip()
-        state = _US_STATES.get(state.upper(), state.title())
-        if state not in _US_STATES.values():
+        state = US_STATES.get(state.upper(), state.title())
+        if state not in US_STATES.values():
             return None
         params.update(city=m.group("city").strip(), state=state, country="USA")
     params["allLocations"] = "true"
@@ -133,6 +124,8 @@ def card_observation(card: Card, *, observed_at: datetime, query_id: str | None,
         source=NAME, source_listing_id=card.id, posting_url=card.url, source_url=card.seen_on,
         title=card.title, company=card.company, location=card.location,
         work_arrangement=parse_arrangement(card.arrangement_label),
+        remote_eligibility=stated_remote_region(card.location)
+        if parse_arrangement(card.arrangement_label) is WorkArrangement.REMOTE else None,
         compensation=parse_compensation(card.salary),
         posted_text=card.posted, observed_at=observed_at, query_id=query_id,
         evidence="Built In search result card; job id from the card element",
@@ -164,7 +157,9 @@ def detail_observation(payload: dict[str, Any], card: Card, *, observed_at: date
         source=NAME, source_listing_id=card.id, posting_url=card.url, source_url=card.url,
         title=title, company=posting_org(posting) or card.company,
         location=card.location or posting_address(posting), work_arrangement=arrangement,
-        remote_eligibility=posting_remote_region(posting), compensation=compensation,
+        remote_eligibility=posting_remote_region(posting) or (
+            stated_remote_region(card.location or posting_address(posting))
+            if arrangement is WorkArrangement.REMOTE else None), compensation=compensation,
         description=description, full_description=True, status=status,
         posted_text=card.posted or clean((posting or {}).get("datePosted")),
         observed_at=observed_at, query_id=query_id, evidence=evidence,
@@ -189,51 +184,53 @@ class BuiltInAdapter:
         more_available = False
         notes: list[str] = [n for n in (plan_note(ctx.query, PLAIN),) if n]
         plan = BudgetPlan(ctx.limit, legs, ctx.query.location_priority)
-        for index, leg in enumerate(legs):
-            budget = plan.budget(index)
-            taken = 0
-            for page in range(1, ctx.max_pages_per_leg + 1):
-                url = search_url(leg, page=page)
-                if url is None:
-                    notes.append(f"skipped {leg.label}: Built In's filter takes a US city/state "
-                                 "or the United States")
-                    break
-                if taken >= budget:
-                    more_available = True
-                    break
-                ctx.transport.open(ctx.session, url)
-                ctx.transport.wait_for(ctx.session, '[data-id="job-card"]', 15000)
-                payload = ctx.evaluate("builtin_search")
-                pages += 1
-                check_access("Built In", payload, ctx, login_paths=LOGIN_PATHS, home_url=HOME)
-                cards = parse_cards(payload)
-                for card in cards:
-                    if card.id in seen:
-                        continue
+        guard = AccessGuard()
+        with guard:
+            for index, leg in enumerate(legs):
+                budget = plan.budget(index)
+                taken = 0
+                for page in range(1, ctx.max_pages_per_leg + 1):
+                    url = search_url(leg, page=page)
+                    if url is None:
+                        notes.append(f"skipped {leg.label}: Built In's filter takes a US city/state "
+                                     "or the United States")
+                        break
                     if taken >= budget:
                         more_available = True
                         break
-                    seen.add(card.id)
-                    planned.append((card, leg))
-                    taken += 1
-                if not cards or not has_page(payload, page + 1):
-                    break
-            else:
-                more_available = True
-            plan.spent(index, taken)
+                    ctx.transport.open(ctx.session, url)
+                    ctx.transport.wait_for(ctx.session, '[data-id="job-card"]', 15000)
+                    payload = ctx.evaluate("builtin_search")
+                    pages += 1
+                    check_access("Built In", payload, ctx, login_paths=LOGIN_PATHS, home_url=HOME)
+                    cards = parse_cards(payload)
+                    for card in cards:
+                        if card.id in seen:
+                            continue
+                        if taken >= budget:
+                            more_available = True
+                            break
+                        seen.add(card.id)
+                        planned.append((card, leg))
+                        taken += 1
+                    if not cards or not has_page(payload, page + 1):
+                        break
+                else:
+                    more_available = True
+                plan.spent(index, taken)
         if ctx.query.posted_within_days:
             notes.append("posted_within_days is not applied on Built In")
 
         observations: list[Observation] = []
         problems: list[str] = []
         for index, (card, leg) in enumerate(planned):
-            if index < ctx.detail_limit:
+            if index < ctx.detail_limit and guard.problem is None:
                 try:
                     observations.append(self._detail(ctx, card, leg))
                     pages += 1
                     continue
-                except AccessProblem:
-                    raise
+                except AccessProblem as problem:
+                    guard.problem = problem  # job pages now need the user; keep the cards
                 except Exception as exc:
                     problems.append(f"job {card.id}: {exc}")
             observations.append(card_observation(card, observed_at=ctx.clock(),
@@ -243,7 +240,8 @@ class BuiltInAdapter:
         if more_available:
             notes.append(f"stopped at the limit of {ctx.limit} listings")
         state = SourceSearchState.PARTIAL if (more_available or problems) else SourceSearchState.OK
-        return SourceOutcome(state, observations, pages, "; ".join(notes) or None)
+        outcome = SourceOutcome(state, observations, pages, "; ".join(notes) or None)
+        return interrupted(outcome, guard.problem) if guard.problem else outcome
 
     def _detail(self, ctx: SearchContext, card: Card, leg: SearchLeg) -> Observation:
         ctx.transport.open(ctx.session, card.url)

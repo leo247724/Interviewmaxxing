@@ -18,7 +18,6 @@ from interviewmaxxing_core import ListingStatus, SourceSearchState, WorkArrangem
 from ..text import (
     clean,
     compensation_from_schema,
-    country_level_region,
     employer_key_from_url,
     html_to_text,
     indeed_job_url,
@@ -27,9 +26,11 @@ from ..text import (
     parse_compensation,
     pay_segment,
     split_indeed_location,
+    stated_remote_region,
 )
 from .base import (
     PLAIN,
+    AccessGuard,
     AccessProblem,
     BudgetPlan,
     Observation,
@@ -39,6 +40,7 @@ from .base import (
     build_legs,
     check_access,
     expired,
+    interrupted,
     is_telecommute,
     make_listing,
     plan_note,
@@ -111,6 +113,8 @@ def card_observation(card: Card, *, observed_at: datetime, query_id: str | None,
         source=NAME, source_listing_id=card.jk, posting_url=indeed_job_url(card.jk),
         source_url=card.seen_on, title=card.title, company=card.company, location=card.location,
         work_arrangement=card.arrangement,
+        remote_eligibility=stated_remote_region(card.location)
+        if card.arrangement is WorkArrangement.REMOTE else None,
         compensation=parse_compensation(card.salary, dollar_currency="USD"),
         observed_at=observed_at, query_id=query_id,
         evidence="Indeed search result card; job key from the result link",
@@ -153,7 +157,7 @@ def detail_observation(payload: dict[str, Any], jk: str, *, observed_at: datetim
         status = ListingStatus.UNKNOWN
     remote_region = posting_remote_region(posting)
     if remote_region is None and arrangement is WorkArrangement.REMOTE:
-        remote_region = country_level_region(location)
+        remote_region = stated_remote_region(location)
     listing = make_listing(
         source=NAME, source_listing_id=jk, posting_url=indeed_job_url(jk),
         source_url=indeed_job_url(jk), title=title,
@@ -183,53 +187,55 @@ class IndeedAdapter:
         more_available = False
         notes: list[str] = [n for n in (plan_note(ctx.query, PLAIN),) if n]
         plan = BudgetPlan(ctx.limit, legs, ctx.query.location_priority)
-        for index, leg in enumerate(legs):
-            budget = plan.budget(index)
-            taken = 0
-            for page in range(ctx.max_pages_per_leg):
-                url = search_url(leg, start=page * PAGE_SIZE,
-                                 posted_within_days=ctx.query.posted_within_days)
-                if url is None:
-                    notes.append(f"skipped {leg.label}: Indeed US remote search covers the United States only")
-                    break
-                if taken >= budget:
-                    more_available = True
-                    break
-                ctx.transport.open(ctx.session, url)
-                ctx.transport.wait_for(
-                    ctx.session, '.job_seen_beacon, [data-testid="noResultsMessage"]', 15000)
-                payload = ctx.evaluate("indeed_search")
-                pages += 1
-                check_access("Indeed", payload, ctx, login_paths=LOGIN_PATHS, home_url=HOME)
-                cards = parse_cards(payload)
-                if not cards and not payload.get("no_results") and page == 0:
-                    raise ValueError(f"no Indeed result list for {leg.label}")
-                for card in cards:
-                    if card.jk in seen:
-                        continue
+        guard = AccessGuard()
+        with guard:
+            for index, leg in enumerate(legs):
+                budget = plan.budget(index)
+                taken = 0
+                for page in range(ctx.max_pages_per_leg):
+                    url = search_url(leg, start=page * PAGE_SIZE,
+                                     posted_within_days=ctx.query.posted_within_days)
+                    if url is None:
+                        notes.append(f"skipped {leg.label}: Indeed US remote search covers the United States only")
+                        break
                     if taken >= budget:
                         more_available = True
                         break
-                    seen.add(card.jk)
-                    planned.append((card, leg))
-                    taken += 1
-                if not cards or not payload.get("next_href"):
-                    break
-            else:
-                more_available = True
-            plan.spent(index, taken)
+                    ctx.transport.open(ctx.session, url)
+                    ctx.transport.wait_for(
+                        ctx.session, '.job_seen_beacon, [data-testid="noResultsMessage"]', 15000)
+                    payload = ctx.evaluate("indeed_search")
+                    pages += 1
+                    check_access("Indeed", payload, ctx, login_paths=LOGIN_PATHS, home_url=HOME)
+                    cards = parse_cards(payload)
+                    if not cards and not payload.get("no_results") and page == 0:
+                        raise ValueError(f"no Indeed result list for {leg.label}")
+                    for card in cards:
+                        if card.jk in seen:
+                            continue
+                        if taken >= budget:
+                            more_available = True
+                            break
+                        seen.add(card.jk)
+                        planned.append((card, leg))
+                        taken += 1
+                    if not cards or not payload.get("next_href"):
+                        break
+                else:
+                    more_available = True
+                plan.spent(index, taken)
 
         observations: list[Observation] = []
         problems: list[str] = []
         for index, (card, leg) in enumerate(planned):
             label = f"{leg.target}:{leg.label}"
-            if index < ctx.detail_limit:
+            if index < ctx.detail_limit and guard.problem is None:
                 try:
                     observations.append(self._detail(ctx, card, label))
                     pages += 1
                     continue
-                except AccessProblem:
-                    raise
+                except AccessProblem as problem:
+                    guard.problem = problem  # job pages now need the user; keep the cards
                 except Exception as exc:
                     problems.append(f"job {card.jk}: {exc}")
             observations.append(card_observation(card, observed_at=ctx.clock(),
@@ -239,7 +245,8 @@ class IndeedAdapter:
         if more_available:
             notes.append(f"stopped at the limit of {ctx.limit} listings")
         state = SourceSearchState.PARTIAL if (more_available or problems) else SourceSearchState.OK
-        return SourceOutcome(state, observations, pages, "; ".join(notes) or None)
+        outcome = SourceOutcome(state, observations, pages, "; ".join(notes) or None)
+        return interrupted(outcome, guard.problem) if guard.problem else outcome
 
     def _detail(self, ctx: SearchContext, card: Card, leg: str) -> Observation:
         ctx.transport.open(ctx.session, indeed_job_url(card.jk))

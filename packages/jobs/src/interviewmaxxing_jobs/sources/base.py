@@ -188,6 +188,40 @@ class SourceOutcome:
     pages_visited: int = 0
     message: str | None = None
     user_action: str | None = None
+    access: AccessProblem | None = None
+    """Set when a sign-in wall, challenge or denial interrupted the search after some
+    listings were collected: the observations are kept (PARTIAL) and the session is
+    left open for the user."""
+
+
+class AccessGuard:
+    """Catches an AccessProblem raised inside a ``with`` block and keeps it, so a search
+    can stop cleanly and still report the listings collected before the wall."""
+
+    def __init__(self) -> None:
+        self.problem: AccessProblem | None = None
+
+    def __enter__(self) -> AccessGuard:
+        return self
+
+    def __exit__(self, exc_type: object, exc: BaseException | None, tb: object) -> bool:
+        if isinstance(exc, AccessProblem):
+            self.problem = exc
+            return True
+        return False
+
+
+def interrupted(outcome: SourceOutcome, access: AccessProblem) -> SourceOutcome:
+    """The outcome of a search that hit ``access`` part-way: collected listings stay,
+    the state is PARTIAL (or the access state when nothing was collected) and the
+    user action is carried along."""
+    notes = [access.message, *([outcome.message] if outcome.message else [])]
+    if not outcome.observations:
+        return SourceOutcome(access.state, [], outcome.pages_visited, "; ".join(notes),
+                             access.user_action, access)
+    notes.insert(1, f"{len(outcome.observations)} listings collected before that were kept")
+    return SourceOutcome(SourceSearchState.PARTIAL, outcome.observations, outcome.pages_visited,
+                         "; ".join(notes), access.user_action, access)
 
 
 @dataclass
