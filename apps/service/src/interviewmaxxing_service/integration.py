@@ -309,13 +309,20 @@ class LocalSelectionBackend:
     def latest_for(
         self, listing_ids: Sequence[str], *, candidate_id: str
     ) -> dict[str, DecisionRecord]:
-        """One store connection for the whole request. Uses J2's candidate-scoped
-        ``latest(listing_id, candidate_id=)`` when the installed J2 has it (J2R); with
-        the current J2 it filters that listing's history by candidate."""
+        """Use J2's candidate-scoped batch API when available. Older checkpoints
+        fall back to scoped latest reads or candidate-filtered history."""
         store = self._store()
         scoped = "candidate_id" in inspect.signature(store.latest).parameters
         out: dict[str, DecisionRecord] = {}
         try:
+            latest_many = getattr(store, "latest_many", None)
+            if latest_many is not None:
+                outcomes = latest_many(dict.fromkeys(listing_ids), candidate_id=candidate_id)
+                return {
+                    listing_id: self._record(outcome)
+                    for listing_id, outcome in outcomes.items()
+                    if outcome.selection.candidate_id == candidate_id
+                }
             for listing_id in dict.fromkeys(listing_ids):
                 if scoped:
                     outcome = store.latest(listing_id, candidate_id=candidate_id)
@@ -354,7 +361,7 @@ class LocalSelectionBackend:
         preferences: SelectionPreferences,
         profile: CandidateProfile | None,
     ) -> bool:
-        current: bool = self._service(None).is_current(
+        current: bool = self._service(None, candidate_id=selection.candidate_id).is_current(
             selection, listing, preferences, self._evidence(profile)
         )
         return current

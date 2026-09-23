@@ -21,6 +21,7 @@ from interviewmaxxing_core import (
     ListingSource,
     LocalPaths,
     ReconciliationMethod,
+    SelectionPreferences,
     SubmissionObservation,
     SubmissionOutcome,
     SubmissionReconciliation,
@@ -111,6 +112,19 @@ def test_candidates_never_see_or_link_each_others_decisions(
     assert set(decisions.get_many([sel_a["id"]], candidate_id="cand-a")) == {sel_a["id"]}
     latest_b = decisions.latest_for([x.id], candidate_id="cand-b")[x.id].selection
     assert latest_b.id == sel_b["id"] and latest_b.candidate_id == "cand-b"
+
+
+def test_missing_profile_currentness_keeps_the_explicit_candidate(shared_home: Any) -> None:
+    _paths, _repo, decisions = shared_home
+    x = posting("no-profile", location="Austin, TX", arrangement=WorkArrangement.HYBRID,
+                observed=datetime.now(UTC))
+    prefs = SelectionPreferences()
+    record = decisions.decide(x, prefs, None, candidate_id="cand-without-profile",
+                              application_lookup=lambda _: None)
+    assert record.selection.candidate_id == "cand-without-profile"
+    assert decisions.is_current(record.selection, x, prefs, None)
+    changed = prefs.model_copy(update={"role_focus": "A different responsibility focus"})
+    assert not decisions.is_current(record.selection, x, changed, None)
 
 
 # --- 2. decision task lifecycle -----------------------------------------------------------
