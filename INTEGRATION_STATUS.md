@@ -1,67 +1,55 @@
 # Interviewmaxxing integration status
 
-## Current objective
+Build the complete local backend and frontend: supplied-URL applications, OpenCLI job discovery, Jev selection through funded OpenRouter, and the pipeline tracker. The user has repeatedly authorized continuing the parallel build through actual integrated testing. No production deployment, remote push, employer outreach or bulk applications is part of the current development task.
 
-Build the supplied-URL application flow: the user chooses a job and asks to apply; the system uses verified candidate information to fill and submit it, verifies acceptance, and saves a receipt. The user explicitly resumed the workers and requested the entire backend and frontend on 2026-09-22. Job discovery and Jev selection are deferred. The MVP now uses six of the eight prepared worktrees, including a local HTTP service in queue-runtime.
+## Confirmed product criteria
 
-## Repository baseline
+- Performance marketing operator fit by actual responsibilities, including paid acquisition, paid media, performance/growth marketing, demand generation and digital marketing leadership. Titles are representative search seeds, never an exact-title allowlist. Similar acquisition/lead/director roles qualify semantically.
+- Seed titles: Paid Media Manager, Senior Paid Media Manager, Performance Marketing Manager, Growth Marketing Manager, Demand Generation Manager, Digital Marketing Manager, plus the original marketing manager/director. Pure data-platform engineering is outside the focus.
+- Strongly prefer Austin onsite/hybrid over eligible nationwide US remote. Remote remains eligible and is never restricted to Texas. Minimum annual compensation USD100000; missing/noncomparable pay stays unknown.
+- The tracker retains all23 fields and8 private records from the supplied Numbers workbook, with original source provenance and separately editable board lanes. Imports never manufacture application receipts.
+- User supplied the résumé. Its private candidate profile has been imported successfully with35 literal source-backed USER_STATED claims,6 experience records,1 education and the original PDF bytes. Setup is complete; no screening/consent answers were invented.
 
-- Coordinator branch: `j-workspace`.
-- Upstream baseline: `9afc591` (architecture only).
-- Shared setup documents: `ARCHITECTURE.md` and `WORKTREES.md`.
-- All eight feature-worker worktrees have been created from the shared documentation checkpoint `c68643a4286d39c69ec2709684de72bbcea490b4`.
-- At creation, each worktree was verified clean, on its intended `build/<workspace-name>` branch, with HEAD at that checkpoint. The coordinator owns subsequent scope checkpoints; verify that each worker has the current documentation before dispatch.
-- Reviewed core contracts through `462476ccb2b4fac8913b58af4e8fd011b549b508` are integrated. `CONTRACTS.md` publishes version 2 interfaces and `sh scripts/verify.sh` is the executable verification command.
+## Coordinator and integrated work
+
+Coordinator directory `/Users/leo/.superset/worktrees/Interviewmaxxing/caramel-ketch`, branch `j-workspace`; original upstream baseline9afc591. Latest semantic contract checkpoint `caae823`. Private runtime home `/Users/leo/.interviewmaxxing`, candidate id `default`; private profile/resume stay outside Git. Root `env.local` is ignored and never printed or sent to the frontend.
+
+Reviewed and integrated: C1R3 core contracts/store; C2R candidate loading; C2P/C2P1/C2P2 through9eb9f72; C3R factual generation through9d6a142; F1R2 frontend through8f0da8a; D0 identity fixes and location preference throughac4d626 plus timestamp precision5e994ed. Root6e02c71 excludes Node apps/web from Python workspace and locks reviewed candidate/generation packages.
+
+Coordinator checks: combined core/candidate/generation487 tests passed before latest candidate/semantic additions; latest54 discovery tests and144 candidate tests pass, scopedruff and strictcoremypy pass. D0 identity/enrichment/location/date fixes received independent approval. C2P2 independent144-test review and targeted corruption/concurrency probes approved. Supplied PDF digest matches stored copy; candidate reload and complete setup verified. Whole-product verification remains pending below.
 
 ## Worker board
 
-| Worker | Superset workspace ID | Status | Next dependency |
+All worktrees are under `/Users/leo/.superset/worktrees/Interviewmaxxing/build/<name>`. All use local Superset terminal transport. Models are verified from provider metadata; user corrected the additional review model to Fable5.1.
+
+| Worker | Current package/checkpoint | Status and dependency |
+| --- | --- | --- |
+| core-contracts | I1 d43ce6b reusable runner/CLI/schema3/resume pinning | Opus checkpoint passed worker619unit +13realCLI/Chromiume2e; Fable review running; final check requires C4R2 |
+| candidate-brain | C2P2 9eb9f72 | Approved and merged; terminal now runs Fable review of J2 |
+| application-packets | P1R d6ce9e4 |97tests claimed; independent final review running; source-scoped import, immutable snapshots, all23fields |
+| browser-ats | C4R2 00e0362 | Independent final review running; O1 OpenCLI driver implementation continues |
+| job-ingestion | J1 OpenCLI source search/store | Implementation and real source verification running; must consume caae823 semantic defaults |
+| jev-selection | J2 53201dd, J2S semantic follow-up | Fable read-only review and separate Opus role_focus follow-up running; canonical decisions/strongAustin tiers/provider verified |
+| queue-runtime | S1 98aff0a and S1R/S2 | Fixes plus jobs/pipeline HTTP adapters running; must consume I1resume pin/factory, P1R API, role_focus |
+| dashboard | F2/F3 816afa1 boundary checkpoint | Full jobs/pipeline UI and live service integration running; explicit user-confirmation authority, roleFocus and backend acceptance remain |
+
+## Control mapping
+
+| Worker | Workspace ID | Terminal ID | Opus session |
 | --- | --- | --- | --- |
-| core-contracts | `6a218556-206b-446f-ab32-7659bd383217` | C1R3 `4fd2959` done, in review | C2/C3/C4 integration before I1 |
-| job-ingestion | `60876c0b-328b-4fc8-ba66-5ef7028922eb` | parked | Later job-discovery milestone |
-| jev-selection | `82112dc8-f635-439f-a61d-c9c33f6636e3` | parked | Later automated job-selection milestone |
-| candidate-brain | `4d16e305-b074-4bdd-9ff9-f46a553ccfbf` | C2/C2R through `fa99724` done, in review | C2P profile editing and resume uploads next |
-| application-packets | `7333147f-5e19-441c-b25c-e08dc161282e` | C3 `61d89af` done; C3R running | Preserve meaningful symbols, then C1R3 roundtrip |
-| browser-ats | `acff6e42-6b2f-407e-b5c8-0978a8017ca4` | C4 `bb1bb3a` done, in review | Independent runtime review and integration; OpenCLI driver follow-up |
-| queue-runtime | `04292d12-950d-40a8-b8ca-355593be29d9` | S1 local HTTP service running | I1 reusable runner and C2P setup API; hosted/distributed work deferred |
-| dashboard | `ec7d3896-d6e4-407e-85eb-a5c452224509` | F1R `620fb97` done; focused tests/types pass; visual recheck running | S1/I1 for real F2 integration |
+| core-contracts |6a218556-206b-446f-ab32-7659bd383217|4fcc3a93-dbde-40f5-9ac8-47415b2c8c83|c7b3b809-7801-421c-95c1-499f7330cd14|
+| candidate-brain |4d16e305-b074-4bdd-9ff9-f46a553ccfbf|8ea7cdf0-d32c-4938-87fa-df5f94f48ec1|612aa043-1c46-4250-83a7-f6e9924410ea|
+| application-packets |7333147f-5e19-441c-b25c-e08dc161282e|277d2333-35ea-4ebb-83d4-3f0985a2eaa5|052fc903-c0a3-451e-8d73-48aa674890e7|
+| browser-ats |acff6e42-6b2f-407e-b5c8-0978a8017ca4|599558c3-fd93-43ce-a29c-9c9702b23b69|5947e2df-8de9-43a3-ae01-09ac9898b1af|
+| dashboard |ec7d3896-d6e4-407e-85eb-a5c452224509|043d3f36-8a95-49a6-bc97-ea1255a7283f|7741a68f-82d8-4d3a-89fd-41dab783e3f6|
+| queue-runtime |04292d12-950d-40a8-b8ca-355593be29d9|6aeb2dec-1fa7-4e68-9ca9-d88da8f2c7d6|c0180abb-71bb-400f-9d79-2b833e52014d|
+| job-ingestion |60876c0b-328b-4fc8-ba66-5ef7028922eb|50f61059-be65-4169-98cf-f6c7e3742cfc|42491b53-c805-47f7-a057-2673ebd934f8|
+| jev-selection |82112dc8-f635-439f-a61d-c9c33f6636e3|24ff5b4d-723a-4719-a46f-1654df2bdabf|8d49cec1-0ca1-4d5f-99d6-3aa21e74e66c|
 
-All workers are on the local host. Their directories are `/Users/leo/.superset/worktrees/Interviewmaxxing/build/<workspace-name>`. The existing coordinator remains at `caramel-ketch` on `j-workspace`.
+Additional Fable5.1 sessions reuse completed worker terminals read-only: J2 review in candidate-brain720e14d4-2376-4977-99e9-b0d23349f2ec; I1 review in core-contractsf563693b-534d-4fd7-a0ab-e14f7284b14a. Do not send an Opus follow-up while its terminal is occupied by Fable. Finite print tasks require verified shell prompt before next command; shell-quote argv and resume the intended provider session. Keep all terminals/worktrees available.
 
-Bounded assignments and acceptance requirements are in [.handoff/mvp-build-tasks.md](.handoff/mvp-build-tasks.md). C1 starts from `9111218`; later tasks receive its reviewed result before dispatch.
+## Remaining completion gates
 
-| Task | Terminal | Claude session | Verified model | Result |
-| --- | --- | --- | --- | --- |
-| control handshake | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `a953ca77-51e6-4b01-89cd-d7527d957d1a` | `claude-opus-5-5` from `modelUsage` | Initial and resumed assistant acknowledgments verified through terminal reads and `agents read` |
-| C1 / C1R / C1R2 | `4fcc3a93-dbde-40f5-9ac8-47415b2c8c83` | `c7b3b809-7801-421c-95c1-499f7330cd14` | `claude-opus-5-5`, verified from task assistant messages | Integrated through `462476c`; coordinator independently passed all 218 tests, ruff, strict mypy, locked sync and CLI smoke |
-| C4a | `599558c3-fd93-43ce-a29c-9c9702b23b69` | `5947e2df-8de9-43a3-ae01-09ac9898b1af` | `claude-opus-5-5`, verified from task assistant messages | `2382f65` independently verified and merged as `f2e3d6b`; terminal kept for C4 |
-| C2 / C2R | `8ea7cdf0-d32c-4938-87fa-df5f94f48ec1` | `612aa043-1c46-4250-83a7-f6e9924410ea` | `claude-opus-5-5`, verified from task assistant messages | `fa99724`; loader conflict and stale-save corrections under independent review |
-| C3 / C3R | `277d2333-35ea-4ebb-83d4-3f0985a2eaa5` | `052fc903-c0a3-451e-8d73-48aa674890e7` | `claude-opus-5-5`, verified from task assistant messages | `61d89af`; question matching correction running |
-| F1 / F1R | `043d3f36-8a95-49a6-bc97-ea1255a7283f` | `7741a68f-82d8-4d3a-89fd-41dab783e3f6` | `claude-opus-5-5`, verified from task assistant messages | `620fb97`; coordinator passed all 6 recovery tests and typecheck; visual review running |
-| S1 | `6aeb2dec-1fa7-4e68-9ca9-d88da8f2c7d6` | `c0180abb-71bb-400f-9d79-2b833e52014d` | `claude-opus-5-5`, verified handshake `modelUsage` | Local service implementation dispatched; allowlist `apps/service/**`, `tests/service/**` |
+Resolve concrete review findings, merge reviewed packages, lock all Pythonmembers and run clean integrated checks. Connect actual frontend->S1->I1->Chromium->localhost ATS; verify receipt/upload digest/onePOST, missing-input restart, duplicate prevention, uncertainty/reconciliation and résuméA/B pinning. Verify O1 against owned OpenCLI localhostsession. Import real8-row pipeline idempotently after P1Rapproval, preserve original23columns and update TogetherWork completed assessments from this session. Connect real jobs/preferences/Jev/pipeline routes, test semantic matches and strongAustin ranking, record actual source login/challenge/availability states, and verify responsive UI. Private profile is ready; no live employer acceptance is claimed.
 
-## Completed verification
-
-- C4a changes are confined to its six allowed fixture files. The coordinator reran all 28 stdlib HTTP tests successfully on Python 3.12 and checked the text diff. PDF cross-reference trailing spaces are valid fixture bytes and were excluded from text whitespace checking.
-- The coordinator started an isolated mock server from the merged tree and used Playwright CLI/Chromium to fill native controls, select machine-backed choices and upload the fictional resume. The page showed acceptance for BWA-ENG-101 with reference `BWA-000001` at `2026-09-22T22:02:16Z`; an independent server query found exactly one accepted POST and the correct uploaded SHA-256.
-- That coordinator-only browser session and mock server were closed cleanly. Snapshot evidence is under `/var/folders/wy/jv0dwczn75d5s_7w71jb7vpr0000gn/T/imx-coordinator-browser-4u0ulxsr/.playwright-cli/`; no real employer or candidate data was used.
-- C1 review corrections are complete, including explicit saved-answer scope, verified facts and complete question wording in fingerprints. A changed attestation description invalidates the prior input and packet. The coordinator reviewed the final diff and reran all 218 tests plus formatting, strict types, locked sync and CLI smoke successfully.
-- F1 independent UI review passed desktop and mobile compose, validation, missing answers, unselected attestations, draft save, receipt and uncertain reconciliation. F1R now preserves the active ID across transient service failures and clears it only for a genuine missing record. Coordinator recovery tests and types pass; visual follow-up is running.
-- C2/C3 review found four reproducible defects: meaningful symbols lost by question matching, tied JOB conflicts removed before resolution, stale saves overwriting newer answers, and full wording lost in saved-answer roundtrips. Corrections are assigned in `.handoff/saved-answer-review.md`; completion requires independent verification and integration.
-- C4 worker reports 332 passing tests, strict types/lint and a real browser demo with exactly one accepted POST. Independent review and coordinator browser tests are underway; these are not yet integrated acceptance results.
-- OpenCLI 1.8.6 and Browser Bridge were verified live. In a named session, the assistant read current questions while the user controlled all assessment actions. All three assessment sections completed and the final page confirmed completion. This is evidence for user-present observation, not an automated application submission or a completed reusable site adapter. Private invitation data and assessment content remain outside source control.
-
-## Control-path evidence — 2026-09-22
-
-- Superset CLI/host 1.30.1 is authenticated and reachable on the local host.
-- Workspace discovery, terminal discovery, terminal reads and terminal sends succeeded.
-- The preset model list rejects the pinned `claude-opus-5-5` ID. An explicit Claude command can run in a Superset terminal.
-- After the user updated Claude Code to 2.1.280, an explicit `claude --model claude-opus-5-5 --effort high` launch displayed **Opus 5.5 with high effort**.
-- The earlier model request returned **Login expired · Please run /login**. A subsequent `claude auth login` completed successfully; a fresh auth check now reports `loggedIn: true`.
-- The core worktree terminal returned actual assistant acknowledgments `IMX_CONTROL_ACK_20260922_A` and `IMX_CONTROL_ACK_20260922_B` across an initial and resumed request. Both responses reported `claude-opus-5-5` in `modelUsage`, with no permission denials. `agents read` independently exposed both assistant messages.
-- Superset terminal transport also works with finite `claude --print` tasks. After a task exits to a verified shell, send a new command using `--resume <Claude session ID>` for follow-up. Do not send natural-language prompts to a shell or shell commands into a running model conversation.
-- Login terminal `f9a78907-ec8c-4f77-86b5-26f93ffe11f3` is task-owned, in the coordinator workspace, and has completed sign-in. The earlier probe terminal has ended. User terminals remain untouched.
-
-## Next action
-
-Integrate the reviewed corrections and browser/frontend foundations, then run I1, C2P, S1 and F2 to finish the local application product. Exact scopes and seams are in `.handoff/local-service-integration.md`. The OpenCLI driver remains a separate browser follow-up sharing the same runtime. A real target application URL and verified candidate profile/resume are still needed for live employer acceptance; build and verify all independent functionality against fictional localhost fixtures first.
+Detailed current correction/seam brief: [.handoff/current-integration.md](.handoff/current-integration.md). Original scoped tasks: [.handoff/mvp-build-tasks.md](.handoff/mvp-build-tasks.md), [.handoff/local-service-integration.md](.handoff/local-service-integration.md), [.handoff/job-browser-selection.md](.handoff/job-browser-selection.md), [.handoff/pipeline-and-frontend.md](.handoff/pipeline-and-frontend.md).
