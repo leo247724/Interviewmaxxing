@@ -322,3 +322,25 @@ def test_a_cancelled_terminal_prompt_does_not_hold_the_process_open():
     asyncio.run(scenario())  # asyncio.run also shuts the default executor down
     assert time.monotonic() - started < 2
     release.set()
+
+
+def test_status_explains_a_prepared_application_and_points_to_review() -> None:
+    from types import SimpleNamespace
+
+    from interviewmaxxing_cli.main import _preparation_lines, _review_steps
+    from interviewmaxxing_core import ApplicationState
+
+    events = [SimpleNamespace(event="application.inspecting", metadata={}),
+              SimpleNamespace(event="preparation.ready",
+                              metadata={"form_step": 3, "submitted": False, "captcha_pending": True}),
+              SimpleNamespace(event="application.needs_input", metadata={})]
+    lines = _preparation_lines(ApplicationState.NEEDS_INPUT, events, [])
+    assert lines[0].startswith("prepared:") and "form step 3" in lines[0] and "nothing was submitted" in lines[0]
+    assert any(line.startswith("captcha:") for line in lines)
+    # Open questions or another state mean the application is not "prepared".
+    assert _preparation_lines(ApplicationState.NEEDS_INPUT, events, [object()]) == []  # type: ignore[list-item]
+    assert _preparation_lines(ApplicationState.FAILED_RETRYABLE, events, []) == []
+    assert _preparation_lines(ApplicationState.NEEDS_INPUT, events[:1], []) == []
+    steps = _review_steps("app_x", Path("/tmp/artifacts"))
+    assert steps[0].startswith("review the filled form evidence under")
+    assert any("resume app_x" in step and "submission stays disabled" in step for step in steps)

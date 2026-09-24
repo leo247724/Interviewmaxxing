@@ -3,7 +3,7 @@ store, re-inspection and multi-step forms."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from interviewmaxxing_core import (
     AnswerReuse,
@@ -138,7 +138,7 @@ def test_latest_user_input_for_a_question_wins(
 ):
     draft = UserInput.for_field(mock_form, "why_us", TextValue(text="Draft"))
     final = UserInput.for_field(mock_form, "why_us", TextValue(text="Final")).model_copy(
-        update={"provided_at": LATER})
+        update={"provided_at": draft.provided_at + timedelta(seconds=1)})
     packet = resolve(make_context(mock_form, fictional_candidate, user_inputs=[final, draft]))
     assert packet.answer_for("why_us").value == TextValue(text="Final")
 

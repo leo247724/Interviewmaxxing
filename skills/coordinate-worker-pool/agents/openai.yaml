@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coordinate Worker Pool"
+  short_description: "Balance agent work, queues, and bounded handoffs"
+  default_prompt: "Use $coordinate-worker-pool to coordinate my workers with clear ownership and bounded resource use."

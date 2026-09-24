@@ -1,0 +1,349 @@
+{
+ "backend": "smartrecruiters",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:03:36Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed_partial",
+ "coverage": {
+  "inventory_density": 11,
+  "observed_examples": 3,
+  "fully_mapped_examples": 0,
+  "employers_distinct": 3,
+  "note": "All three resolve to the SmartRecruiters 'Easy apply' oneclick-ui (Angular web components, controls inside nested shadow roots — extractor v5 shadow traversal was required). Only step 1 (Personal information + Resume + message) was observed blank; the 'Next' button leads to screening questions/consents that are gated behind required step-1 fields and were NOT visited."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "sr-01",
+   "url": "https://jobs.smartrecruiters.com/AllianceAnimalHealth/744000149701344-integrated-marketing-manager-remote-?oga=true",
+   "resolved_url": "https://jobs.smartrecruiters.com/oneclick-ui/company/AllianceAnimalHealth/publication/d1972d5c-a447-4bac-80a1-1dea7da9bc3e?dcr_ci=AllianceAnimalHealth",
+   "page_title": "Easy apply - Integrated Marketing Manager (Remote) - Alliance Animal Health",
+   "captured_at_utc": "2026-09-24T00:01:54Z",
+   "hosting_mode": "oneclick_ui_easy_apply",
+   "entry": "?oga=true on the job URL redirects straight into the Easy apply form",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/smartrecruiters-01-alliance.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/smartrecruiters-01-alliance.state.txt"
+   ],
+   "option_lists_captured": "none opened (country-code combobox has a very large list rendered in the state snapshot; City is an async typeahead)",
+   "steps_visited": [
+    "Easy apply step 1 (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "screening questions / consents after 'Next'",
+    "submit"
+   ]
+  },
+  {
+   "sample_id": "sr-02",
+   "url": "https://jobs.smartrecruiters.com/Wise/744000150172789-senior-business-marketing-lead-north-america",
+   "resolved_url": "https://jobs.smartrecruiters.com/oneclick-ui/company/Wise/publication/7ac0df40-f2e1-4b8d-a001-51fb62942171?dcr_ci=Wise",
+   "page_title": "Easy apply - Senior Business Marketing Lead, North America - Wise",
+   "captured_at_utc": "2026-09-24T00:02:25Z",
+   "hosting_mode": "oneclick_ui_easy_apply",
+   "entry": "job page anchor \"I'm interested\" (5 copies; jobs.smartrecruiters.com and smartr.me hrefs) -> oneclick-ui publication URL, navigated directly",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/smartrecruiters-02-wise.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/smartrecruiters-02-wise.state.txt"
+   ],
+   "steps_visited": [
+    "Easy apply step 1 (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "after 'Next'"
+   ]
+  },
+  {
+   "sample_id": "sr-03",
+   "url": "https://jobs.smartrecruiters.com/KIPP/744000149913724-managing-director-of-marketing",
+   "resolved_url": "https://jobs.smartrecruiters.com/oneclick-ui/company/KIPP/publication/8bf47626-45b6-4b52-b9fe-80220a62b4d6?dcr_ci=KIPP",
+   "page_title": "Easy apply - Managing Director of Marketing - KIPP Texas Public Schools",
+   "captured_at_utc": "2026-09-24T00:02:35Z",
+   "hosting_mode": "oneclick_ui_easy_apply",
+   "entry": "?oga=true redirect",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/smartrecruiters-03-kipp.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/smartrecruiters-03-kipp.state.txt"
+   ],
+   "steps_visited": [
+    "Easy apply step 1 (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "after 'Next'"
+   ],
+   "note": "City not starred here (optional)"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "wizard": "step 1 personal info -> 'Next' -> (unobserved) screening/consent -> submit",
+   "url_pattern": "https://jobs.smartrecruiters.com/<Company>/<id>-<slug>[?oga=true]  ->  https://jobs.smartrecruiters.com/oneclick-ui/company/<Company>/publication/<uuid>?dcr_ci=<Company>",
+   "form_element": "none (no <form>); custom elements oc-apply-with-resume, oc-resume-upload, spl-dropzone, spl-form-element with nested shadow roots",
+   "captcha_widget": false,
+   "auth_required": false,
+   "third_party_apply": "button 'Apply With Indeed' above an 'or Easy Apply' divider",
+   "footer": "'Privacy Notice' link (employer-specific), 'Cookie Settings' button"
+  },
+  "control_families": {
+   "text": "input#first-name-input, #last-name-input (autocomplete given-name/family-name, aria-required=true); label element <label for=id id=id-label> with text '<Label>*' when required.",
+   "email": "input[type=email]#email-input and #confirm-email-input (both required) — email must be entered twice.",
+   "city_typeahead": "input#spl-form-element_10 role=combobox aria-haspopup=listbox 'City' (required on sr-01/02, optional sr-03); async suggestions, no static list.",
+   "phone": "div[role=group] 'Phone number' containing button[role=combobox]#spl-form-element_12 aria-label 'Country code' (listbox with search 'Search by country/region or code') + input[type=tel]#spl-form-element_5.",
+   "avatar": "button[data-test=avatar-browse] 'Upload profile image' + input[type=file] accept images (optional).",
+   "file_autofill": "spl-dropzone[data-test=apply-with-resume-container] inside <oc-apply-with-resume>: input[type=file]#file-input, label 'Choose a file or drop it here' — this is the AUTOFILL PARSER at the top of the form.",
+   "file_resume": "spl-dropzone[data-test=resume-upload] under <oc-resume-upload> with section title 'Resume' (data-test=section-title): second input[type=file]#file-input (same id!) — this is the RESUME ATTACHMENT. Both accept the same very long list (.doc, .dot, .rmr, .rsm, .resume, .oxps, .pdf, .p7s, .ai, .rtf, .pages, .gdoc, .gslides, .xls, .xlsm, .pub, .msg, .ppt, .wps, .ods, .odt, .pptx, .ppsx, .xlsx, .docx, .dotx, .sxw, .wpd, .abw, .mp3, .m4a, .wav, .psd, .eml, .ical, .ics, .ifb, .icalendar, .ics_response, .csv, .txt, .text, .vcf, .mp4, .mov, .bmp, .gif, .jfif, .jpeg, .jpg, .png, .tif, .tiff, .webp).",
+   "social": "optional text inputs #linkedin-input 'LinkedIn', #facebook-input 'Facebook', #twitter-input 'X (fka Twitter)', #website-input 'Website'.",
+   "textarea": "textarea#hiring-manager-message-input 'Let the company know about your interest working there' (optional free text).",
+   "next": "button containing span 'Next' at the bottom (advances to gated step; not final submit)."
+  },
+  "field_patterns": [
+   {
+    "key": "autofill_resume",
+    "label_seen": "Apply with resume — Choose a file or drop it here",
+    "control": "file_autofill",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ],
+    "classification": "file (parser)"
+   },
+   {
+    "key": "profile_image",
+    "label_seen": "Upload profile image",
+    "control": "file (images)",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ],
+    "classification": "human"
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email*",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "email_confirm",
+    "label_seen": "Confirm your email*",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ],
+    "classification": "fact_copy (same as email)"
+   },
+   {
+    "key": "city",
+    "label_seen": "City* (sr-03: 'City')",
+    "control": "city_typeahead",
+    "required": "varies",
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone number (Country code + number)",
+    "control": "phone",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "facebook_url",
+    "label_seen": "Facebook",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "twitter_url",
+    "label_seen": "X (fka Twitter)",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "website_url",
+    "label_seen": "Website",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume — Choose a file or drop it here",
+    "control": "file_resume",
+    "required": "unmarked",
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ]
+   },
+   {
+    "key": "message_to_hiring_manager",
+    "label_seen": "Let the company know about your interest working there",
+    "control": "textarea",
+    "required": false,
+    "seen_in": [
+     "sr-01",
+     "sr-02",
+     "sr-03"
+    ],
+    "classification": "free_text_narrative"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "identity_hint": "jobs.smartrecruiters.com/<Company>/<id>-slug; anchors \"I'm interested\"",
+    "observed": true
+   },
+   {
+    "step": "easy_apply_step1",
+    "identity_hint": "document.title starts 'Easy apply - '; URL /oneclick-ui/company/<Company>/publication/<uuid>",
+    "observed": true
+   },
+   {
+    "step": "next",
+    "control": "button with span 'Next'",
+    "observed": true,
+    "never_actuated": true,
+    "gated": "requires first/last/email/confirm/city"
+   },
+   {
+    "step": "screening_and_consents",
+    "observed": false,
+    "expected_unverified": [
+     "employer screening questions",
+     "privacy/consent checkboxes",
+     "EEO"
+    ]
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "note": "control text UNVERIFIED (never reached)"
+   }
+  ],
+  "conditional_patterns": [
+   "Uploading to the autofill dropzone likely pre-populates name/email/socials (not exercised)."
+  ],
+  "blockers": [
+   {
+    "type": "shadow_dom",
+    "detail": "All controls live in nested shadow roots; querySelector from document sees nothing. Runtime must traverse shadowRoot (extract_form.js v5 qsaDeep) or use opencli state (which already pierces shadow)."
+   },
+   {
+    "type": "wizard_gated",
+    "detail": "Screening questions unobserved; require typing to reach."
+   },
+   {
+    "type": "duplicate_ids",
+    "detail": "Two input#file-input (autofill vs resume). Bind via ancestor data-test (apply-with-resume-container vs resume-upload)."
+   }
+  ],
+  "runtime_observations": [
+   "nearest_heading_before is unreliable across shadow boundaries (compareDocumentPosition); use ancestor_context/preceding_text in controls.json.",
+   "state.txt is very large (~7.5k lines) because the country-code listbox options are all in the DOM."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "step 1",
+   "Next",
+   "screening questions + privacy consent (possibly required checkbox)",
+   "Submit"
+  ],
+  "screening_inference": "SmartRecruiters screening questions are usually radio/select/free text per employer; some employers require a GDPR/privacy consent checkbox. UNVERIFIED here."
+ },
+ "provider_hint": {
+  "for_jev": "SmartRecruiters Easy apply: step 1 in shadow DOM (first/last/email x2/city typeahead/phone/socials/resume/message). Two identical file inputs: the top one is a resume PARSER, the 'Resume' section one is the attachment. Screening questions appear only after 'Next' and are unknown at prepare time; request re-observation before answering. Never click 'Apply With Indeed'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email (+confirm)",
+   "city",
+   "phone (+country code)",
+   "linkedin/facebook/twitter/website urls"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "message to hiring manager (optional short pitch)"
+  ],
+  "requires_human_input": [
+   "resume file",
+   "profile image",
+   "everything after 'Next' until observed"
+  ]
+ },
+ "edge_cases": [
+  "?oga=true on a job URL deep-links into Easy apply; without it the job page shows multiple \"I'm interested\" anchors including smartr.me tracking variants.",
+  "City required-ness differs per employer."
+ ]
+}

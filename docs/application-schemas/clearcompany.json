@@ -1,0 +1,172 @@
+{
+ "backend": "clearcompany",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:02:59Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 2,
+  "employers_in_inventory": "1 distinct URL (CDI Health and Rendevor Dialysis rows point to the same listing)",
+  "observed_examples": 1,
+  "fully_mapped_examples": 0,
+  "status": "partial",
+  "note": "Singleton coverage. Step 1 ('Enter your information below to begin the application') mapped blank. The 'Continue' button posts first/last/email and creates a candidate record, so later steps (resume, questions, EEO) were NOT observed. SPA renders after ~6s; first capture at 4s was empty."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "cc-01",
+   "url": "https://rendevor.clearcompany.com/careers/jobs/4c3f1008-2608-c49f-bc9c-52d5d5a42c18/apply",
+   "page_title": "Apply for a job at Rendevor Dialysis",
+   "captured_at_utc": "2026-09-24T00:02:29.510Z",
+   "hosting_mode": "native <tenant>.clearcompany.com/careers/jobs/<uuid>/apply",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/clearcompany-01-rendevor.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/clearcompany-01-rendevor.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/clearcompany-01-rendevor.pagetext.txt"
+   ],
+   "option_lists_captured": "radio options inline",
+   "steps_visited": [
+    "step 1 personal-info gate (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "everything after 'Continue' (never clicked)",
+    "'I Already Have An Account' login (not opened)"
+   ],
+   "classification_note": "Inventory lists two companies for this URL; page shows 'Rendevor Dialysis'."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "entry": "/apply URL loads step 1 directly (RequireJS SPA, cc-app-static.clearcompany.com build 2026.923)",
+   "form": "form#personal-info-form method=post action=/blank/page (target hidden iframe /blank/page); buttons 'I Already Have An Account' and 'Continue'; footer 'Privacy Policy' link",
+   "captcha": "none",
+   "auth": "optional account login; otherwise Continue proceeds as guest (creates record)"
+  },
+  "control_families": {
+   "text": "unnamed input[type=text|email] with placeholder = label (First Name, Last Name, Email, Re-enter Email, Mobile Phone); required attr except phone",
+   "radio": "input[type=radio] name=sms-opt-in (values true/false, optional) and name=future-consideration (required); question text precedes the group",
+   "submit": "button[type=submit] 'Continue'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "cc-01"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "cc-01"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "cc-01"
+    ]
+   },
+   {
+    "key": "email_confirm",
+    "label_seen": "Re-enter Email",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "cc-01"
+    ]
+   },
+   {
+    "key": "mobile_phone",
+    "label_seen": "Mobile Phone (Optional)",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "cc-01"
+    ]
+   },
+   {
+    "key": "sms_optin",
+    "label_seen": "May we use this number to send you text messages from Rendevor Dialysis that pertain to your job application?",
+    "control": "radio Yes/No",
+    "required": false,
+    "seen_in": [
+     "cc-01"
+    ]
+   },
+   {
+    "key": "future_consideration",
+    "label_seen": "Would you like to be considered for other positions now or in the future?",
+    "control": "radio Yes/No",
+    "required": true,
+    "seen_in": [
+     "cc-01"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "personal_info_gate",
+    "identity_hint": "form#personal-info-form + 'Enter your information below to begin the application'",
+    "observed": true,
+    "note": "Continue submits identity data — STOP in prepare-only mode"
+   },
+   {
+    "step": "application_steps",
+    "observed": false
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "identity_gate",
+    "detail": "Later steps require submitting name/email first (creates candidate record)",
+    "observed": true
+   },
+   {
+    "type": "tooling",
+    "detail": "SPA needs >4s to render; inputs have no name/id — bind by placeholder/preceding label",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Wait for form#personal-info-form before extracting.",
+   "Inputs lack name/id; use placeholder text."
+  ]
+ },
+ "inferred": {
+  "confidence": "low beyond step 1",
+  "not_observed": [
+   "resume upload",
+   "screening questions",
+   "EEO",
+   "review/submit"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "ClearCompany",
+  "detect": "*.clearcompany.com/careers/jobs/<uuid>/apply, form#personal-info-form",
+  "for_jev": "ClearCompany: step 1 asks first/last name, email + re-enter, optional mobile with SMS opt-in Yes/No, and a required 'considered for other positions' Yes/No; 'Continue' creates the candidate and reveals the rest (unobserved). Runtime must stop before Continue."
+ },
+ "edge_cases": [
+  {
+   "case": "duplicate inventory rows",
+   "detail": "two company names map to one listing URL"
+  }
+ ],
+ "human_action_needed": "A human must press Continue (with real identity) to reveal and map subsequent steps."
+}

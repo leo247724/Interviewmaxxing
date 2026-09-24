@@ -1,0 +1,67 @@
+{
+ "backend": "recruitee",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "closed",
+ "status_reason": "The singleton Recruitee URL returns \"We couldn't find this job\" (posting closed/removed). No alternative Recruitee sample exists in the inventory.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "rc-01",
+   "url": "https://careers.lansweeper.com/o/senior-manager-demand-generation",
+   "page_title": "We couldn’t find this job",
+   "captured_at_utc": "2026-09-23T23:57:45Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/recruitee-01-lansweeper.controls.json",
+    ".imx/dynamic-applications/fable/evidence/recruitee-01-lansweeper.state.txt"
+   ],
+   "steps_visited": [
+    "not-found page (cookie agreement dialog present)"
+   ],
+   "gated_steps_not_visited": [
+    "all"
+   ],
+   "actual_observed_backend": "recruitee (closed)"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "not_found": true,
+   "cookie_dialog": "Cookies agreement with Necessary/Optional toggles"
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "closed_posting",
+    "detail": "job not found",
+    "observed": true
+   }
+  ],
+  "runtime_observations": []
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "Recruitee /o/<slug>/c/new apply page with name, email, phone, resume, LinkedIn, custom questions, GDPR consent, Submit"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Recruitee: no observed form (closed). Do not count toward coverage.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": []
+ },
+ "edge_cases": [
+  "Recruitee sites live on employer subdomains (careers.<company>.com) so URL classification relies on page markers, not domain."
+ ]
+}

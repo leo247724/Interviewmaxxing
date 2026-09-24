@@ -1,0 +1,509 @@
+{
+ "backend": "rippling",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:46:12Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed",
+ "coverage": {
+  "inventory_density": 28,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "employers_distinct": 3,
+  "note": "All three samples are native ats.rippling.com single-page apply forms (step=application). Custom questions differ per employer; core identity block and EEO block are identical across all three."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "rp-01",
+   "url": "https://ats.rippling.com/kalkomey/jobs/0c5ec66e-5502-444f-a212-640df2cc2411",
+   "resolved_url": "https://ats.rippling.com/kalkomey/jobs/0c5ec66e-5502-444f-a212-640df2cc2411/apply?jobBoardSlug=kalkomey&jobId=0c5ec66e-5502-444f-a212-640df2cc2411&step=application",
+   "page_title": "Apply - Paid Media Specialist",
+   "captured_at_utc": "2026-09-23T23:40:33Z",
+   "hosting_mode": "native_ats_rippling",
+   "entry": "clicked 'Apply now' button on job page (2 identical buttons, data-testid='Apply now'); navigated to /apply?step=application",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/rippling-01-kalkomey.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/rippling-01-kalkomey.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/rippling-01-kalkomey.options.jsonl"
+   ],
+   "option_lists_captured": "Pronouns(7), Gender(4), Race(8), Hispanic/Latino(3), Veteran(3). NOT captured: phone country-code list (search-driven listbox renders empty until typed).",
+   "steps_visited": [
+    "job page",
+    "blank single-page application form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' confirmation (never triggered)"
+   ]
+  },
+  {
+   "sample_id": "rp-02",
+   "url": "https://ats.rippling.com/incredible-health/jobs/c64ef23a-e11d-4e10-8495-fdcfdf706bb0",
+   "resolved_url": "https://ats.rippling.com/incredible-health/jobs/c64ef23a-e11d-4e10-8495-fdcfdf706bb0/apply?step=application&jobBoardSlug=incredible-health&jobId=c64ef23a-e11d-4e10-8495-fdcfdf706bb0",
+   "page_title": "Apply - Demand Generation Manager (AI-native)",
+   "captured_at_utc": "2026-09-23T23:44:40Z",
+   "hosting_mode": "native_ats_rippling",
+   "entry": "direct navigation to <job_url>/apply?step=application (server appended jobBoardSlug/jobId)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/rippling-02-incrediblehealth.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/rippling-02-incrediblehealth.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/rippling-02-incrediblehealth.options.jsonl"
+   ],
+   "option_lists_captured": "custom 'eligible to work without sponsorship' (Yes/No), custom 'need sponsorship' (Yes/No) via keyboard ArrowDown; NOT captured: 'What state do you live in?' (typeahead listbox empty until typed), EEO lists not re-opened here (same widget as rp-01), phone country code.",
+   "steps_visited": [
+    "blank single-page application form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' confirmation"
+   ]
+  },
+  {
+   "sample_id": "rp-03",
+   "url": "https://ats.rippling.com/zrg-partners-careers/jobs/91b73ba3-b1e9-498a-a609-dd2e4a52e331",
+   "resolved_url": "https://ats.rippling.com/zrg-partners-careers/jobs/91b73ba3-b1e9-498a-a609-dd2e4a52e331/apply?step=application&jobBoardSlug=zrg-partners-careers&jobId=91b73ba3-b1e9-498a-a609-dd2e4a52e331",
+   "page_title": "Apply - Director, Performance Marketing",
+   "captured_at_utc": "2026-09-23T23:43:01Z",
+   "hosting_mode": "native_ats_rippling",
+   "entry": "direct navigation to /apply?step=application",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/rippling-03-zrg.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/rippling-03-zrg.state.txt"
+   ],
+   "option_lists_captured": "all custom questions are inline radiogroups (Yes/No) captured statically; EEO menus not re-opened (same widget as rp-01).",
+   "steps_visited": [
+    "blank single-page application form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' confirmation"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "url_pattern": "https://ats.rippling.com/<board-slug>/jobs/<uuid>  ->  /apply?step=application (jobBoardSlug & jobId query params added)",
+   "form_element": "one <form> without id; method attr 'get' (submission is JS-driven; do not rely on native action)",
+   "heading_seen": "h4 'Application : <job title>' and h6 'Application: <job title>'",
+   "progress_cue": "element with aria-label 'Progress bar' present but only one visible step in all samples",
+   "captcha_widget": false,
+   "iframes": 0,
+   "auth_required": false,
+   "footer_text": "'By clicking \"Apply\" you agree to Rippling's Terms of Service and User Privacy Notice.' (rp-01); rp-01 also shows 'Kalkomey uses AI to analyze applications. To learn more or opt out click here.'"
+  },
+  "control_families": {
+   "text": "input[type=text] id=field-<n> with random name attr; label is a <span id=field-<n>-label> referenced via aria-labelledby; required marked by sibling <span>*</span> AND aria-required=true. Placeholder equals the label text.",
+   "file": "label[data-testid=resume] / label[data-testid=cover_letter] wrapping a hidden input[type=file] accept=.doc,.docx,.pdf multiple=false; visible text 'Drop or select (.doc / .docx / .pdf)'. Resume label carries '*'.",
+   "phone": "div[data-testid=phone_number-code] containing a required search-combobox (input data-testid=input-select-search-input, id=field-<n>, pre-valued with a default country code, options render only after typing) plus input[data-testid=input-phone_number] 'Phone number'.",
+   "location_typeahead": "input aria-label='textbox' aria-haspopup=listbox labelled 'Location' (required); async typeahead, no static list.",
+   "combobox_div": "div[role=combobox][aria-haspopup=listbox] id=field-<n> with child <p>Select...</p>; listbox appears as ul#field-<n>-list role=listbox with li[role=option]. Opens on click for EEO fields; for employer custom questions click did NOT expand it but focus + ArrowDown did.",
+   "combobox_search": "input[role=combobox][data-testid=input-select-search-input] placeholder 'Search'/'Select...'; used for Pronouns, Race, phone country code, and custom typeahead questions (e.g. 'What state do you live in?'). Some lists are static (Pronouns, Race), others render nothing until a query is typed.",
+   "radiogroup": "div[role=radiogroup] id=field-<n> containing div[role=radio] items whose visible labels are 'Yes'/'No' or full consent sentences; no <input type=radio>.",
+   "custom_question_prompt": "The question text is a <p> in a sibling <div> immediately BEFORE the div[data-testid=field] container, with NO label/aria association to the control. The control's aria-label is just 'Select'. Custom question containers carry data-testid=customQuestions.<employerHash>.<questionUuid>.",
+   "submit": "button[type=submit] text 'Apply' at the bottom of the form (STOP BOUNDARY)."
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "Résumé *",
+    "control": "file(.doc,.docx,.pdf)",
+    "required": true,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "pronouns",
+    "label_seen": "Pronouns",
+    "help_seen": "Add pronouns to your application so interviewers know how to refer to you when talking to or about you.",
+    "control": "combobox_search",
+    "required": false,
+    "options": [
+     "She/her/hers",
+     "He/him/his",
+     "They/them/theirs",
+     "She/her/hers, they/them/theirs",
+     "He/him/his, they/them/theirs",
+     "Just use my name",
+     "Enter my pronouns"
+    ],
+    "seen_in": [
+     "rp-01",
+     "rp-02"
+    ]
+   },
+   {
+    "key": "current_company",
+    "label_seen": "Current company",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "rp-01",
+     "rp-02"
+    ]
+   },
+   {
+    "key": "phone_country_code",
+    "label_seen": "(unlabelled search combobox inside phone_number-code)",
+    "control": "combobox_search",
+    "required": true,
+    "options": "UNOBSERVED (empty until typed); default country pre-selected",
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone number *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "location",
+    "label_seen": "Location *",
+    "control": "location_typeahead",
+    "required": true,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn Link",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "rp-01"
+    ]
+   },
+   {
+    "key": "website_url",
+    "label_seen": "Website link",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "rp-01"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover letter",
+    "control": "file(.doc,.docx,.pdf)",
+    "required": false,
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "Gender",
+    "section": "U.S. Equal Opportunity Employment Information (Completion is voluntary)",
+    "control": "combobox_div",
+    "required": false,
+    "options": [
+     "Male",
+     "Female",
+     "Non-binary",
+     "Choose not to disclose"
+    ],
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "eeo_race",
+    "label_seen": "Please identify your race",
+    "control": "combobox_search",
+    "required": false,
+    "options": [
+     "American Indian or Alaskan Native",
+     "Asian",
+     "Black or African American",
+     "Middle Eastern or North African",
+     "White",
+     "Native Hawaiian or other Pacific Islander",
+     "Two or more races",
+     "Choose not to disclose"
+    ],
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "eeo_hispanic",
+    "label_seen": "Are you Hispanic/Latino?",
+    "control": "combobox_div",
+    "required": false,
+    "options": [
+     "Yes",
+     "No",
+     "Choose not to disclose"
+    ],
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "eeo_veteran",
+    "label_seen": "Veteran Status",
+    "intro_text": "If you believe you belong to any of the categories of protected veterans listed below, please indicate by making the appropriate selection...",
+    "control": "combobox_div",
+    "required": false,
+    "options": [
+     "I am not a protected veteran",
+     "I identify as one or more of the classifications of a protected veteran",
+     "Choose not to disclose"
+    ],
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ]
+   },
+   {
+    "key": "sms_consent",
+    "label_seen": "Check Yes or No to indicate your agreement to receive text message updates from <Employer> regarding your job application. Frequency may vary...",
+    "control": "radiogroup",
+    "required": false,
+    "options": [
+     "Yes - I consent to receiving text messages",
+     "No - I do not consent to receiving text messages"
+    ],
+    "seen_in": [
+     "rp-01",
+     "rp-02",
+     "rp-03"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "custom.work_authorization",
+    "label_seen": [
+     "Are you eligible to work for any employer in the U.S. without sponsorship?",
+     "Are you legally authorized to work in the United States?"
+    ],
+    "control": "combobox_div (rp-02) | radiogroup (rp-03)",
+    "required": true,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "rp-02",
+     "rp-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.sponsorship",
+    "label_seen": [
+     "Will you need sponsorship now or in the future for work authorization?",
+     "Will you now or in the future require sponsorship for employment visa status (e.g., H-1B visa status)?"
+    ],
+    "control": "combobox_div | radiogroup",
+    "required": true,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "rp-02",
+     "rp-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.state_of_residence",
+    "label_seen": "What state do you live in?",
+    "control": "combobox_search (typeahead)",
+    "required": true,
+    "options": "UNOBSERVED (empty until typed)",
+    "seen_in": [
+     "rp-02"
+    ],
+    "classification": "fact_copy"
+   },
+   {
+    "key": "custom.education_level",
+    "label_seen": "Have you completed the following level of education: Bachelor's Degree?",
+    "control": "radiogroup",
+    "required": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "rp-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.salary_expectation",
+    "label_seen": "What are your annual base salary expectations?",
+    "control": "text maxlength=15",
+    "required": true,
+    "seen_in": [
+     "rp-03"
+    ],
+    "classification": "free_text_short (needs user fact)"
+   },
+   {
+    "key": "custom.related_employee",
+    "label_seen": "Are you related to any current employee of ZRG Partners?",
+    "control": "radiogroup",
+    "required": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "rp-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.related_employee_detail",
+    "label_seen": "If yes, please share the name, relationship, and division/title (if known).",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "rp-03"
+    ],
+    "classification": "conditional free_text"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "identity_hint": "document.title = job title; two buttons text 'Apply now' data-testid='Apply now' (either navigates to /apply)",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "URL contains /apply?...step=application; document.title 'Apply - <job title>'; h4 'Application : <title>'",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Apply'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high; no review page seen; footer states clicking Apply agrees to Rippling ToS/Privacy Notice"
+   }
+  ],
+  "conditional_patterns": [
+   "'If yes, please share...' free-text follows the related-employee radiogroup (rp-03) and is rendered unconditionally (not hidden)."
+  ],
+  "blockers": [
+   {
+    "type": "menu_open_method",
+    "detail": "Custom-question div comboboxes did not expand on click (aria-expanded stayed false); focus + ArrowDown expanded them. Escape did NOT close keyboard-opened lists (they remained in DOM), so option reads must target ul#field-<n>-list specifically."
+   },
+   {
+    "type": "typeahead_options_unobserved",
+    "detail": "Phone country code and 'What state do you live in?' lists render no options until a query is typed. Not typed (read-only policy)."
+   }
+  ],
+  "runtime_observations": [
+   "Random per-render name attributes (e.g. name=74TJQImfM-); ids are field-<n> and shift between employers/renders. Bind by aria-labelledby span text or by preceding <p> prompt text.",
+   "has_value=true on the phone country combobox in a blank form is the pre-selected country code, not user data."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "job page 'Apply now'",
+   "single blank form",
+   "'Apply' click",
+   "confirmation page (UNVERIFIED)"
+  ],
+  "required_marker_inference": "sibling <span>*</span> after the label span co-occurs with aria-required=true; custom radiogroups show aria-required=false even when employer likely expects an answer; treat unanswered radios as soft-required.",
+  "typeahead_inference": "State and location typeaheads likely accept US state names; phone country list likely 'Country (+code)'. Unverified.",
+  "optional_fields_vary": "LinkedIn/Website/Current company/Pronouns appear only when the employer enabled them (rp-03 lacked LinkedIn/Website/Pronouns)."
+ },
+ "provider_hint": {
+  "for_jev": "Rippling ATS: single page at /apply?step=application. Labels are span#field-N-label via aria-labelledby; custom questions have NO label association — the prompt is the <p> immediately preceding the field container, and the control's aria-label is just 'Select'. Required = sibling '*' or aria-required. Custom answers are Yes/No comboboxes or radiogroups; salary is a 15-char text. EEO block (Gender/Race/Hispanic/Veteran) and SMS consent are voluntary and human-only. Stop at button 'Apply'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "phone (+country code)",
+   "location (city typeahead)",
+   "current_company",
+   "linkedin_url",
+   "website_url",
+   "state_of_residence"
+  ],
+  "option_choice_from_verified_facts": [
+   "work_authorization yes/no",
+   "sponsorship_required yes/no",
+   "bachelor_degree_completed yes/no",
+   "related_to_employee yes/no"
+  ],
+  "escalate_to_writer_opus": [
+   "cover letter file content if the user wants one generated (upload is human-gated)",
+   "any free-text custom question beyond salary/relationship detail"
+  ],
+  "requires_human_input": [
+   "resume/cover letter file selection",
+   "salary expectation (user fact, never invented)",
+   "all EEO / veteran selections",
+   "SMS consent radiogroup",
+   "pronouns"
+  ]
+ },
+ "edge_cases": [
+  "Two identical 'Apply now' buttons on the job page (top and bottom); semantic click by text is ambiguous, pick by ref/nth.",
+  "Keyboard-opened listboxes persist after Escape; multiple ul[role=listbox] can coexist in DOM, so read options by list id, not by 'first visible listbox'."
+ ]
+}

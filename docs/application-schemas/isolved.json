@@ -1,0 +1,171 @@
+{
+ "backend": "isolved",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "partial_gated",
+ "status_reason": "Page 1 is a quick-apply pre-form whose submit (\"Apply for this Position\") creates the applicant record; further steps (resume/questions) sit behind it and were not visited. A separate Login link exists for returning applicants.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "is-01",
+   "url": "https://bluewheelmedia.isolvedhire.com/jobs/1651563",
+   "page_title": "Paid Search Strategist (REMOTE) - Chicago, IL - Blue Wheel Media Jobs",
+   "captured_at_utc": "2026-09-23T23:54:21Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/isolved-01-bluewheel.controls.json",
+    ".imx/dynamic-applications/fable/evidence/isolved-01-bluewheel.state.txt"
+   ],
+   "steps_visited": [
+    "job page with inline 'Apply Now with our quick 3 minute Application!' pre-form"
+   ],
+   "gated_steps_not_visited": [
+    "steps after 'Apply for this Position' (resume upload, questions, EEO) UNOBSERVED"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "forms": "form#apply (form_index 0, submit 'Apply for this Position'), form#refer-widget-form (form_index 1, 'Sign Up For Job Alerts' with Name/Email/Location/Resume File/TOS), plus FAQ search input. Only form_index 0 is the application.",
+   "sections": [
+    "Apply Now",
+    "Sign Up For Job Alerts!",
+    "Share This Job"
+   ]
+  },
+  "control_families": {
+   "text": "inputs with id=name (first_name, last_name, email, contact_number); required shown only as '*' in PLACEHOLDER ('First Name*'), not in label and not via required attr",
+   "select": "contact_number_type (Home/Cell/Work, preselected), text_approval 'What is your preferred method of communication?' (Email/Text Message), applicant_consent_approval 'Please indicate if you agree to isolved Applicant Tracking's Applicant Communication Policy.' ('' / 'Yes, I agree to be contacted by text messages' / …)",
+   "checkbox": "info_use_consent 'I agree to isolved Applicant Tracking's Privacy Policy and Terms of Service.*'",
+   "submit": "button#apply_button 'Apply for this Position'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "placeholder_seen": "First Name*",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "placeholder_seen": "Last Name*",
+    "required": true
+   },
+   {
+    "key": "email",
+    "placeholder_seen": "Email*",
+    "required": true
+   },
+   {
+    "key": "phone",
+    "placeholder_seen": "Phone Number*",
+    "maxlength": 16,
+    "required": true
+   },
+   {
+    "key": "phone_type",
+    "label_seen": "Number Type",
+    "options": [
+     "Home",
+     "Cell",
+     "Work"
+    ]
+   },
+   {
+    "key": "preferred_contact_method",
+    "label_seen": "What is your preferred method of communication?",
+    "options": [
+     "Email",
+     "Text Message"
+    ]
+   },
+   {
+    "key": "sms_consent",
+    "label_seen": "Please indicate if you agree to isolved Applicant Tracking's Applicant Communication Policy.",
+    "control": "select"
+   },
+   {
+    "key": "privacy_attestation",
+    "label_seen": "I agree to isolved Applicant Tracking's Privacy Policy and Terms of Service.*",
+    "control": "checkbox",
+    "required": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "quick_apply_preform",
+    "observed": true
+   },
+   {
+    "step": "apply_for_this_position",
+    "control": "button#apply_button 'Apply for this Position'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "medium: this is an intermediate step that creates the applicant record (not final submission), but it persists candidate data so it is a stop in prepare-only mode",
+    "never_actuated": true
+   },
+   {
+    "step": "later_steps",
+    "observed": false,
+    "gated_reason": "behind applicant record creation"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "record_creation_gate",
+    "detail": "first submit creates the applicant record before resume/questions",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "optional Login (account/login.php) for returning applicants",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none on page 1",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Required markers live in placeholders only.",
+   "Job-alert form on the same page duplicates name/email/resume fields; select by form_index 0."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "quick pre-form",
+   "applicant record created",
+   "resume upload + screening questions + EEO (UNVERIFIED)",
+   "final submit (UNVERIFIED)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "isolved Hire: page 1 quick-apply (name, email, phone, phone type, contact preference, SMS consent, privacy attestation). Its submit creates a record: stop there in prepare-only. Ignore the job-alert form.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "phone"
+  ],
+  "option_choice_from_verified_facts": [
+   "phone_type",
+   "preferred_contact_method"
+  ],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "SMS consent",
+   "privacy attestation",
+   "everything after step 1"
+  ]
+ },
+ "edge_cases": [
+  "Consent select includes an empty first option; empty may or may not be accepted."
+ ]
+}

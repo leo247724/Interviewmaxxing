@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Job Candidates"
+  short_description: "Check role fit, evidence, pay, and duplicates before saving"
+  default_prompt: "Use $review-job-candidates to review this candidate batch against the current run scope."

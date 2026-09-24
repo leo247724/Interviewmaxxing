@@ -1,0 +1,71 @@
+{
+  "backend": "workday",
+  "schema_version": "0.1.0",
+  "generated_at_utc": "2026-09-23T23:49:00Z",
+  "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab DAD881D819255BA3BD8D9AA69DE16EEA",
+  "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+  "status": "blocked_auth",
+  "status_reason": "All three Workday tenants gate the application behind 'Create Account' / 'Sign In' immediately after the 'Start Your Application' intro. No application form fields were observable without creating an account, which is prohibited for this run. The gate itself is fully mapped.",
+  "coverage": {"inventory_density": 51, "observed_examples": 3, "fully_mapped_examples": 0, "gate_mapped_examples": 3, "employers": ["Tinuiti", "CrowdStrike", "Amgen"]},
+  "human_action_needed": "A candidate-owned Workday account per tenant (email + password + terms consent), created by the user, is required before any form can be observed or prepared. Each myworkdayjobs tenant (<tenant>.wd<N>.myworkdayjobs.com) has separate accounts.",
+  "observed_samples": [
+    {"sample_id": "wd-01", "url": "https://tinuiti.wd12.myworkdayjobs.com/Tinuiti/job/USA---Remote/Director--Paid-Social_R26_649/apply", "captured_at_utc": "2026-09-23T23:47:30Z", "gate_url": "https://tinuiti.wd12.myworkdayjobs.com/en-US/Tinuiti/job/USA---Remote/Director--Paid-Social_R26_649/apply/applyManually", "gate_captured_at_utc": "2026-09-23T23:47:57Z", "gate_title": "Create Account", "consent_label": "Yes, I have read and consent to the terms and conditions.", "evidence_private": [".imx/dynamic-applications/fable/evidence/workday-01-tinuiti.controls.json", ".imx/dynamic-applications/fable/evidence/workday-01-tinuiti-step2.controls.json", ".imx/dynamic-applications/fable/evidence/workday-01-tinuiti-step2.state.txt"], "steps_visited": ["Start Your Application intro", "Create Account gate"], "gated_steps_not_visited": ["My Information", "My Experience", "Application Questions", "Voluntary Disclosures", "Self Identify", "Review", "Submit"]},
+    {"sample_id": "wd-02", "url": "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers/job/USA---Remote/Sr-Strategics-Field-Marketing-Manager--Remote-_R29441/apply", "captured_at_utc": "2026-09-23T23:48:16Z", "gate_url": ".../en-US/crowdstrikecareers/job/.../apply/applyManually", "gate_captured_at_utc": "2026-09-23T23:48:23Z", "gate_title": "Create Account", "consent_label": "Yes, I understand and acknowledge the terms and conditions.", "extra": "cookie-consent banner heading present on intro page", "evidence_private": [".imx/dynamic-applications/fable/evidence/workday-02-crowdstrike.controls.json", ".imx/dynamic-applications/fable/evidence/workday-02-crowdstrike-step2.controls.json"], "steps_visited": ["intro", "Create Account gate"], "gated_steps_not_visited": ["all application steps"]},
+    {"sample_id": "wd-03", "url": "https://amgen.wd1.myworkdayjobs.com/Careers/job/United-States---Remote/Senior-Manager---GEO-Strategy---Operations--USBO_R-253480/apply", "captured_at_utc": "2026-09-23T23:48:31Z", "gate_url": ".../en-US/Careers/job/.../apply/applyManually", "gate_captured_at_utc": "2026-09-23T23:48:37Z", "gate_title": "Create Account", "consent_label": "I consent to the use of my personal data for the Amgen recruitment process. (group text: I have read and agree to the Terms of use …)", "evidence_private": [".imx/dynamic-applications/fable/evidence/workday-03-amgen.controls.json", ".imx/dynamic-applications/fable/evidence/workday-03-amgen-step2.controls.json"], "steps_visited": ["intro", "Create Account gate"], "gated_steps_not_visited": ["all application steps"]}
+  ],
+  "observed": {
+    "page_shape": {
+      "intro": "/apply route renders 'Start Your Application' with two anchor role=button links: 'Autofill with Resume' and 'Apply Manually'. document.title is empty on the intro. OpenCLI click on 'Apply Manually' reported success but did not navigate (SPA anchor); opening the anchor's href (…/apply/applyManually, locale-prefixed /en-US/) works.",
+      "gate": "title 'Create Account'; form (method get, submit text 'Create Account'); fields Email Address*, Password*, Verify New Password*, a terms/consent checkbox, a 'Sign In' toggle button for existing accounts, 'Back to Job Posting' link, and a honeypot input name=website labelled 'Enter website. This input is for robots only, do not enter if you're human.'",
+      "no_captcha_on_gate": true
+    },
+    "control_families": {
+      "text": "input ids input-<n> (sequential, unstable), labels '<text>*' via <label for>.",
+      "password": "two password inputs (Password*, Verify New Password*).",
+      "checkbox": "single consent checkbox whose wording is tenant-specific.",
+      "honeypot": "hidden-intent text input name=website; must never be filled."
+    },
+    "field_patterns": [
+      {"key": "account_email", "label_seen": "Email Address*", "control": "text", "required": true, "seen_in": ["wd-01","wd-02","wd-03"], "gate_field": true},
+      {"key": "account_password", "label_seen": "Password*", "control": "password", "required": true, "seen_in": ["wd-01","wd-02","wd-03"], "gate_field": true},
+      {"key": "account_password_verify", "label_seen": "Verify New Password*", "control": "password", "required": true, "seen_in": ["wd-01","wd-02","wd-03"], "gate_field": true},
+      {"key": "terms_consent", "label_seen": "Yes, I have read and consent to the terms and conditions. | Yes, I understand and acknowledge the terms and conditions. | I consent to the use of my personal data for the Amgen recruitment process.", "control": "checkbox", "required": "not marked in DOM", "seen_in": ["wd-01","wd-02","wd-03"], "gate_field": true},
+      {"key": "honeypot", "label_seen": "Enter website. This input is for robots only, do not enter if you're human.", "control": "text name=website", "seen_in": ["wd-01","wd-02","wd-03"], "never_fill": true}
+    ],
+    "step_patterns": [
+      {"step": "intro", "identity_hint": "'Start Your Application' heading; links Autofill with Resume / Apply Manually", "observed": true, "safe_to_click": true},
+      {"step": "create_account_gate", "identity_hint": "title 'Create Account'; /apply/applyManually", "observed": true, "STOP_BOUNDARY": true, "reason": "account creation prohibited; requires user-owned credentials", "confidence": "high"},
+      {"step": "application_steps", "observed": false, "gated_reason": "behind account"}
+    ],
+    "conditional_patterns": [
+      {"trigger": "'Sign In' button on gate", "effect": "switches to sign-in form for existing accounts (not exercised)", "observed": "button present"}
+    ],
+    "blockers": [
+      {"type": "auth_account_required", "detail": "Create Account (email/password/consent) or Sign In required before any application step", "observed": true, "samples": ["wd-01","wd-02","wd-03"]},
+      {"type": "honeypot", "detail": "anti-bot honeypot field present; automated fills must skip it", "observed": true},
+      {"type": "cookie_banner", "detail": "CrowdStrike tenant shows a cookie-consent banner on the intro", "observed": true}
+    ],
+    "runtime_observations": [
+      "OpenCLI semantic click on the 'Apply Manually' anchor returned clicked:true without navigation; use the anchor href.",
+      "URL gains an /en-US/ locale segment after navigation; document identity should normalise it.",
+      "Element ids are sequential (input-4…) and will collide across steps; bind by label."
+    ]
+  },
+  "inferred": {
+    "typical_stages_unverified": ["intro", "Create Account or Sign In", "My Information (name, address, phone, source, previously worked)", "My Experience (work history repeated sections, education, skills, resume upload, websites)", "Application Questions (tenant-specific)", "Voluntary Disclosures (EEO)", "Self Identify (disability form CC-305)", "Review", "Submit"],
+    "autosave_inference": "Workday saves each step on 'Save and Continue'; abandoned applications persist as drafts in the candidate account.",
+    "repeated_sections_inference": "Work experience and education are 'Add Another' repeated blocks; date pickers are month/year comboboxes.",
+    "verification_inference": "Some tenants require email verification code after account creation."
+  },
+  "provider_hint": {
+    "for_jev": "Workday requires a candidate account before any form. In prepare-only mode, stop at the Create Account gate and request the user to sign in themselves; then re-observe. Never fill the honeypot 'website' field. Expect a multi-step wizard with autosave once authenticated (unverified).",
+    "exact_copy_facts": [],
+    "option_choice_from_verified_facts": [],
+    "escalate_to_writer_opus": [],
+    "requires_human_input": ["account creation or sign-in per tenant", "terms consent", "email verification if prompted"]
+  },
+  "edge_cases": [
+    "Inventory has two Workday URLs without /apply (Bitsight, UserTesting); they will show the job posting with an 'Apply' button that leads to the same intro/gate (not observed).",
+    "Tenant consent wording differs; treat as attestation requiring explicit user consent."
+  ]
+}

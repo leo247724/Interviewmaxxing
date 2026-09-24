@@ -223,6 +223,11 @@ class ApplicationField(Contract):
     help_text: str | None = None
     validation_error: str | None = None
     """Validation message the page currently shows for this field, if any."""
+    section_context: list[str] = Field(default_factory=list)
+    """Headings and group labels of the sections that precede this control, outermost
+    first. Model context for subject and timeframe only: it is not part of the
+    question the user sees, so ``fingerprint`` and ``question_text`` exclude it and
+    saved answers keep matching on the bare wording."""
 
     @model_validator(mode="after")
     def _options_match_control(self) -> Self:

@@ -1,0 +1,258 @@
+{
+ "backend": "dover",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:00:41Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 3,
+  "employers_in_inventory": 3,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "status": "observed",
+  "note": "All 3 employers mapped. React/MUI form; labels are NOT programmatically linked to inputs (label element is a sibling above; input ids are React ':rN:' and custom question names are UUIDs). Question text must be read from the preceding visible label in DOM order. Re-captured 23:59Z after reviewer request: raw per-control preceding_label/section_heading now stored; the top input[type=file] sits in the 'Autofill from resume' block (question_container) while the bottom one follows the 'Resume (optional)' / 'Resume *' label."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "dv-01",
+   "url": "https://app.dover.com/apply/well-oiled-operations/53c50d98-b434-4a11-8739-669f47c65903",
+   "page_title": "Apply for Senior Paid Media Manager at Well-Oiled Operations",
+   "captured_at_utc": "2026-09-23T23:59:12.534Z",
+   "hosting_mode": "native app.dover.com/apply/<company>/<uuid>",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/dover-01-welloiled.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/dover-01-welloiled.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/dover-01-welloiled.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/dover-01-welloiled.formtext.txt"
+   ],
+   "option_lists_captured": "radio options inline (Yes/No); no selects present",
+   "steps_visited": [
+    "single page: job description + blank form in same document"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' (never clicked)"
+   ],
+   "classification_note": "Questions: work-authorization radio, salary expectations text, plus an extra required custom text question labelled 'Email' (employer duplicate). Resume optional.",
+   "label_binding_evidence": "controls.json: each control carries preceding_label (nearest preceding visible text, zero-width chars stripped), section_heading, question_container (2000-char cap, [TRUNCATED] marker) and form_index; formtext.txt holds the full form text in DOM order."
+  },
+  {
+   "sample_id": "dv-02",
+   "url": "https://app.dover.com/apply/Jivpad/a6582918-d89b-45c2-bd33-2cf7008acd7a",
+   "page_title": "Apply for Growth Marketing Manager at Jivpad",
+   "captured_at_utc": "2026-09-23T23:59:17.535Z",
+   "hosting_mode": "native app.dover.com/apply/<company>/<uuid>",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/dover-02-jivpad.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/dover-02-jivpad.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/dover-02-jivpad.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/dover-02-jivpad.formtext.txt"
+   ],
+   "option_lists_captured": "radio options inline (Yes/No); no selects present",
+   "steps_visited": [
+    "single page: job description + blank form in same document"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' (never clicked)"
+   ],
+   "classification_note": "No custom questions; LinkedIn URL required; Resume optional.",
+   "label_binding_evidence": "controls.json: each control carries preceding_label (nearest preceding visible text, zero-width chars stripped), section_heading, question_container (2000-char cap, [TRUNCATED] marker) and form_index; formtext.txt holds the full form text in DOM order."
+  },
+  {
+   "sample_id": "dv-03",
+   "url": "https://app.dover.com/apply/heydrew/cb88bfea-d1b8-4489-b83c-48aac7e44cab",
+   "page_title": "Apply for Growth Marketer at HeyDrew",
+   "captured_at_utc": "2026-09-23T23:59:22.518Z",
+   "hosting_mode": "native app.dover.com/apply/<company>/<uuid>",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/dover-03-heydrew.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/dover-03-heydrew.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/dover-03-heydrew.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/dover-03-heydrew.formtext.txt"
+   ],
+   "option_lists_captured": "radio options inline (Yes/No); no selects present",
+   "steps_visited": [
+    "single page: job description + blank form in same document"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' (never clicked)"
+   ],
+   "classification_note": "7 custom questions (5 short text, 1 textarea, 1 radio); Phone required; Resume label 'Resume *' (required by label; input not DOM-required).",
+   "label_binding_evidence": "controls.json: each control carries preceding_label (nearest preceding visible text, zero-width chars stripped), section_heading, question_container (2000-char cap, [TRUNCATED] marker) and form_index; formtext.txt holds the full form text in DOM order."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "URL is the apply page itself; description on top, form below (no Apply-to-reveal step).",
+   "form": "one <form> (no id/action; JS submit). Top: 'Autofill from resume — Drag & drop or upload to autofill your application. Upload file' (input[type=file] accept=.pdf multiple). Then fields, custom questions, Resume dropzone, 'Apply' submit.",
+   "headings": "none (labels are plain text with a zero-width-space placeholder line)",
+   "captcha": "none seen",
+   "iframes": "none"
+  },
+  "control_families": {
+   "text": "input[type=text] name=firstName|lastName|linkedinUrl|phoneNumber; input[type=email] name=email; id ':rN:' (unstable). Required = native required attr; visible label text ends with ' *'.",
+   "custom_text": "input[type=text] (or textarea) with name = UUID; required attr present; label is the preceding text node/element in the same column.",
+   "custom_radio": "div[role=radiogroup] with input[type=radio] name=UUID, values 'Yes'/'No' (or 'yes'/'no'); label = text before the group; DOM required varies (dv-01 required=true, dv-03 false).",
+   "autofill_resume": "input[type=file] accept=.pdf multiple + 'Upload file' button at top — parsing autofill, not the resume attachment itself. Raw binding: preceding_label of the 'Upload file' button = 'Autofill from resume Drag & drop or upload to autofill your application.'",
+   "resume": "dropzone 'Drag and drop file or browse computer (PDF, 5 MB maximum)' with input[type=file] accept=.pdf multiple; label 'Resume (optional)' or 'Resume *'. Raw binding: preceding_label = 'Resume (optional)' or 'Resume *'.",
+   "submit": "button[type=submit] 'Apply'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "dv-01",
+     "dv-02",
+     "dv-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "dv-01",
+     "dv-02",
+     "dv-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email *",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "dv-01",
+     "dv-02",
+     "dv-03"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn Profile URL (* on dv-02, dv-03)",
+    "control": "text",
+    "required": "per employer",
+    "seen_in": [
+     "dv-01",
+     "dv-02",
+     "dv-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone Number (* on dv-03)",
+    "control": "text",
+    "required": "per employer",
+    "seen_in": [
+     "dv-01",
+     "dv-02",
+     "dv-03"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume (optional) | Resume *",
+    "control": "file dropzone",
+    "required": "per employer (label only)",
+    "accept": ".pdf (5 MB max)",
+    "seen_in": [
+     "dv-01",
+     "dv-02",
+     "dv-03"
+    ]
+   },
+   {
+    "key": "custom_question",
+    "name_pattern_seen": "<uuid>",
+    "control": "custom_text | textarea | custom_radio",
+    "required": "label ' *' / required attr",
+    "seen_in": [
+     "dv-01",
+     "dv-03"
+    ],
+    "examples_seen": [
+     "Are you authorized to work in the United States without employer sponsorship now or in the future? * [Yes/No]",
+     "What are your salary expectations for this role? * [text]",
+     "Where do you live? Please add city and state. Thanks! * [text]",
+     "Are you eligible to work for any employer in the US without sponsorship? (OPT is not eligible) [yes/no]",
+     "How many years of experience do you have in hands-on growth marketing where you are creating, managing, and tracking marketing campaigns? * [text]",
+     "How many years of experience do you have with planning and developing marketing strategies and setting KPIs? * [text]",
+     "Do you have experience running campaigns on platforms such as Meta Ads, LinkedIn Ad, Google Ads, etc.) Please list which ones. * [textarea]",
+     "What are your favorite tools for running marketing campaigns and tracking? * [text]",
+     "At what company did you work in a startup environment? In none, please add N/A. * [text]"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "document.title 'Apply for <job> at <company>' on app.dover.com/apply/",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Apply'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Upload file' autofill",
+    "effect": "parses resume to prefill fields (not exercised)",
+    "observed": "control present"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   },
+   {
+    "type": "eligibility_gate",
+    "detail": "US work-authorization radios on 2 of 3",
+    "observed": true
+   },
+   {
+    "type": "label_binding",
+    "detail": "no label/for or aria linkage; question text must be derived from DOM order",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Derive each field's label from the nearest preceding text block; ids ':rN:' change per render and names for custom questions are UUIDs.",
+   "Radio option values may be lowercase 'yes'/'no' on some tenants.",
+   "Two file inputs exist: the top one is autofill, the bottom one is the resume attachment."
+  ]
+ },
+ "inferred": {
+  "confidence": "high for standard block; custom questions vary widely and are mostly short-text narrative",
+  "not_observed": [
+   "autofill parsing",
+   "post-submit"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Dover (app.dover.com)",
+  "detect": "hostname app.dover.com path /apply/, 'Autofill from resume' block, UUID field names",
+  "for_jev": "Dover: single page. First/Last/Email required, LinkedIn URL and Phone required per employer, Resume PDF (5 MB) optional or required per employer, then employer questions: Yes/No work-authorization radio, short-text salary expectations, city/state, years-of-experience numbers, platform/tool lists, startup-experience company, one textarea. 'Apply' is the stop boundary. No captcha, no login."
+ },
+ "edge_cases": [
+  {
+   "case": "duplicate 'Email' custom question",
+   "detail": "dv-01 shows a required custom text field labelled 'Email *' after Phone Number — distinct from the account email field"
+  }
+ ]
+}

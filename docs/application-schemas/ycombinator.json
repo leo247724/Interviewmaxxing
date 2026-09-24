@@ -1,0 +1,96 @@
+{
+ "backend": "ycombinator",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:42:33Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "blocked",
+ "actual_observed_backend": "workatastartup (behind Y Combinator account login)",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0,
+  "singleton_coverage": true,
+  "note": "Singleton inventory. The ycombinator.com job page is a read-only description with no form; its only apply control links to the Work at a Startup application behind the YC login gate. Not a mapped form."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "yc-01",
+   "listing_id": "lst_c802aadbf06302b05a851c62bc329c54",
+   "url": "https://www.ycombinator.com/companies/waydev/jobs/ecnmEt7-head-of-growth",
+   "page_title": "Head of Growth at Waydev | Y Combinator",
+   "captured_at_utc": "2026-09-23T23:38:48Z",
+   "status": "no_form_on_page; apply link -> auth gate",
+   "forms_on_page": 0,
+   "apply_link_observed": {
+    "text": "Apply to role \u203a",
+    "href": "https://account.ycombinator.com/authenticate?continue=https%3A%2F%2Fwww.workatastartup.com%2Fapplication%3Fsignup_job_id%3D85262&defaults[signUpActive]=true&defaults[waas_company]=23530"
+   },
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/ycombinator-01-waydev.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/ycombinator-01-waydev.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "forms_on_page": 0,
+   "headings_seen": [
+    "About the role",
+    "What you will own",
+    "What makes you a fit",
+    "Why join Waydev",
+    "About Waydev"
+   ],
+   "apply_entry": "'Apply to role \u203a' anchor to account.ycombinator.com/authenticate with continue=workatastartup application URL and defaults[signUpActive]=true (sign-up tab preselected)."
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "yc_job_description",
+    "identity_hint": "host www.ycombinator.com path /companies/<slug>/jobs/<id>-<slug>, zero <form> elements",
+    "observed": true
+   },
+   {
+    "step": "yc_account_authenticate",
+    "observed": false,
+    "gated_by": "auth",
+    "note": "link target only; not followed beyond what workatastartup samples already showed (same host)"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Apply link targets the YC account authenticate page; same gate as workatastartup.",
+    "observed": true,
+    "human_action_needed": "User logs into YC account in the runtime profile."
+   }
+  ],
+  "runtime_observations": [
+   "The apply link's signup_job_id (85262) differs from the listing id path segment; the runtime must take the href from the rendered page rather than deriving it.",
+   "The page also lists ~20 other YC job links; a naive 'first apply-like link' scan must match the anchor text 'Apply to role' exactly, not 'Apply' (which is the YC startup-application link /apply)."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "YC login/signup",
+   "WaaS application (see workatastartup.json)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "ycombinator job pages have no form. Route to workatastartup handling; the apply control is the anchor whose text is 'Apply to role'. If the destination is account.ycombinator.com, classify auth_required.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "Y Combinator login"
+  ]
+ },
+ "edge_cases": [
+  "Two different anchors read 'Apply' on the page: the site-wide 'Apply' (to YC as a startup, href /apply) and 'Apply to role \u203a'. Only the latter is the job application entry."
+ ]
+}

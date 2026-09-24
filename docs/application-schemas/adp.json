@@ -1,0 +1,162 @@
+{
+ "backend": "adp",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:11:55Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 04FD50C2CB395FB8DDCFF3271D407217",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "blocked_identity_gate",
+ "status_reason": "ADP Workforce Now Career Center: clicking Apply opens a guest identity step (First Name, Last Name, Email, Mobile Number with country select) with a captcha widget and a login view cue. Proceeding creates/verifies a candidate identity, so it was not advanced. Identical on both employers.",
+ "coverage": {
+  "inventory_density": 5,
+  "observed_examples": 2,
+  "fully_mapped_examples": 0,
+  "employers": [
+   "RealTime eClinical Solutions",
+   "Moroch"
+  ]
+ },
+ "observed_samples": [
+  {
+   "sample_id": "adp-01",
+   "employer": "RealTime eClinical Solutions",
+   "url": "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=9054646f-9aae-42c8-8167-93d86fefbae4&ccId=19000101_000001&jobId=574964&lang=en_US",
+   "captured_at_utc": "2026-09-24T00:05:01Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/adp-01-realtime.controls.json",
+    ".imx/dynamic-applications/fable/evidence/adp-01-realtime-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/adp-01-realtime-apply.state.txt"
+   ],
+   "steps_visited": [
+    "job description",
+    "Apply: guest identity step"
+   ],
+   "gated_steps_not_visited": [
+    "all application steps"
+   ]
+  },
+  {
+   "sample_id": "adp-02",
+   "employer": "Moroch",
+   "url": "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=125e53c7-163f-45f8-8299-63a9ec645332&ccId=19000101_000001&jobId=9205238812544_1&lang=en_US",
+   "captured_at_utc": "2026-09-24T00:05:07Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/adp-02-moroch.controls.json",
+    ".imx/dynamic-applications/fable/evidence/adp-02-moroch-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/adp-02-moroch-apply.state.txt"
+   ],
+   "steps_visited": [
+    "job description",
+    "Apply: guest identity step"
+   ],
+   "gated_steps_not_visited": [
+    "all application steps"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "job_page": "SPA (recruitment.html?cid=&ccId=&jobId=) with buttons #recruitment_jobDescription_apply 'Apply', #recruitment_jobDescription_back, and a hidden #recruitment_jobDescription_candidateApply; cookie-preference dialog ('Set your cookie preferences', 'Cookie List') present",
+   "gate": "after Apply: #guestFirstName 'First Name', #guestLastName 'Last Name', #guestEmail 'Email' (required, maxlength 50), select name=phoneCountry 'Phone number country' (245 options), input#login_view_phone 'Mobile Number' (placeholder 'Phone Number', prefilled with country code only); captcha widget detected; login view cue"
+  },
+  "control_families": {
+   "text": "aria-labelled inputs (no <label for>), ids guestFirstName/guestLastName/guestEmail",
+   "phone": "country select + tel input where the country code is auto-inserted ('Country code was added to the field.')"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name",
+    "required": true,
+    "gate_field": true
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name",
+    "required": true,
+    "gate_field": true
+   },
+   {
+    "key": "email",
+    "label_seen": "Email",
+    "required": true,
+    "gate_field": true
+   },
+   {
+    "key": "phone_country",
+    "label_seen": "Phone number country",
+    "control": "select 245",
+    "gate_field": true
+   },
+   {
+    "key": "phone",
+    "label_seen": "Mobile Number",
+    "control": "tel",
+    "gate_field": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_description",
+    "observed": true,
+    "safe_to_click": "Apply opens the identity step without persisting data"
+   },
+   {
+    "step": "guest_identity",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "reason": "continuing sends email verification / creates candidate identity; captcha present",
+    "confidence": "high"
+   },
+   {
+    "step": "application_steps",
+    "observed": false
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "identity_verification",
+    "detail": "guest identity + captcha before any form",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "captcha widget present on the identity step",
+    "observed": true
+   },
+   {
+    "type": "cookie_dialog",
+    "detail": "cookie preferences dialog",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Two 'Apply' buttons with different ids; use #recruitment_jobDescription_apply.",
+   "Phone field shows has_value on load due to injected country code; not user data."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "identity step then email verification code",
+   "resume upload/autofill",
+   "personal info, work history (repeated), education",
+   "questions",
+   "EEO/voluntary",
+   "review",
+   "submit"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "ADP Workforce Now: stop at the guest identity step (name/email/phone + captcha). Ask the user to complete identity verification, then re-observe.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "identity verification",
+   "captcha"
+  ]
+ },
+ "edge_cases": [
+  "Some ADP tenants use ccId=19000101_000003 (BuildASign); same SPA."
+ ]
+}

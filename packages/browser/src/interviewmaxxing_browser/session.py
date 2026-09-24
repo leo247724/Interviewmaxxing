@@ -6,6 +6,7 @@ from playwright.async_api import Browser, BrowserContext, Page, Playwright, asyn
 
 from interviewmaxxing_core import BrowserOptions
 
+from .annotations import FormAnnotator, SchemaHintLoader
 from .driver import PlaywrightDriver
 from .runtime import ActionPolicy, GenericApplicationBrowser
 
@@ -24,12 +25,16 @@ class PlaywrightApplicationBrowser(GenericApplicationBrowser):
         action_timeout_s: float,
         settle_timeout_s: float,
         policy: ActionPolicy | None = None,
+        annotator: FormAnnotator | None = None,
+        schema_hint_loader: SchemaHintLoader | None = None,
     ) -> None:
         super().__init__(
             PlaywrightDriver(page, action_timeout_s=action_timeout_s),
             options,
             settle_timeout_s=settle_timeout_s,
             policy=policy,
+            annotator=annotator,
+            schema_hint_loader=schema_hint_loader,
         )
         self._playwright = playwright
         self._browser = browser
@@ -68,10 +73,14 @@ class PlaywrightSessionFactory:
         action_timeout_s: float = 10.0,
         settle_timeout_s: float = 15.0,
         policy: ActionPolicy | None = None,
+        annotator: FormAnnotator | None = None,
+        schema_hint_loader: SchemaHintLoader | None = None,
     ) -> None:
         self.action_timeout_s = action_timeout_s
         self.settle_timeout_s = settle_timeout_s
         self.policy = policy
+        self.annotator = annotator
+        self.schema_hint_loader = schema_hint_loader
 
     async def start(self, options: BrowserOptions) -> PlaywrightApplicationBrowser:
         playwright = await async_playwright().start()
@@ -106,4 +115,6 @@ class PlaywrightSessionFactory:
             action_timeout_s=self.action_timeout_s,
             settle_timeout_s=self.settle_timeout_s,
             policy=self.policy,
+            annotator=self.annotator,
+            schema_hint_loader=self.schema_hint_loader,
         )

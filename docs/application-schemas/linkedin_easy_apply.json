@@ -1,0 +1,79 @@
+{
+  "backend": "linkedin_easy_apply",
+  "schema_version": "0.1.0",
+  "generated_at_utc": "2026-09-23T23:45:00Z",
+  "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab DAD881D819255BA3BD8D9AA69DE16EEA (authenticated LinkedIn profile jgd7jms9)",
+  "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+  "status": "partial_gated",
+  "status_reason": "Only Easy Apply page 1 (Contact info) was observed on 3 employers. The contact step is prefilled from the logged-in profile and pressing Next persists an application draft, so pages 2..N were NOT visited. Every modal was closed via Dismiss then Discard (no draft saved).",
+  "coverage": {"inventory_density": 78, "observed_examples": 3, "fully_mapped_examples": 0, "step1_mapped_examples": 3, "employers": ["Lasso MD", "Loud Marketing Co", "Smadex"]},
+  "observed_samples": [
+    {"sample_id": "li-01", "url": "https://www.linkedin.com/jobs/view/4467558620/", "page_title": "Director of SEO | Lasso MD | LinkedIn", "captured_at_utc": "2026-09-23T23:42:47Z", "pages_declared": "1/6 pages", "step1_title": "Contact info", "evidence_private": [".imx/dynamic-applications/fable/evidence/linkedin-01-lassomd.controls.json", ".imx/dynamic-applications/fable/evidence/linkedin-01-lassomd-step1.controls.json"], "steps_visited": ["job page", "Easy Apply page 1"], "gated_steps_not_visited": ["pages 2-6"], "closed_via": "Dismiss -> 'Save this application?' -> Discard"},
+    {"sample_id": "li-02", "url": "https://www.linkedin.com/jobs/view/4462675702/", "page_title": "PPC Marketing Manager | Loud Marketing Co | LinkedIn", "captured_at_utc": "2026-09-23T23:43:34Z", "pages_declared": "1/5 pages", "step1_title": "Contact info", "evidence_private": [".imx/dynamic-applications/fable/evidence/linkedin-02-loudmarketing.controls.json", ".imx/dynamic-applications/fable/evidence/linkedin-02-loudmarketing-step1.controls.json"], "steps_visited": ["job page", "Easy Apply page 1"], "gated_steps_not_visited": ["pages 2-5"], "closed_via": "Dismiss -> Discard"},
+    {"sample_id": "li-03", "url": "https://www.linkedin.com/jobs/view/4445505312/", "page_title": "Ad Operations Senior Manager | Smadex | LinkedIn", "captured_at_utc": "2026-09-23T23:43:56Z", "pages_declared": "1/4 pages", "step1_title": "Kontaktinfo (German-localised step title; field labels English)", "evidence_private": [".imx/dynamic-applications/fable/evidence/linkedin-03-smadex.controls.json", ".imx/dynamic-applications/fable/evidence/linkedin-03-smadex-step1.controls.json"], "steps_visited": ["job page", "Easy Apply page 1"], "gated_steps_not_visited": ["pages 2-4"], "closed_via": "Dismiss -> Discard"}
+  ],
+  "observed": {
+    "page_shape": {
+      "job_page": "linkedin.com/jobs/view/<id>/ with a top-card button 'Easy Apply' (aria-label 'Easy Apply to this job') and 'Save'. Authenticated session required to see the button state; no sign-in wall was shown because the profile was logged in.",
+      "modal": "Clicking Easy Apply appends ?companyName=…&trackingId=…&applicantTrackingSystemName=LinkedIn to the URL and opens a native <dialog> element (NOT role=dialog). Header 'Apply to <company>', a page counter 'N/M pages', a step title, controls, and footer buttons Dismiss / Next (Back appears on later pages, unverified).",
+      "no_form_element": true,
+      "draft_prompt": "Dismiss on a started application opens a second <dialog> 'Save this application? … Any uploaded files will not be saved.' with buttons Discard / Save."
+    },
+    "control_families": {
+      "select": "native <select> with label '<text>*' (required marker is a trailing '*' in the label). Email address select lists the account's verified emails (1 option, PRIVATE). Phone country code select has 249 options 'Country (+code)'.",
+      "tel": "input[type=tel] 'Mobile phone number*' prefilled from profile (PRIVATE).",
+      "text": "input[type=text] for First name / Last name / Address / City / State / Postal when the employer requests full contact details (li-03).",
+      "dialog_buttons": ["Dismiss", "Next"]
+    },
+    "field_patterns": [
+      {"key": "email", "label_seen": "Email address*", "control": "select (account emails)", "required": true, "seen_in": ["li-01","li-02","li-03"], "note": "value set is the LinkedIn account's emails; cannot be free-typed"},
+      {"key": "phone_country_code", "label_seen": "Phone country code*", "control": "select", "required": true, "options_total": 249, "seen_in": ["li-01","li-02","li-03"]},
+      {"key": "phone", "label_seen": "Mobile phone number*", "control": "tel", "required": true, "seen_in": ["li-01","li-02","li-03"]},
+      {"key": "first_name", "label_seen": "First name*", "control": "text", "required": true, "seen_in": ["li-03"]},
+      {"key": "last_name", "label_seen": "Last name*", "control": "text", "required": true, "seen_in": ["li-03"]},
+      {"key": "street_address", "label_seen": "Address*", "control": "text", "required": true, "seen_in": ["li-03"]},
+      {"key": "city", "label_seen": "City*", "control": "text", "required": true, "seen_in": ["li-03"]},
+      {"key": "state", "label_seen": "State*", "control": "text", "required": true, "seen_in": ["li-03"]},
+      {"key": "postal_code", "label_seen": "Postal*", "control": "text", "required": true, "seen_in": ["li-03"]}
+    ],
+    "step_patterns": [
+      {"step": "job_page", "identity_hint": "url /jobs/view/<id>/ and 'Easy Apply' button", "observed": true, "safe_to_click": "Easy Apply opens the modal; no data is persisted by opening it"},
+      {"step": "page_1_contact", "identity_hint": "<dialog> text 'Apply to <company>' + '1/N pages'", "observed": true, "note": "prefilled with private profile values; page count N varied 4, 5, 6"},
+      {"step": "pages_2_to_N", "observed": false, "gated_reason": "advancing requires pressing Next on a prefilled private contact step, which persists a draft", "expected_unverified": ["Resume (choose previously uploaded or upload)", "Additional/Screening questions (employer-configured; numeric, yes/no, text, dropdown)", "Work authorization", "Review"]},
+      {"step": "final_submit", "observed": false, "STOP_BOUNDARY": true, "expected_control_unverified": "button 'Submit application' on the Review page, possibly with a 'Follow <company>' checkbox", "confidence": "unverified prior from LinkedIn's public flow; never seen in this run"},
+      {"step": "draft_prompt", "control": "'Save this application?' dialog: Discard | Save", "observed": true, "note": "runtime must choose Discard when abandoning a prepare-only run"}
+    ],
+    "conditional_patterns": [
+      {"trigger": "employer contact-detail configuration", "effect": "page 1 may be email+phone only (li-01, li-02) or full name+address block (li-03)", "observed": true}
+    ],
+    "blockers": [
+      {"type": "auth", "detail": "LinkedIn login required for Easy Apply; session was already authenticated, no challenge shown", "observed": true},
+      {"type": "private_prefill", "detail": "Page 1 is prefilled with account email/phone/name/location. Runtime must never export or send these values to models; observation should emit labels and has_value flags only.", "observed": true},
+      {"type": "draft_autosave", "detail": "Pressing Next persists an application draft on LinkedIn; abandoning triggers a Save/Discard prompt", "observed": "prompt observed; Next never pressed"},
+      {"type": "captcha", "detail": "none seen on page 1", "observed": true}
+    ],
+    "runtime_observations": [
+      "Modal detection must include the native <dialog> tag; role=dialog matching alone misses it.",
+      "Two <dialog> elements can be open at once (application + Save prompt); pick the last visible one.",
+      "Step title text can be localised (Kontaktinfo) even when field labels are English; do not key on step title strings.",
+      "Element ids use React useId style («r6») and are unstable; OpenCLI refs re-numbered after the modal opened (Easy Apply button became ref 1).",
+      "Email is a select over account emails: the runtime cannot enter an arbitrary verified email; it must match the candidate's email to an option or escalate."
+    ]
+  },
+  "inferred": {
+    "typical_stages_unverified": ["job page", "Easy Apply modal page 1 Contact info", "Resume page", "Additional questions page(s)", "Review page", "Submit application", "Done dialog"],
+    "page_count_inference": "'N pages' likely equals number of steps including Review; employer screening questions add pages.",
+    "screening_question_inference": "LinkedIn screening questions are typically numeric (years of experience), yes/no, or single-select with employer 'ideal answer' filtering; free-text is rare."
+  },
+  "provider_hint": {
+    "for_jev": "LinkedIn Easy Apply is a multi-page <dialog>. Page 1 = contact info prefilled from the account (private; labels only). Required = label ends with '*'. Email is a select over account emails. Later pages unobserved: expect resume choice, employer screening questions, review. Never press Next in prepare-only mode unless root authorises draft creation; never press Submit application.",
+    "exact_copy_facts": ["first_name", "last_name", "phone", "street_address", "city", "state", "postal_code"],
+    "option_choice_from_verified_facts": ["email (must match an account email option)", "phone country code"],
+    "escalate_to_writer_opus": ["none observed on page 1; later-page free-text questions if any"],
+    "requires_human_input": ["confirmation before any Next press (draft persistence)", "resume choice", "screening questions without verified facts", "final submit (never automated)"]
+  },
+  "edge_cases": [
+    "Some LinkedIn listings use external 'Apply' instead of 'Easy Apply' (not among these 3 samples); runtime should branch on button aria-label.",
+    "Opening Easy Apply mutates the URL query string; document identity should ignore companyName/trackingId params."
+  ]
+}

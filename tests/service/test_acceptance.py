@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from interviewmaxxing_cli.runner import LocalApplicationRunner
 from interviewmaxxing_core import ApplicationStore, LocalPaths
 from interviewmaxxing_service import ServiceConfig
 from interviewmaxxing_service.integration import (
@@ -88,6 +89,10 @@ class MockAts:
 
 
 def _saved(answer_id: str, question: str, value: Any, semantic_type: str | None = None) -> dict[str, Any]:
+    # Saved answers carry the complete question wording the user saw (label, help
+    # text, placeholder). Enclosing section headings such as the mock's "Application
+    # form" are model context (``ApplicationField.section_context``), never part of
+    # the question, so they are not stored here.
     return {"id": answer_id, "scope": "GLOBAL", "semantic_type": semantic_type,
             "question": question, "value": value, "confirmed_at": VERIFIED_AT}
 
@@ -150,13 +155,27 @@ def home(isolated_imx_home: LocalPaths) -> LocalPaths:
     return isolated_imx_home
 
 
-def real_service(paths: LocalPaths, site: FictionalSite) -> Any:
+def real_service(paths: LocalPaths, site: FictionalSite, *, prepare_only: bool = False) -> Any:
+    # Existing acceptance tests intentionally exercise synthetic submissions. Real
+    # service runners default to preparation only; the default-path test below
+    # retains that setting and checks HTTP, storage and the mock employer together.
     config = ServiceConfig(paths=paths, allowed_origin="http://127.0.0.1:4317", port=0)
+
+    def executor_factory(c: ServiceConfig) -> Any:
+        production_factory = runner_factory(
+            ServiceConfig(paths=c.paths, allowed_origin=c.allowed_origin, headless=True))
+
+        def make(interaction: Any) -> Any:
+            runner = production_factory(interaction)
+            assert isinstance(runner, LocalApplicationRunner) and runner.prepare_only is True
+            if not prepare_only:
+                runner.prepare_only = False  # fictional localhost acceptance only
+            return runner
+        return make
+
     return serve(
         paths, site, LocalCandidateGateway(config),
-        executor_factory=lambda c: runner_factory(
-            ServiceConfig(paths=c.paths, allowed_origin=c.allowed_origin, headless=True)
-        ),
+        executor_factory=executor_factory,
         runner_problem=runner_problem, reconcile_wait_s=25.0,
     )
 
@@ -181,6 +200,28 @@ def start(h: Harness, url: str, resume_id: str = "resume_supplied",
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def test_default_service_prepares_without_a_submission_or_applied_card(
+    home: LocalPaths, ats: MockAts, fictional_site: FictionalSite
+) -> None:
+    with real_service(home, fictional_site, prepare_only=True) as h:
+        entry = h.client.post("/pipeline/entries", {
+            "lane": "saved", "fields": {"company": "Fictional Co", "role": "Test Role"},
+            "applicationUrl": ats.url("standard"),
+        }).json
+        response = start(h, ats.url("standard"), pipeline_entry_id=entry["id"])
+        assert response.status == 201
+        app_id = response.json["id"]
+        view = wait_for(h, app_id, STATES_DONE)
+        assert view["state"] == "NEEDS_INPUT" and view["receipt"] is None, view["events"][-5:]
+        assert any(e["type"] == "preparation.ready" for e in view["events"])
+        assert ats.submissions("standard")["accepted_count"] == 0
+        [card] = h.client.get("/pipeline").json["entries"]
+        assert card["lane"] == "saved" and card["application"]["state"] == "NEEDS_INPUT"
+        with ApplicationStore.open(home.state_db) as store:
+            assert store.is_preparation_only(app_id)
+            assert store.list_attempts(app_id) == [] and store.get_receipt(app_id) is None
 
 
 def test_standard_application_submits_once_with_receipt_and_upload(

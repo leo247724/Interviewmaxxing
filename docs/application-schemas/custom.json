@@ -1,0 +1,841 @@
+{
+ "backend": "custom",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:03:24Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed (per-origin)",
+ "coverage": {
+  "inventory_density": 21,
+  "attempted_samples": 21,
+  "observed_examples": 21,
+  "distinct_application_origins": 15,
+  "origins": [
+   "screening.malemd.com",
+   "corporatetools.com (2 URL variants)",
+   "calvis.com",
+   "stratabeat.com",
+   "spoks.com",
+   "apply.rocketalumnisolutions.com",
+   "3rdandlamar.com (404)",
+   "hercules.app",
+   "opascope.com",
+   "careers.puffy.com + join.careers.puffy.com iframe",
+   "talent.aquent.com",
+   "amazon.jobs / account.amazon.jobs -> passport.amazon.jobs",
+   "jobs.digitalneighbor.com",
+   "goliaence.com",
+   "remotivatejobs.com"
+  ],
+  "fully_mapped_examples": 11,
+  "partial": 5,
+  "blocked_auth": 5,
+  "closed": 2,
+  "note": "Every distinct origin was opened read-only. 'custom' is not one backend; the per-sample form_shape is the schema. Counts: observed 11 (cu-02,03,04,05,08,09,10,14,17,20 + cu-15/19 job pages are description-only), partial 5 (cu-01,06,18,21 multi-step gated; cu-08 options), blocked_auth 5 (Aquent, 4x Amazon), closed 2 (3rd + Lamar). Closed URLs excluded from mapped coverage."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "cu-01",
+   "listing_id": "lst_a991e0a155329d042d6bb5d0953a5912",
+   "url": "https://screening.malemd.com/",
+   "company": "MaleMD",
+   "captured_at_utc": "2026-09-23T23:57:34Z",
+   "status": "partial",
+   "application_origin": "screening.malemd.com (bespoke single-page app)",
+   "form_shape": "Landing: 'Ten questions so we can get a real read on your work. About six to eight minutes, no resume needed.' + 'Start application' (non-submitting; answers auto-save). Step 'FIRST \u2014 YOUR DETAILS': Full name, Email (help: 'We'll only use this to get back to you about this role.'), LinkedIn URL (placeholder linkedin.com/in/...), 'Next'. The ten screening questions are gated behind these details and were NOT observed. No <form> element; progress bar 'Application progress'. OpenCLI click on the start button did not fire; an in-page element.click() did.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-01-malemd.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-01-malemd.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/custom-01-malemd-step1.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-01-malemd-step1.state.txt"
+   ],
+   "gated_steps_not_visited": [
+    "10 screening questions (one at a time, auto-saving)",
+    "final submit (control text unknown)"
+   ],
+   "narrative_benchmark": "expected: ten narrative screening questions (unobserved)"
+  },
+  {
+   "sample_id": "cu-02",
+   "listing_id": "lst_084706157dc36dac4b078f847072d54b",
+   "url": "https://www.corporatetools.com/jobs/apply-now?j=Marketing-Manager",
+   "company": "Two Barrels / Corporate Tools",
+   "captured_at_utc": "2026-09-23T23:54:15Z",
+   "status": "observed",
+   "application_origin": "corporatetools.com /jobs/apply-now/?j=<slug> (variant A: custom comboboxes)",
+   "form_shape": "form#job-application (form_index 1; form_index 0 is the site search). First Name, Last Name, Email Address, Phone Number (none marked required in DOM); comboboxes 'Position Applying For' (searchbox 'Select a Position'), 'Where are you located?' ('Select State'), 'How did you hear about us?' ('Select an Option'), and two yes/no 'Select a Response' comboboxes for the accommodation and 8h/5d schedule questions; textareas 'Why do you want to work here?' and 'Tell us about the 2 company principles that resonate with you most'; file 'PDF Cover Letter'; optional GitHub/CodePen/LinkedIn links; 'Add Project' repeater button; reCAPTCHA v2 iframe; submit 'Submit Your Application'. Combobox menus did NOT open on click (4 attempts); option lists inferred from variant B.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-02-corporatetools-mm.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-02-corporatetools-mm.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/custom-02-corporatetools-mm.options.jsonl (empty option lists; menus never expanded)"
+   ],
+   "narrative_benchmark": [
+    "Why do you want to work here?",
+    "Tell us about the 2 company principles that resonate with you most"
+   ]
+  },
+  {
+   "sample_id": "cu-03",
+   "listing_id": "lst_14fa0d6afb89a75b10fb547729c5d89e",
+   "url": "https://calvis.com/careers/marketing-manager-austin",
+   "company": "Calvis",
+   "captured_at_utc": "2026-09-23T23:54:20Z",
+   "status": "observed",
+   "application_origin": "calvis.com (bespoke)",
+   "form_shape": "Single form (method get, JS-driven): First name*, Last name*, Email*, Phone, LinkedIn URL* (placeholder linkedin.com/in/you), required radio group name=screening-in-office under the fieldset text 'We're building an in-office culture in Austin, TX. The team is together 5 days a week because we believe that's how we do our best work and move fast. Does that kind of in-person collaboration energize you? *' (Yes/No), Resume (PDF or Word)* accept .pdf,.doc,.docx via 'Attach your resume' button, textarea 'Anything you'd like us to know?' (max 5000), a text input labelled 'Website' (likely honeypot: no required marker, present after the note), submit 'SUBMIT APPLICATION'. The HTTP pre-scan flagged 'closed' text but no closed notice exists in the rendered page.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-03-calvis.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-03-calvis.state.txt"
+   ],
+   "narrative_benchmark": [
+    "Anything you'd like us to know? (optional, 5000 chars)"
+   ],
+   "eligibility": [
+    "in-office 5 days/week Austin yes/no (disqualifying intent)"
+   ]
+  },
+  {
+   "sample_id": "cu-04",
+   "listing_id": "lst_4a713c6b9469872b4de250fdf424707c",
+   "url": "https://stratabeat.com/job/seo-content-strategist/",
+   "company": "Stratabeat",
+   "captured_at_utc": "2026-09-23T23:54:26Z",
+   "status": "observed",
+   "application_origin": "stratabeat.com (WordPress Gravity Forms gform_6)",
+   "form_shape": "form#gform_6 method post: First Name*, Last Name*, Email*, Phone* (all placeholder-labelled with trailing *), LinkedIn Url (not required), native select 'How did you hear about us? *' [LinkedIn, SEOJobs.com, Other], textarea 'Message' (optional), checkbox 'Sign-up and be the first to know when we have new job opportunities available' (marketing opt-in, default unchecked), file 'Attach PDF File *' (Accepted file types: pdf, Max. file size: 5 MB), submit 'Send Application'. Also mailto careers@stratabeat.com in page text as alternative.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-04-stratabeat.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-04-stratabeat.state.txt"
+   ],
+   "narrative_benchmark": [
+    "Message (free text, optional)"
+   ]
+  },
+  {
+   "sample_id": "cu-05",
+   "listing_id": "lst_895b9852ba1c017cd249aa94272524e1",
+   "url": "https://spoks.com/careers/growth-lead",
+   "company": "Spoks",
+   "captured_at_utc": "2026-09-23T23:54:31Z",
+   "status": "observed",
+   "application_origin": "spoks.com (bespoke, fieldset 'Your application for Founding Growth Marketing Lead')",
+   "form_shape": "Full name* (max 120), Email* (max 254), US phone number* (help 'Plain digits, spaces or dashes are all fine. Include your area code; +1 is optional.', placeholder '(512) 555-0123'), LinkedIn profile* (url, max 1000), CV / resume (PDF)* accept .pdf (help 'PDF, up to 5 MB. A PDF export of your LinkedIn profile works too. Upload starts when you choose a file.'), textarea 'Your work & introduction *' (max 6000) with prompt 'Tell us about a business, product or campaign you helped grow. Where did it start, what did you personally do, and what changed? Include something that didn't work and what you learned. A few paragraphs are enough. Add links if they help.', native select 'Working in Austin *' [I'm already in the Austin area, I'm planning to relocate to Austin, I'd need to discuss the location] (help 'These roles include at least three days in the Austin office each week.'), honeypot text input labelled 'Leave this field empty' (name=website), submit 'Send application'.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-05-spoks.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-05-spoks.state.txt"
+   ],
+   "narrative_benchmark": [
+    "Your work & introduction (required, \u22646000 chars, multi-part prompt incl. a failure and learning)"
+   ],
+   "honeypot": "input[name=website] 'Leave this field empty' - never fill"
+  },
+  {
+   "sample_id": "cu-06",
+   "listing_id": "lst_262ea67f6c29afcc1df4126b76aaabec",
+   "url": "https://apply.rocketalumnisolutions.com/apply/growth",
+   "company": "Rocket Alumni Solutions",
+   "captured_at_utc": "2026-09-23T23:56:28Z",
+   "status": "partial",
+   "application_origin": "apply.rocketalumnisolutions.com (bespoke multi-step)",
+   "form_shape": "Step 1 'Profile' ('Tell us about yourself'): resume file 'Choose PDF' (accept application/pdf) with 'Enter manually' alternative, Full name * (required), Email * (required), Phone, LinkedIn, Portfolio / website; submit 'Start interview'. Progress cue 'Step 1: Profile (current)'. Later steps (an 'interview') gated behind step 1 and NOT observed. No <form> element (JS app).",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-06-rocketalumni.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-06-rocketalumni.state.txt"
+   ],
+   "gated_steps_not_visited": [
+    "interview step(s) after 'Start interview'"
+   ]
+  },
+  {
+   "sample_id": "cu-07",
+   "listing_id": "lst_513204c75fb84e5f77d05d7a2d777b43",
+   "url": "https://3rdandlamar.com/careers/paid-media-manager-austin-tx/",
+   "company": "3rd + Lamar",
+   "captured_at_utc": "2026-09-23T23:56:34Z",
+   "status": "closed",
+   "application_origin": "3rdandlamar.com",
+   "form_shape": "HTTP 404; page shows 'OOPS! THAT PAGE CAN'T BE FOUND.' with only a site search and a newsletter form (gform_2 'Subscribe'). Not an application form.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-07-3rdlamar-manager.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-07-3rdlamar-manager.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-08",
+   "listing_id": "lst_5c8088d43b8ce23bf5d41d669750a791",
+   "url": "https://hercules.app/careers/ai-native-growth-hacker",
+   "company": "Hercules",
+   "captured_at_utc": "2026-09-23T23:56:41Z",
+   "status": "observed",
+   "application_origin": "hercules.app/careers (embedded form using Ashby-style _systemfield_name/_systemfield_email ids; no ashby DOM markers; treat as custom-hosted Ashby-like)",
+   "form_shape": "'Apply for this role' section: Name *, Email *, Resume * (accept .pdf,.doc,.docx; 'Drag and drop or click to upload resume PDF or Word, max 10MB'), LinkedIn, Personal Website, 'How technical are you? *' (button aria-haspopup=listbox 'Select an option\u2026' - options NOT captured; menu did not expand on 2 attempts), textarea 'Please share 3-5 growth hacks you have done that you are most proud of *', textarea 'What is the first 100x AI-native growth hack you would run at Hercules? *', submit 'Submit application'. Header has a 'Log in' button (product login, not required for the form).",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-08-hercules.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-08-hercules.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/custom-08-hercules.options.jsonl (empty)"
+   ],
+   "narrative_benchmark": [
+    "Please share 3-5 growth hacks you have done that you are most proud of",
+    "What is the first 100x AI-native growth hack you would run at Hercules?"
+   ]
+  },
+  {
+   "sample_id": "cu-09",
+   "listing_id": "lst_53ad7e06f1db8c5695875a318768330b",
+   "url": "https://opascope.com/job/senior-manager-paid-social/",
+   "company": "Opascope",
+   "captured_at_utc": "2026-09-23T23:56:47Z",
+   "status": "observed",
+   "application_origin": "opascope.com (WordPress Ninja Forms)",
+   "form_shape": "Two forms: form_index 0 = application ('Apply at Opascope'): First Name *, Last Name *, Your Email *, Your LinkedIn * (text), input[type=submit]; form_index 1 = newsletter (email + submit) which must be excluded. No resume upload, no narrative field.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-09-opascope.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-09-opascope.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-10",
+   "listing_id": "lst_259e41c76c0ee94116715099eff9ab80",
+   "url": "https://careers.puffy.com/roles/senior-director-performance-marketing",
+   "company": "Puffy",
+   "captured_at_utc": "2026-09-23T23:56:54Z",
+   "status": "observed",
+   "application_origin": "careers.puffy.com (Framer page) embedding join.careers.puffy.com in an iframe (frame index 1)",
+   "form_shape": "Iframe form#application-form 'Apply for Senior Director - Performance Marketing': First Name*, Last Name*, Email*, LinkedIn Profile* (url), file 'Upload your resume, CV, portfolio, or anything else you'd like us to see to strengthen your application.' accept .pdf,.doc,.docx,.rtf,.txt, checkbox 'Privacy and Consent Notice' (attestation), submit 'SUBMIT APPLICATION'. Requiredness expressed only by '*' in labels (no required attr). Top document has 0 controls; runtime must read frame 1.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-10-puffy.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-10-puffy.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/custom-10-puffy-frame1.controls.json"
+   ],
+   "attestation": [
+    "Privacy and Consent Notice checkbox"
+   ]
+  },
+  {
+   "sample_id": "cu-11",
+   "listing_id": "lst_9218724cec376b8284966693ce24cf8c",
+   "url": "https://3rdandlamar.com/careers/paid-media-director-austin-tx/",
+   "company": "3rd + Lamar",
+   "captured_at_utc": "2026-09-23T23:58:41Z",
+   "status": "closed",
+   "application_origin": "3rdandlamar.com",
+   "form_shape": "HTTP 404 'OOPS! THAT PAGE CAN'T BE FOUND.' (same as cu-07).",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-11-3rdlamar-director.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-11-3rdlamar-director.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-12",
+   "listing_id": "lst_9bc91caa487788b3e0ba24a2e9575ae8",
+   "url": "https://talent.aquent.com/quick-apply/213102/start?locale=en_US",
+   "company": "Aquent (end client undisclosed)",
+   "captured_at_utc": "2026-09-23T23:58:48Z",
+   "status": "blocked_auth",
+   "application_origin": "talent.aquent.com Quick Apply (identity-first gate)",
+   "form_shape": "Page 'Apply for PPC \u2013 Google Ads': single field 'Email or Username' (max 80) + 'Continue'. This is an account lookup/creation gate; the application steps behind it were not observed. OneTrust cookie preference centre present (not interacted).",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-12-aquent.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-12-aquent.state.txt"
+   ],
+   "human_action_needed": "User signs in to / creates an Aquent talent account"
+  },
+  {
+   "sample_id": "cu-13",
+   "listing_id": "lst_9ce31db7a41a37557722f9c36069357a",
+   "url": "https://www.amazon.jobs/applicant/jobs/10529859/apply",
+   "company": "Amazon Web Services (Amazon)",
+   "captured_at_utc": "2026-09-23T23:58:56Z",
+   "status": "blocked_auth",
+   "application_origin": "amazon.jobs applicant flow -> passport.amazon.jobs",
+   "form_shape": "302 to passport.amazon.jobs 'Log in or create account': Email* (help: 'If you use social logins like Amazon, Google, LinkedIn, or Apple, provide the email associated with your account.') + 'Continue' (form posts to /prelogin/route). Application form not observable without an Amazon.jobs account.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-13-aws-applicant-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-13-aws-applicant-apply.state.txt"
+   ],
+   "human_action_needed": "User logs into Amazon.jobs (passport) in the runtime profile"
+  },
+  {
+   "sample_id": "cu-14",
+   "listing_id": "lst_9ffaca329799f3bbd8a596a3e4376d9c",
+   "url": "https://www.corporatetools.com/jobs/apply?id=a0ddbb42-893d-4fb5-9d25-53162c933d4a",
+   "company": "Corporate Tools LLC",
+   "captured_at_utc": "2026-09-23T23:59:02Z",
+   "status": "observed",
+   "application_origin": "corporatetools.com /jobs/apply/?id=<uuid> (variant B: native selects)",
+   "form_shape": "form_index 1 (form_index 0 is site search): First Name *, Last Name *, Email Address *, Phone Number *, City *, native select 'State *' (52 options incl. 'Select a state' + DC), native select 'Position Applying For *' (101 options, preselected to the posting), textarea 'Why do you want to work here?', textarea 'Tell us about the 2 company principles that resonate with you most *', native select 'How did you hear about us?' [Built In, Glassdoor, Google, Indeed, LinkedIn, Referral, Other], file 'PDF Cover Letter *' accept application/pdf, optional Github/Codepen/LinkedIn url inputs, 'Add Project' repeater, native selects 'If hired, would you be able to perform the essential functions of the job, either with or without accommodation? *' [Yes, No] and 'This position requires you to work, 8 hours a day, 5 days a week. If hired, would you be able to meet the work schedule as described? *' [Yes, No], reCAPTCHA v2 iframe, submit 'Submit Your Application'. Requiredness only via '*' in label text.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-14-corporatetools-ppc.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-14-corporatetools-ppc.state.txt"
+   ],
+   "narrative_benchmark": [
+    "Why do you want to work here?",
+    "Tell us about the 2 company principles that resonate with you most"
+   ],
+   "eligibility": [
+    "accommodation yes/no (ADA essential-functions attestation)",
+    "8h/5d schedule yes/no"
+   ]
+  },
+  {
+   "sample_id": "cu-15",
+   "listing_id": "lst_ab10df4b5374a3b550594ecfdccb2e68",
+   "url": "https://www.amazon.jobs/en/jobs/10555686/marketing-manager-ring-appstore-ring-appstore",
+   "company": "Amazon",
+   "captured_at_utc": "2026-09-23T23:59:09Z",
+   "status": "blocked_auth",
+   "application_origin": "amazon.jobs job description -> 'Apply now' anchor to /applicant/jobs/<id>/apply -> passport login",
+   "form_shape": "Job page has only site-search forms (2x, action /en/search) and an 'Apply now' anchor (no target attr) to https://www.amazon.jobs/applicant/jobs/10555686/apply, which (per cu-13/cu-16) redirects to the passport login gate.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-15-amazon-ring.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-15-amazon-ring.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-16",
+   "listing_id": "lst_b90b5c329b8e27cfa5b5da2df906ec67",
+   "url": "https://account.amazon.jobs/jobs/10529858/apply",
+   "company": "Amazon Web Services, Inc.",
+   "captured_at_utc": "2026-09-23T23:59:42Z",
+   "status": "blocked_auth",
+   "application_origin": "account.amazon.jobs -> passport.amazon.jobs",
+   "form_shape": "Same passport 'Log in or create account' gate as cu-13.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-16-aws-account-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-16-aws-account-apply.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-17",
+   "listing_id": "lst_b8aa62e0d2e659c11c03b054b4c0ea9c",
+   "url": "https://www.corporatetools.com/jobs/apply-now/?j=Director-of-Marketing-Demand-Generation",
+   "company": "Two Barrels / Corporate Tools",
+   "captured_at_utc": "2026-09-23T23:59:48Z",
+   "status": "observed",
+   "application_origin": "corporatetools.com variant A (same template as cu-02)",
+   "form_shape": "Identical control set to cu-02 (form#job-application, custom comboboxes, two narrative textareas, PDF cover letter, reCAPTCHA, 'Submit Your Application').",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-17-corporatetools-director.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-17-corporatetools-director.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-18",
+   "listing_id": "lst_ba8599537af1b63f8cc6d1a77e082c08",
+   "url": "https://jobs.digitalneighbor.com/ad-strategist",
+   "company": "Digital Neighbor",
+   "captured_at_utc": "2026-09-24T00:00:37Z",
+   "status": "partial",
+   "application_origin": "jobs.digitalneighbor.com (bespoke; 'APPLY NOW' button reveals an inline form 'Ad Strategist Application (Step 1 of 2)')",
+   "form_shape": "Step 1 (66 form elements): First name*, Last name*, Email*, Phone* (placeholder '(813) 555-0123'), Current company, Current job title, Current location (city, state)*, LinkedIn profile URL*; screener question groups (see field_patterns.digital_neighbor_screeners); submit 'Send Application & Move to the Next Step' (this SENDS step 1 - STOP BOUNDARY). Step 2 gated and NOT observed. Requiredness only via '*' in heading/label text.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-18-digitalneighbor.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-18-digitalneighbor-after-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-18-digitalneighbor-after-apply.state.txt"
+   ],
+   "gated_steps_not_visited": [
+    "Step 2 of 2"
+   ],
+   "narrative_benchmark": [
+    "A client is underspending their monthly budget. What would you typically do?",
+    "How do you communicate campaign underperformance to clients?",
+    "Any additional information? (optional)"
+   ]
+  },
+  {
+   "sample_id": "cu-19",
+   "listing_id": "lst_c867fd6979351267da42cd0ba792e014",
+   "url": "https://www.amazon.jobs/en/jobs/3184409/field-marketing-manager-amazon-business",
+   "company": "Amazon",
+   "captured_at_utc": "2026-09-24T00:00:03Z",
+   "status": "blocked_auth",
+   "application_origin": "amazon.jobs job description -> 'Apply now' -> passport login",
+   "form_shape": "Same shape as cu-15; 'Apply now' href https://www.amazon.jobs/applicant/jobs/3184409/apply.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-19-amazon-fieldmktg.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-19-amazon-fieldmktg.state.txt"
+   ]
+  },
+  {
+   "sample_id": "cu-20",
+   "listing_id": "lst_deda2ad3b749892427cc0e17243f1e3a",
+   "url": "https://goliaence.com/careers#positions",
+   "company": "Goliaence",
+   "captured_at_utc": "2026-09-24T00:00:45Z",
+   "status": "observed",
+   "application_origin": "goliaence.com/careers (bespoke; per-role 'Apply Now' button reveals inline form 'APPLY: PPC CAMPAIGN MANAGER')",
+   "form_shape": "Full name * (max 120), Email * (max 255), Phone * (max 40), City / State (placeholder 'Round Rock, TX'), LinkedIn (url), 'Years of relevant experience' (text, placeholder 'e.g. 3'), Resume * (accept .pdf,.doc,.docx,.rtf,.txt, 'Max 5MB'), textarea 'Why you are a fit (optional)' (max 4000), required checkbox 'I am authorized to work in the United States and can work on a hybrid schedule out of Round Rock, Texas. *', submit 'Submit application'. Three 'Apply Now' buttons on the page (one per role) plus 'Send Your Resume' (mailto jordan@goliaence.com) for speculative applications.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-20-goliaence.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-20-goliaence.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/custom-20-goliaence-after-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-20-goliaence-after-apply.state.txt"
+   ],
+   "narrative_benchmark": [
+    "Why you are a fit (optional, \u22644000)"
+   ],
+   "attestation": [
+    "work authorization + hybrid Round Rock checkbox (combined attestation; cannot be answered partially)"
+   ]
+  },
+  {
+   "sample_id": "cu-21",
+   "listing_id": "lst_fdc7976ad61029638a8df8124b2f71e3",
+   "url": "https://remotivatejobs.com/start-application/?job_id=716377",
+   "company": "UTM.io (via Remotivate)",
+   "captured_at_utc": "2026-09-24T00:00:16Z",
+   "status": "partial",
+   "application_origin": "remotivatejobs.com start-application (recruiter intermediary, multi-step)",
+   "form_shape": "form_index 1 (form_index 0 is site search) 'APPLICATION STEP': Full Name (required), Email Address (required), 'Country of Residence' typeahead text (placeholder 'Type to search country...'), file 'Upload your CV' (required; 'PDF, DOC, or DOCX. Maximum file size: 10 MB.'; accept also lists .jpg/.jpeg), submit 'Start Application' (button#sprint-application-submit-btn) which posts step 1 and is therefore a STOP BOUNDARY in prepare-only mode. Later steps NOT observed.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/custom-21-remotivate.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/custom-21-remotivate.state.txt"
+   ],
+   "gated_steps_not_visited": [
+    "application steps after 'Start Application'"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": "mixed: single-page bespoke forms (Calvis, Spoks, Stratabeat, Opascope, Hercules, Goliaence, Corporate Tools, Puffy-iframe) and JS multi-step apps (MaleMD, Rocket Alumni, Digital Neighbor, Remotivate)",
+   "forms_on_page": "frequently >1: site search (Corporate Tools, Remotivate, Amazon, 3rd+Lamar), newsletter (Opascope form_index 1, Stratabeat opt-in checkbox inside the application form, 3rd+Lamar gform_2). The application form is identified by its submit text (Submit Your Application / SUBMIT APPLICATION / Send application / Send Application / Submit application / Start interview / Start Application / Send Application & Move to the Next Step) and never by form index 0.",
+   "apply_entry": "form already rendered (8 origins), revealed by an 'Apply Now'/'APPLY NOW' <button> without href (Digital Neighbor, Goliaence), 'Start application' (MaleMD), or inside a cross-origin iframe (Puffy)."
+  },
+  "control_families": {
+   "text_basic": "first/last or full name, email, phone (tel), LinkedIn (text or url), portfolio/website (url). Required marker is '*' in the label text far more often than the required attribute (Corporate Tools B, Hercules, Digital Neighbor, Puffy have zero required attrs).",
+   "file": "resume/CV or PDF cover letter; accept lists vary: .pdf only (Spoks, Stratabeat, Rocket Alumni, Corporate Tools cover letter), .pdf/.doc/.docx (Calvis, Hercules), +.rtf/.txt (Goliaence, Puffy), +.jpg (Remotivate). Size limits stated in help text (5 MB, 10 MB).",
+   "native_select": "Corporate Tools B (state 52, position 101, source 8, yes/no x2), Spoks (Austin availability 4), Stratabeat (source 4). Options fully captured inline.",
+   "custom_combobox": "Corporate Tools A (role=combobox + inner searchbox; menus did not open under OpenCLI click), Hercules (button aria-haspopup=listbox; did not open), Remotivate country typeahead. Options unobserved -> OptionsUnavailable.",
+   "radio_group": "Calvis in-office yes/no (fieldset), Digital Neighbor experience bands (5 groups).",
+   "checkbox_group": "Digital Neighbor platforms/tools multi-select ('Select all that apply').",
+   "single_checkbox_attestation": "Puffy 'Privacy and Consent Notice', Goliaence combined work-authorization + hybrid-schedule, Stratabeat marketing opt-in (NOT an attestation; default unchecked; leave unchecked).",
+   "textarea_narrative": "Corporate Tools (2), Spoks (1, max 6000), Hercules (2), Calvis (optional, 5000), Goliaence (optional, 4000), Stratabeat ('Message', optional).",
+   "honeypot": "Spoks input[name=website] 'Leave this field empty'; Calvis 'Website' text input after the note (suspected); 3rd+Lamar gform hidden validation field. Never fill.",
+   "captcha": "reCAPTCHA v2 iframe on all three Corporate Tools forms (hidden textarea g-recaptcha-response). Others: none detected.",
+   "iframe_embed": "Puffy: form lives in frame index 1 (join.careers.puffy.com); top document has no controls."
+  },
+  "field_patterns": [
+   {
+    "key": "name",
+    "variants": [
+     "Full name * (Spoks, Goliaence, Remotivate, MaleMD, Rocket Alumni)",
+     "First name*/Last name* (Calvis, Stratabeat, Opascope, Corporate Tools, Digital Neighbor, Puffy)",
+     "Name * (Hercules)"
+    ],
+    "control": "text",
+    "required": true
+   },
+   {
+    "key": "email",
+    "control": "email/text",
+    "required": true,
+    "seen_in": "all forms"
+   },
+   {
+    "key": "phone",
+    "control": "tel",
+    "required": "varies (Spoks/Stratabeat/Goliaence/Digital Neighbor/Corporate Tools B required; Calvis/Rocket Alumni optional)",
+    "note": "Spoks specifies US number with help text"
+   },
+   {
+    "key": "linkedin_url",
+    "control": "url/text",
+    "required": "Calvis, Spoks, Opascope, Digital Neighbor, Puffy required; others optional"
+   },
+   {
+    "key": "resume",
+    "control": "file",
+    "required": "Calvis, Spoks, Hercules, Goliaence, Remotivate, Rocket Alumni(step1 optional), Stratabeat ('Attach PDF File *')",
+    "not_present": "Opascope, Corporate Tools (cover letter PDF instead), MaleMD ('no resume needed')"
+   },
+   {
+    "key": "cover_letter_pdf",
+    "control": "file",
+    "required": true,
+    "seen_in": [
+     "cu-02",
+     "cu-14",
+     "cu-17"
+    ]
+   },
+   {
+    "key": "location",
+    "variants": [
+     "Current location (city, state)* (Digital Neighbor)",
+     "City * + State * select (Corporate Tools B)",
+     "City / State (Goliaence, optional)",
+     "Country of Residence typeahead (Remotivate)",
+     "Where are you located? combobox (Corporate Tools A)"
+    ]
+   },
+   {
+    "key": "source_of_hire",
+    "control": "select/combobox",
+    "options_seen": {
+     "stratabeat": [
+      "LinkedIn",
+      "SEOJobs.com",
+      "Other"
+     ],
+     "corporatetools": [
+      "Built In",
+      "Glassdoor",
+      "Google",
+      "Indeed",
+      "LinkedIn",
+      "Referral",
+      "Other"
+     ]
+    }
+   },
+   {
+    "key": "position_applying_for",
+    "control": "select (101 options, preselected) / combobox",
+    "seen_in": [
+     "cu-02",
+     "cu-14",
+     "cu-17"
+    ],
+    "note": "must match the posting; preselected in variant B"
+   },
+   {
+    "key": "eligibility_yes_no",
+    "items": [
+     "Calvis: in-office 5 days/week energizes you? (radio Yes/No, required)",
+     "Corporate Tools: able to perform essential functions with/without accommodation? (Yes/No)",
+     "Corporate Tools: able to meet 8h/day 5d/week schedule? (Yes/No)",
+     "Spoks: Working in Austin (3 options; \u22653 office days/week)",
+     "Goliaence: US work authorization + hybrid Round Rock (single required checkbox)",
+     "Digital Neighbor: Have you worked in a digital marketing agency?*"
+    ],
+    "classification": "eligibility/attestation -> verified facts or human"
+   },
+   {
+    "key": "digital_neighbor_screeners",
+    "question_headings": [
+     "How many years of hands-on paid media experience do you have?*",
+     "How many years have you managed Google Ads specifically?*",
+     "How many client accounts have you managed at one time?*",
+     "What is the typical monthly ad spend you have managed?*",
+     "Which advertising platforms have you managed? (Select all that apply)*",
+     "Which tools have you used? (Select all that apply)*",
+     "When a campaign's CPA suddenly increases, what is your FIRST step?*",
+     "Have you worked in a digital marketing agency?*"
+    ],
+    "groups": {
+     "paid_media_experience": {
+      "type": "radio",
+      "options": [
+       "Less than 1 year",
+       "1-2 years",
+       "3-5 years",
+       "6-8 years",
+       "9+ years"
+      ]
+     },
+     "google_ads_experience": {
+      "type": "radio",
+      "options": [
+       "Less than 1 year",
+       "1-2 years",
+       "3-5 years",
+       "6+ years"
+      ]
+     },
+     "concurrent_accounts": {
+      "type": "radio",
+      "options": [
+       "1-5",
+       "6-10",
+       "11-20",
+       "20+"
+      ]
+     },
+     "monthly_ad_spend": {
+      "type": "radio",
+      "options": [
+       "Under $3,000",
+       "$3,000-10,000",
+       "$10,000-25,000",
+       "$50,000+"
+      ]
+     },
+     "platforms": {
+      "type": "checkbox",
+      "options": [
+       "Google Search",
+       "Google Display",
+       "Performance Max",
+       "Local Service Ads",
+       "Meta Ads",
+       "TikTok Ads",
+       "LinkedIn Ads",
+       "YouTube Ads",
+       "Microsoft Ads",
+       "Other"
+      ]
+     },
+     "tools": {
+      "type": "checkbox",
+      "options": [
+       "GA4",
+       "Google Tag Manager",
+       "Looker Studio",
+       "Agency Analytics",
+       "WhatConverts",
+       "CallRail",
+       "Zapier",
+       "Go High Level (GHL)",
+       "Asana",
+       "None of the above"
+      ]
+     },
+     "cpa_first_step": {
+      "type": "checkbox",
+      "options": [
+       "Review conversion tracking",
+       "Check search terms/audiences and campaign changes",
+       "Increase budget",
+       "Pause the campaign",
+       "Other"
+      ]
+     },
+     "agency_experience": {
+      "type": "radio",
+      "options": [
+       "Yes",
+       "No"
+      ]
+     }
+    },
+    "note": "Group names are semantic (paid_media_experience, google_ads_experience, concurrent_accounts, monthly_ad_spend, platforms, tools, ...); headings carry the full question text with trailing '*'. 'When a campaign's CPA suddenly increases, what is your FIRST step?*' is a CHECKBOX group (cpa_first_step) despite asking for a single 'first' step. Step 1 also has a required 'Resume / CV*' file input and the two narrative textareas listed under narrative_questions."
+   },
+   {
+    "key": "narrative_questions",
+    "classification": "free_text_narrative -> writer",
+    "items": [
+     {
+      "origin": "corporatetools.com",
+      "prompt": "Why do you want to work here?",
+      "required": "A: not marked; B: not marked"
+     },
+     {
+      "origin": "corporatetools.com",
+      "prompt": "Tell us about the 2 company principles that resonate with you most",
+      "required": "B: * ; A: not marked",
+      "note": "requires knowledge of the employer's published principles"
+     },
+     {
+      "origin": "spoks.com",
+      "prompt": "Your work & introduction: Tell us about a business, product or campaign you helped grow. Where did it start, what did you personally do, and what changed? Include something that didn't work and what you learned. A few paragraphs are enough. Add links if they help.",
+      "required": true,
+      "max_chars": 6000
+     },
+     {
+      "origin": "hercules.app",
+      "prompt": "Please share 3-5 growth hacks you have done that you are most proud of",
+      "required": true
+     },
+     {
+      "origin": "hercules.app",
+      "prompt": "What is the first 100x AI-native growth hack you would run at Hercules?",
+      "required": true
+     },
+     {
+      "origin": "calvis.com",
+      "prompt": "Anything you'd like us to know?",
+      "required": false,
+      "max_chars": 5000
+     },
+     {
+      "origin": "goliaence.com",
+      "prompt": "Why you are a fit (optional)",
+      "required": false,
+      "max_chars": 4000
+     },
+     {
+      "origin": "stratabeat.com",
+      "prompt": "Message",
+      "required": false
+     },
+     {
+      "origin": "screening.malemd.com",
+      "prompt": "ten screening questions (unobserved; gated behind details step)"
+     },
+     {
+      "origin": "jobs.digitalneighbor.com",
+      "prompt": "A client is underspending their monthly budget. What would you typically do?*",
+      "required": true,
+      "control": "textarea q_underspend_answer"
+     },
+     {
+      "origin": "jobs.digitalneighbor.com",
+      "prompt": "How do you communicate campaign underperformance to clients?*",
+      "required": true,
+      "control": "textarea q_underperformance_answer"
+     },
+     {
+      "origin": "jobs.digitalneighbor.com",
+      "prompt": "Any additional information?",
+      "required": false,
+      "control": "textarea additionalInfo"
+     }
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "single_page_blank_form",
+    "observed": true,
+    "origins": [
+     "calvis",
+     "spoks",
+     "stratabeat",
+     "opascope",
+     "hercules",
+     "goliaence",
+     "corporatetools A/B",
+     "puffy (iframe)"
+    ],
+    "final_submit_texts": [
+     "SUBMIT APPLICATION",
+     "Send application",
+     "Send Application",
+     "Submit",
+     "Submit application",
+     "Submit Your Application"
+    ],
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   },
+   {
+    "step": "multi_step_first_step_sends_data",
+    "observed": true,
+    "origins": [
+     "digitalneighbor ('Send Application & Move to the Next Step')",
+     "remotivate ('Start Application')",
+     "rocketalumni ('Start interview')",
+     "malemd ('Next' after details; answers auto-save)"
+    ],
+    "STOP_BOUNDARY": true,
+    "note": "In these flows the first advance control already transmits candidate data; prepare-only mode must stop BEFORE it, so steps 2+ are unmappable without authorisation."
+   },
+   {
+    "step": "auth_gate",
+    "observed": true,
+    "origins": [
+     "talent.aquent.com ('Email or Username' -> Continue)",
+     "passport.amazon.jobs ('Log in or create account')"
+    ]
+   },
+   {
+    "step": "closed_404",
+    "observed": true,
+    "origins": [
+     "3rdandlamar.com x2"
+    ]
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "Corporate Tools 'Add Project' button",
+    "effect": "repeater adds project sub-fields (not exercised)",
+    "observed": "button present"
+   },
+   {
+    "trigger": "Rocket Alumni 'Enter manually'",
+    "effect": "alternative to PDF resume upload (not exercised)",
+    "observed": "button present"
+   },
+   {
+    "trigger": "Goliaence per-role 'Apply Now'",
+    "effect": "reveals the inline form titled 'APPLY: <ROLE>'; the form is shared across roles so the role is carried by which button was pressed",
+    "observed": true
+   },
+   {
+    "trigger": "Digital Neighbor 'APPLY NOW'",
+    "effect": "reveals 'Step 1 of 2' inline form (66 elements)",
+    "observed": true
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Aquent talent account; Amazon.jobs passport account (4 listings).",
+    "observed": true,
+    "human_action_needed": "User logs in to those accounts in the runtime profile."
+   },
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2 on Corporate Tools (3 listings); expect challenge at submit.",
+    "observed": true
+   },
+   {
+    "type": "closed",
+    "detail": "3rd + Lamar career pages 404.",
+    "observed": true
+   },
+   {
+    "type": "gated_steps",
+    "detail": "MaleMD (10 questions), Rocket Alumni (interview), Digital Neighbor (step 2), Remotivate (later steps) require transmitting step-1 data first.",
+    "observed": true
+   },
+   {
+    "type": "tooling",
+    "detail": "OpenCLI click did not open custom comboboxes (Corporate Tools A x5, Hercules x2) and did not fire MaleMD's start button (in-page click did).",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Backend identity must be derived per origin; the inventory tag 'custom' carries no field prior. Use the per-origin form_shape above only as a hint.",
+   "Required-ness: rely on '*' in label/heading text; the required attribute is absent on most bespoke forms.",
+   "Never fill honeypots ('Leave this field empty', trailing 'Website' inputs).",
+   "Exclude non-application forms by submit text and by form_index != 0 heuristics; several pages have search/newsletter forms first.",
+   "Puffy requires frame-scoped observation (frames -> eval --frame 1).",
+   "Amazon 'Apply now' anchors and Built In anchors resolve to gates/redirects; follow with a GET in the owned tab, then re-observe."
+  ]
+ },
+ "inferred": {
+  "malemd_unverified": "The 10 questions are likely narrative (page: 'so we can get a real read on your work'); expect 1 question per screen with auto-save.",
+  "rocketalumni_unverified": "'Start interview' suggests an async video/text interview step.",
+  "remotivate_unverified": "Recruiter-intermediary flow; later steps likely include screening questions and consent to share with the end client (UTM.io)."
+ },
+ "provider_hint": {
+  "for_jev": "custom backend: no shared schema. Read the rendered form; identify the application form by its submit text, exclude search/newsletter forms and honeypots. Required = '*' in label text. Classify each control: fact_copy (name/email/phone/linkedin/location), file (resume/cover letter with accept list), option_choice (state/position/source/availability from verified facts), eligibility/attestation (in-office, schedule, accommodation, work authorization -> verified fact or human), free_text_narrative (route to writer with the exact prompt and length cap). For multi-step apps stop before the first control that transmits data ('Start Application', 'Send Application & Move to the Next Step', 'Start interview', 'Next').",
+  "exact_copy_facts": [
+   "name",
+   "email",
+   "phone (US format where requested)",
+   "linkedin_url",
+   "portfolio/website url",
+   "current company/title",
+   "city/state"
+  ],
+  "option_choice_from_verified_facts": [
+   "state",
+   "country of residence",
+   "position applying for (must equal the posting)",
+   "source of hire (user preference else 'Other')",
+   "Austin/Round Rock availability",
+   "experience bands and ad-spend bands (Digital Neighbor) only if verified facts exist"
+  ],
+  "escalate_to_writer_opus": [
+   "all narrative_questions items above"
+  ],
+  "requires_human_input": [
+   "every attestation/eligibility checkbox and yes/no",
+   "captcha",
+   "resume/cover-letter file selection",
+   "Aquent/Amazon logins",
+   "authorisation to advance multi-step flows"
+  ]
+ },
+ "edge_cases": [
+  "Corporate Tools has two templates for the same employer: apply-now/?j= (custom comboboxes, no required attrs, no '*') and apply/?id= (native selects, '*' markers). Same questions, different control families.",
+  "Stratabeat's marketing opt-in checkbox sits inside the application form and is easy to mistake for a consent attestation.",
+  "Goliaence's single checkbox bundles work authorization AND hybrid-schedule acceptance; a truthful answer requires both facts.",
+  "Digital Neighbor's LinkedIn URL input reported has_value=true on a blank form (likely a default prefix); the runtime must not assume prefilled fields are candidate data.",
+  "Remotivate's CV accept list includes JPEG."
+ ]
+}

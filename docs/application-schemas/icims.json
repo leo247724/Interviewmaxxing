@@ -1,0 +1,269 @@
+{
+ "backend": "icims",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:06:53Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "blocked_auth_gate_mapped",
+ "coverage": {
+  "inventory_density": 8,
+  "observed_examples": 3,
+  "fully_mapped_examples": 0,
+  "employers_distinct": 3,
+  "note": "iCIMS renders inside a same-origin iframe (in_iframe=1). 'Apply for this job online' (mode=apply) redirects to /jobs/<id>/<slug>/login — an 'Enter Your Information' email-first step with hCaptcha and privacy/GDPR consents. The application form itself is behind that gate (email + captcha + account/guest step) and was NOT observed. Three employers' gate pages were mapped; the gate content varies per employer (privacy checkbox, GDPR select, phone field)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ic-01",
+   "url": "https://careers-leftfieldlabs.icims.com/jobs/8465/senior-growth-marketing-manager/job",
+   "page_title": "Senior Growth Marketing Manager in United States | Careers at US Remote",
+   "captured_at_utc": "2026-09-24T00:05:18Z",
+   "hosting_mode": "icims_iframe_portal",
+   "entry": "anchor 'Apply for this job online' href ...job?mode=apply&apply=yes&in_iframe=1&hashed=... -> redirected to .../login",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/icims-01-leftfieldlabs.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/icims-01-leftfieldlabs-frame.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/icims-01-leftfieldlabs-gate.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/icims-01-leftfieldlabs-gate-frame.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/icims-01-leftfieldlabs.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/icims-01-leftfieldlabs-gate.state.txt"
+   ],
+   "steps_visited": [
+    "job detail (frame)",
+    "login gate 'Enter Your Information' (frame)"
+   ],
+   "gated_steps_not_visited": [
+    "email 'Next' (hCaptcha)",
+    "account/password or guest step",
+    "application form",
+    "EEO",
+    "submit"
+   ],
+   "gate_fields": [
+    "Email (css_loginName)",
+    "checkbox required 'I accept the Privacy Policy'",
+    "checkbox required 'If you are a European Union (EU) or United Kingdom (UK) resident, please check this box.'",
+    "input[type=submit] 'Next'"
+   ]
+  },
+  {
+   "sample_id": "ic-02",
+   "url": "https://careers-americas.icims.com/jobs/26354/paid-ads-marketing-manager%2c-dx/job?mode=apply",
+   "page_title": "Login | General Data Protection Regulation (GDPR)",
+   "captured_at_utc": "2026-09-24T00:05:25Z",
+   "hosting_mode": "icims_iframe_portal",
+   "entry": "?mode=apply URL lands directly on the login gate",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/icims-02-atlassian-frame.controls.json"
+   ],
+   "steps_visited": [
+    "login gate (frame)"
+   ],
+   "gated_steps_not_visited": [
+    "everything after 'Next'"
+   ],
+   "gate_fields": [
+    "Email (help: 'Atlassian Employees: Please apply via the Internal Mobility Careers Site...')",
+    "select required gdpr_consent_type ['— Make a Selection —','Continue']",
+    "checkbox required 'I accept' (GDPR privacy notice)",
+    "input[type=submit] 'Next'"
+   ]
+  },
+  {
+   "sample_id": "ic-03",
+   "url": "https://careers-rpmliving.icims.com/jobs/40945/senior-marketing-manager/job",
+   "page_title": "Login | California Privacy Statement",
+   "captured_at_utc": "2026-09-24T00:05:55Z",
+   "hosting_mode": "icims_iframe_portal",
+   "entry": "'Apply for this job online' -> /login",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/icims-03-rpmliving-frame.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/icims-03-rpmliving-gate-frame.controls.json"
+   ],
+   "steps_visited": [
+    "job detail (frame)",
+    "login gate (frame)"
+   ],
+   "gated_steps_not_visited": [
+    "everything after 'Next'"
+   ],
+   "gate_fields": [
+    "Email (css_loginName)",
+    "Phone 'Number' (css_phoneNumber) with a country-code list rendered in DOM",
+    "input[type=submit] 'Next'"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "url_pattern": "https://careers-<tenant>.icims.com/jobs/<id>/<slug>/job  (content in same-origin iframe ...?in_iframe=1); apply = same URL + ?mode=apply&apply=yes -> /jobs/<id>/<slug>/login",
+   "outer_page": "wrapper with employer branding + OneTrust consent; on ic-01 the wrapper also contains an unrelated newsletter form#subscribe-form (name/email) — NOT the application",
+   "captcha_widget": "hCaptcha (newassets.hcaptcha.com) inside the login gate frame",
+   "auth_required": true
+  },
+  "control_families": {
+   "gate_email": "form#enterEmailForm method=post action=.../login?step=email; input[type=email]#email name=css_loginName label 'Email'.",
+   "gate_consents": "input[type=checkbox] required (accept_privacy / eu_resident / accept_gdpr) with aria-describedby explanatory text; select#gdpr_consent_type required ['— Make a Selection —','Continue'] (ic-02).",
+   "gate_phone": "input#phoneNumber name=css_phoneNumber 'Number' with country-code list (ic-03).",
+   "gate_next": "input[type=submit]#enterEmailSubmitButton 'Next' (advances; triggers hCaptcha).",
+   "apply_link": "a 'Apply for this job online' (title identical) under heading 'Options' in the job frame; also 'Publish to LinkedIn' share link."
+  },
+  "field_patterns": [
+   {
+    "key": "gate.email",
+    "label_seen": "Email",
+    "control": "email",
+    "required": "unmarked (enforced server-side)",
+    "seen_in": [
+     "ic-01",
+     "ic-02",
+     "ic-03"
+    ],
+    "classification": "fact_copy (but gate — human decision to proceed)"
+   },
+   {
+    "key": "gate.accept_privacy",
+    "label_seen": "I accept the Privacy Policy",
+    "control": "checkbox",
+    "required": true,
+    "seen_in": [
+     "ic-01"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "gate.eu_resident",
+    "label_seen": "If you are a European Union (EU) or United Kingdom (UK) resident, please check this box.",
+    "control": "checkbox (required attr, semantically optional)",
+    "required": "attr true",
+    "seen_in": [
+     "ic-01"
+    ],
+    "classification": "eligibility/attestation"
+   },
+   {
+    "key": "gate.gdpr_consent_type",
+    "label_seen": "— Make a Selection — / Continue",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "— Make a Selection —",
+     "Continue"
+    ],
+    "seen_in": [
+     "ic-02"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "gate.accept_gdpr",
+    "label_seen": "I accept",
+    "control": "checkbox",
+    "required": true,
+    "seen_in": [
+     "ic-02"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "gate.phone",
+    "label_seen": "Number",
+    "control": "text + country code",
+    "required": false,
+    "seen_in": [
+     "ic-03"
+    ],
+    "classification": "fact_copy"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_detail_frame",
+    "identity_hint": "iframe src careers-<tenant>.icims.com/jobs/<id>/.../job?in_iframe=1; heading 'Options' with 'Apply for this job online'",
+    "observed": true
+   },
+   {
+    "step": "login_gate",
+    "identity_hint": "URL ends /login; heading 'Enter Your Information'; form#enterEmailForm; hCaptcha iframes",
+    "observed": true
+   },
+   {
+    "step": "gate_next",
+    "control": "input[type=submit] 'Next'",
+    "observed": true,
+    "never_actuated": true,
+    "gated_by": "email + consents + hCaptcha"
+   },
+   {
+    "step": "account_or_guest",
+    "observed": false,
+    "expected_unverified": [
+     "verification code by email or password/create profile",
+     "'Apply with LinkedIn/Indeed' resume import"
+    ]
+   },
+   {
+    "step": "application_form",
+    "observed": false
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth_gate",
+    "detail": "Email-first login/registration required before any application field is shown."
+   },
+   {
+    "type": "captcha",
+    "detail": "hCaptcha on the gate."
+   },
+   {
+    "type": "iframe",
+    "detail": "Content is a same-origin iframe; runtime must read contentDocument (cap_frame.sh) or navigate the frame URL. Direct navigation to ?in_iframe=1 is redirected back to the wrapper."
+   }
+  ],
+  "runtime_observations": [
+   "Inventory item careers-wrenchgroup.icims.com/jobs/12801/login is already the gate URL.",
+   "Two distinct hashed= tokens per session; do not persist apply hrefs."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "email + consent + hCaptcha",
+   "one-time code or password",
+   "profile/resume upload",
+   "application questions",
+   "EEO/voluntary self-ID",
+   "review",
+   "submit"
+  ],
+  "form_inference": "iCIMS application pages are classic table-based forms (.iCIMS_TableRow) with per-employer question sets; UNVERIFIED in this session."
+ },
+ "provider_hint": {
+  "for_jev": "iCIMS: no blank form is reachable without the user's email, consent checkboxes and hCaptcha. Prepare-only runtime must stop at the 'Enter Your Information' gate and hand off to a human. Do not tick privacy/GDPR consents automatically.",
+  "exact_copy_facts": [
+   "email",
+   "phone (gate)"
+  ],
+  "option_choice_from_verified_facts": [
+   "EU/UK residency checkbox (verified residency fact only)"
+  ],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "privacy/GDPR consent",
+   "hCaptcha",
+   "account creation / verification code",
+   "entire application form (unobserved)"
+  ]
+ },
+ "edge_cases": [
+  "Wrapper page may host unrelated forms (newsletter) with name/email inputs — never bind facts to them (form id subscribe-form).",
+  "Gate content differs per tenant (privacy checkbox vs GDPR select vs phone)."
+ ]
+}

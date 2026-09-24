@@ -1,0 +1,135 @@
+{
+ "backend": "wellfound",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:51:51Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "blocked",
+ "coverage": {
+  "inventory_density": 30,
+  "attempted_samples": 3,
+  "observed_examples": 3,
+  "fully_mapped_examples": 0,
+  "note": "3 different employers inspected. Profile jgd7jms9 is logged out of Wellfound; the job page renders fully (description, company, similar jobs) but 'Apply Now' produced no observable response and no navigation to a form or login screen. No application form was observable; not a mapped form. The remaining 27 listings share the same host/page template and were not opened (no new information expected while logged out)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "wf-01",
+   "listing_id": "lst_97c508f3c90132b53818539edc26ce29",
+   "url": "https://wellfound.com/jobs/3997434-demand-generation-manager",
+   "company": "Brellium",
+   "page_title": "Demand Generation Manager at Brellium \u2022 New York City \u2022 Remote (Work from Home) | Wellfound",
+   "captured_at_utc": "2026-09-23T23:48:07Z",
+   "status": "blocked_auth",
+   "apply_control": "<button type=submit> 'Apply Now' (2 copies: header card and end of description) plus 'Save'; no href, no enclosing <form>",
+   "click_result": "real click via OpenCLI; after 4-8s: URL unchanged, no [role=dialog]/modal, window.open not called (instrumented), history.pushState not called (wf-01), console empty. Page header shows 'Log In' / 'Sign Up'.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-01-brellium.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-01-brellium-after-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-01-brellium.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-01-brellium-after-apply.state.txt"
+   ]
+  },
+  {
+   "sample_id": "wf-02",
+   "listing_id": "lst_a07405bd286d22ec0c96322193a63c43",
+   "url": "https://wellfound.com/jobs/4522318-senior-manager-ecommerce-retention",
+   "company": "LUCY",
+   "page_title": "Senior Manager, Ecommerce & Retention at LUCY \u2022 Las Vegas \u2022 Remote (Work from Home) | Wellfound",
+   "captured_at_utc": "2026-09-23T23:51:00Z",
+   "status": "blocked_auth",
+   "apply_control": "<button type=submit> 'Apply Now' (2 copies: header card and end of description) plus 'Save'; no href, no enclosing <form>",
+   "click_result": "real click via OpenCLI; after 4-8s: URL unchanged, no [role=dialog]/modal, window.open not called (instrumented), history.pushState not called (wf-01), console empty. Page header shows 'Log In' / 'Sign Up'.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-02-lucy.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-02-lucy-after-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-02-lucy.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-02-lucy-after-apply.state.txt"
+   ]
+  },
+  {
+   "sample_id": "wf-03",
+   "listing_id": "lst_450ae21dd6bdbeafddf6a86f13dff1eb",
+   "url": "https://wellfound.com/jobs/4696287-growth-marketing-manager",
+   "company": "Juno",
+   "page_title": "Growth Marketing Manager at Juno \u2022 Miami \u2022 Remote (Work from Home) | Wellfound",
+   "captured_at_utc": "2026-09-23T23:51:11Z",
+   "status": "blocked_auth",
+   "apply_control": "<button type=submit> 'Apply Now' (2 copies: header card and end of description) plus 'Save'; no href, no enclosing <form>",
+   "click_result": "real click via OpenCLI; after 4-8s: URL unchanged, no [role=dialog]/modal, window.open not called (instrumented), history.pushState not called (wf-01), console empty. Page header shows 'Log In' / 'Sign Up'.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-03-juno.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-03-juno-after-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-03-juno.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/wellfound-03-juno-after-apply.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "forms_on_page": 0,
+   "apply_entry": "button 'Apply Now' (React handler; no href). Also many 'Apply' buttons in the 'Similar Jobs' rail (one per other listing) that must not be confused with the target job's control.",
+   "auth_state_cues": [
+    "header buttons 'Log In' and 'Sign Up'"
+   ],
+   "headings_pattern": "<h1 job title>, 'About the job', 'About the company', '<Company>', optional 'Funding'/'Perks'/'Founders', 'Similar Jobs'"
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "wellfound_job_page_logged_out",
+    "identity_hint": "host wellfound.com path /jobs/<id>-<slug>, title '<role> at <company> \u2022 <city> \u2022 <remote> | Wellfound', 0 forms, 'Log In'/'Sign Up' buttons",
+    "observed": true
+   },
+   {
+    "step": "wellfound_login",
+    "observed": false,
+    "gated_by": "auth"
+   },
+   {
+    "step": "wellfound_application",
+    "observed": false,
+    "gated_by": "auth",
+    "note": "Wellfound applications are known to be profile-based with an optional note to the company (UNVERIFIED here)."
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Logged out; 'Apply Now' inert. Not bypassed; no account created.",
+    "observed": true,
+    "human_action_needed": "User logs into their Wellfound account in the runtime profile, then the apply flow (expected: profile-backed form + note) must be re-observed."
+   }
+  ],
+  "runtime_observations": [
+   "Verify a click had an effect (URL/dialog/network) before assuming a form opened; on Wellfound logged-out, nothing changes and the runtime should classify auth_required from the 'Log In'/'Sign Up' header cues rather than retrying the click.",
+   "The 'Similar Jobs' rail contains ~9 'Apply' buttons; select the apply control by proximity to the h1 title, never by first match."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "login (email/password or OAuth)",
+   "profile completeness check",
+   "per-job application: optional note to the company, possibly employer questions",
+   "submit"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "wellfound: without login the page has no form and the Apply Now control is inert. Classify as auth_required when 'Log In'/'Sign Up' are present. After human login, re-observe; expect a profile-backed application with a short note field that should route to the writer with job context.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "(unverified) note to the company"
+  ],
+  "requires_human_input": [
+   "Wellfound login",
+   "profile completion"
+  ]
+ },
+ "edge_cases": [
+  "One inventory URL slug ('real-estate-sales-manager-property-owners-clone') does not match its title ('Marketing Manager (AI Property Management)'); Wellfound resolves by numeric id, so slug mismatches are expected and harmless."
+ ]
+}

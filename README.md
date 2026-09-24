@@ -85,6 +85,10 @@ Asking to apply authorizes the submission; there is no extra confirmation step. 
 | `SUBMISSION_UNKNOWN` | 5 | The submit may have reached the employer but no confirmation tied to this job was seen. It is never retried; `reconcile` it. |
 | already submitted / duplicate / in progress | 4 | Nothing was done. A submit interrupted by a crash becomes `SUBMISSION_UNKNOWN` once its lease lapses (ten minutes at most); `reconcile` it. It is never repeated. |
 
+### Many jobs at once
+
+`interviewmaxxing prepare-batch --inventory FILE --workers 3` prepares every Saved job of an inventory file through the same `apply` flow, one headless browser per worker, and stops each one at its final review step without submitting. Finished jobs are written to a resumable ledger under `$IMX_HOME/batches/`, with a summary of what is prepared and what still needs you. See [docs/mass-preparation.md](docs/mass-preparation.md). The measured state of this path on real Saved applications, and the bottlenecks that still limit scale, are in [docs/mass-apply-readiness.md](docs/mass-apply-readiness.md).
+
 ### Missing answers (across restarts)
 
 ```bash
@@ -117,6 +121,7 @@ Instead of stopping, `apply --interactive` (or `resume --interactive`) asks on t
 | --- | --- |
 | `interviewmaxxing apply URL [--candidate ID] [--headless] [--interactive] [--act] [--json]` | Apply to the job at `URL` |
 | `interviewmaxxing resume APP [--headless] [--interactive] [--act] [--json]` | Continue a stopped application |
+| `interviewmaxxing prepare-batch --inventory FILE [--backends A,B] [--limit N] [--workers N] [--max-prepared N] [--batch-id ID] [--json]` | Prepare many Saved jobs to their final review step, never submitting ([docs/mass-preparation.md](docs/mass-preparation.md)) |
 | `interviewmaxxing answer APP (--set FIELD=VALUE ... \| --answers FILE) [--reuse application\|job\|global]` | Answer recorded questions |
 | `interviewmaxxing reconcile APP [--headless] [--json]` | Re-check an uncertain submission on the site |
 | `interviewmaxxing status [APP] [--json]` | List applications, or show one with attempts and pending questions |

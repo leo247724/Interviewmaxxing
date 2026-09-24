@@ -11,7 +11,7 @@ legend. Validation messages go to ``validation_error`` and never into the questi
 Only enabled, operable controls become fields. Hidden inputs, honeypots (aria-hidden
 or off-screen), disabled controls and CAPTCHA answer boxes are excluded; a CAPTCHA
 is reported through the page kind instead. Non-native widgets become ``UNSUPPORTED``
-fields for the user to operate.
+fields for the user to operate, except unambiguous selection-only ARIA comboboxes.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from interviewmaxxing_core import (
     JobIdentityObservation,
     PageInspection,
     PageKind,
+    SemanticType,
 )
 
 from .semantics import classify
@@ -58,8 +59,16 @@ _KNOWN_ATS = (
     ("greenhouse", re.compile(r"(^|\.)greenhouse\.io$")),
     ("lever", re.compile(r"(^|\.)lever\.co$")),
     ("ashby", re.compile(r"(^|\.)ashbyhq\.com$")),
-    ("workday", re.compile(r"(^|\.)myworkdayjobs\.com$|(^|\.)workday\.com$")),
+    ("workday", re.compile(r"(^|\.)(?:myworkdayjobs|myworkdaysite|workday)\.com$")),
     ("smartrecruiters", re.compile(r"(^|\.)smartrecruiters\.com$")),
+    ("workable", re.compile(r"(^|\.)workable\.com$")),
+    ("linkedin_easy_apply", re.compile(r"(^|\.)linkedin\.com$")),
+    ("icims", re.compile(r"(^|\.)icims\.com$")),
+    ("bamboohr", re.compile(r"(^|\.)bamboohr\.com$")),
+    ("jobvite", re.compile(r"(^|\.)jobvite\.com$")),
+    ("recruitee", re.compile(r"(^|\.)recruitee\.com$")),
+    ("successfactors", re.compile(r"(^|\.)successfactors\.(?:com|eu)$")),
+    ("taleo", re.compile(r"(^|\.)taleo\.net$")),
     ("rippling", re.compile(r"(^|\.)rippling\.com$|(^|\.)rippling-ats\.com$")),
 )
 
@@ -86,6 +95,8 @@ class FieldBinding:
     """Option value (or "" for a single control) -> its <label>, for click fallback."""
     checked_values: frozenset[str] = frozenset()
     value: str = ""
+    aria: dict[str, Any] | None = None
+    """Document-current ARIA selection binding, never a provider-authored selector."""
     user_completed: bool = False
     """An UNSUPPORTED control the user has already operated."""
 
@@ -94,6 +105,10 @@ class FieldBinding:
 class ClassifiedButton:
     button: DomButton
     intent: ButtonIntent
+    apply_control: bool = False
+    """An "Apply" control that leads to the application rather than submitting one
+    (it has no real form behind it), so it is followed like a link, never clicked as
+    a submit or next control."""
 
 
 @dataclass(frozen=True)
@@ -117,10 +132,14 @@ class PageModel:
     captcha: CaptchaState
     title: str | None
     unsupported_pending: list[str]
-    """Required UNSUPPORTED fields the user has not operated yet."""
+    """Required custom fields without a verified value (including ARIA selects)."""
     candidate_fields: list[ApplicationField] = field(default_factory=list)
     """Fields of the chosen form even when it is not an application form (e.g. a
     status lookup), for read-only helpers such as reconciliation."""
+    apply_controls: list[DomButton] = field(default_factory=list)
+    """Page-wide controls that lead to the application and never submit one."""
+    fillable_counts: Mapping[int, int] = field(default_factory=dict)
+    """Fillable (non-utility) fields per form index; ``-1`` is outside any form."""
 
     @property
     def form(self) -> ApplicationForm | None:
@@ -134,10 +153,87 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
+_REQUIRED_MARKER = r"(?:[*\u2731\uff0a]|\(required\)|[-\u2013\u2014]\s*required)"
+"""``*``, ``\u2731``, ``\uff0a``, ``(required)``, ``- required`` at the end of question text."""
+_TRAILING_MARKERS = re.compile(rf"(?:\s*(?:{_REQUIRED_MARKER}|:))+\s*$", re.IGNORECASE)
+_LEADING_MARKERS = re.compile(r"^(?:\s*[*\u2731\uff0a])+\s*")
+_HAS_REQUIRED_MARKER = re.compile(
+    rf"(?:{_REQUIRED_MARKER}\s*:?\s*$)|(?:^\s*[*\u2731\uff0a])", re.IGNORECASE
+)
+_QUESTION_THEN_MORE = re.compile(
+    rf"^(?P<question>.*?{_REQUIRED_MARKER})\s*:?\s+(?P<rest>\S.*)$", re.IGNORECASE | re.DOTALL
+)
+_IDENTIFIER = re.compile(r"[\[\]_\-]|\d|(?<=[a-z])[A-Z]")
+
+
 def clean_label(text: str) -> str:
-    """Visible label text without a trailing required marker or colon."""
+    """Visible question text without required markers (``*``, ``\u2731``, ``\uff0a`` before
+    or after it, ``(required)``, ``- required`` after it) or a trailing colon."""
+    return _TRAILING_MARKERS.sub("", _LEADING_MARKERS.sub("", _squash(text))).strip()
+
+
+def _take_question(text: str) -> tuple[str, str | None]:
+    """Split visible text at a required marker followed by more text ("Question \u2731
+    hint"): the question, and the rest for help text."""
     text = _squash(text)
-    return re.sub(r"[\s*:]+$", "", text).strip()
+    lead = _LEADING_MARKERS.match(text)
+    prefix, body = (text[:lead.end()], text[lead.end():]) if lead else ("", text)
+    split = _QUESTION_THEN_MORE.match(body)
+    if split:
+        return prefix + split.group("question"), split.group("rest")
+    return text, None
+
+
+def _has_required_marker(text: str) -> bool:
+    return bool(_HAS_REQUIRED_MARKER.search(_squash(text)))
+
+
+def _looks_like_identifier(text: str) -> bool:
+    """A machine name (``cards[\u2026][field3]``, ``first_name``, ``q2``, ``startDate``)
+    rather than a word a person would read as the question."""
+    text = text.strip()
+    if not text:
+        return False
+    return bool(_IDENTIFIER.search(text)) or (" " not in text and not text.isalpha())
+
+
+def _fallback_label(control: DomControl) -> tuple[str, list[str], str | None]:
+    """Label text for a control without a label, placeholder or accessible name.
+
+    The inspector can only name such a control after its ``name``/``id``. When that is
+    a machine identifier and visible question text sits next to the control (a
+    ``<div>Question \u2731</div>`` before an unlabeled Lever input), that text is the
+    question; any text after its required marker stays help text. Returns the label
+    text, the adjacent parts left for help text and the described text consumed."""
+    adjacent = [_squash(t) for t in control.adjacent if _squash(t)]
+    identifier = control.name or control.id
+    if not _looks_like_identifier(identifier):
+        return identifier, adjacent, None
+    if adjacent:
+        question, rest = _take_question(adjacent[0])
+        return question, [*([rest] if rest else []), *adjacent[1:]], None
+    described = next((_squash(d.text) for d in control.described if not d.error and _squash(d.text)), None)
+    if described:
+        return described, adjacent, described
+    if _squash(control.preceding):
+        return _take_question(control.preceding)[0], adjacent, None
+    return identifier, adjacent, None
+
+
+def _member_values(members: list[DomControl]) -> list[str]:
+    """Option values of a radio/checkbox group. Missing or duplicate ``value``
+    attributes (some ATSs post the choice separately) get a stable synthetic value,
+    the member's id, else ``<name>#<index>``, so every member stays selectable and
+    the binding maps it back to the member's own input."""
+    values = [m.value for m in members]
+    if len(members) == 1:
+        return [values[0] or "on"]
+    if all(values) and len(set(values)) == len(values):
+        return values
+    ids = [m.id for m in members]
+    if all(ids) and len(set(ids)) == len(ids):
+        return ids
+    return [f"{m.name or 'option'}#{i}" for i, m in enumerate(members)]
 
 
 _COUNTER = re.compile(
@@ -159,6 +255,18 @@ def _join_unique(parts: Iterable[str | None]) -> str | None:
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "field"
+
+
+def _section_context(parts: Iterable[str], label: str) -> list[str]:
+    """Headings and group labels preceding the control, outermost first, without
+    duplicates or the field's own label. Context for models only: it never enters the
+    question text or the fingerprint, so saved answers match on the bare wording."""
+    out: list[str] = []
+    for part in parts:
+        text = _squash(part)
+        if text and clean_label(text) != label and text not in out:
+            out.append(text)
+    return out
 
 
 # --- fields -------------------------------------------------------------------------
@@ -185,6 +293,12 @@ def _operable(control: DomControl) -> bool:
 
 
 def _control_type(control: DomControl, group_size: int) -> ControlType:
+    if control.aria is not None:
+        # Wording can reveal multi-select ambiguity missing from ARIA metadata.
+        question = " ".join([control.label, *control.adjacent, *(d.text for d in control.described)])
+        if re.search(r"(?:mark|select|choose|check)\s+all|multiple\s+(?:answers|options|choices)", question, re.I):
+            return ControlType.UNSUPPORTED
+        return ControlType.SELECT
     if control.kind == "custom":
         return ControlType.UNSUPPORTED
     if control.tag == "select":
@@ -246,11 +360,32 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
     control_type = _control_type(first, len(group.members))
     is_group = control_type in (ControlType.RADIO, ControlType.CHECKBOX_GROUP)
 
+    values = _member_values(group.members)
     if is_group:
-        label = clean_label(first.legend or first.group_label or first.label or first.name)
+        option_labels = {clean_label(m.label).lower() for m in group.members if m.label}
+        label_text = first.legend or first.group_label or first.label or first.name
+        adjacent = [_squash(t) for t in first.adjacent if _squash(t)]
+        described = [t for m in group.members for t in _non_errors(m.described)]
+        consumed: str | None = None
+        derived = clean_label(label_text)
+        if not derived or derived.lower() in option_labels or _looks_like_identifier(label_text):
+            # The group has no question of its own: its "label" is an option's text
+            # (a yes/no group) or a machine name. The visible question shown next to
+            # or before the group is the question.
+            for candidate in (*adjacent, *_non_errors(first.legend_described),
+                              *_non_errors(first.group_described), *described, first.preceding):
+                cleaned = clean_label(candidate)
+                if cleaned and cleaned.lower() not in option_labels:
+                    label_text, consumed = candidate, _squash(candidate)
+                    break
+        question, rest = _take_question(label_text) if consumed else (label_text, None)
+        label = clean_label(question)
         help_text = _join_unique(
-            [*_non_errors(first.legend_described), *_non_errors(first.group_described),
-             *(t for m in group.members for t in _non_errors(m.described)), *first.adjacent]
+            [*(t for t in _non_errors(first.legend_described) if _squash(t) != consumed),
+             *(t for t in _non_errors(first.group_described) if _squash(t) != consumed),
+             *(t for t in described if _squash(t) != consumed),
+             rest,
+             *(clean_label(t) for t in adjacent if t != consumed)]
         )
         errors = _error_text(
             [*_errors(first.legend_described), *_errors(first.group_described),
@@ -259,17 +394,23 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
         )
         selector = first.legend_selector or first.selector
         options = [
-            FieldOption(value=m.value or "on", label=clean_label(m.label) or m.value,
+            FieldOption(value=value, label=clean_label(m.label) or value,
                         selector=m.selector, disabled=m.disabled)
-            for m in group.members
+            for m, value in zip(group.members, values, strict=True)
         ]
-        required = any(m.required for m in group.members)
+        required = any(m.required for m in group.members) or _has_required_marker(question)
     else:
-        label = clean_label(first.label or first.placeholder or first.name or first.id)
+        if first.label or first.placeholder:
+            label_text, adjacent, consumed = first.label or first.placeholder, list(first.adjacent), None
+        else:
+            label_text, adjacent, consumed = _fallback_label(first)
+        label = clean_label(label_text)
         legend = first.legend if first.legend and clean_label(first.legend) != label else None
         help_text = _join_unique(
-            [legend, *_non_errors(first.legend_described), *_non_errors(first.described),
-             *first.adjacent]
+            [legend, first.group_label, *_non_errors(first.group_described),
+             *_non_errors(first.legend_described),
+             *(t for t in _non_errors(first.described) if _squash(t) != consumed),
+             *(clean_label(t) for t in adjacent)]
         )
         errors = _error_text(
             [*_errors(first.described), first.error_message, *first.adjacent_errors]
@@ -281,7 +422,11 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
                 FieldOption(value=o.value, label=o.label, disabled=o.disabled)
                 for o in first.options
             ]
-        required = first.required
+        if control_type is ControlType.SELECT and first.aria:
+            options = [FieldOption(value=o["value"], label=o["label"], disabled=o["disabled"])
+                       for o in first.aria["options"]]
+        # A visible required marker counts when the control itself carries no attribute.
+        required = first.required or _has_required_marker(label_text)
 
     user_completed = control_type is ControlType.UNSUPPORTED and first.has_value
     if user_completed or (control_type is ControlType.UNSUPPORTED and first.kind == "native"
@@ -322,21 +467,26 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
         placeholder=first.placeholder or None,
         help_text=help_text,
         validation_error=errors,
+        section_context=_section_context(first.section_context, label),
     )
     binding = FieldBinding(
         field_id=field_id,
         control_type=control_type,
         selector=first.selector,
-        option_selectors={m.value or "on": m.selector for m in group.members} if is_group else {},
+        option_selectors=(
+            {value: m.selector for m, value in zip(group.members, values, strict=True)}
+            if is_group else {}
+        ),
         label_selectors={
-            (m.value or "on") if is_group else "": m.label_selector
-            for m in group.members
+            (value if is_group else ""): m.label_selector
+            for m, value in zip(group.members, values, strict=True)
             if m.label_selector
         },
         checked_values=frozenset(
-            (m.value or "on") for m in group.members if m.checked
+            value for m, value in zip(group.members, values, strict=True) if m.checked
         ) if is_group else (frozenset({"on"}) if first.checked else frozenset()),
-        value=first.value,
+        value=first.aria["value"] if first.aria else first.value,
+        aria=first.aria if control_type is ControlType.SELECT else None,
         user_completed=user_completed,
     )
     return app_field, binding
@@ -456,8 +606,43 @@ def _captcha_state(snapshot: DomSnapshot, captcha_controls: list[DomControl], ha
     return CaptchaState()
 
 
-def _classify_buttons(buttons: list[DomButton]) -> list[ClassifiedButton]:
-    return [ClassifiedButton(b, button_intent(b.text, submits_form=b.submits_form)) for b in buttons]
+_UTILITY_CONTROL = re.compile(r"\b(?:lang(?:uage)?|locale|share|search)\b", re.IGNORECASE)
+"""Page utilities that are not application questions: a language/locale switch, a
+share or search box. They never make a page an application form on their own."""
+
+
+def _fillable(fields: list[ApplicationField]) -> list[ApplicationField]:
+    return [f for f in fields if not _UTILITY_CONTROL.search(f"{f.id} {f.label}")]
+
+
+def _classify_buttons(
+    buttons: list[DomButton], fillable_counts: Mapping[int, int]
+) -> list[ClassifiedButton]:
+    """``fillable_counts``: fillable fields per form index (-1: controls outside any
+    form). An "Apply"/"Apply now" control whose form has fewer than two of them does
+    not submit an application; it leads to one, and is never a submit/next intent."""
+    out: list[ClassifiedButton] = []
+    for b in buttons:
+        intent = button_intent(b.text, submits_form=b.submits_form)
+        apply_control = bool(APPLY_LINK.search(b.text)) and fillable_counts.get(b.form_index, 0) < 2
+        out.append(ClassifiedButton(b, ButtonIntent.OTHER if apply_control else intent, apply_control))
+    return out
+
+
+def _qualifies_as_application(
+    fields: list[ApplicationField], buttons: list[ClassifiedButton],
+    final: bool | None, has_step: bool,
+) -> bool:
+    """At least two fillable fields; one fillable field only with a genuine submit or
+    next control (never an apply control); no fields only for a review step of a
+    multi-step form."""
+    fillable = _fillable(fields)
+    genuine = any(b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT) for b in buttons)
+    return (
+        len(fillable) >= 2
+        or (len(fillable) == 1 and genuine)
+        or (not fields and final is not None and has_step)
+    )
 
 
 def _primary_action(buttons: list[ClassifiedButton]) -> tuple[bool | None, str | None, str | None]:
@@ -498,18 +683,53 @@ def build_page(
         pair = _build_field(group)
         per_form.setdefault(group.key[0], []).append(pair)
 
-    all_buttons = _classify_buttons(snapshot.buttons)
+    fillable_counts = {index: len(_fillable([f for f, _ in pairs])) for index, pairs in per_form.items()}
+    all_buttons = _classify_buttons(snapshot.buttons, fillable_counts)
 
-    def score(index: int) -> tuple[int, int]:
+    def score(index: int) -> int:
         pairs = per_form.get(index, [])
         has_file = any(f.control_type is ControlType.FILE for f, _ in pairs)
         acts = [b for b in all_buttons if b.button.form_index == index
                 and b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT)]
-        return (len(pairs) + (5 if has_file else 0) + (3 if acts else 0), -index)
+        return len(pairs) + (5 if has_file else 0) + (3 if acts else 0)
+
+    def plausible_application(index: int) -> bool:
+        candidate_fields = [f for f, _ in per_form.get(index, [])]
+        candidate_buttons = [b for b in all_buttons if b.button.form_index == index]
+        final, _, _ = _primary_action(candidate_buttons)
+        candidate_form = next((f for f in snapshot.forms if f.index == index), None)
+        lookup = (candidate_form is not None and candidate_form.method == "get"
+                  and len(candidate_fields) <= 2 and not any(
+                      b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT)
+                      for b in candidate_buttons))
+        return not lookup and _qualifies_as_application(
+            candidate_fields, candidate_buttons, final, snapshot.step is not None)
 
     candidates = set(per_form) | {b.button.form_index for b in all_buttons
                                   if b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT)}
-    form_index = max(candidates, key=score) if candidates else None
+    plausible = [index for index in candidates if plausible_application(index)]
+    ambiguous_forms = False
+    if len(plausible) > 1:
+        # Field count and DOM order cannot distinguish an alert subscription from
+        # an application. Only retain the established dominant-document case:
+        # exactly one candidate asks for a resume/cover letter, has more fields,
+        # and outranks every competitor. This is a bounded heuristic, not general form-purpose
+        # understanding; other competing plausible forms require user review.
+        document_forms = [index for index in plausible if any(
+            f.control_type is ControlType.FILE
+            and f.semantic_type in (SemanticType.RESUME, SemanticType.COVER_LETTER)
+            for f, _ in per_form.get(index, []))]
+        dominant = (document_forms[0] if len(document_forms) == 1
+                    and all(len(per_form.get(document_forms[0], [])) > len(per_form.get(other, []))
+                            and score(document_forms[0]) > score(other)
+                            for other in plausible if other != document_forms[0]) else None)
+        form_index = dominant
+        ambiguous_forms = dominant is None
+    elif plausible:
+        form_index = plausible[0]
+    else:
+        # Non-application lookup helpers have no application data-entry authority.
+        form_index = max(candidates, key=lambda index: (score(index), -index)) if candidates else None
     pairs = _dedupe_ids(per_form.get(form_index, [])) if form_index is not None else []
     buttons = [b for b in all_buttons if b.button.form_index == form_index] if form_index is not None else []
     is_final, submit_selector, next_selector = _primary_action(buttons)
@@ -527,13 +747,19 @@ def build_page(
         dom_form is not None and dom_form.method == "get" and len(fields) <= 2
         and not any(b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT) for b in buttons)
     )
-    is_application_form = not lookup_only and (
-        (len(fields) >= 2)
-        or (len(fields) == 1 and has_action)
-        or (not fields and is_final is not None and snapshot.step is not None)
-    )
+    is_application_form = not lookup_only and _qualifies_as_application(
+        fields, buttons, is_final, snapshot.step is not None)
 
     captcha = _captcha_state(snapshot, captcha_controls, bool(fields))
+    # An embedded widget (badge, checkbox, token field) on an otherwise usable form only
+    # matters when the form is submitted, so filling and preparation go ahead and the
+    # inspection reports it as pending. A text challenge control, or a widget with no
+    # fillable form behind it (an interstitial), still needs the user first.
+    captcha_pending = (
+        captcha.present and not captcha.solved and is_application_form
+        and not captcha_controls
+        and (any(f.visible for f in snapshot.captcha_frames) or snapshot.captcha_widget)
+    )
     identity = extract_job_identity(snapshot)
     alerts = [r.text for r in snapshot.regions if r.role == "alert"]
     h1 = next((h.text for h in snapshot.headings if h.level == 1), None)
@@ -543,9 +769,13 @@ def build_page(
     if snapshot.password_visible:
         kind = PageKind.SIGN_IN_REQUIRED
         message = "Sign in (or create an account) in the browser to continue."
-    elif captcha.present and not captcha.solved:
+    elif captcha.present and not captcha.solved and not captcha_pending:
         kind = PageKind.CAPTCHA
         message = f"{captcha.detail}. Solve it in the browser to continue."
+    elif ambiguous_forms:
+        kind = PageKind.UNKNOWN
+        message = ("Multiple plausible application forms are visible; their purpose is ambiguous. "
+                   "No form was selected for filling. Open or identify the intended application form.")
     elif is_application_form:
         kind = PageKind.APPLICATION_FORM
         form = ApplicationForm(
@@ -572,7 +802,7 @@ def build_page(
     elif JOB_CLOSED.search(snapshot.body_text):
         kind = PageKind.JOB_CLOSED
     elif any(APPLY_LINK.search(link.text) for link in snapshot.links) or any(
-        APPLY_LINK.search(b.button.text) for b in all_buttons
+        b.apply_control for b in all_buttons
     ):
         kind = PageKind.JOB_DESCRIPTION
     elif (http_status is not None and http_status >= 400) or any(
@@ -586,7 +816,8 @@ def build_page(
     bindings = {b.field_id: b for _, b in pairs}
     pending = [
         f.id for f in fields
-        if f.control_type is ControlType.UNSUPPORTED and f.required
+        if f.required and (f.control_type is ControlType.UNSUPPORTED
+                           or (bindings[f.id].aria is not None and not bindings[f.id].value))
     ] if form is not None else []
     inspection = PageInspection(
         kind=kind,
@@ -595,6 +826,7 @@ def build_page(
         job_identity=identity,
         message=message,
         evidence=evidence or [],
+        captcha_pending=captcha_pending and form is not None,
     )
     return PageModel(
         snapshot=snapshot,
@@ -608,4 +840,6 @@ def build_page(
         title=(identity.title if identity and identity.title else h1),
         unsupported_pending=pending,
         candidate_fields=fields,
+        apply_controls=[b.button for b in all_buttons if b.apply_control],
+        fillable_counts=fillable_counts,
     )

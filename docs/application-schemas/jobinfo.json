@@ -1,0 +1,143 @@
+{
+ "backend": "jobinfo",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:12:18Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab E5F0FF755A27795EB7679FECDE900939",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "partial",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "singleton_coverage": true,
+  "note": "Singleton (Homeaglow on jobinfo.com). Description page has an 'Apply Now' input[type=button] whose onclick sets window.location to apply.php?jid=<id>. apply.php shows 'Step 1 of 4: Upload your resume' (Uploadcare widget + paste-resume-text form) and 'Just enter your email address to begin:'; steps 2-4 are gated behind an email/resume submission and were NOT observed."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ji-01",
+   "listing_id": "lst_6be626b89174d13e0bbaa30c12978ab6",
+   "url": "https://cid128182.jobinfo.com/public/description.php?jid=9972753",
+   "apply_url": "https://cid128182.jobinfo.com/public/apply.php?jid=9972753",
+   "company": "Homeaglow",
+   "page_title": "Homeaglow Employment Information Center",
+   "captured_at_utc": "2026-09-24T00:08:17Z",
+   "status": "partial",
+   "steps_visited": [
+    "description",
+    "apply.php step 1 of 4"
+   ],
+   "gated_steps_not_visited": [
+    "steps 2-4",
+    "submit"
+   ],
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/jobinfo-01-homeaglow.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/jobinfo-01-homeaglow.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/jobinfo-01-homeaglow-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/jobinfo-01-homeaglow-apply.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "description_page": {
+    "forms": [
+     "monster_form (hidden: command, jid, process_monster, request_url)",
+     "indeed_form (hidden: command, jid, session_indeed_uniq)"
+    ],
+    "apply_entry": "input#main_apply_btn value 'Apply Now' onclick window.location='.../apply.php?jid=<id>' (two copies)"
+   },
+   "apply_page_step1": {
+    "heading": "Step 1 of 4: Upload your resume",
+    "text": "Apply quickly by uploading your resume first. We'll try to pre-fill your application with it.",
+    "forms": [
+     "parse_form (post apply.php; hidden command=process_resume, jid, process_upload, ids_resume_attempt, uuid) with Uploadcare dialog (Local Files, Dropbox, Google Drive, Box, OneDrive, Arbitrary Links) + 'Paste Resume Text' textarea + 'Submit Resume Text'",
+     "uploadcare url form ('Paste your link here...' + Upload)",
+     "step_form (post apply.php) with 'Just enter your email address to begin:' email input#valid_email + forward button"
+    ]
+   }
+  },
+  "control_families": {
+   "uploadcare": "third-party upload dialog; native input[type=file] inside role=uploadcare-dialog-browse-file; no accept attribute.",
+   "resume_text": "textarea paste_resume_text + submit 'Submit Resume Text' (alternative to file).",
+   "email_gate": "input[type=email]#valid_email + input[type=button]#fwd_btn; starts the 4-step application."
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "step": 1,
+    "controls": [
+     "file (Uploadcare)",
+     "pasted text"
+    ],
+    "note": "used to pre-fill later steps"
+   },
+   {
+    "key": "email",
+    "step": 1,
+    "label": "Just enter your email address to begin:",
+    "required": "effectively"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "description",
+    "observed": true
+   },
+   {
+    "step": "apply_step_1_resume_or_email",
+    "observed": true,
+    "advance_control": "'Submit Resume Text' / upload completion / email forward button",
+    "STOP_BOUNDARY": true,
+    "note": "Any of these transmits candidate data; prepare-only must stop before them."
+   },
+   {
+    "step": "steps_2_to_4",
+    "observed": false
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "resume uploaded",
+    "effect": "parser pre-fills later steps (per page text)",
+    "observed": "text only"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "gated_steps",
+    "detail": "Steps 2-4 require an email or resume submission first.",
+    "observed": true,
+    "human_action_needed": "Authorise transmitting email/resume to jobinfo.com, then re-observe steps 2-4."
+   }
+  ],
+  "runtime_observations": [
+   "The description page's monster_form/indeed_form are hidden apply-source trackers, not application forms.",
+   "apply.php has three forms; the email gate is step_form (form_index 2).",
+   "No captcha or login observed at step 1."
+  ]
+ },
+ "inferred": {
+  "steps_2_4_unverified": "Likely contact details, work history parsed from the resume, employer questions and EEO, then submit."
+ },
+ "provider_hint": {
+  "for_jev": "jobinfo: 4-step flow starting with resume upload or email. Do not upload/type in prepare-only mode; classify step 1 as a data-transmitting gate. After authorisation, expect parsed-resume prefill that must be verified against facts before use.",
+  "exact_copy_facts": [
+   "email"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "authorisation to send email/resume",
+   "steps 2-4 content until observed"
+  ]
+ },
+ "edge_cases": [
+  "The Uploadcare dialog also accepts 'Arbitrary Links' (URL) as a resume source; never supply URLs from model output."
+ ]
+}

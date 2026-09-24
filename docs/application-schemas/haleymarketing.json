@@ -1,0 +1,164 @@
+{
+ "backend": "haleymarketing",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed",
+ "status_reason": "Apply page reached via \"Apply Online\" link; single \"Job Board Apply Standard Form\" with reCAPTCHA v2 and optional login.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 1
+ },
+ "observed_samples": [
+  {
+   "sample_id": "hm-01",
+   "url": "https://jobs.methodrecruiting.com/jb/Director-of-Marketing-Jobs-in-Austin-Texas/14136956",
+   "form_url": "https://jobs.methodrecruiting.com/index.smpl?arg=jb_apply&POST_ID=14136956&is_related=",
+   "page_title": "Director of Marketing Jobs in Austin TX \\ Executive / Leadership Job Recruiters",
+   "captured_at_utc": "2026-09-23T23:56:33Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/haleymarketing-01-method.controls.json",
+    ".imx/dynamic-applications/fable/evidence/haleymarketing-01-method-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/haleymarketing-01-method-apply.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "Apply Online form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ],
+   "note": "first two extractor runs crashed on a DOM-clobbered form.action (hidden input named 'action'); fixed and recaptured"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "job_page": "'Apply Online' link (index.smpl?arg=jb_apply&POST_ID=…), 'Apply Later' (email reminder), 'Login' link",
+   "forms": "form#applyform (form_index 1, POST /index.smpl, ~40 elements incl. many hidden), heading 'Apply For The <title> Position', legend 'Job Board Apply Standard Form'",
+   "iframes": [
+    "admin.haleymarketing.com blank.smpl?arg=jb_remote_chooser (Google Drive chooser)",
+    "Google reCAPTCHA v2 anchor + bframe"
+   ]
+  },
+  "control_families": {
+   "text": "USER_FNAME 'First Name*', USER_LNAME (label association broken: label text '*First Name' resolves to it; placeholder 'Last Name'), USER_EMAIL 'Email*'",
+   "phone": "intl-tel-input combobox 'Telephone country code' + input#phone-input 'Phone' (hidden USER_PHONE mirror)",
+   "checkbox": "USER_SMS_FLAG 'Enable Text Message Alerts' (consent help text), USER_OPTION_FLAG 'Send Me Featured Job Updates' (CHECKED BY DEFAULT), TALENT_MATCH_OPT_IN 'I'd like a detailed match report and a complimentary professional review of my resume from the experts at TopResume.'",
+   "file": "input#upload aria-label 'upload a .doc, .docx or .pdf file' accept .doc,.docx,.pdf; alternative 'Choose from Google Drive' button (type=submit!)",
+   "submit": "button[type=submit] 'Submit This Information'; hidden 'Apply with your Resume' button"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "required": true
+   },
+   {
+    "key": "email",
+    "required": true
+   },
+   {
+    "key": "phone",
+    "required": false
+   },
+   {
+    "key": "sms_alerts_optin",
+    "default": "unchecked"
+   },
+   {
+    "key": "job_updates_optin",
+    "default": "CHECKED",
+    "note": "marketing opt-in pre-checked; runtime should surface, not silently keep"
+   },
+   {
+    "key": "topresume_optin",
+    "default": "unchecked",
+    "third_party_data_share": true
+   },
+   {
+    "key": "resume",
+    "control": "file",
+    "required": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "apply_form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Submit This Information'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high; note a second type=submit button 'Choose from Google Drive' exists and must not be confused with the final submit",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "resume upload",
+    "effect": "'Is your resume a match for this job?' TopResume opt-in",
+    "observed": "checkbox present"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2 present",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "optional Login",
+    "observed": true
+   },
+   {
+    "type": "dom_clobbering",
+    "detail": "hidden inputs named action/arg clobber form properties; use getAttribute",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Pre-checked marketing opt-in.",
+   "Two submit-type buttons; pick by text."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "apply form",
+   "Submit This Information",
+   "reCAPTCHA",
+   "confirmation (UNVERIFIED)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Haley Marketing job board standard form: first/last/email/phone, resume (.doc/.docx/.pdf), SMS + newsletter + TopResume opt-ins (one pre-checked). Stop at 'Submit This Information'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "phone"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "all opt-ins (default state must be confirmed)",
+   "resume",
+   "captcha"
+  ]
+ },
+ "edge_cases": [
+  "Label association is wrong for last name (label reads '*First Name'); bind by placeholder/name."
+ ]
+}

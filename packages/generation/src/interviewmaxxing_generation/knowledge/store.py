@@ -1,0 +1,520 @@
+"""Private PostgreSQL projection, never an authority for candidate facts.
+
+The connection factory must return an owned psycopg3 connection/context manager.
+Queries are parameterized and candidate-scoped even when a privileged connection
+bypasses RLS. The caller refreshes job descriptions from its trusted listing store.
+Job scope is the conservatively normalized application URL, so discovery/runtime
+record IDs can differ without matching by employer, title, or a redirect.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+import re
+import time
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from interviewmaxxing_core import CandidateFact, CandidateProfile, JobRecord
+from interviewmaxxing_core.urls import normalize_application_url
+
+from .embeddings import (
+    EMBEDDING_DIMENSIONS,
+    EMBEDDING_MODEL,
+    MAX_EMBEDDING_INPUTS,
+    MAX_INPUT_BYTES,
+    Embedder,
+    EmbeddingError,
+    EmbeddingResult,
+    KnowledgeError,
+    validate_vector,
+)
+
+MAX_RETRIEVAL_LIMIT = 20
+MAX_SOURCE_CHARS = 100_000
+CHUNK_CHARS = 1800
+MAX_SOURCE_CHUNKS = 64
+
+
+@dataclass(frozen=True)
+class RetrievalResult:
+    facts: list[CandidateFact] = field(default_factory=list)
+    job_evidence: list[dict[str, str]] = field(default_factory=list)
+    voice_samples: list[str] = field(default_factory=list)
+    receipt: dict[str, Any] = field(default_factory=dict)
+
+
+class KnowledgeRetriever(Protocol):
+    def retrieve(self, *, candidate: CandidateProfile, job: JobRecord,
+                 query: str, limit: int = 8) -> RetrievalResult: ...
+
+
+def _hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _json_hash(value: object) -> str:
+    return _hash(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                            separators=(",", ":"), allow_nan=False))
+
+
+def fact_fingerprint(fact: CandidateFact) -> str:
+    """Binds ID, value, key, source, verification, confidence and source evidence."""
+    return _json_hash(fact.model_dump(mode="json"))
+
+
+def _normalized_url(value: str) -> str:
+    try:
+        return normalize_application_url(value)
+    except ValueError:
+        raise KnowledgeError("Knowledge source requires a valid HTTP(S) URL") from None
+
+
+def job_fingerprint(job: JobRecord) -> str:
+    """Exact URL boundary, independent of temporary record IDs and mutable labels."""
+    if job.merged_into:
+        raise KnowledgeError("Resolve the canonical job before indexing or retrieval")
+    return _json_hash({"normalized_url": _normalized_url(job.normalized_url)})
+
+
+def pg_connection_factory(dsn: str, *, connect_timeout: int = 10) -> Callable[[], Any]:
+    """Lazy psycopg import; no DB connection or credential use at construction."""
+    if not dsn.strip() or not 1 <= connect_timeout <= 30:
+        raise ValueError("A DSN and bounded connection timeout are required")
+
+    def connect() -> Any:
+        try:
+            psycopg = importlib.import_module("psycopg")
+        except ImportError:
+            raise KnowledgeError("Knowledge retrieval requires psycopg3") from None
+        return psycopg.connect(dsn, connect_timeout=connect_timeout)
+
+    return connect
+
+
+def _chunks(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_SOURCE_CHARS:
+        raise KnowledgeError("Knowledge source text is empty or exceeds its size limit")
+    remaining = text.strip()
+    result: list[str] = []
+    while remaining:
+        boundary = min(CHUNK_CHARS, len(remaining))
+        if boundary < len(remaining):
+            preferred = max(remaining.rfind("\n", 0, boundary),
+                            remaining.rfind(" ", 0, boundary))
+            if preferred >= CHUNK_CHARS // 2:
+                boundary = preferred
+        result.append(remaining[:boundary].strip())
+        remaining = remaining[boundary:].lstrip()
+    if len(result) > MAX_SOURCE_CHUNKS:
+        raise KnowledgeError("Knowledge source exceeds its chunk limit")
+    return result
+
+
+def _fact_text(fact: CandidateFact) -> str:
+    value = fact.value if isinstance(fact.value, str) else json.dumps(
+        fact.value, ensure_ascii=False, allow_nan=False)
+    return "\n".join([f"{fact.key}: {value}", *fact.evidence])
+
+
+@dataclass(frozen=True)
+class _Source:
+    kind: str
+    job_scope: str
+    source_id: str
+    version: str
+    chunks: list[str]
+    source_url: str = ""
+    indexed_job_id: str = ""
+
+
+_RESULT_COLUMNS = (
+    "id", "candidate_id", "kind", "job_scope", "source_id", "source_version",
+    "chunk_number", "body", "content_hash", "source_url", "indexed_job_id",
+)
+
+_SNAPSHOT_SQL = """
+SELECT s.source_id, s.source_version,
+       array_agg(c.content_hash ORDER BY c.chunk_number) FILTER (WHERE c.id IS NOT NULL) AS chunk_hashes,
+       array_agg(c.embedding_model ORDER BY c.chunk_number) FILTER (WHERE c.id IS NOT NULL) AS models
+FROM imx_knowledge.sources s
+LEFT JOIN imx_knowledge.chunks c
+    USING (candidate_id, kind, job_scope, source_id, source_version)
+WHERE s.candidate_id = %s AND s.kind = %s AND s.job_scope = %s
+GROUP BY s.source_id, s.source_version
+"""
+
+SourceSignature = tuple[str, tuple[str, ...], tuple[str, ...]]
+
+
+def _signature(source: _Source) -> SourceSignature:
+    return (source.version, tuple(_hash(t) for t in source.chunks),
+            (EMBEDDING_MODEL,) * len(source.chunks))
+
+
+# One canonical source is selected before its chunks. This also prevents mixing
+# snapshots if a legacy index predates the one-description-per-job write rule.
+_JOB_CONTEXT_SQL = """
+WITH current_job AS (
+    SELECT * FROM imx_knowledge.sources
+    WHERE candidate_id = %s AND kind = 'job' AND job_scope = %s
+    ORDER BY indexed_at DESC, source_id LIMIT 1
+)
+SELECT c.id, c.candidate_id, c.kind, c.job_scope, c.source_id, c.source_version,
+       c.chunk_number, c.body, c.content_hash, s.source_url, s.indexed_job_id
+FROM current_job s
+JOIN imx_knowledge.chunks c
+    USING (candidate_id, kind, job_scope, source_id, source_version)
+WHERE c.embedding_model = %s
+ORDER BY ts_rank_cd(c.search_terms, websearch_to_tsquery('english', %s)) DESC,
+         c.chunk_number, c.id
+LIMIT %s
+"""
+
+
+def _fact_relevance_query(query: str, job: JobRecord, evidence: list[dict[str, str]]) -> str:
+    if not evidence:
+        return query
+    # Job text influences ranking only; the returned candidate facts are still
+    # separately loaded and compared with the current verified canonical objects.
+    # Preserve the full actual question and give long/multibyte JDs a byte bound.
+    combined = (f"Question: {query}\n"
+                f"Job context for relevance only, not candidate experience:\n"
+                f"Role: {job.title or ''}\nCompany: {job.company or ''}\n"
+                + "\n".join(item["text"] for item in evidence))
+    return combined.encode("utf-8")[:MAX_INPUT_BYTES - 1].decode("utf-8", errors="ignore")
+
+
+def _cover_letter_request(query: str) -> bool:
+    normalized = query.strip().lower()
+    return bool(re.fullmatch(r"(?:optional\s+)?cover[\s-]*letter(?:\s*\(optional\))?[.:?!]*", normalized)
+                or re.match(r"^(?:please\s+)?(?:write|draft|create|compose)\b.{0,80}\bcover[\s-]*letter\b",
+                            normalized))
+
+
+def _lexical_query(query: str) -> str:
+    """Recall individual terms instead of requiring every word of a question.
+
+    Alphanumeric terms cannot inject full-text operators; SQL still receives a
+    bound parameter. PostgreSQL handles stemming and language stop words.
+    """
+    terms = dict.fromkeys(word.casefold() for word in re.findall(r"[^\W_]+", query)
+                          if len(word) <= 80 and word.casefold() not in {"and", "or", "not"})
+    return " OR ".join(list(terms)[:96])
+
+
+def _valid_hit_body(hit: dict[str, Any]) -> bool:
+    body, version = hit.get("body"), hit.get("source_version")
+    return (isinstance(body, str) and bool(body.strip()) and len(body) <= CHUNK_CHARS
+            and hit.get("content_hash") == _hash(body)
+            and isinstance(version, str) and len(version) == 64)
+
+# RRF combines bounded lexical and semantic lists; each list is filtered before
+# ranking. Exact vector distances avoid ANN's under-return under tenant filters.
+_RETRIEVE_SQL = """
+WITH scoped AS NOT MATERIALIZED (
+    SELECT c.*, s.source_url, s.indexed_job_id
+    FROM imx_knowledge.chunks c
+    JOIN imx_knowledge.sources s USING (candidate_id, kind, job_scope, source_id)
+    WHERE c.candidate_id = %s AND c.kind = %s AND c.job_scope = %s
+      AND c.source_version = s.source_version AND c.embedding_model = %s
+), semantic AS (
+    SELECT id, row_number() OVER (ORDER BY distance, id) AS rank
+    FROM (SELECT id, embedding OPERATOR(extensions.<=>) %s::extensions.vector AS distance
+          FROM scoped ORDER BY distance, id LIMIT %s) ranked
+), lexical AS (
+    SELECT id, row_number() OVER (ORDER BY score DESC, id) AS rank
+    FROM (SELECT id, ts_rank_cd(search_terms, websearch_to_tsquery('english', %s), 2) AS score
+          FROM scoped WHERE search_terms @@ websearch_to_tsquery('english', %s)
+          ORDER BY score DESC, id LIMIT %s) ranked
+)
+SELECT d.id, d.candidate_id, d.kind, d.job_scope, d.source_id, d.source_version,
+       d.chunk_number, d.body, d.content_hash, d.source_url, d.indexed_job_id
+FROM scoped d
+LEFT JOIN semantic v USING (id) LEFT JOIN lexical l USING (id)
+WHERE v.id IS NOT NULL OR l.id IS NOT NULL
+ORDER BY (coalesce(1.0 / (60 + v.rank), 0) + coalesce(1.0 / (60 + l.rank), 0)) DESC, d.id
+LIMIT %s
+"""
+
+
+class PgKnowledgeStore:
+    def __init__(self, connection_factory: Callable[[], Any], embedder: Embedder) -> None:
+        self._connection_factory = connection_factory
+        self._embedder = embedder
+
+    @contextmanager
+    def _transaction(self, candidate_id: str, *, write: bool = False) -> Iterator[Any]:
+        if not candidate_id.strip():
+            raise KnowledgeError("A candidate ID is required")
+        try:
+            with self._connection_factory() as conn, conn.transaction(), conn.cursor() as cursor:
+                cursor.execute("SELECT set_config('imx_knowledge.candidate_id', %s, true)",
+                               (candidate_id,))
+                cursor.execute("SET LOCAL statement_timeout = '15000ms'")
+                cursor.execute("SET LOCAL lock_timeout = '5000ms'")
+                if write:
+                    cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                                   ("imx_knowledge:" + candidate_id,))
+                yield cursor
+        except KnowledgeError:
+            raise
+        except Exception:
+            # SQL/DSN diagnostics may contain source text or credentials.
+            raise KnowledgeError("Knowledge database operation failed") from None
+
+    def _embed(self, texts: list[str]) -> EmbeddingResult:
+        if len(texts) > MAX_EMBEDDING_INPUTS:
+            raise KnowledgeError("Knowledge operation exceeds its embedding input limit")
+        result = self._embedder.embed(texts)
+        if (result.receipt.get("model") != EMBEDDING_MODEL
+                or result.receipt.get("dimensions") != EMBEDDING_DIMENSIONS):
+            raise EmbeddingError("Embedding contract metadata mismatch")
+        if len(result.vectors) != len(texts):
+            raise EmbeddingError("Embedding response count mismatch")
+        return EmbeddingResult([validate_vector(v) for v in result.vectors], result.receipt)
+
+    def index_candidate(self, candidate: CandidateProfile) -> dict[str, Any]:
+        """Replace the verified projection; delete any facts now revoked/removed."""
+        sources = [_Source("fact", "", fact.id, fact_fingerprint(fact),
+                           _chunks(_fact_text(fact))) for fact in candidate.verified_facts()]
+        return self._index(candidate.id, sources, revoke_facts=True)
+
+    def index_job(self, candidate_id: str, job: JobRecord, description: str,
+                  source_url: str) -> dict[str, Any]:
+        """Replace the one current job snapshot, including when its source URL changes."""
+        scope = job_fingerprint(job)
+        url = _normalized_url(source_url)
+        source = _Source("job", scope, _hash(url),
+                         _json_hash([scope, url, description]), _chunks(description),
+                         url, job.id)
+        return self._index(candidate_id, [source])
+
+    def index_voice(self, candidate_id: str, text: str, source_id: str) -> dict[str, Any]:
+        """Explicitly supplied writing samples; returned only in the style channel."""
+        if not source_id.strip():
+            raise KnowledgeError("A voice source ID is required")
+        source = _Source("voice", "", source_id, _json_hash([source_id, text]), _chunks(text))
+        return self._index(candidate_id, [source])
+
+    def _index(self, candidate_id: str, sources: list[_Source], *,
+               revoke_facts: bool = False) -> dict[str, Any]:
+        started = time.monotonic()
+        if sum(len(source.chunks) for source in sources) > MAX_EMBEDDING_INPUTS:
+            raise KnowledgeError("Knowledge operation exceeds its chunk limit")
+        kind = "fact" if revoke_facts else sources[0].kind
+        scope = sources[0].job_scope if sources else ""
+        with self._transaction(candidate_id) as cursor:
+            existing = self._snapshot(cursor, candidate_id, kind, scope)
+        unchanged = {source.source_id for source in sources
+                     if existing.get(source.source_id) == _signature(source)}
+        changed = [source for source in sources if source.source_id not in unchanged]
+        embedded = self._embed([text for source in changed for text in source.chunks])
+        offset, revoked_count, replaced_source_count = 0, 0, 0
+        ids: list[str] = []
+        with self._transaction(candidate_id, write=True) as cursor:
+            if unchanged:
+                locked = self._snapshot(cursor, candidate_id, kind, scope)
+                if any(locked.get(source_id) != existing[source_id] for source_id in unchanged):
+                    raise KnowledgeError("Knowledge index changed during preparation; retry indexing")
+            if revoke_facts:
+                cursor.execute("""DELETE FROM imx_knowledge.sources
+                    WHERE candidate_id = %s AND kind = 'fact'
+                      AND NOT (source_id = ANY(%s::text[]))""",
+                               (candidate_id, [s.source_id for s in sources]))
+                revoked_count = max(cursor.rowcount, 0)
+            elif kind == "job":
+                cursor.execute("""DELETE FROM imx_knowledge.sources
+                    WHERE candidate_id = %s AND kind = 'job' AND job_scope = %s
+                      AND source_id <> %s""", (candidate_id, scope, sources[0].source_id))
+                replaced_source_count = max(cursor.rowcount, 0)
+            for source in sources:
+                key = (candidate_id, source.kind, source.job_scope, source.source_id)
+                rows = []
+                for number, text in enumerate(source.chunks):
+                    content_hash = _hash(text)
+                    chunk_id = source.kind + ":" + _json_hash(
+                        [*key, source.version, number, content_hash])
+                    ids.append(chunk_id)
+                    if source.source_id not in unchanged:
+                        rows.append((chunk_id, *key, source.version, number, text, content_hash,
+                                     json.dumps(embedded.vectors[offset]), EMBEDDING_MODEL))
+                        offset += 1
+                if source.source_id in unchanged:
+                    continue
+                cursor.execute("""DELETE FROM imx_knowledge.sources
+                    WHERE candidate_id = %s AND kind = %s AND job_scope = %s AND source_id = %s""",
+                               key)
+                cursor.execute("""INSERT INTO imx_knowledge.sources
+                    (candidate_id, kind, job_scope, source_id, source_version,
+                     source_url, indexed_job_id) VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                               (*key, source.version, source.source_url, source.indexed_job_id))
+                cursor.executemany("""INSERT INTO imx_knowledge.chunks
+                    (id, candidate_id, kind, job_scope, source_id, source_version,
+                     chunk_number, body, content_hash, embedding, embedding_model)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::extensions.vector, %s)""",
+                                   rows)
+        return {"status": "indexed", "candidate_sha256": _hash(candidate_id),
+                "source_count": len(sources), "chunk_count": len(ids), "chunk_ids": ids,
+                "source_versions": sorted({s.version for s in sources}),
+                "revoked_count": revoked_count, "replaced_source_count": replaced_source_count,
+                "unchanged_source_count": len(unchanged), "embedding": embedded.receipt,
+                "duration_ms": round((time.monotonic() - started) * 1000, 3)}
+
+    @staticmethod
+    def _snapshot(cursor: Any, candidate_id: str, kind: str,
+                  scope: str) -> dict[str, SourceSignature]:
+        cursor.execute(_SNAPSHOT_SQL, (candidate_id, kind, scope))
+        result: dict[str, SourceSignature] = {}
+        for raw in cursor.fetchall():
+            row = dict(raw) if isinstance(raw, Mapping) else dict(zip(
+                ("source_id", "source_version", "chunk_hashes", "models"), raw, strict=True))
+            result[row["source_id"]] = (row["source_version"],
+                                        tuple(row["chunk_hashes"] or ()), tuple(row["models"] or ()))
+        return result
+
+    @staticmethod
+    def _scoped_hits(cursor: Any, candidate_id: str, kind: str,
+                     scope: str) -> list[dict[str, Any]]:
+        hits = []
+        for raw in cursor.fetchall():
+            row = dict(raw) if isinstance(raw, Mapping) else dict(zip(_RESULT_COLUMNS, raw, strict=True))
+            # Do not let an incorrect connection, query, or injected row put
+            # another candidate/job's text into either embeddings or output.
+            if (row.get("candidate_id") != candidate_id or row.get("kind") != kind
+                    or row.get("job_scope") != scope):
+                hits.append({"invalid_scope": True})
+            else:
+                hits.append(row)
+        return hits
+
+    def _job_context(self, candidate_id: str, scope: str, query: str,
+                     limit: int) -> tuple[list[dict[str, str]], int]:
+        with self._transaction(candidate_id) as cursor:
+            cursor.execute(_JOB_CONTEXT_SQL, (candidate_id, scope, EMBEDDING_MODEL, _lexical_query(query),
+                                              min(limit * 4, 16)))
+            hits = self._scoped_hits(cursor, candidate_id, "job", scope)
+        jobs: list[dict[str, str]] = []
+        seen: set[str] = set()
+        rejected = 0
+        for hit in hits:
+            url, identifier = hit.get("source_url"), hit.get("id")
+            if (not _valid_hit_body(hit) or not isinstance(url, str) or not url
+                    or not isinstance(identifier, str) or not identifier.startswith("job:")):
+                rejected += 1
+                continue
+            try:
+                if _normalized_url(url) != url or hit.get("source_id") != _hash(url):
+                    rejected += 1
+                    continue
+            except KnowledgeError:
+                rejected += 1
+                continue
+            if hit["content_hash"] not in seen and len(jobs) < min(limit, 4):
+                jobs.append({"id": identifier, "text": hit["body"],
+                             "source_url": url, "source_version": hit["source_version"]})
+                seen.add(hit["content_hash"])
+        return jobs, rejected
+
+    def retrieve(self, *, candidate: CandidateProfile, job: JobRecord,
+                 query: str, limit: int = 8) -> RetrievalResult:
+        """Return up to limit facts, min(limit, 4) job chunks and two style chunks.
+
+        Index hits must still match the supplied current canonical profile. A
+        stale index therefore cannot restore a revoked or changed candidate claim.
+        Job text supplies relevance for cover letters. Specific questions alone
+        rank their candidate evidence, with the scoped JD returned separately for
+        tailoring. Each retrieval uses one embedding request.
+        """
+        if type(limit) is not int or not 1 <= limit <= MAX_RETRIEVAL_LIMIT:
+            raise KnowledgeError("Retrieval limit must be between 1 and 20")
+        if not isinstance(query, str) or not query.strip() or len(query) > CHUNK_CHARS:
+            raise KnowledgeError("Retrieval query is empty or exceeds its size limit")
+        started = time.monotonic()
+        scope = job_fingerprint(job)
+        jobs, rejected = self._job_context(candidate.id, scope, query, limit)
+        job_context_ms = round((time.monotonic() - started) * 1000, 3)
+        context_query = _fact_relevance_query(query, job, jobs)
+        if jobs and _cover_letter_request(query):
+            fact_queries = [("job_context", context_query, 1.0)]
+        else:
+            fact_queries = [("question", query, 1.0)]
+        embedded = self._embed([text for _, text, _ in fact_queries])
+        pool_limit = min(limit * 4, 80)
+        current = {f.id: f for f in candidate.verified_facts()}
+        hits: list[dict[str, Any]] = []
+        with self._transaction(candidate.id) as cursor:
+            if jobs:
+                current_sources = self._snapshot(cursor, candidate.id, "job", scope)
+                for evidence in jobs:
+                    current_source = current_sources.get(_hash(evidence["source_url"]))
+                    if (not current_source or current_source[0] != evidence["source_version"]
+                            or _hash(evidence["text"]) not in current_source[1]):
+                        raise KnowledgeError("Job knowledge changed during retrieval; retry retrieval")
+            lexical_query = _lexical_query(fact_queries[0][1])
+            for kind in ("fact", "voice"):
+                cursor.execute(_RETRIEVE_SQL, (candidate.id, kind, "", EMBEDDING_MODEL,
+                                              json.dumps(embedded.vectors[0]), pool_limit,
+                                              lexical_query, lexical_query,
+                                              pool_limit, pool_limit))
+                hits.extend(self._scoped_hits(cursor, candidate.id, kind, ""))
+
+        facts: list[CandidateFact] = []
+        voices: list[str] = []
+        seen_facts: set[str] = set()
+        seen_voices: set[str] = set()
+        versions = {j["source_version"] for j in jobs}
+        for hit in hits:
+            if not _valid_hit_body(hit):
+                rejected += 1
+                continue
+            body, version = hit["body"], hit["source_version"]
+            kind = hit["kind"]
+            if kind == "fact":
+                source_id = hit.get("source_id")
+                if not isinstance(source_id, str):
+                    rejected += 1
+                    continue
+                fact = current.get(source_id)
+                number = hit.get("chunk_number")
+                if (fact is None or fact_fingerprint(fact) != version
+                        or type(number) is not int or number < 0):
+                    rejected += 1
+                    continue
+                canonical_chunks = _chunks(_fact_text(fact))
+                if number >= len(canonical_chunks) or body != canonical_chunks[number]:
+                    rejected += 1
+                    continue
+                if source_id not in seen_facts and len(facts) < limit:
+                    facts.append(fact)
+                    seen_facts.add(source_id)
+                    versions.add(version)
+            elif kind == "voice":
+                if hit["content_hash"] not in seen_voices and len(voices) < 2:
+                    voices.append(body)
+                    seen_voices.add(hit["content_hash"])
+                    versions.add(version)
+
+        return RetrievalResult(facts, jobs, voices, {
+            "status": "retrieved", "backend": "pgvector-hybrid",
+            "candidate_sha256": _hash(candidate.id), "job_scope_sha256": scope,
+            "query_sha256": _hash(query), "fact_ids": [f.id for f in facts],
+            "fact_query_sha256": _hash(fact_queries[0][1]),
+            "fact_query_bytes": len(fact_queries[0][1].encode("utf-8")),
+            "fact_queries": [{"stage": stage, "query_sha256": _hash(text),
+                              "query_bytes": len(text.encode("utf-8")), "rank_weight": weight}
+                             for stage, text, weight in fact_queries],
+            "job_context_applied": bool(jobs), "job_context_duration_ms": job_context_ms,
+            "candidate_ranking_uses_job_context": fact_queries[0][0] == "job_context",
+            "job_evidence_ids": [j["id"] for j in jobs], "source_versions": sorted(versions),
+            "counts": {"facts": len(facts), "job_evidence": len(jobs), "voice_samples": len(voices)},
+            "rejected_count": rejected, "embedding": embedded.receipt,
+            "embedding_stages": [{"stage": "candidate_relevance",
+                                   "query_stages": [stage for stage, _, _ in fact_queries],
+                                   "receipt": embedded.receipt}],
+            "duration_ms": round((time.monotonic() - started) * 1000, 3),
+        })

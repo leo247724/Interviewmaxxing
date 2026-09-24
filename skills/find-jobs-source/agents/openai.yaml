@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Jobs Source"
+  short_description: "Collect source evidence in an isolated job-search worker"
+  default_prompt: "Use $find-jobs-source to collect candidates from my assigned source and return evidence for review."

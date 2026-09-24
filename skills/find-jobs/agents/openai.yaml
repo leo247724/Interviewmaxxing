@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Jobs"
+  short_description: "Find, review, and save distinct jobs with a verified count"
+  default_prompt: "Use $find-jobs to find and save a batch of jobs matching my current search requirements."

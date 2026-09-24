@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -53,6 +54,11 @@ class PageDriver(Protocol):
     async def fill(self, selector: str, text: str) -> None: ...
 
     async def select_values(self, selector: str, values: list[str]) -> None: ...
+
+    async def select_accessible(
+        self, selector: str, values: list[str], binding: dict[str, Any],
+        *, before_action: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[str]: ...
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None: ...
 
@@ -186,6 +192,37 @@ class PlaywrightDriver:
             self._guard(before, f"selecting in {selector}", exc)
             raise NotActionable(f"could not select {values} in {selector}: {exc}") from exc
         self._guard(before, f"selecting in {selector}")
+
+    async def select_accessible(
+        self, selector: str, values: list[str], binding: dict[str, Any],
+        *, before_action: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[str]:
+        from .aria import select_accessible
+
+        before = self._doc_mark()
+        handle = await self.page.query_selector(selector)
+        if handle is None:
+            raise NotActionable("ARIA control no longer exists")
+
+        async def identity_check() -> None:
+            self._guard(before, f"selecting in {selector}")
+            same = await handle.evaluate(
+                "(el, selector) => el.isConnected && document.querySelector(selector) === el", selector,
+            )
+            if not same:
+                raise NotActionable("ARIA control node was replaced; re-inspect")
+
+        try:
+            result = await select_accessible(
+                self, selector, values, binding, identity_check=identity_check, before_action=before_action,
+            )
+            self._guard(before, f"selecting in {selector}")
+            return result
+        except PlaywrightError as exc:
+            self._guard(before, f"selecting in {selector}", exc)
+            raise NotActionable(f"ARIA control became unavailable: {exc}") from exc
+        finally:
+            await handle.dispose()
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None:
         before = self._doc_mark()

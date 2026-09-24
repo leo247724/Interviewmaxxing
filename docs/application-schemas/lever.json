@@ -1,0 +1,98 @@
+{
+  "backend": "lever",
+  "schema_version": "0.1.0",
+  "generated_at_utc": "2026-09-23T23:47:00Z",
+  "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab DAD881D819255BA3BD8D9AA69DE16EEA",
+  "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+  "status": "observed",
+  "coverage": {"inventory_density": 70, "observed_examples": 3, "fully_mapped_examples": 3, "employers": ["airSlate", "Rover", "Wpromote"]},
+  "observed_samples": [
+    {"sample_id": "lv-01", "url": "https://jobs.lever.co/airslate/9a4add3b-1bbc-453d-94da-502113da3c53", "form_url": "https://jobs.lever.co/airslate/9a4add3b-1bbc-453d-94da-502113da3c53/apply", "page_title": "airSlate - B2B Demand Generation Leader", "captured_at_utc": "2026-09-23T23:45:35Z", "entry": "job page has no form; /apply route holds the blank form", "evidence_private": [".imx/dynamic-applications/fable/evidence/lever-01-airslate.controls.json", ".imx/dynamic-applications/fable/evidence/lever-01-airslate-apply.controls.json", ".imx/dynamic-applications/fable/evidence/lever-01-airslate-apply.state.txt"], "steps_visited": ["job page", "blank /apply form"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "lv-02", "url": "https://jobs.lever.co/rover/f05fbca8-fea6-45d4-948d-4e16b14eac9e/apply", "page_title": "Rover.com - Senior Marketing Manager", "captured_at_utc": "2026-09-23T23:45:11Z", "evidence_private": [".imx/dynamic-applications/fable/evidence/lever-02-rover.controls.json", ".imx/dynamic-applications/fable/evidence/lever-02-rover.state.txt"], "steps_visited": ["blank /apply form"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "lv-03", "url": "https://jobs.lever.co/wpromote/859d0ced-47af-4fd8-8458-34c78742f2e0/apply", "page_title": "Wpromote - Senior Paid Search Manager", "captured_at_utc": "2026-09-23T23:46:20Z", "evidence_private": [".imx/dynamic-applications/fable/evidence/lever-03-wpromote.controls.json", ".imx/dynamic-applications/fable/evidence/lever-03-wpromote.state.txt"], "steps_visited": ["blank /apply form"], "gated_steps_not_visited": ["post-submit"], "note": "re-extracted after group-label heuristic fix"}
+  ],
+  "observed": {
+    "page_shape": {
+      "single_page_form": true,
+      "form": "form#application-form method=post action=<same /apply url>, form_index 0; the submit is button#btn-submit text 'SUBMIT APPLICATION' (not type=submit, so form.submit_texts is empty).",
+      "route": "job page /<org>/<uuid> (description only, 'Apply for this job' link); blank form at /<org>/<uuid>/apply.",
+      "sections_seen": ["SUBMIT YOUR APPLICATION (resume + basics + links)", "employer custom cards", "ADDITIONAL INFORMATION", "EEO / voluntary survey", "consent"]
+    },
+    "control_families": {
+      "resume": "input[type=file]#resume-upload-input name=resume labelled 'Resume/CV ✱ ATTACH RESUME/CV' (accept attribute not set). 'Apply with LinkedIn' button also present.",
+      "basics": "input name=name 'Full name ✱', name=email 'Email ✱', name=phone 'Phone' (required varies), #location-input name=location 'Current location' (maxlength 100, likely typeahead), name=org 'Current company'.",
+      "links": "input name=urls[LinkedIn|Twitter|GitHub|Portfolio|Other] labelled '<X> URL'; set varies per employer; LinkedIn URL can be required (lv-03).",
+      "custom_cards": "name=cards[<uuid>][field<n>]; control is input text (placeholder 'Type your response'), textarea, native select (first option 'Select...'), radio group, checkbox, or file. Question text is a sibling label above the control; required marker is the '✱' glyph (U+2731) in the label, plus the required attribute.",
+      "additional_information": "textarea#additional-information name=comments placeholder 'Add a cover letter or anything else you want to share.'",
+      "eeo": "select name=eeo[gender|race|veteran] (lv-02, rendered hidden in DOM snapshot; options 'Select ...', Male/Female/Decline…; race list of 8 + decline; veteran 'I am a veteran'/'I am not a veteran'/'Decline to self-identify').",
+      "survey": "name=surveysResponses[<uuid>][responses][field<n>] radio/checkbox groups for employer diversity survey (lv-03).",
+      "pronouns": "checkbox group name=pronouns with options He/him, She/her, They/them, Xe/xem, Ze/hir, Ey/em, Hir/hir, Fae/faer, Hu/hu, 'Use name only', 'Custom' (lv-03).",
+      "consent": "checkbox name=consent[marketing] 'Yes, <company> can contact me about future job opportunities…' (lv-01).",
+      "submit": "button#btn-submit 'SUBMIT APPLICATION'"
+    },
+    "field_patterns": [
+      {"key": "resume", "label_seen": "Resume/CV ✱", "control": "file", "required": true, "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "full_name", "label_seen": "Full name ✱", "control": "text", "required": true, "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "email", "label_seen": "Email ✱", "control": "email", "required": true, "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "phone", "label_seen": "Phone | Phone ✱", "control": "text", "required": "lv-01 false; lv-02, lv-03 true", "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "current_location", "label_seen": "Current location", "control": "text (maxlength 100)", "required": false, "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "current_company", "label_seen": "Current company", "control": "text", "required": false, "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "linkedin_url", "label_seen": "LinkedIn URL", "control": "text", "required": "lv-03 true", "seen_in": ["lv-01","lv-02","lv-03"]},
+      {"key": "other_urls", "labels_seen": ["Twitter URL","GitHub URL","Portfolio URL","Portfolio (if applicable) URL","Other website"], "control": "text", "required": false},
+      {"key": "opportunity_location", "label_seen": "Which location are you applying for?", "control": "select name=opportunityLocationId", "options": ["Select...","Remote","Florida","Georgia","Idaho","Michigan","North Carolina","Washington","Texas","California"], "seen_in": ["lv-02"]},
+      {"key": "sponsorship", "label_seen": "Do you or will you require sponsorship in the future to work in the U.S.? ✱ | Will you now or in the future require sponsorship for employment visa status (e.g. E, F-1 STEM OPT, H-1B, J-1, L-1, O-1, TN) ✱", "control": "radio YES/NO (lv-02) | select Yes/No (lv-03)", "required": true},
+      {"key": "work_authorization", "label_seen": "Are you legally authorized to work in the United States? ✱", "control": "select Yes/No", "required": true, "seen_in": ["lv-03"]},
+      {"key": "state_residence", "label_seen": "What state do you currently reside in? ✱", "control": "select (53 options incl. states/DC/territories)", "required": true, "seen_in": ["lv-03"]},
+      {"key": "location_eligibility", "label_seen": "This position has the option to be performed fully remotely, however candidates must be located in one of the following states: WA, CA, TX, GA, FL, NC, MI or ID. Are you currently located in or willing to relocate to one of those states? ✱", "control": "radio YES/NO", "required": true, "seen_in": ["lv-02"]},
+      {"key": "salary_expectation", "label_seen": "What are your salary expectations? ✱ (+ Pay Period ✱ select monthly/annually + Currency ✱ select USD/EUR/PLN/ILS/PHP) | What is your desired salary? ✱ | What is your desired total compensation? ✱ | Desired Salary ✱", "control": "text | textarea", "required": true, "seen_in": ["lv-01","lv-02","lv-03"], "benchmark_candidate": true},
+      {"key": "start_date", "label_seen": "Earliest Start Date? ✱", "control": "select", "options": ["Select...","ASAP","One week after offer acceptance","Two weeks after offer acceptance","Three weeks after offer acceptance","Four weeks + after offer acceptance"], "seen_in": ["lv-03"]},
+      {"key": "source_of_hire", "label_seen": "How Did You Hear About Us? ✱", "control": "select (13 options e.g. Wpromote Career Page, Referral, LinkedIn, Indeed, Built In LA, Zip Recruiter, Google Jobs, Glassdoor, National Diversity…)", "seen_in": ["lv-03"]},
+      {"key": "referral", "label_seen": "Were you referred by anyone at Rover.com? If so, who were you referred by?", "control": "textarea", "required": false, "seen_in": ["lv-02"]},
+      {"key": "nickname_pronouns", "label_seen": "How should we refer to you (nickname and/or pronouns)?", "control": "textarea", "required": false, "seen_in": ["lv-02"]},
+      {"key": "accommodations", "label_seen": "Do you require any reasonable adjustments or accommodations during the recruitment process?", "control": "textarea", "required": false, "seen_in": ["lv-01"], "sensitive": true},
+      {"key": "narrative_short", "label_seen": "In 150 characters or fewer, What's a performance or growth challenge you love tackling—and how do you approach it?", "control": "textarea (no maxlength attr; limit stated in label only)", "required": false, "seen_in": ["lv-03"], "benchmark_candidate": true},
+      {"key": "privacy_attestation", "label_seen": "I have read and understood airSlate's Recruitment Privacy Notice ✱", "control": "checkbox 'I confirm'", "required": true, "seen_in": ["lv-01"]},
+      {"key": "accuracy_attestation", "label_seen": "I certify the information contained in my resume and application is true and accurate. I understand that if hired any misrepresentation of information may impact my employment with Rover. ✱", "control": "checkbox 'Yes'", "required": true, "seen_in": ["lv-02"]},
+      {"key": "tool_consent", "label_seen": "For the recruitment process, we use Metaview, a tool for recruitment feedback that connects to the call and re… (full text in evidence)", "control": "radio yes/no", "required": true, "seen_in": ["lv-01"]},
+      {"key": "country_select_unlabeled", "label_seen": "What is your location? (select, 251 options, name attr absent)", "control": "select", "seen_in": ["lv-01"]},
+      {"key": "cover_letter_freeform", "label_seen": "ADDITIONAL INFORMATION", "control": "textarea", "required": false, "seen_in": ["lv-01"], "benchmark_candidate": true},
+      {"key": "eeo", "seen_in": ["lv-02"], "required": false, "groups": {"Gender": ["Select ...","Male","Female","Decline to self-identify"], "Race": ["Select ...","Hispanic or Latino","White (Not Hispanic or Latino)","Black or African American (Not Hispanic or Latino)","Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)","Asian (Not Hispanic or Latino)","American Indian or Alaska Native (Not Hispanic or Latino)","Two or More Races (Not Hispanic or Latino)","Decline to self-identify"], "Veteran status": ["Select ...","I am a veteran","I am not a veteran","Decline to self-identify"]}},
+      {"key": "survey", "seen_in": ["lv-03"], "required": false, "groups": {"What is your age range?": {"control": "radio", "options": ["17 or younger","18-20","21-29","30-39","40-49","50-59","60 or older","I prefer not to answer"]}, "I identify my ethnicity as Select all that apply": {"control": "checkbox", "options": ["White / Caucasian","Hispanic, Latino, or Spanish origin","Black or African American","Asian","Native Hawaiian or other Pacific Islander","Indigenous Peoples, First Nations, Native American, or Alaska Native","Middle Eastern or North African","Some other race, ethnicity, or origin","I prefer not to answer"]}, "What gender do you identify as?": {"control": "radio", "options": ["Female","Male","Non-binary","I prefer not to answer"]}}}
+    ],
+    "step_patterns": [
+      {"step": "job_page", "identity_hint": "/<org>/<uuid> without /apply", "observed": true},
+      {"step": "blank_form", "identity_hint": "/apply route, form#application-form, #resume-upload-input", "observed": true},
+      {"step": "final_submit", "control": "button#btn-submit 'SUBMIT APPLICATION'", "observed": true, "STOP_BOUNDARY": true, "confidence": "high; single page; hCaptcha likely fires on click", "never_actuated": true}
+    ],
+    "conditional_patterns": [
+      {"trigger": "pronouns 'Custom' checkbox", "effect": "presumably reveals a text input", "observed": "checkbox present only"},
+      {"trigger": "salary card with Pay Period + Currency", "effect": "three coupled controls form one answer", "observed": true}
+    ],
+    "blockers": [
+      {"type": "captcha", "detail": "hCaptcha iframes (newassets.hcaptcha.com) on every /apply page; not triggered", "observed": true},
+      {"type": "auth", "detail": "none", "observed": true}
+    ],
+    "runtime_observations": [
+      "Required marker is the '✱' glyph (U+2731), not '*'; the required attribute is also set on inputs.",
+      "Custom question labels are not <label for>; they sit above the control, so label association must use proximity within the card container.",
+      "EEO selects can be display:none in the DOM until scrolled/expanded; treat visible=false as 'present but not yet interactable', not absent.",
+      "Radio/checkbox groups share a name; option labels are separate <label> elements; the question is the nearest non-option text above the group."
+    ]
+  },
+  "inferred": {
+    "typical_stages_unverified": ["job page", "/apply blank form", "SUBMIT APPLICATION", "hCaptcha", "confirmation page (UNVERIFIED)"],
+    "resume_accept_inference": "Lever accepts pdf/doc/docx/txt/rtf per its public docs; accept attr absent so cannot be read from DOM.",
+    "location_typeahead_inference": "#location-input likely offers autocomplete suggestions."
+  },
+  "provider_hint": {
+    "for_jev": "Lever single-page /apply form. Bind by visible label; required = '✱' or required attr. Custom cards mix text/select/radio/checkbox/textarea; some employers couple salary amount + pay period + currency. Attestation checkboxes and tool-consent radios need explicit user authorisation. Stop at 'SUBMIT APPLICATION'.",
+    "exact_copy_facts": ["full_name", "email", "phone", "current_location", "current_company", "linkedin_url", "portfolio/other urls", "state_residence"],
+    "option_choice_from_verified_facts": ["work_authorization", "sponsorship", "location_eligibility", "opportunity_location", "start_date", "source_of_hire (user preference else 'Other' if present)", "salary pay period/currency"],
+    "escalate_to_writer_opus": ["ADDITIONAL INFORMATION cover letter", "150-character growth-challenge narrative", "referral text if user names a referrer", "nickname/pronoun phrasing"],
+    "requires_human_input": ["EEO/survey/pronouns", "accommodations", "attestations and tool consent", "salary expectation if no verified fact", "resume file", "captcha"]
+  },
+  "edge_cases": [
+    "A country select can appear without a name attribute (lv-01 'What is your location?'), so name-based binding fails; use label.",
+    "Same employer posts (Wpromote ×5 in inventory) likely share one custom card set; do not assume across employers."
+  ]
+}

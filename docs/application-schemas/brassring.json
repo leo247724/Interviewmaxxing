@@ -1,0 +1,155 @@
+{
+ "backend": "brassring",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:13:14Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab E5F0FF755A27795EB7679FECDE900939",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "blocked_consent_gate",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "singleton_coverage": true,
+  "fully_mapped_examples": 0,
+  "note": "Singleton (Kendra Scott on BrassRing / Infinite Talent TGnewUI). Job details page -> 'Apply to job' -> 'Sign In' page (email + password, or 'Skip sign in') -> 'Privacy Policy' page: 'Note: You must AGREE to proceed.' with Agree/Disagree buttons. Agreeing to an employer policy requires the user's explicit permission, so I stopped there; the application form itself was NOT observed."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "br-01",
+   "listing_id": "lst_3acf30b14ab1be3142c7257bd1ab45b8",
+   "url": "https://sjobs.brassring.com/TGnewUI/Search/home/HomeWithPreLoad?partnerid=26224&siteid=5247&PageType=JobDetails&jobid=1415916",
+   "company": "Kendra Scott",
+   "page_titles": [
+    "VP, Digital Site Merchandising | Kendra Scott",
+    "Sign In",
+    "Privacy Policy"
+   ],
+   "captured_at_utc": "2026-09-24T00:06:45Z (job), 00:07:17Z (sign in), 00:08:59Z (privacy gate)",
+   "status": "blocked_consent_gate",
+   "steps_visited": [
+    "job details",
+    "sign-in gate",
+    "'Skip sign in' -> privacy policy gate"
+   ],
+   "gated_steps_not_visited": [
+    "application form (after Agree)",
+    "submit"
+   ],
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott-after-apply.controls.json (Sign In)",
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott-after-apply.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott-skip-signin.controls.json (Privacy Policy)",
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott-skip-signin.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/brassring-01-kendrascott-privacy-gate.json"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "job_details": {
+    "forms": [
+     "powerSearchForm (search)",
+     "frmSMSiteLoginAccount (hidden login post form, 20 elements)"
+    ],
+    "apply_entry": "button#applyFromDetailBtn 'Apply to job'; secondary buttons 'Easy Apply' (ui-id-1), 'Save', 'Send to friend'",
+    "spa": "Angular single-page app; URL keeps #jobDetails=<jobid>_<siteid> across views, so URL is not a step identity"
+   },
+   "sign_in_gate": {
+    "title": "Sign In",
+    "controls": [
+     "'Skip sign in' button (group 'Skip sign in option')",
+     "Email address* (loginField)",
+     "Password*",
+     "'Sign in'"
+    ],
+    "note": "'Fields marked with an asterisk (*) are required.'"
+   },
+   "privacy_gate": {
+    "title": "Privacy Policy",
+    "heading": "Kendra Scott Employment Privacy Policy",
+    "text": "Note: You must AGREE to proceed. ... Last Updated: July 1, 2023 ... (California employees, contractors and job applicants policy)",
+    "controls": [
+     "Agree",
+     "Disagree"
+    ],
+    "checkboxes": 0
+   }
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "job_details",
+    "identity_hint": "document.title '<role> | <company>', button#applyFromDetailBtn",
+    "observed": true
+   },
+   {
+    "step": "sign_in",
+    "identity_hint": "document.title 'Sign In', #loginField/#password, button 'Skip sign in'",
+    "observed": true,
+    "gate": "auth_optional"
+   },
+   {
+    "step": "privacy_policy_consent",
+    "identity_hint": "document.title 'Privacy Policy', text 'You must AGREE to proceed', buttons Agree/Disagree",
+    "observed": true,
+    "gate": "consent",
+    "STOP_BOUNDARY_for_prepare_only": true
+   },
+   {
+    "step": "application_form",
+    "observed": false,
+    "gated_by": "consent"
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Easy Apply' (ui-id-1) instead of 'Apply to job'",
+    "effect": "unknown (not clicked)",
+    "observed": "button present"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "consent",
+    "detail": "Employer privacy policy must be agreed ('Agree') before the form renders. Not clicked.",
+    "observed": true,
+    "human_action_needed": "User reads and agrees to the Kendra Scott employment privacy policy (or authorises the runtime to do so), then the form can be observed."
+   },
+   {
+    "type": "auth_optional",
+    "detail": "Sign-in gate can be skipped via 'Skip sign in'; account not required at this point.",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Clicking 'Apply to job' and 'Skip sign in' are non-submitting navigations; both worked via OpenCLI click (#applyFromDetailBtn, #ng-scope_BUTTON_1).",
+   "Step identity must come from document.title/headings, not the URL.",
+   "The 'Send to friend' and 'Save' buttons sit next to Apply; 'Send to friend' would send an email and must never be clicked."
+  ]
+ },
+ "inferred": {
+  "form_unverified": "BrassRing TGnewUI application pages are known to be multi-section (contact, resume upload/parse, questions, EEO) with 'Save and continue' between sections; UNVERIFIED here."
+ },
+ "provider_hint": {
+  "for_jev": "brassring: expect three gates before the form: Apply to job -> Sign In (skippable) -> Privacy Policy (Agree required). Classify the privacy page as consent_required and stop for human decision in prepare-only mode. After consent, re-observe and map by label; never click 'Send to friend'.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "privacy policy agreement",
+   "optional account sign-in"
+  ]
+ },
+ "edge_cases": [
+  "Two apply controls exist ('Apply to job' and 'Easy Apply'); only 'Apply to job' was exercised.",
+  "The hidden frmSMSiteLoginAccount form posts to tgwebhost/SMSiteLoginAccount.aspx with a session id in the action; do not treat it as the application form."
+ ]
+}

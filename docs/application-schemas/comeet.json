@@ -1,0 +1,347 @@
+{
+ "backend": "comeet",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:52:46Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 4,
+  "employers_in_inventory": 4,
+  "observed_examples": 4,
+  "fully_mapped_examples": 4,
+  "status": "observed",
+  "note": "All 4 employers mapped. Form is an Angular app inside a cross-origin iframe (www.comeet.co/jobs/<company-uid>/<position-uid>/apply?token=…); the bridge exposed 0 cross-origin frame targets, so the iframe src was opened directly in the owned tab. Title of the iframe document is 'Spark Hire Recruit Jobs' (Comeet is now Spark Hire Recruit)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "cm-01",
+   "url": "https://www.comeet.com/jobs/outerbox/49.00D/lead-paid-search-strategist/0E.271",
+   "resolved_url": "https://www.comeet.co/jobs/49.00D/0E.271/apply?token=94D411B01BE72534094D411B4A680&company-name=OuterBox&company-uid=49.00D&position-uid=0E.271&embedded=true&version=rc-311-10&referrer=www.comeet.com&…(token elided)",
+   "page_title": "Spark Hire Recruit Jobs | Spark Hire Recruit - Collaborative Recruiting",
+   "captured_at_utc": "2026-09-23T23:50:17.117Z",
+   "hosting_mode": "comeet.com posting page embedding comeet.co apply iframe (opened iframe URL directly in tab)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/comeet-01-outerbox.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-01-outerbox.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-01-outerbox.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-01-outerbox.questions.json"
+   ],
+   "option_lists_captured": "all (dropdown <ul.dropdown-menu> and radio <ul.options> options are in the DOM)",
+   "steps_visited": [
+    "posting page",
+    "clicked button#showApplyForm 'Apply for this job' (in-page reveal)",
+    "opened apply iframe URL directly: single blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'SUBMIT APPLICATION' (never clicked)"
+   ],
+   "custom_questions": 7
+  },
+  {
+   "sample_id": "cm-02",
+   "url": "https://www.comeet.com/jobs/framesecurity/FA.002/director-of-growth-marketing/6A.276",
+   "resolved_url": "https://www.comeet.co/jobs/FA.002/6A.276/apply?token=AF24C9E4C9E015E457906282579036BA36BA&company-name=framesecurity&company-uid=FA.002&position-uid=6A.276&position-slug=director-of-growth-marketing&e…(token elided)",
+   "page_title": "Spark Hire Recruit Jobs | Spark Hire Recruit - Collaborative Recruiting",
+   "captured_at_utc": "2026-09-23T23:50:26.083Z",
+   "hosting_mode": "comeet.com posting page embedding comeet.co apply iframe (opened iframe URL directly in tab)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/comeet-02-framesecurity.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-02-framesecurity.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-02-framesecurity.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-02-framesecurity.questions.json"
+   ],
+   "option_lists_captured": "all (dropdown <ul.dropdown-menu> and radio <ul.options> options are in the DOM)",
+   "steps_visited": [
+    "posting page",
+    "clicked button#showApplyForm 'Apply for this job' (in-page reveal)",
+    "opened apply iframe URL directly: single blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'SUBMIT APPLICATION' (never clicked)"
+   ],
+   "custom_questions": 1
+  },
+  {
+   "sample_id": "cm-03",
+   "url": "https://www.comeet.com/jobs/silverfort/54.007/performance-marketing-manager/9B.27B",
+   "resolved_url": "https://www.comeet.co/jobs/54.007/9B.27B/apply?token=45715B315B38AE22B8D051A0A457D051E61&company-name=silverfort&company-uid=54.007&position-uid=9B.27B&position-slug=performance-marketing-manager&embe…(token elided)",
+   "page_title": "Spark Hire Recruit Jobs | Spark Hire Recruit - Collaborative Recruiting",
+   "captured_at_utc": "2026-09-23T23:50:34.755Z",
+   "hosting_mode": "comeet.com posting page embedding comeet.co apply iframe (opened iframe URL directly in tab)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/comeet-03-silverfort.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-03-silverfort.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-03-silverfort.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-03-silverfort.questions.json"
+   ],
+   "option_lists_captured": "all (dropdown <ul.dropdown-menu> and radio <ul.options> options are in the DOM)",
+   "steps_visited": [
+    "posting page",
+    "clicked button#showApplyForm 'Apply for this job' (in-page reveal)",
+    "opened apply iframe URL directly: single blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'SUBMIT APPLICATION' (never clicked)"
+   ],
+   "custom_questions": 1
+  },
+  {
+   "sample_id": "cm-04",
+   "url": "https://www.comeet.com/jobs/onyxsecurity/BA.005/digital-marketing-manager/9E.276",
+   "resolved_url": "https://www.comeet.co/jobs/BA.005/9E.276/apply?token=AB54AF3403E156A55A8605D156A2AD44AF3605D&company-name=onyxsecurity&company-uid=BA.005&position-uid=9E.276&position-slug=digital-marketing-manager&em…(token elided)",
+   "page_title": "Spark Hire Recruit Jobs | Spark Hire Recruit - Collaborative Recruiting",
+   "captured_at_utc": "2026-09-23T23:50:42.438Z",
+   "hosting_mode": "comeet.com posting page embedding comeet.co apply iframe (opened iframe URL directly in tab)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/comeet-04-onyx.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-04-onyx.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-04-onyx.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/comeet-04-onyx.questions.json"
+   ],
+   "option_lists_captured": "all (dropdown <ul.dropdown-menu> and radio <ul.options> options are in the DOM)",
+   "steps_visited": [
+    "posting page",
+    "clicked button#showApplyForm 'Apply for this job' (in-page reveal)",
+    "opened apply iframe URL directly: single blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'SUBMIT APPLICATION' (never clicked)"
+   ],
+   "custom_questions": 0
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "entry": "comeet.com posting: button#showApplyForm 'Apply for this job' reveals iframe#iFrameResizer0 name comeet-applyform-* src www.comeet.co/jobs/<cuid>/<puid>/apply?token=…&embedded=true. Also a 'social' iframe (apply with LinkedIn etc.).",
+   "form": "form#applyForm (Angular, method attr get, action empty; submission is JS/XHR). Header text 'Fields marked with * are mandatory.' Standard block, then employer question fieldsets, then 'Please review our privacy practices: Privacy policy: <Company>' link, then 'SUBMIT APPLICATION'.",
+   "captcha": "Google reCAPTCHA v2 anchor iframe (www.google.com/recaptcha/api2/anchor, site key 6Ld2jG4s…) present on every sample — invisible/badge style; expect token check at submit."
+  },
+  "control_families": {
+   "text": "input#inputFirstName[name=firstName], #inputLastName[name=lastName], #inputEmail[type=email], #inputTel[type=tel] (phone with country selector enabled via ?field-phone-country-selector=true), #inputLink[type=url][name=websiteUrl]; <label> text ends with ' *' when required; aria-label without star.",
+   "file": "input[type=file]#cv[name=cv] REQUIRED accept .pdf,.doc,.docx,.rtf (+MIME); #coverLetter and #portfolio optional (no accept attr); each has a visible 'Attach …' label button.",
+   "textarea": "textarea#inputNote[name=comment] 'Personal note' optional.",
+   "question_text": "fieldset > .question-header (title, trailing ' *' if required) + input[type=text].form-control whose name AND id equal the full question text.",
+   "question_dropdown": "fieldset with div.dropdown: a.dropdown-toggle 'Choose' + ul.dropdown-menu li > a.notBranded > div.option-title; options are in the DOM without opening.",
+   "question_radio": "fieldset with ul.options li input[type=radio].checkbox (visually hidden, styled with fa-stack) + label.checkboxLabel; name = question text.",
+   "info_block": "a fieldset whose header is an instruction paragraph and whose input is an (optional) text field — employer used a 'text question' as a notice (cm-01).",
+   "submit": "button[type=submit] 'SUBMIT APPLICATION'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email *",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone *",
+    "control": "tel(+country selector)",
+    "required": true,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume * / Attach Resume",
+    "control": "file",
+    "required": true,
+    "accept": ".pdf,.doc,.docx,.rtf",
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "website",
+    "label_seen": "Personal website",
+    "control": "url",
+    "required": false,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter / Attach Cover Letter",
+    "control": "file",
+    "required": false,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "portfolio",
+    "label_seen": "Portfolio / Attach Portfolio",
+    "control": "file",
+    "required": false,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "personal_note",
+    "label_seen": "Personal note",
+    "control": "textarea",
+    "required": false,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   },
+   {
+    "key": "custom_question",
+    "control": "question_text | question_dropdown | question_radio",
+    "required": "trailing ' *' in .question-header",
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03"
+    ],
+    "examples_seen": [
+     "All OuterBox employees must reside in the United States. Are you Located & authorized to work in the US? * [dropdown Yes/No]",
+     "What US State do you reside in? * [text]",
+     "Are you able to work 9-5 US Time Zones Monday - Friday? * [dropdown Yes/No]",
+     "Have you run shopping via Performance Max Campaigns before? When dealing with shopping campaigns, have you managed product feeds? * [radio Yes/No]",
+     "Please confirm if you are comfortable with the salary range advertised for this role. ($75-90K) * [radio: 'Yes, I am comfortable with that range.' / 'No, I am looking for a different salary']",
+     "What is the total compensation you are looking for? (Total Compensation includes base salary plus bonus eligibility) * [text]",
+     "Are you legally authorized to work in the United States? * [radio Yes/No/Unsure]",
+     "Which time zone are based in? * [radio PDT/MDT/CDT/EDT]"
+    ]
+   },
+   {
+    "key": "privacy_notice",
+    "label_seen": "Please review our privacy practices: Privacy policy: <Company>",
+    "control": "link (no checkbox)",
+    "required": false,
+    "seen_in": [
+     "cm-01",
+     "cm-02",
+     "cm-03",
+     "cm-04"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "comeet.com/jobs/<company>/<cuid>/<slug>/<puid> + button#showApplyForm",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "iframe name comeet-applyform-* ; inside: form#applyForm + 'Fields marked with * are mandatory.'",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'SUBMIT APPLICATION'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high: single page, no review step"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "none observed",
+    "effect": "all questions visible at once",
+    "observed": true
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2 anchor present on all 4; not triggered",
+    "observed": true
+   },
+   {
+    "type": "iframe",
+    "detail": "Form is cross-origin (comeet.co) inside comeet.com; bridge frame listing returned 0 targets — open iframe src directly or drive via CDP frame targeting",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "eligibility_gate",
+    "detail": "Required US-residence/authorization, time-zone, salary-range-comfort questions",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Question field names/ids are the literal question text (may include newlines) — match by .question-header text, not by id.",
+   "Dropdown options exist in DOM (ul.dropdown-menu) before opening; selecting requires clicking li>a, not a native select.",
+   "Radio inputs are hidden; click the label.checkboxLabel.",
+   "Cover letter is a FILE upload, not a textarea; Personal note textarea is the only free-text narrative field on the standard block."
+  ]
+ },
+ "inferred": {
+  "confidence": "high for standard block (identical on 4/4); custom questions vary",
+  "not_observed": [
+   "phone country selector menu",
+   "social/LinkedIn apply iframe",
+   "post-submit"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Comeet / Spark Hire Recruit",
+  "detect": "iframe src www.comeet.co/jobs/*/apply, form#applyForm, button#showApplyForm",
+  "for_jev": "Comeet: single iframe form — first/last name, email, phone (required), Resume file REQUIRED (pdf/doc/docx/rtf), optional website URL, optional Cover Letter FILE, optional Portfolio FILE, optional 'Personal note' textarea, then employer screening questions (dropdown/radio Yes-No, short text such as state of residence or total compensation figure, radio salary-range confirmation, time zone). reCAPTCHA v2 at submit. 'SUBMIT APPLICATION' is the stop boundary."
+ },
+ "edge_cases": [
+  {
+   "case": "notice-as-question",
+   "detail": "OuterBox put an instruction paragraph in a text question (optional) — do not answer it."
+  }
+ ]
+}

@@ -34,9 +34,13 @@ The product is not one giant autonomous agent. It is a pipeline of typed, replac
 
 **Current MVP:** reliable supplied-URL applications, a local frontend and pipeline tracker, OpenCLI job browsing, and Jev application selection. Find roles matching a performance marketing operator semantically: paid media, acquisition, growth, demand generation, digital marketing and adjacent management/director work. Strongly prefer Austin onsite/hybrid; US-wide remote remains eligible, while Texas-only remote is not equivalent. Minimum compensation is USD 100000 per year. Search titles are examples, not a literal allowlist. The supplied-URL flow remains available independently.
 
-**Current build authorization:** do not use the user's personal information in application tests. Final candidate JSON is pending; the resume-derived profile is provisional for personal applications. The user permits synthetic application tests, including hosted checks; use designated test/demo flows with fictional identities. Local acceptance uses fictional candidates and localhost ATS fixtures, and the dashboard service defaults to `TEST_ONLY`. Source browsing and authorized Jev selection are separate from submission.
+**Current build authorization:** the user has supplied a resume and confirmed simple-answer map, and explicitly authorized using resume evidence for RAG and local writing tests. Employer submissions remain disabled. Browser acceptance uses fictional identities and localhost ATS fixtures; the dashboard service defaults to `TEST_ONLY`. Source browsing, Jev selection and local draft generation are separate from submission.
+
+**Current application execution constraint (September 23): prepare only.** Reach the final review step without submitting to an employer. The canonical runner defaults to this mode and persists a no-submit restriction before browser work; resuming does not authorize submission. Prepared applications stay `NEEDS_INPUT` with a `preparation.ready` event, no submission attempt and no receipt. OpenCLI retains the final page for review. The submission behavior described below remains available for explicitly authorized future work and synthetic regression tests. See [application preparation](docs/application-preparation.md). Many Saved jobs are prepared at once with `interviewmaxxing prepare-batch` ([mass preparation](docs/mass-preparation.md)); the measured state of that path and its remaining bottlenecks are in [mass-apply readiness](docs/mass-apply-readiness.md).
 
 **Jev, from [TypeSafe AI](https://typesafe.ai/), decides which discovered jobs fit the candidate.** The local backend calls it through the user-funded OpenRouter Decisions API. Selection records evidence and APPLY/SKIP/REVIEW separately from a real application receipt. The requested-application executor remains the single submission path.
+
+**Dynamic application routing:** the same typed Decisions API also classifies each freshly observed form field, its requested subject and its answer source. Exact approved facts are copied locally; personal prose goes to a separately configured Opus writer with fact citations and sentence-level grounding. Missing or conflicting facts, unsupported controls, ambiguous forms and low-confidence decisions hold for input. This path is an explicit runtime option, preserves preparation-only execution, and uses observed backend maps as context rather than executable instructions. See [dynamic runtime](docs/dynamic-runtime.md) and [routing](docs/dynamic-application-routing.md).
 
 ---
 
@@ -143,7 +147,8 @@ In the discovery flow, Jev's job-selection decision happens before packet genera
 - **Pydantic**
 - A local CLI runs one application at a time.
 - **SQLite** stores application requests, events, submission state, and duplicate checks for the MVP; local files hold supporting artifacts.
-- **FastAPI**, **PostgreSQL**, **Redis**, and a distributed queue runtime are later additions when a hosted or concurrent workflow needs them.
+- **Supabase PostgreSQL** stores the Saved-job application URL inventory and versioned observed backend maps, with separate observed/partial/blocked/manual coverage. A local map cache keeps database access out of per-field routing. See [URL inventory](docs/application-url-inventory.md) and [backend maps](docs/application-schemas/README.md).
+- **Redis** and a distributed queue runtime remain later additions when a hosted or concurrent workflow needs them.
 
 ### Browser runtime
 - **Playwright**
@@ -1154,4 +1159,23 @@ Start with read-only sync and a visible last-sync/error state. Sending messages,
 
 W1 in `application-packets` owns a separate document-bundle prototype and `docs/documents/`. A job-specific variant can reorder and emphasize relevant verified experience and use accurate terminology. Employers, titles, dates, credentials and metrics retain their factual source. Use readable single-column structure and semantic headings; never hidden instructions, keyword stuffing or invented experience. Do not claim an ATS score or increased interview rate without evidence.
 
-Keep the original resume immutable. Every generated document records its candidate/job evidence versions, source facts, changes and artifact digest. The exact selected artifact remains pinned to its application across retries and later profile edits. Cover letters should be concise and supported by relevant accomplishments. Jev handles selection and evidence triage; free prose uses a separate configurable writing-provider interface. Live writing-model integration and final PDF/DOCX export remain explicit follow-up work, not implied by a mocked or text-only prototype.
+Keep the original resume immutable. Every generated document records its candidate/job evidence versions, source facts, changes and artifact digest. The exact selected artifact remains pinned to its application across retries and later profile edits. Cover letters should be concise and supported by relevant accomplishments. The offline document prototype remains distinct from the live retrieval-backed text writer below. Final PDF/DOCX export and automatic selection of generated upload artifacts remain separate work.
+
+### Retrieval-backed answers and cover-letter text
+
+Jev classifies whole application questions into literal answers, supplied documents,
+writer tasks or missing input. Simple answers use the canonical identity and scoped
+saved-answer map. Complex professional answers and cover-letter text use
+`anthropic/claude-opus-5.5` through OpenRouter; Jev does not generate prose.
+
+The private Supabase `imx_knowledge` schema holds a pgvector projection of verified
+candidate facts, current job-description snapshots and optional style samples.
+Retrieval checks candidate identity, normalized job URL, source versions and exact
+current fact content. Job context selects relevant experience but cannot establish
+candidate qualifications. Style samples guide voice without supplying facts.
+The original candidate fact IDs remain the packet's provenance authority.
+
+Ambiguous evidence checks can escalate to a structured Opus review. Missing facts,
+actual contradictions and incomplete answers remain unresolved. Every provider call
+in the application runtime, including query embeddings and reviews, shares a bounded
+call/cost budget. Local draft commands and setup are in [RAG writing](docs/rag-writing.md).

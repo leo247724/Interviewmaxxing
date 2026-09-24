@@ -27,6 +27,7 @@ from typing import Any, Self
 from pydantic import ValidationError
 
 from interviewmaxxing_core import (
+    CandidateFact,
     CandidateIdentity,
     CandidateNotFound,
     CandidateProfile,
@@ -424,6 +425,31 @@ class LocalCandidateStore:
                 )
             report = self._report_from_raw(candidate_id, profile_path, updated)
             write_json_private(profile_path, updated)
+        return report.profile
+
+    def upsert_facts(
+        self, candidate_id: str, facts: list[CandidateFact]
+    ) -> CandidateProfile:
+        """Merge explicitly supplied facts by id under the existing profile lock.
+
+        Verification is accepted as supplied, never inferred by this store. This
+        also allows a caller to revoke an obsolete fact by supplying UNVERIFIED.
+        Existing identity, resume, experience and saved answers remain intact.
+        """
+        if any(not isinstance(fact, CandidateFact) for fact in facts):
+            raise TypeError("facts must be CandidateFact instances")
+        if len({fact.id for fact in facts}) != len(facts):
+            raise ValueError("duplicate incoming fact ids")
+        directory = self.candidate_dir(candidate_id)
+        with _exclusive_lock(directory / _LOCK_FILENAME):
+            path = self._existing_profile_path(candidate_id)
+            raw = self._read_profile_object(path, candidate_id)
+            self._report_from_raw(candidate_id, path, raw)
+            merged = {fact["id"]: fact for fact in raw.get("facts", [])}
+            merged.update({fact.id: fact.model_dump(mode="json") for fact in facts})
+            updated = {**raw, "facts": list(merged.values())}
+            report = self._report_from_raw(candidate_id, path, updated)
+            write_json_private(path, updated)
         return report.profile
 
     def candidate_setup(self, candidate_id: str) -> CandidateSetup:

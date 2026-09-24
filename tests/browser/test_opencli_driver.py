@@ -463,6 +463,19 @@ def test_no_open_or_release_when_tab_ownership_is_unproven(kit: SimpleNamespace,
     assert driver.tab is None
 
 
+def test_release_can_leave_owned_final_review_tab_open(kit: SimpleNamespace) -> None:
+    fake = FakeOpenCli()
+    driver = driver_with(fake)
+    kit.run(driver.goto(URL))
+    count = len(fake.calls)
+    kit.run(driver.release(keep_tab=True))
+    after_release = fake.calls[count:]
+    assert after_release == []
+    assert driver.tab == PAGE
+    kit.run(driver.release(keep_tab=True))
+    assert fake.calls[count:] == after_release
+
+
 @pytest.mark.parametrize("attached", [b"different bytes!", None])
 def test_same_name_and_size_never_substitute_for_the_pinned_file_digest(
     kit: SimpleNamespace, tmp_path: Path, attached: bytes | None,

@@ -1,0 +1,550 @@
+{
+ "backend": "gem",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:12:29Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed",
+ "coverage": {
+  "inventory_density": 6,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "employers_distinct": 3,
+  "note": "jobs.gem.com/<company>/<id>: the blank application form is rendered on the job page under 'Ready to apply? Powered by Gem'. All questions are visible statically (radio/checkbox groups inline). Two submit buttons: 'Apply and save' and 'Apply without saving'. hCaptcha present on gm-01 only."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "gm-01",
+   "url": "https://jobs.gem.com/hallow/am9icG9zdDoHqdO5ZyTtLGXm5APKUyxi",
+   "page_title": "Organic Growth & Communications Lead",
+   "captured_at_utc": "2026-09-24T00:09:39Z",
+   "hosting_mode": "native_jobs_gem",
+   "entry": "form on job page",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/gem-01-hallow.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/gem-01-hallow.state.txt"
+   ],
+   "option_lists_captured": "all radio groups inline",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "hCaptcha",
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "gm-02",
+   "url": "https://jobs.gem.com/mindbloom/9a0044fa-348d-4f6c-92b9-7ea9fe27b655",
+   "page_title": "Head of Performance Marketing",
+   "captured_at_utc": "2026-09-24T00:10:07Z",
+   "hosting_mode": "native_jobs_gem",
+   "entry": "form on job page",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/gem-02-mindbloom.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/gem-02-mindbloom.state.txt"
+   ],
+   "option_lists_captured": "all radio/checkbox groups inline",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "gm-03",
+   "url": "https://jobs.gem.com/fetch/am9icG9zdDqQDxjL_ACJe9a-e6fNn3D2",
+   "page_title": "Performance Marketing Manager",
+   "captured_at_utc": "2026-09-24T00:10:13Z",
+   "hosting_mode": "native_jobs_gem",
+   "entry": "form on job page",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/gem-03-fetch.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/gem-03-fetch.state.txt"
+   ],
+   "option_lists_captured": "all radio groups inline",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "url_pattern": "https://jobs.gem.com/<company-slug>/<opaque id>",
+   "form_element": "none (no <form>); inputs have no id/name; the visible label is a text block immediately preceding each control ('<Label> *' when required, sometimes followed by helper text); radios/checkboxes have opaque base64 ids and label text = option",
+   "captcha_widget": "hCaptcha iframes on gm-01; none on gm-02/03",
+   "auth_required": false,
+   "footer": "'By applying you agree to Gem's terms and privacy policy.'",
+   "submit": "two buttons: 'Apply and save' (help 'Save your info to apply to other roles faster & help employers reach you.') and 'Apply without saving' — BOTH are final submits (STOP BOUNDARY)"
+  },
+  "control_families": {
+   "text": "input[type=text] without attributes; required only via '*' in the preceding label text (required attr absent).",
+   "file": "input[type=file] accept pdf/doc/docx, label 'Resume *'.",
+   "textarea": "long answers; label = full question with optional helper sentence.",
+   "radio_group": "input[type=radio] siblings sharing a preceding question block; no name attribute — group by preceding_text.",
+   "checkbox_group": "input[type=checkbox] '(Select all that apply)' groups."
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-01",
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-01",
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-01",
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn URL",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "gm-01",
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone number *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "location",
+    "label_seen": "Location *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-01",
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume *",
+    "control": "file",
+    "required": true,
+    "seen_in": [
+     "gm-01",
+     "gm-02",
+     "gm-03"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "gm-03"
+    ]
+   },
+   {
+    "key": "pronouns",
+    "label_seen": "What are your pronouns?",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "gm-03"
+    ],
+    "classification": "human"
+   },
+   {
+    "key": "custom.why_company",
+    "label_seen": "Why Hallow: What gets you most excited about joining the Hallow team? *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-01"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.why_role",
+    "label_seen": [
+     "Role: What makes you perfect for this role? *",
+     "Why is 1) Mindbloom and 2) this role a dream fit for you? Although we're an AI-first company, we don't accept AI-generated app responses — we want to get to know the real you. *"
+    ],
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-01",
+     "gm-02"
+    ],
+    "classification": "free_text_narrative (gm-02 explicitly forbids AI-generated answers — policy flag)"
+   },
+   {
+    "key": "custom.referral",
+    "label_seen": "Referral: Were you referred by a Hallow employee? *  + 'Referral: If you were referred by a Hallow employee please add their name here.'",
+    "control": "radio Yes/No + text",
+    "required": true,
+    "seen_in": [
+     "gm-01"
+    ],
+    "classification": "fact_copy"
+   },
+   {
+    "key": "custom.work_authorization",
+    "label_seen": [
+     "Work Authorization: Are you legally authorized to work in the United States? * Note: Depending on the role, we may be open to international candidates.",
+     "Are you legally authorized to work in the U.S.? *"
+    ],
+    "control": "radio",
+    "required": true,
+    "options": {
+     "gm-01": [
+      "Yes",
+      "No",
+      "Not Sure"
+     ],
+     "gm-03": [
+      "Yes",
+      "No"
+     ]
+    },
+    "seen_in": [
+     "gm-01",
+     "gm-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.sponsorship",
+    "label_seen": [
+     "Work Authorization: Will you now or in the future require visa sponsorship to work in the United States? *",
+     "Will you now or in the future require sponsorship by our company to attain or maintain your employment eligibility (e.g. H-1B visa status)? *"
+    ],
+    "control": "radio",
+    "required": true,
+    "options": {
+     "gm-01": [
+      "Yes",
+      "No",
+      "Not Sure"
+     ],
+     "gm-03": [
+      "Yes",
+      "No"
+     ]
+    },
+    "seen_in": [
+     "gm-01",
+     "gm-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.seo_examples",
+    "label_seen": "Organic Marketing: SEO Examples * Please provide 1-3 links to websites or blogs that you have worked on SEO for in the past.",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-01"
+    ],
+    "classification": "fact_copy (portfolio links)"
+   },
+   {
+    "key": "custom.writing_sample",
+    "label_seen": "Organic Marketing: Writing Sample * Please provide a link to a previous / existing writing sample - i.e., a blog, press release, or article you've written within the past couple of years that's representative of the work you'd be doing in this role.",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-01"
+    ],
+    "classification": "fact_copy (portfolio link)"
+   },
+   {
+    "key": "custom.patience_note",
+    "label_seen": "We're a small team and we care deeply about each new hire, so sometimes it can take us a while to get through the hiring process... (two textareas follow this note; full text in evidence)",
+    "control": "textarea x2",
+    "required": false,
+    "seen_in": [
+     "gm-01"
+    ],
+    "classification": "unknown (prompt is an informational note; re-observe headings before answering)"
+   },
+   {
+    "key": "custom.mission_connection",
+    "label_seen": "We hire missionaries. All Bloomineers have a personal and genuine connection to our mission. Being intellectually honest, which of the following best describes you? (Select all that apply) *",
+    "control": "checkbox group",
+    "required": true,
+    "options": [
+     "I’ve experienced altered states of consciousness myself!",
+     "I’ve never had the right opportunity to experience altered states of consciousness. Can I get a Mindbloom discount code so I can sign up asap?",
+     "First degree connection (friend/family) to the benefits of altered states of consciousness.",
+     "Really well read about psychedelic therapy and excited to join the movement.",
+     "Passionate about the mental health field in general."
+    ],
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "requires_human (personal/health-adjacent)"
+   },
+   {
+    "key": "custom.source_company",
+    "label_seen": "How did you learn about Mindbloom? Be specific. * Ex 1: Through an Instagram ad Ex 2: From X Podcast",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "custom.source_role",
+    "label_seen": "How did you learn about this specific role? Be specific. * Ex 1: Through a LinkedIn post from X Ex 2: From X newsletter",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "custom.residence_region",
+    "label_seen": "Where do you currently reside / where will you be working from? *",
+    "control": "radio",
+    "required": true,
+    "options": [
+     "United States",
+     "Canada",
+     "Other country in the Americas",
+     "Other country outside the Americas"
+    ],
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "fact_copy"
+   },
+   {
+    "key": "custom.wfh_address",
+    "label_seen": "What's your full WFH address? Where you'll physically be working from. *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "fact_copy (address)"
+   },
+   {
+    "key": "custom.ai_percentile",
+    "label_seen": "Mindbloom is an AI-first company. We hire people who hire AI. What are things you’ve done that demonstrate you’re in the 95th percentile of AI users? *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.insight_story",
+    "label_seen": "Briefly describe one significant creative, channel or buyer’s insight that you uncovered that drove a big impact. What did you learn and how did you learn it? What impact did it have? *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.max_monthly_spend",
+    "label_seen": "What's the highest monthly performance marketing spend you’ve managed on a single account? *",
+    "control": "radio",
+    "required": true,
+    "options": [
+     "$5M+ monthly spend",
+     "$1M - $5M monthly spend",
+     "$500K - $1M",
+     "$250K - $500K",
+     "<$250K"
+    ],
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "option_choice from verified fact"
+   },
+   {
+    "key": "custom.years_ig_fb",
+    "label_seen": "How many total years of experience do you have managing spend for IG and FB performance creatives/ads? *",
+    "control": "radio",
+    "required": true,
+    "options": [
+     "0-2 years",
+     "3-5 years",
+     "6-9 years",
+     "10+ years"
+    ],
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "option_choice from verified fact"
+   },
+   {
+    "key": "custom.years_dtc",
+    "label_seen": "How many total years of experience do you have managing spend for IG and FB performance creatives/ads specifically for a DTC start-up (Series A-D) *",
+    "control": "radio",
+    "required": true,
+    "options": [
+     "I've worked for later stage companies/accounts or B2B startups",
+     "0-2 years",
+     "3-5 years",
+     "6-9 years",
+     "10+ years"
+    ],
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "option_choice from verified fact"
+   },
+   {
+    "key": "custom.achievements",
+    "label_seen": "What are 1-2 achievements that demonstrate exceptional ability? (Professional and/or personal.) *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.career_goals",
+    "label_seen": "What are your long-term career goals? Additionally, what are you looking for in your next role? *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "gm-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.privacy_ack",
+    "label_seen": "Please review our Privacy Policy and acknowledge below: https://fetch.com/employee-privacy-policy *",
+    "control": "radio (single option 'Acknowledge/Confirm')",
+    "required": true,
+    "seen_in": [
+     "gm-03"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "custom.ai_recruiting_notice",
+    "label_seen": "Fetch Rewards uses technology tools with artificial intelligence capabilities to help our recruiting team review applications... (full text in evidence)",
+    "control": "radio (single option 'I have read and understand the Fetch Rewards Notice at Collection for Employees and Applicants, including the section describing the use of AI-assisted tools in recruiting, and I consent to the processing...')",
+    "required": true,
+    "seen_in": [
+     "gm-03"
+    ],
+    "classification": "attestation"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "jobs.gem.com job page containing 'Ready to apply? Powered by' + inputs",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "buttons 'Apply and save' | 'Apply without saving'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   "Referral name text follows the referral Yes/No radio (rendered unconditionally)."
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "hCaptcha on gm-01."
+   },
+   {
+    "type": "labels_not_associated",
+    "detail": "No label/for or aria association; runtime must use preceding text blocks (extract_form.js preceding_text/ancestor_context)."
+   }
+  ],
+  "runtime_observations": [
+   "Radio ids are opaque base64 (cXVlc29wdDo...) — never use as stable keys.",
+   "gm-02 explicitly rejects AI-generated answers; policy layer must surface this to the user."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "blank form",
+   "(hCaptcha)",
+   "Apply and save / Apply without saving",
+   "confirmation"
+  ],
+  "save_inference": "'Apply and save' likely creates a Gem candidate profile (account-like); prefer 'Apply without saving' only with user consent."
+ },
+ "provider_hint": {
+  "for_jev": "Gem: single page, no form element, labels are preceding text blocks with '*' for required. Expect several hard narrative textareas and employer-specific radio/checkbox screens (spend bands, years of experience, mission alignment). Both apply buttons are final submits. Some employers forbid AI-written answers — flag to user.",
+  "exact_copy_facts": [
+   "first/last name",
+   "email",
+   "phone",
+   "location / WFH address",
+   "linkedin_url",
+   "preferred_name",
+   "portfolio/writing links"
+  ],
+  "option_choice_from_verified_facts": [
+   "work_authorization",
+   "sponsorship_required",
+   "residence region",
+   "max monthly spend band",
+   "years-of-experience bands"
+  ],
+  "escalate_to_writer_opus": [
+   "all narrative textareas (why company/role, insight story, achievements, career goals, AI usage)"
+  ],
+  "requires_human_input": [
+   "resume",
+   "pronouns",
+   "mission/personal-connection checkboxes",
+   "privacy/AI-notice acknowledgements",
+   "source-of-hire specifics",
+   "hCaptcha"
+  ]
+ },
+ "edge_cases": [
+  "gm-01 has two textareas following an informational 'small team' note whose actual prompts were not separable from the note; treat as unknown."
+ ]
+}

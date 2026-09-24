@@ -5,11 +5,15 @@ description = "Playwright browser runtime: inspect, fill, navigate, submit and c
 requires-python = ">=3.12"
 dependencies = [
     "interviewmaxxing-core",
+    "interviewmaxxing-generation",
+    "interviewmaxxing-selection",
     "playwright>=1.62,<2",
 ]
 
 [tool.uv.sources]
 interviewmaxxing-core = { workspace = true }
+interviewmaxxing-generation = { workspace = true }
+interviewmaxxing-selection = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -1,0 +1,184 @@
+{
+ "backend": "builtin_easy_apply",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:47:03Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed_redirect_hub",
+ "actual_observed_backend": "none hosted on builtin.com in this inventory; every Apply resolves to the employer's own ATS (lever, workday, rippling, gem, greenhouse)",
+ "coverage": {
+  "inventory_density": 5,
+  "attempted_samples": 5,
+  "observed_examples": 5,
+  "fully_mapped_examples": 0,
+  "note": "5 of 5 listings observed. Built In did not host an application form for any of them ('Easy Apply' prior was wrong for all five). The runtime profile is logged into Built In (header shows Sign Out / Edit Profile); with that session the ?handler=ApplyRedirect GET 302s straight to the external ATS. Unauthenticated (curl) the same URL 302s to the job page with ?applyRequired=true. Coverage counts as redirect mapping, not form mapping."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "bi-01",
+   "listing_id": "lst_92757ad4ec739504d1132ec29f99abae",
+   "url": "https://builtin.com/job/associate-director-paid-media/11141807",
+   "company": "Princeton10",
+   "job_page_captured_at_utc": "2026-09-23T23:42:51Z",
+   "apply_redirect_followed_at_utc": "2026-09-23T23:45:26Z",
+   "apply_href_observed": "https://builtin.com/job/associate-director-paid-media/11141807?handler=ApplyRedirect",
+   "resolved_url": "https://jobs.lever.co/princeton10/7a0bf60d-fbb3-471b-8714-23a24adcdea5/apply?lever-origin=applied&lever-source[]=BuiltInNationwide",
+   "actual_observed_backend": "lever",
+   "status": "redirect_observed",
+   "note": "Lever /apply blank form rendered directly (form#application-form, hCaptcha iframes present, 'SUBMIT APPLICATION' stop boundary). Evidence captured but the lever backend belongs to worker fable; not mapped here.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/builtin-01-princeton10.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-01-princeton10-applyredirect.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-01-princeton10.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-01-princeton10-applyredirect.state.txt"
+   ]
+  },
+  {
+   "sample_id": "bi-02",
+   "listing_id": "lst_8dca08a6d16f2e9966aea3a51b801ece",
+   "url": "https://builtin.com/job/demand-generation-manager/10877873",
+   "company": "Lumeris",
+   "job_page_captured_at_utc": "2026-09-23T23:42:58Z",
+   "apply_redirect_followed_at_utc": "2026-09-23T23:45:34Z",
+   "apply_href_observed": "https://builtin.com/job/demand-generation-manager/10877873?handler=ApplyRedirect",
+   "resolved_url": "https://lumeris.wd1.myworkdayjobs.com/LC/job/Remote-USA/Demand-Generation-Manager_R0007063",
+   "actual_observed_backend": "workday",
+   "status": "redirect_observed",
+   "note": "Workday job description page with an 'Apply' role=button anchor; the Workday apply flow (account gate expected) was not entered.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/builtin-02-lumeris.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-02-lumeris-applyredirect.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-02-lumeris.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-02-lumeris-applyredirect.state.txt"
+   ]
+  },
+  {
+   "sample_id": "bi-03",
+   "listing_id": "lst_91455d0ae1cf4f82cbdd1c2e1d254a04",
+   "url": "https://builtin.com/job/revenue-marketing-director/11257426",
+   "company": "Capitalize Analytics",
+   "job_page_captured_at_utc": "2026-09-23T23:43:05Z",
+   "apply_redirect_followed_at_utc": "2026-09-23T23:44:58Z",
+   "apply_href_observed": "https://builtin.com/job/revenue-marketing-director/11257426?handler=ApplyRedirect",
+   "resolved_url": "https://ats.rippling.com/capitalize-data-analytics-llc/jobs/22513e06-11e1-463e-ade5-e01dc3af1dab",
+   "actual_observed_backend": "rippling",
+   "status": "redirect_observed",
+   "note": "Rippling ATS job page with two 'Apply now' buttons; form not opened (rippling belongs to worker fable_b).",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize-after-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize-applyrequired.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize-applyredirect.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize-after-apply.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize-applyrequired.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-03-capitalize-applyredirect.state.txt"
+   ]
+  },
+  {
+   "sample_id": "bi-04",
+   "listing_id": "lst_9358763b54e2757ded4ba79b6d193acb",
+   "url": "https://builtin.com/job/senior-director-web-digital-marketing/10921027",
+   "company": "BigPanda",
+   "job_page_captured_at_utc": "(job page not captured; redirect only)",
+   "apply_redirect_followed_at_utc": "2026-09-23T23:45:41Z",
+   "apply_href_observed": "https://builtin.com/job/senior-director-web-digital-marketing/10921027?handler=ApplyRedirect",
+   "resolved_url": "https://jobs.gem.com/bigpanda/am9icG9zdDrqP8r_kePNnoFl9aAU05h5",
+   "actual_observed_backend": "gem",
+   "status": "redirect_observed",
+   "note": "Gem-hosted single-page form rendered directly: 6 unlabeled text inputs (labels not exposed via for/aria; needs visual/near-text association), resume file input accept pdf/doc/docx, an EEO textarea near 'Race and ethnicity descriptions', and two submit buttons 'Apply and save' / 'Apply without saving' (both stop boundaries). gem belongs to worker fable_b.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/builtin-04-bigpanda-applyredirect.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-04-bigpanda-applyredirect.state.txt"
+   ]
+  },
+  {
+   "sample_id": "bi-05",
+   "listing_id": "lst_960f7afe99a7d706953507e320083863",
+   "url": "https://builtin.com/job/senior-marketing-director/11314630",
+   "company": "Strata Information Group (SIG)",
+   "job_page_captured_at_utc": "(job page not captured; redirect only)",
+   "apply_redirect_followed_at_utc": "2026-09-23T23:45:47Z",
+   "apply_href_observed": "https://builtin.com/job/senior-marketing-director/11314630?handler=ApplyRedirect",
+   "resolved_url": "https://job-boards.greenhouse.io/stratainformationgroup/jobs/5242281007",
+   "actual_observed_backend": "greenhouse",
+   "status": "redirect_observed",
+   "note": "Native Greenhouse job-boards form (matches greenhouse.json prior: first/last/email/country/phone/location comboboxes, resume/cover letter groups, custom question comboboxes, reCAPTCHA Enterprise, 'Submit application').",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/builtin-05-sig-applyredirect.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/builtin-05-sig-applyredirect.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "forms_on_page": "1 (form#jobReportForm, a Salesforce Web-to-Case 'Report Job' form; NOT an application form; must be excluded by form identity)",
+   "apply_entry": "a#applyButton href='/job/<slug>/<id>?handler=ApplyRedirect' aria-label='Apply to job' target=_blank rel='nofollow noopener'; visible text 'Apply'. Adjacent 'Save' button and disclaimer 'By clicking Apply Now you agree to share your profile information with the hiring company.'",
+   "other_controls": "Two resume file inputs (accept pdf/doc/docx/txt(+odt/rtf)) belong to Built In's 'AI-powered fit analysis' / profile tools, not to the job application. A hidden 'Did you apply to this job?' modal (#jobApplyQuestion: 'Yes, I applied' / 'Maybe later') exists for the application tracker."
+  },
+  "control_families": {
+   "redirect_anchor": "a#applyButton with target=_blank; opencli click on it spawns a NEW browser tab outside the session (observed once). Prefer navigating the href in the owned tab instead of clicking."
+  },
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "builtin_job_page",
+    "identity_hint": "host builtin.com, path /job/<slug>/<id>, a#applyButton present",
+    "observed": true
+   },
+   {
+    "step": "apply_redirect",
+    "identity_hint": "GET ?handler=ApplyRedirect -> 302 to external ATS (logged in) or ?applyRequired=true (logged out)",
+    "observed": true
+   },
+   {
+    "step": "external_ats_form",
+    "observed": true,
+    "note": "Delegate to the resolved backend's schema map; the ATS is only knowable after following the redirect."
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "not logged into Built In",
+    "effect": "ApplyRedirect bounces to ?applyRequired=true on the same job page (curl-verified, browser page showed no extra dialog because the profile was already logged in)",
+    "observed": "partially (curl)"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Built In session required for the ApplyRedirect to reach the employer ATS; the runtime profile was already logged in.",
+    "observed": true
+   },
+   {
+    "type": "new_tab",
+    "detail": "target=_blank apply anchor; an untracked tab was opened by the single click test on bi-03 and could not be closed via the OpenCLI session (not listed). Human should close any stray builtin/rippling tab.",
+    "observed": true,
+    "human_action_needed": "close stray tab if present"
+   }
+  ],
+  "runtime_observations": [
+   "Never bind the first <form> on a Built In job page: it is the Report Job form posting to a Salesforce sandbox.",
+   "Resolve backend by following ApplyRedirect with a GET in the owned tab and then re-deriving backend from the rendered form; the inventory label 'builtin_easy_apply' was wrong in 5/5 cases.",
+   "Lever destination carried tracking params lever-origin=applied&lever-source[]=BuiltInNationwide; keep them (attribution) but they do not affect fields."
+  ]
+ },
+ "inferred": {
+  "builtin_hosted_easy_apply_unverified": "Built In advertises an in-site apply for some postings; none of the 5 assigned listings used it. If encountered, expect a modal using the profile's stored resume and the 'share your profile information' consent."
+ },
+ "provider_hint": {
+  "for_jev": "builtin_easy_apply: treat builtin.com job pages as a redirect hub. The only apply control is the anchor aria-label 'Apply to job'. Do not map any field on builtin.com. Follow the redirect in the owned tab, then classify the destination backend from the rendered form (lever/workday/rippling/gem/greenhouse seen) and apply that backend's prior. If the destination is builtin.com?applyRequired=true, classify auth_required.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "Built In login if applyRequired=true appears",
+   "closing stray tabs opened by target=_blank"
+  ]
+ },
+ "edge_cases": [
+  "The 'Did you apply?' tracker modal (#jobApplyQuestion) may appear after returning from the external ATS; 'Yes, I applied' is a self-report that must never be clicked by the runtime.",
+  "Gem destination (bi-04) had six text inputs with no programmatic labels at all; label association must come from neighbouring text nodes."
+ ]
+}

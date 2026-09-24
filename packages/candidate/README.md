@@ -105,6 +105,12 @@ Under `LocalPaths.profile_dir` (`$IMX_HOME/profile`; outside source control):
 
 `examples/candidate.example.json` and `examples/answers.example.json` are a fictional starting point. Copy them to `<profile_dir>/default/profile.json` and `answers.json`, then put the resume beside them as `resume.pdf`.
 
+For contact details only, use the [simple answer map](../../docs/simple-answers.md).
+It exports thirteen contact keys into the same canonical identity plus fourteen optional
+explicit reusable answers through the saved-answer store, preserving the resume,
+facts, work history and unrelated saved answers. The runtime does not load this
+editable draft directly.
+
 ## What loading guarantees
 
 - **Nothing is fabricated or upgraded.** The loader never sets `verified_at`, never changes a fact's verification and never changes an answer's scope. Unverified facts are returned unchanged. Only `verified_facts()` / `verified_only()` should feed answers. `report.unverified_fact_ids` and `report.warnings()` let the UI ask the user to confirm them.

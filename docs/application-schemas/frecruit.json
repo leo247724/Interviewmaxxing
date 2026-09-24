@@ -1,0 +1,328 @@
+{
+ "backend": "frecruit",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:09:17Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 2,
+  "employers_in_inventory": 1,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0,
+  "status": "partial",
+  "blocker": "registration_gate",
+  "note": "Singleton employer (Sage, two vacancies on the same portal). Job page -> 'Apply' -> fRecruit__ApplyRegister 'Get Started' page: registration form (blank, mapped) or 'Log in' by email. Application questions live behind registration and were NOT observed. Second vacancy (VN43379) not opened: same portal/gate."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "fr-01",
+   "url": "https://sagehr.my.salesforce-sites.com/careers/fRecruit__ApplyJob?vacancyNo=VN43382&source=LinkedIn",
+   "page_title": "Senior Account-Based Marketing Manager | Job Details",
+   "captured_at_utc": "2026-09-24T00:08:09.534Z",
+   "hosting_mode": "Salesforce Sites (Visualforce) fRecruit package",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm.pagetext.txt"
+   ],
+   "steps_visited": [
+    "job details page: input[type=submit] 'Apply' + 'Nominate Someone' (top and bottom)"
+   ],
+   "gated_steps_not_visited": [],
+   "classification_note": "Apply is a Visualforce postback to fRecruit__ApplyRegister."
+  },
+  {
+   "sample_id": "fr-01b",
+   "url": "https://sagehr.my.salesforce-sites.com/careers/fRecruit__ApplyRegister?portal=USA&startURL=%2Fapex%2FfRecruit__Apply%3Fportal%3DUSA%26source%3DLinkedIn%26vacancyNo%3DVN43382",
+   "page_title": "Get Started",
+   "captured_at_utc": "2026-09-24T00:08:29.532Z",
+   "hosting_mode": "Salesforce Sites fRecruit registration gate",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm-apply.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm-apply.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm-apply.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/frecruit-01-sage-abm-apply.pagetext.txt"
+   ],
+   "option_lists_captured": "all native selects inline (Title 7, Country 250, State dependent/empty, Yes/No x2, privacy 2)",
+   "steps_visited": [
+    "'Get Started' page with Register form + Login (email) form, viewed blank"
+   ],
+   "gated_steps_not_visited": [
+    "'Register' submit (never clicked; creates account)",
+    "fRecruit__Apply application form (behind registration)"
+   ],
+   "classification_note": "Page text includes retention-period table by country and privacy notice links; 'To see this page, you need to register or log in first.'"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "entry": "fRecruit__ApplyJob?vacancyNo=<VN> job details; 'Apply' submit -> fRecruit__ApplyRegister?portal=USA&startURL=/apex/fRecruit__Apply?…",
+   "gate": "form id like j_id0:j_id1:j_id398:j_id518 POST /careers/fRecruit__ApplyRegister; sections 'Register' (fields below, submit 'Register') and 'Login' (Email + 'Log in' — passwordless email login)",
+   "captcha": "none",
+   "legend": "'= Required Information' with a red marker glyph; required attr present on inputs"
+  },
+  "control_families": {
+   "text": "input[type=text] with Visualforce ids 'j_id0:…:<n>:j_id554:<field>' where field is fRecruit__First_Name__c / fRecruit__Surname__c / fRecruit__Email__c (+ fRecruit__Email__c2 confirm) / fRecruit__Phone__c or generic j_id568; label via aria-labelledby + title attr; maxlength set",
+   "select": "native select with '--None--' first; Country 250; State depends on Country (initially only '--None--'); Yes/No picklists",
+   "submit": "input[type=submit] value 'Register' / 'Log in'"
+  },
+  "field_patterns": [
+   {
+    "key": "title",
+    "label_seen": "Title",
+    "control": "select",
+    "required": false,
+    "options": [
+     "Doctor",
+     "Miss",
+     "Mr",
+     "Mrs",
+     "Ms",
+     "Not Specified",
+     "Professor"
+    ],
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name",
+    "control": "text (max 128)",
+    "required": true,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name",
+    "control": "text (max 128)",
+    "required": true,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email — 'Please enter the email twice'",
+    "control": "text x2 (max 80)",
+    "required": true,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "mobile",
+    "label_seen": "Mobile",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone",
+    "control": "text (max 64)",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "address1",
+    "label_seen": "Address 1",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "address2",
+    "label_seen": "Address 2",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "city",
+    "label_seen": "City",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "province",
+    "label_seen": "Province or County",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "country",
+    "label_seen": "Country",
+    "control": "select",
+    "required": true,
+    "options_total": 250,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "state",
+    "label_seen": "State",
+    "control": "select (dependent on Country)",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Postal / Zip Code",
+    "control": "text (max 16)",
+    "required": true,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "linkedin",
+    "label_seen": "LinkedIn Profile",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "current_employee",
+    "label_seen": "I am currently employed by Sage",
+    "control": "select",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "former_employee",
+    "label_seen": "I have previously worked for Sage",
+    "control": "select",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "privacy_notice",
+    "label_seen": "Have you read Sage’s Privacy Notice?",
+    "control": "select",
+    "required": true,
+    "options": [
+     "Yes I have read and understood the privacy notice and wish to proceed with my application",
+     "No I do not wish to proceed with my application"
+    ],
+    "seen_in": [
+     "fr-01b"
+    ]
+   },
+   {
+    "key": "login_email",
+    "label_seen": "Login — Email",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "fr-01b"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_details",
+    "identity_hint": "fRecruit__ApplyJob + submit 'Apply'",
+    "observed": true
+   },
+   {
+    "step": "register_gate",
+    "identity_hint": "title 'Get Started', fRecruit__ApplyRegister",
+    "observed": true,
+    "HUMAN_ACTION": "register (creates account) or log in"
+   },
+   {
+    "step": "application",
+    "identity_hint": "fRecruit__Apply (startURL)",
+    "observed": false
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "Country",
+    "effect": "State picklist populates",
+    "observed": "State empty before selection"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Registration/login required before application form",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none on gate",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Visualforce ids are positional (j_idNNN) and may change; bind by aria-labelledby/title text or fRecruit__*__c suffix.",
+   "Both Apply buttons on job page are input[type=submit] postbacks."
+  ]
+ },
+ "inferred": {
+  "confidence": "none for the application form; high for the gate",
+  "not_observed": [
+   "fRecruit__Apply questions",
+   "resume upload",
+   "EEO"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "fRecruit (Salesforce Sites package, sagehr.my.salesforce-sites.com)",
+  "detect": "*.my.salesforce-sites.com/careers/fRecruit__*",
+  "for_jev": "fRecruit: applying requires registering (title, name, email x2, mobile/phone, address, country/state, zip, LinkedIn, current/former Sage employee Yes/No, privacy-notice acknowledgement) or logging in by email; the actual application questions are behind that gate and were not observed. Stop before Register."
+ },
+ "edge_cases": [],
+ "human_action_needed": "Register or log in on the Sage applicant portal, then re-observe fRecruit__Apply."
+}

@@ -83,9 +83,11 @@ IDENTITY = JobIdentityObservation(ats_type="mock", ats_tenant="fictional", exter
 
 
 def _page(form: ApplicationForm | None = None, kind: PageKind = PageKind.APPLICATION_FORM,
-          identity: JobIdentityObservation | None = IDENTITY) -> PageInspection:
+          identity: JobIdentityObservation | None = IDENTITY, *,
+          captcha_pending: bool = False) -> PageInspection:
     return PageInspection(kind=kind, observed_url=URL, form=form, job_identity=identity,
-                          message="Sign in to continue" if kind is PageKind.SIGN_IN_REQUIRED else None)
+                          message="Sign in to continue" if kind is PageKind.SIGN_IN_REQUIRED else None,
+                          captcha_pending=captcha_pending)
 
 
 ACCEPTED = SubmissionObservation(outcome=SubmissionOutcome.ACCEPTED,
@@ -210,12 +212,15 @@ class Answering(NoninteractiveInteraction):
 
 
 def _runner(paths, candidate, script, *, interaction=None, limits=None,
-            clock=None) -> LocalApplicationRunner:
+            clock=None, prepare_only=False) -> LocalApplicationRunner:
+    # These legacy tests exercise confirmed submission against a scripted browser.
+    # Preparation tests below explicitly retain the production no-submit default.
     extra = {"clock": clock} if clock is not None else {}
     return LocalApplicationRunner(
         paths=paths, interaction=interaction or NoninteractiveInteraction(), headless=True,
         browser_factory=ScriptedFactory(script), candidates=Candidates(candidate),
-        limits=limits or RunLimits(max_steps=6, max_same_form=2), **extra,
+        limits=limits or RunLimits(max_steps=6, max_same_form=2),
+        prepare_only=prepare_only, **extra,
     )
 
 
@@ -224,6 +229,128 @@ def _store(paths, clock=None) -> ApplicationStore:
 
 
 # --- happy path, threads -----------------------------------------------------------------
+
+
+def test_default_runner_reaches_final_review_without_submission(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_form(final=False))], advance=[
+        NavigationResult(advanced=True, inspection=_page(_form(step=1)))])
+    factory = ScriptedFactory(script)
+    runner = LocalApplicationRunner(
+        paths=isolated_imx_home, candidates=Candidates(fictional_candidate),
+        interaction=NoninteractiveInteraction(), browser_factory=factory,
+    )
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.receipt is None
+    assert "final review" in result.message and "Nothing was submitted" in result.message
+    assert script.calls.count("fill") == 2 and script.calls.count("advance") == 1
+    assert "submit" not in script.calls and "confirm" not in script.calls
+    assert factory.options[-1].allow_submission is False
+    with _store(isolated_imx_home) as store:
+        assert store.is_preparation_only(result.application_id)
+        assert store.list_attempts(result.application_id) == []
+        assert store.get_receipt(result.application_id) is None
+        ready = [e for e in store.list_events(result.application_id)
+                 if e.event == "preparation.ready"]
+        assert len(ready) == 1 and ready[0].metadata["form_step"] == 1
+
+
+def test_preparation_restriction_survives_restart_resume_and_repeated_apply(
+    isolated_imx_home, fictional_candidate
+):
+    first = _runner(isolated_imx_home, fictional_candidate, Script(), prepare_only=True)
+    result = asyncio.run(first.apply(URL, candidate_id="c1"))
+    for repeat_request in (False, True):
+        script = Script()
+        runner = _runner(isolated_imx_home, fictional_candidate, script, prepare_only=False)
+        call = (runner.apply(URL, candidate_id="c1") if repeat_request
+                else runner.resume(result.application_id))
+        resumed = asyncio.run(call)
+        assert resumed.application_id == result.application_id
+        assert resumed.state is S.NEEDS_INPUT and resumed.receipt is None
+        assert "submit" not in script.calls
+        assert runner.browser_factory.options[-1].allow_submission is False
+    with _store(isolated_imx_home) as store:
+        assert store.list_attempts(result.application_id) == []
+        assert sum(e.event == "application.preparation_only"
+                   for e in store.list_events(result.application_id)) == 1
+
+
+def test_changed_final_form_is_not_reported_ready(isolated_imx_home, fictional_candidate):
+    script = Script(inspect_pages=[_page(_form(extra_label="Describe a missing qualification"))])
+    runner = _runner(isolated_imx_home, fictional_candidate, script, prepare_only=True)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.missing_inputs
+    assert "submit" not in script.calls
+    with _store(isolated_imx_home) as store:
+        assert not any(e.event == "preparation.ready" for e in store.list_events(result.application_id))
+
+
+def test_final_validation_errors_are_not_reported_ready(isolated_imx_home, fictional_candidate):
+    invalid = _form().model_copy(update={"page_errors": ["Please correct the form"]})
+    script = Script(inspect_pages=[_page(invalid)])
+    runner = _runner(isolated_imx_home, fictional_candidate, script, prepare_only=True)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "validation errors" in result.message
+    assert "submit" not in script.calls
+    with _store(isolated_imx_home) as store:
+        assert not any(e.event == "preparation.ready" for e in store.list_events(result.application_id))
+
+
+def test_preparation_notes_a_pending_captcha_widget(isolated_imx_home, fictional_candidate):
+    script = Script(pages=[_page(_form(), captcha_pending=True)])
+    runner = _runner(isolated_imx_home, fictional_candidate, script, prepare_only=True)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
+    assert "Prepared to the final review step" in result.message
+    assert "A CAPTCHA on this form must be solved in the browser before it can be submitted." in result.message
+    assert "submit" not in script.calls and "wait_for_user" not in script.calls
+    with _store(isolated_imx_home) as store:
+        [ready] = [e for e in store.list_events(result.application_id)
+                   if e.event == "preparation.ready"]
+        assert ready.metadata["captcha_pending"] is True
+
+
+CAPTCHA_REFUSED = SubmissionObservation(
+    outcome=SubmissionOutcome.NOT_SUBMITTED,
+    signals=["submit was not dispatched: a CAPTCHA on this form must be solved by the user "
+             "before submitting"],
+    next_state=NotSubmittedNext.NEEDS_INPUT,
+    detail="a CAPTCHA on this form must be solved by the user before submitting",
+)
+
+
+def test_a_submit_refused_for_a_pending_captcha_stops_as_a_user_action(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_form(), captcha_pending=True)],
+                    submit=SubmitActionResult(dispatched=False, detail=CAPTCHA_REFUSED.detail),
+                    confirm=CAPTCHA_REFUSED)
+    runner = _runner(isolated_imx_home, fictional_candidate, script, prepare_only=False)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT
+    [need] = result.missing_inputs
+    assert (need.reason, need.label, need.field_id) == (MissingReason.USER_ACTION, "Solve the CAPTCHA", None)
+    assert script.calls.count("submit") == 1 and "wait_for_user" not in script.calls
+    with _store(isolated_imx_home) as store:
+        assert [n.label for n in pending_inputs(store, result.application_id)] == ["Solve the CAPTCHA"]
+        assert [a.outcome for a in store.list_attempts(result.application_id)] == [
+            SubmissionOutcome.NOT_SUBMITTED]
+
+
+def test_a_pending_captcha_is_waited_for_when_the_user_is_present_then_submitted(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_form(), captcha_pending=True)],
+                    submit=SubmitActionResult(dispatched=False, detail=CAPTCHA_REFUSED.detail),
+                    confirm=[CAPTCHA_REFUSED, ACCEPTED], after_user=_page(_form()))
+    runner = _runner(isolated_imx_home, fictional_candidate, script,
+                     interaction=NoninteractiveInteraction(allow_browser_action=True),
+                     prepare_only=False)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.SUBMITTED and result.receipt is not None
+    assert script.calls.count("wait_for_user") == 1 and script.calls.count("submit") == 2
 
 
 def test_constructs_without_side_effects_and_runs_on_a_service_thread(
@@ -1021,7 +1148,7 @@ def test_a_browser_that_cannot_start_is_a_retryable_outcome_not_a_traceback(
 ):
     runner = LocalApplicationRunner(paths=isolated_imx_home, interaction=NoninteractiveInteraction(),
                                     headless=True, browser_factory=Boom(),
-                                    candidates=Candidates(fictional_candidate))
+                                    candidates=Candidates(fictional_candidate), prepare_only=False)
     outcome = asyncio.run(runner.apply(URL, candidate_id="c1"))
     assert outcome.state is S.FAILED_RETRYABLE
     assert "Could not start the browser" in outcome.message and "playwright install" in outcome.message

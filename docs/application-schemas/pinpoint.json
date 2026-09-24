@@ -1,0 +1,568 @@
+{
+ "backend": "pinpoint",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:41:10Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 4,
+  "employers_in_inventory": 3,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "status": "observed",
+  "note": "Portnox (native pinpointhq.com, /en/ locale), Brivo (custom domain careers.brivo.com), Thorne (native, no locale prefix). Second Portnox listing skipped as same employer template."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "pp-01",
+   "url": "https://portnox.pinpointhq.com/en/postings/e0dc5ba9-0edf-4802-8b07-6bae0f0dea00/applications/new",
+   "page_title": "New Application | Manager, Account-Based Marketing (ABM) | Portnox Careers",
+   "captured_at_utc": "2026-09-23T23:40:44.126Z",
+   "hosting_mode": "native_pinpointhq_subdomain",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-01-portnox-abm.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-01-portnox-abm.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-01-portnox-abm.options.json"
+   ],
+   "option_lists_captured": "all combobox option lists read from hidden <select> mirrors (no menus opened)",
+   "steps_visited": [
+    "single page blank form at /applications/new"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit confirmation (never triggered)"
+   ]
+  },
+  {
+   "sample_id": "pp-02",
+   "url": "https://careers.brivo.com/postings/d59ec26e-3235-498a-bdc5-631cb764d831/applications/new",
+   "page_title": "New Application | Sr. Marketing Manager, Growth Marketing | Brivo Careers",
+   "captured_at_utc": "2026-09-23T23:40:48.460Z",
+   "hosting_mode": "employer_custom_domain_pinpoint",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-02-brivo.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-02-brivo.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-02-brivo.options.json"
+   ],
+   "option_lists_captured": "all combobox option lists read from hidden <select> mirrors (no menus opened)",
+   "steps_visited": [
+    "single page blank form at /applications/new"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit confirmation (never triggered)"
+   ],
+   "classification_note": "reCAPTCHA Enterprise anchor iframes present on this custom-domain instance only."
+  },
+  {
+   "sample_id": "pp-03",
+   "url": "https://thorne.pinpointhq.com/postings/5094ea7e-5e8f-44bd-8524-b700cf5154ff/applications/new",
+   "page_title": "New Application | AEO Specialist/Lead (AI / Answer Engine Optimization) - Contractor | Thorne Careers",
+   "captured_at_utc": "2026-09-23T23:40:40.015Z",
+   "hosting_mode": "native_pinpointhq_subdomain",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-03-thorne.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-03-thorne.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/pinpoint-03-thorne.options.json"
+   ],
+   "option_lists_captured": "all combobox option lists read from hidden <select> mirrors (no menus opened)",
+   "steps_visited": [
+    "single page blank form at /applications/new"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit confirmation (never triggered)"
+   ],
+   "classification_note": "Employer configured the Diversity & Inclusion selects as REQUIRED (hidden select required=true plus react-select required proxy input)."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "Posting page has <a> 'Apply Now' -> /postings/<uuid>/applications/new (locale prefix /en/ optional). Blank form renders fully on load.",
+   "form": "form#application-form method=post action=/postings/<uuid>/applications",
+   "section_headings_seen": [
+    "1. Personal Details",
+    "2. Profile",
+    "3. Questions",
+    "Diversity and Inclusion",
+    "4. Submit Application"
+   ],
+   "apply_with_linkedin": "anchor to app.pinpointhq.com/auth/linkedin/new (OAuth; not exercised)",
+   "save_for_later": "button#application-save-later-link 'Save application for later' (not exercised; likely prompts email)"
+  },
+  "control_families": {
+   "text": "input[type=text|email|tel|number] with name application_form[application][<field>] and id application_form_application_<field>; <label for> gives clean label; required via native required attr (no '*' in label).",
+   "combobox_react_select": "react-select control (div[class*=select__control]) whose input id equals the field name (e.g. application_form[application][country]). A HIDDEN native <select> mirror with the same id / *_mobile_select id holds the full option list, so options are readable without opening the menu. Option[0] is always 'Select...'.",
+   "address_autocomplete": "button 'Start typing an address' (pp-02, pp-03) precedes Street Address/City/State/Zipcode; manual inputs address1/address2/postcode required, town(State) react-select.",
+   "file": "input[type=file] name application_form[application][cv] accept=application/msword,…wordprocessingml.document,application/pdf single; label 'Attach Résumé / CV'; not required on any sample.",
+   "textarea": "textarea#personal-summary (optional) and textarea id application_form_application_answers_attributes_<i>_text_answer for custom text questions.",
+   "radio_boolean": "custom yes/no questions render as two radios name application_form[application][answers_attributes][<i>][boolean_answer] values true/false, labelled Yes/No with aria-labelledby question text. NOT marked required in DOM even when likely mandatory.",
+   "number": "input[type=number] name …[answers_attributes][<i>][number_answer] for salary/compensation questions (required).",
+   "custom_select": "custom choice questions render as react-select with hidden select id application_form_application_answers_attributes_<i>_mobile_select.",
+   "consent_checkbox": "input[type=checkbox]#application_process_information required, label '(Required) Allow us to process your personal information. *'",
+   "submit": "button[type=submit] text 'Submit Application' in section '4. Submit Application'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email Address",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone",
+    "control": "tel",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn URL",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "country",
+    "label_seen": "Country",
+    "control": "combobox_react_select",
+    "required": false,
+    "options_total": 250,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ],
+    "note": "unsorted country list"
+   },
+   {
+    "key": "address_line",
+    "label_seen": "Street Address (placeholder)",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "city",
+    "label_seen": "City (placeholder)",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "state",
+    "label_seen": "State",
+    "control": "combobox_react_select",
+    "required": false,
+    "options_total": 60,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ],
+    "note": "US states + territories + armed forces"
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Zipcode (placeholder)",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Attach Résumé / CV",
+    "control": "file",
+    "required": false,
+    "accept": "doc,docx,pdf (MIME)",
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "personal_summary",
+    "label_seen": "Personal Summary",
+    "control": "textarea",
+    "required": false,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "custom_question",
+    "id_pattern_seen": "application_form_application_answers_attributes_<i>_{text_answer|boolean_answer_true/false|number_answer|mobile_select}",
+    "control": "textarea | radio_boolean | number | custom_select",
+    "required": "native required on textarea/number only; radios unmarked",
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ],
+    "examples_seen": [
+     "Which of these states do you live in, if any? … [Texas, North Carolina, Florida, Georgia, Idaho, Pennsylvania, Virginia, South Carolina, Nevada, Arizona, None of the above]",
+     "Will you now, or in the future, require sponsorship for employment visa status (e.g. H-1B visa status)? [Yes/No]",
+     "Did a Portnox employee refer you to this role? If so, please share their name. (textarea, required)",
+     "What is your preferred name? (textarea)",
+     "Are you legally eligible to work in the U.S.? [Yes/No]",
+     "What is your desired fixed (base) salary for this position? (number, required)",
+     "How did you hear about this position? [Brivo Website, Employee Referral, LinkedIn, Indeed, Membership Association, Other]",
+     "As part of Brivo's hiring process, we may conduct video interviews… [Yes, I consent…, No, I do not consent…]",
+     "In the past 7 years, have you been convicted of or plead guilty to a criminal misdemeanor or felony? [Yes/No]",
+     "What is your desired compensation? (number, required)",
+     "Were you referred by a current Thorne employee? [Yes/No]"
+    ]
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "Gender",
+    "control": "combobox_react_select",
+    "required": "pp-01/pp-02 false; pp-03 TRUE",
+    "options": [
+     "Male",
+     "Female",
+     "Non-Binary",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "eeo_gender_identity",
+    "label_seen": "Gender Identity",
+    "control": "combobox_react_select",
+    "required": "pp-03 TRUE",
+    "options": [
+     "Intersex",
+     "Transsexual",
+     "Transgender",
+     "Male",
+     "Female",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "eeo_ethnicity",
+    "label_seen": "Ethnicity",
+    "control": "combobox_react_select",
+    "required": "pp-03 TRUE",
+    "options": [
+     "American Indian Or Alaska Native",
+     "Asian",
+     "Black Or African American",
+     "Hispanic Or Latino",
+     "Black Caribbean Native Hawaiian Or Other Pacific Islander",
+     "White",
+     "Two or more",
+     "Other Ethnicity",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ],
+    "note": "option wording varies per employer"
+   },
+   {
+    "key": "eeo_sexual_orientation",
+    "label_seen": "Sexual Orientation",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "Heterosexual",
+     "Bisexual",
+     "Homosexual",
+     "Pansexual",
+     "Asexual",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-02"
+    ]
+   },
+   {
+    "key": "eeo_religion",
+    "label_seen": "Religion",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "No Religion",
+     "Christian",
+     "Muslim",
+     "Jewish",
+     "Buddhist",
+     "Hindu",
+     "Jain",
+     "Other Religion",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-02"
+    ]
+   },
+   {
+    "key": "eeo_marital_status",
+    "label_seen": "Marital Status",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "Single",
+     "Married",
+     "Widowed",
+     "Divorced",
+     "Separated",
+     "Registered Partnership",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-02"
+    ]
+   },
+   {
+    "key": "eeo_age_bracket",
+    "label_seen": "Age Bracket",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "16-24",
+     "25-34",
+     "35-44",
+     "45-54",
+     "55-64",
+     "65+",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02"
+    ]
+   },
+   {
+    "key": "eeo_disability",
+    "label_seen": "Disability",
+    "control": "combobox_react_select",
+    "required": "pp-03 TRUE",
+    "options": [
+     "Yes",
+     "No",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "eeo_veteran",
+    "label_seen": "Veteran Status",
+    "control": "combobox_react_select",
+    "required": "pp-03 TRUE",
+    "options": [
+     "Active Wartime Or Campaign Badge Veteran",
+     "Armed Forces Service Medal Veteran",
+     "Disabled Veteran",
+     "I Am A Protected Veteran, But I Choose Not To Self-Identify The Classifications To Which I Belong",
+     "I Am Not A Protected Veteran",
+     "I Am Not A Veteran",
+     "I Choose Not To Identify",
+     "Recently Separated Veteran",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   },
+   {
+    "key": "eeo_pronouns",
+    "label_seen": "Preferred Pronouns",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "She/Her/Hers",
+     "He/Him/His",
+     "They/Them/Theirs",
+     "No Pronouns (Use My Name)",
+     "Other",
+     "Prefer Not To Say"
+    ],
+    "seen_in": [
+     "pp-01",
+     "pp-02"
+    ]
+   },
+   {
+    "key": "privacy_consent",
+    "label_seen": "(Required) Allow us to process your personal information. *",
+    "control": "consent_checkbox",
+    "required": true,
+    "seen_in": [
+     "pp-01",
+     "pp-02",
+     "pp-03"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "<a> 'Apply Now' href ends /applications/new",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "document.title 'New Application | <job> | <company> Careers' + form#application-form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Submit Application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high: single-page, no review step seen"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Start typing an address' button",
+    "effect": "address autocomplete widget; manual fields already visible",
+    "observed": "button present only"
+   },
+   {
+    "trigger": "question index gaps (e.g. answers_attributes 3, 4/5 missing in visible set)",
+    "effect": "employer question sets may include hidden/conditional items; mirror selects for choice questions are hidden by design",
+    "observed": "index gaps + hidden mirror selects"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA Enterprise anchor iframes (recaptcha.net) on Brivo custom-domain instance; none on Portnox/Thorne native pages",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "No login required; 'Apply with LinkedIn' is optional OAuth",
+    "observed": true
+   },
+   {
+    "type": "eligibility_gate",
+    "detail": "Yes/No work-authorization, sponsorship, criminal-history and referral radios; state-residency select. Radios are not DOM-required, so server-side validation is unknown.",
+    "observed": true
+   },
+   {
+    "type": "demographic_required",
+    "detail": "Thorne marks Gender/Gender Identity/Ethnicity/Disability/Veteran as required; must route to human ('Prefer Not To Say' exists).",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Read options from the hidden <select> (same id as the combobox input, or *_mobile_select) rather than opening react-select menus.",
+   "Labels: use <label for=id>; for react-select the label is the sibling <label> ('near:') and aria-describedby points at the 'Select...' placeholder, not the label.",
+   "Salary/compensation questions are numeric inputs: send digits only.",
+   "Locale prefix /en/ appears on some tenants; the same form exists with and without it."
+  ]
+ },
+ "inferred": {
+  "selector_hints": {
+   "first_name": "#application_form_application_first_name",
+   "email": "#application_form_application_email",
+   "resume": "input[type=file][name='application_form[application][cv]']",
+   "submit": "form#application-form button[type=submit]"
+  },
+  "confidence": "medium-high across 3 employers; custom question sets vary per employer",
+  "not_observed": [
+   "Apply with LinkedIn OAuth flow",
+   "Save-for-later flow",
+   "address autocomplete behaviour",
+   "server-side required validation for radio questions",
+   "post-submit confirmation"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Pinpoint (pinpointhq.com)",
+  "detect": "form#application-form + input[name^='application_form[application]'] + 'Save application for later'; hostname *.pinpointhq.com OR custom domain with /postings/<uuid>/applications/new",
+  "for_jev": "Pinpoint: single-page form. Sections Personal Details (first/last/preferred name, email, phone, LinkedIn URL, country/state react-selects, street/city/zip required), Profile (optional CV pdf/doc/docx, optional Personal Summary textarea), Questions (employer custom: yes/no radios for work auth/sponsorship/referral/criminal history, numeric salary, select 'how did you hear', consent selects, free-text referral/preferred-name), optional or REQUIRED demographic selects, required privacy checkbox, then 'Submit Application'. Hard narrative prompts seen: none beyond Personal Summary; salary number required on 2 of 3."
+ },
+ "edge_cases": [
+  {
+   "case": "custom domain",
+   "detail": "careers.brivo.com serves the identical Pinpoint template with reCAPTCHA Enterprise added."
+  },
+  {
+   "case": "required demographics",
+   "detail": "Thorne D&I selects required=true."
+  }
+ ]
+}

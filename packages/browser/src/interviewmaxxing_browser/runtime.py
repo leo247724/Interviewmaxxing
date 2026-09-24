@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -67,9 +68,10 @@ from interviewmaxxing_core import (
     utc_now,
 )
 
+from .annotations import FormAnnotator, SchemaHintLoader, observation_signature, semantic_only
 from .driver import DriverError, NotActionable, PageContextLost, PageDriver
 from .evidence import EvidenceRecorder
-from .normalize import FieldBinding, PageModel, build_page
+from .normalize import FieldBinding, PageModel, build_page, detect_ats
 from .signals import (
     APPLY_LINK,
     CONFIRMATION_LINK,
@@ -83,7 +85,7 @@ from .signals import (
     confirmation_references,
     job_ids,
 )
-from .snapshot import DomSnapshot, inspector_script
+from .snapshot import DomButton, DomSnapshot, inspector_script
 
 
 class SubmissionRefused(RuntimeError):
@@ -110,8 +112,10 @@ _NATIVE_VALIDITY = """({form, button}) => {
   const b = button ? document.querySelector(button) : null;
   if (!f || f.noValidate || (b && b.formNoValidate)) return [];
   const out = [];
+  const CAPTCHA_TOKENS = ['g-recaptcha-response', 'h-captcha-response', 'cf-turnstile-response'];
   for (const el of f.elements) {
     if (!el.willValidate || el.validity.valid) continue;  // read-only: no 'invalid' events
+    if (CAPTCHA_TOKENS.includes(el.name)) continue;  // filled by the CAPTCHA widget, reported separately
     const label = (el.labels && el.labels[0] ? el.labels[0].innerText : el.name || el.id || el.type);
     const line = label.replace(/\\s+/g, ' ').replace(/[\\s*:]+$/, '').trim() + ': ' + el.validationMessage;
     if (!out.includes(line)) out.push(line);
@@ -134,6 +138,26 @@ _EFFECTIVE_SUBMISSION = """(sel) => {
 
 _DOCUMENT_IDENTITY = "() => String(performance.timeOrigin) + ' ' + location.href"
 """Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
+
+_READY_POLL_S = 0.5
+"""Interval between page readiness polls (an SPA rendering its form)."""
+_READY_SETTLE_S = 5.0
+"""Upper bound on the network/document settle inside one readiness wait."""
+
+_COOKIE_TEXT = re.compile(r"cookie", re.IGNORECASE)
+_COOKIE_DECLINE = re.compile(
+    r"^(?:decline(?: all)?(?: cookies)?|reject(?: all)?(?: cookies)?|only necessary|"
+    r"necessary(?: cookies)? only|essential only|use necessary cookies only)$",
+    re.IGNORECASE,
+)
+_COOKIE_ACCEPT = re.compile(
+    r"^(?:accept(?: all)?(?: cookies)?|allow all(?: cookies)?|agree|i agree|got it|"
+    r"i understand|ok|okay)$",
+    re.IGNORECASE,
+)
+"""Consent-banner buttons. A decline-group button is preferred; an accept-group button
+is the fallback. Only a visible button that does not submit a form and is not inside
+the selected application form is ever clicked, at most once per ``open()``."""
 
 
 @dataclass(frozen=True)
@@ -215,14 +239,27 @@ class GenericApplicationBrowser:
         poll_interval_s: float = 0.25,
         policy: ActionPolicy | None = None,
         on_close: Callable[[], Awaitable[None]] | None = None,
+        annotator: FormAnnotator | None = None,
+        schema_hint_loader: SchemaHintLoader | None = None,
     ) -> None:
         self.driver = driver
         self.options = options
-        self.policy = policy or ActionPolicy()
+        requested_policy = policy or ActionPolicy()
+        self.policy = ActionPolicy(
+            automation_may_navigate=requested_policy.automation_may_navigate,
+            automation_may_submit=(requested_policy.automation_may_submit
+                                   and options.allow_submission),
+        )
         self.settle_timeout_s = settle_timeout_s
         self.poll_interval_s = poll_interval_s
         self._evidence = EvidenceRecorder(options.artifacts_dir, options.artifacts_root)
         self._on_close = on_close
+        self.annotator = annotator
+        self.schema_hint_loader = schema_hint_loader
+        self.annotation_document_id: str | None = None
+        self._observations: list[tuple[ApplicationForm, str, str]] = []
+        self._filled_structure: str | None = None
+        self._active_fill_signature: str | None = None
         self._steps_advanced = 0
         self._last: PageModel | None = None
         self._identity: JobIdentityObservation | None = None
@@ -250,19 +287,50 @@ class GenericApplicationBrowser:
         raise DriverError(f"could not inspect the page: {last_error}")
 
     async def _model(self, *, evidence: str | None = None, html: bool = False) -> PageModel:
-        snapshot = await self._snapshot()
+        # Read identity on both sides of inspection and provider work. A semantic
+        # answer is never applied to a document or binding the provider did not see.
+        for _ in range(3):
+            document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY)) if self.annotator else ""
+            snapshot = await self._snapshot()
+            model = build_page(snapshot, fallback_step=self._steps_advanced,
+                               http_status=self.driver.last_status)
+            if self.annotator is None or model.form is None:
+                break
+            if document != str(await self.driver.evaluate(_DOCUMENT_IDENTITY)):
+                continue
+            hints = (self.schema_hint_loader(detect_ats(snapshot.url), snapshot.url)
+                     if self.schema_hint_loader else None)
+            original = model.form.model_copy(deep=True)
+            annotation_document = document + ":" + observation_signature(model)
+            annotated = await asyncio.to_thread(
+                self.annotator.annotate, model.form.model_copy(deep=True),
+                document_id=annotation_document, schema_hints=hints,
+            )
+            form = semantic_only(original, annotated)
+            fresh_snapshot = await self._snapshot()
+            fresh = build_page(fresh_snapshot, fallback_step=self._steps_advanced,
+                               http_status=self.driver.last_status)
+            if (document != str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
+                    or observation_signature(model, include_values=True)
+                    != observation_signature(fresh, include_values=True)):
+                continue
+            snapshot = fresh_snapshot
+            model = replace(fresh, inspection=fresh.inspection.model_copy(update={"form": form}))
+            self.annotation_document_id = annotation_document
+            break
+        else:
+            raise PageContextLost("form changed repeatedly during semantic annotation; inspect again")
         refs: list[EvidenceRef] = []
         if evidence:
             refs = await self._evidence.capture(
                 self.driver, evidence, description=f"{evidence} at {snapshot.url}",
                 html=html, text=snapshot.body_text if html else None,
             )
-        model = build_page(
-            snapshot,
-            fallback_step=self._steps_advanced,
-            http_status=self.driver.last_status,
-            evidence=refs,
-        )
+        if refs:
+            model = replace(model, inspection=model.inspection.model_copy(update={"evidence": refs}))
+        if self.annotator is not None and model.form is not None:
+            self._observations.append((model.form, document, observation_signature(model)))
+            self._observations = self._observations[-32:]
         if model.inspection.job_identity is not None:
             self._identity = model.inspection.job_identity
         self._last = model
@@ -285,6 +353,91 @@ class GenericApplicationBrowser:
             model = await self._model(evidence=label)
         return model.inspection
 
+    async def _await_ready(self) -> PageModel:
+        """Bounded readiness before classifying a freshly loaded document.
+
+        A page that already classifies is used as it is. An ``UNKNOWN`` page (an SPA
+        still rendering its form, a consent overlay) gets ``settle_timeout_s`` in
+        total: the document and network settle first, then the page is re-read every
+        ``_READY_POLL_S`` until it classifies, or until it stops changing between two
+        consecutive reads while showing no loading indicator. Static pages therefore
+        classify within a couple of seconds; nothing on the page is touched."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.settle_timeout_s
+        model = await self._model()
+        if model.inspection.kind is not PageKind.UNKNOWN:
+            return model
+        await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
+        model = await self._model()
+        previous = self._readiness_key(model)
+        while model.inspection.kind is PageKind.UNKNOWN and loop.time() < deadline:
+            await asyncio.sleep(max(0.0, min(_READY_POLL_S, deadline - loop.time())))
+            model = await self._model()
+            key = self._readiness_key(model)
+            if key == previous and not model.snapshot.loading_indicator:
+                break
+            previous = key
+        return model
+
+    @staticmethod
+    def _readiness_key(model: PageModel) -> tuple[str, int, int]:
+        return (observation_signature(model), len(model.snapshot.body_text),
+                len(model.snapshot.controls))
+
+    async def _dismiss_cookie_banner(self, model: PageModel) -> bool:
+        """Click one consent button (decline preferred) that lies outside the
+        application form, then let the page settle. Returns whether a click happened.
+        Nothing about the page is logged."""
+        if not _COOKIE_TEXT.search(model.snapshot.body_text):
+            return False
+        candidates = [
+            b for b in model.snapshot.buttons
+            if not b.submits_form and not b.disabled
+            and (b.form_index == -1
+                 or (model.form_index is not None and b.form_index != model.form_index))
+        ]
+
+        def first(pattern: re.Pattern[str]) -> DomButton | None:
+            return next((b for b in candidates if pattern.match(b.text.strip())), None)
+
+        button = first(_COOKIE_DECLINE) or first(_COOKIE_ACCEPT)
+        if button is None:
+            return False
+        try:
+            await self.driver.click(button.selector)
+        except DriverError:
+            return False
+        await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
+        return True
+
+    async def prepare_review(self) -> PageInspection:
+        """Read final-page evidence and native validity without clicking anything."""
+        model = await self._model(evidence="prepared-review")
+        form = model.form
+        if form is None or form.is_final_step is not True:
+            return model.inspection
+        if self._context_lost or self._changed_since_fill(form):
+            raise ValueError("the final form changed; inspect and resolve it again")
+        await self._assert_fill_context()
+        invalid = await self.driver.evaluate(
+            _NATIVE_VALIDITY, {"form": model.form_selector, "button": form.submit_selector}
+        )
+        invalid = [*invalid, *(f"{field_id}: required control is not completed"
+                                for field_id in model.unsupported_pending)]
+        await self._assert_fill_context()
+        after = await self._model()
+        if after.form is None or after.form.fingerprint != form.fingerprint:
+            return after.inspection
+        if self._changed_since_fill(after.form):
+            raise ValueError("the final form constraints changed; inspect and resolve it again")
+        # Preserve final-review evidence while using the latest form observation.
+        inspection = after.inspection.model_copy(update={"evidence": model.inspection.evidence})
+        form = after.form
+        if invalid:
+            form = form.model_copy(update={"page_errors": [*form.page_errors, *invalid]})
+            return inspection.model_copy(update={"form": form})
+        return inspection
+
     @property
     def last_page(self) -> PageModel | None:
         """The most recent normalized page (for adapters and diagnostics)."""
@@ -298,14 +451,21 @@ class GenericApplicationBrowser:
         self._context_lost = False
         self._fill_document = None
         await self.driver.goto(url)
-        model = await self._model()
+        model = await self._await_ready()
+        consent_done = await self._dismiss_cookie_banner(model)
+        if consent_done:
+            model = await self._await_ready()
         posting_identity = model.inspection.job_identity
         for _ in range(2):
             if model.inspection.kind is not PageKind.JOB_DESCRIPTION:
                 break
             if not await self._follow_apply(model):
                 break
-            model = await self._model()
+            model = await self._await_ready()
+            if not consent_done:
+                consent_done = await self._dismiss_cookie_banner(model)
+                if consent_done:
+                    model = await self._await_ready()
         inspection = model.inspection
         label = self._evidence_label(inspection.kind)
         if label:
@@ -314,14 +474,24 @@ class GenericApplicationBrowser:
             inspection = inspection.model_copy(update={"job_identity": posting_identity})
         return inspection
 
+    async def observe(self, url: str) -> PageInspection:
+        """Open precisely this URL and classify it without following or acting on forms."""
+        await self.driver.goto(url)
+        await self._await_ready()
+        return await self.inspect()
+
     async def _follow_apply(self, model: PageModel) -> bool:
         link = next((lk for lk in model.snapshot.links if APPLY_LINK.search(lk.text)), None)
         if link is not None:
             await self.driver.goto(link.href)
             return True
+        # An apply control leads to the form. One that submits a form is clicked only
+        # when that form has no fillable field at all (a navigation form), never when
+        # anything on the page could be sent with it.
         button = next(
-            (b for b in model.snapshot.buttons
-             if APPLY_LINK.search(b.text) and not b.submits_form and not b.disabled),
+            (b for b in model.apply_controls
+             if not b.disabled
+             and (not b.submits_form or model.fillable_counts.get(b.form_index, 0) == 0)),
             None,
         )
         if button is None:
@@ -338,8 +508,14 @@ class GenericApplicationBrowser:
         problems = packet.problems_against(form)
         if problems:
             raise ValueError("packet does not fit this form: " + "; ".join(problems))
+        issued = next((item for item in self._observations if item[0] is form), None)
         model = await self._model()
         current = model.form
+        if self.annotator is not None:
+            document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
+            if (issued is None or issued[1] != document
+                    or issued[2] != observation_signature(model)):
+                raise ValueError("the annotated document or field bindings changed; re-inspect and resolve")
         if current is None or current.fingerprint != form.fingerprint:
             raise ValueError(
                 "the page no longer shows the inspected form step; re-inspect and resolve again"
@@ -348,33 +524,37 @@ class GenericApplicationBrowser:
         errors_before = set(current.page_errors)
         results: list[FieldFillResult] = []
         lost: PageContextLost | None = None
-        for app_field in form.fields:
-            binding = model.bindings[app_field.id]
-            answer = packet.answer_for(app_field.id)
-            if lost is not None:
-                if answer is not None:
+        self._active_fill_signature = observation_signature(model)
+        try:
+            for app_field in form.fields:
+                binding = model.bindings[app_field.id]
+                answer = packet.answer_for(app_field.id)
+                if lost is not None:
+                    if answer is not None:
+                        results.append(FieldFillResult(
+                            field_id=app_field.id, status=FieldFillStatus.FAILED,
+                            detail="not attempted: the page changed while filling an earlier field"))
+                    continue
+                try:
+                    await self._assert_fill_context()
+                    if answer is None:
+                        results.append(await self._leave_unanswered(app_field, binding))
+                    else:
+                        results.append(await self._apply(app_field, binding, answer.value))
+                    await self._assert_fill_context()
+                except PageContextLost as exc:
+                    # The document or approved questions changed. Every remaining
+                    # answer is reported without writing through stale bindings.
+                    lost = exc
+                    self._context_lost = True
+                    self._inspected_after_loss = False
                     results.append(FieldFillResult(
-                        field_id=app_field.id, status=FieldFillStatus.FAILED,
-                        detail="not attempted: the page changed while filling an earlier field"))
-                continue
-            try:
-                await self._assert_fill_context()
-                if answer is None:
-                    results.append(await self._leave_unanswered(app_field, binding))
-                else:
-                    results.append(await self._apply(app_field, binding, answer.value))
-                await self._assert_fill_context()
-            except PageContextLost as exc:
-                # The document is gone: nothing further may be written to whatever
-                # replaced it. Every remaining answer is reported, not attempted.
-                lost = exc
-                self._context_lost = True
-                self._inspected_after_loss = False
-                results.append(FieldFillResult(
-                    field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
-            except DriverError as exc:  # per-field, page still the same: keep going
-                results.append(FieldFillResult(
-                    field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
+                        field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
+                except DriverError as exc:  # per-field, page still the same: keep going
+                    results.append(FieldFillResult(
+                        field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
+        finally:
+            self._active_fill_signature = None
         if lost is not None:
             self._filled = None
             self._context_lost = True
@@ -382,7 +562,7 @@ class GenericApplicationBrowser:
             with contextlib.suppress(DriverError):
                 evidence = await self._evidence.capture(
                     self.driver, f"context-lost-step-{form.step}",
-                    description="page after the document was replaced mid-fill")
+                    description="page after its document or approved questions changed mid-fill")
             return FillResult(
                 form_step=form.step, fields=results, evidence=evidence,
                 page_errors=[f"{lost}; the step must be inspected and resolved again"],
@@ -391,10 +571,12 @@ class GenericApplicationBrowser:
         self._inspected_after_loss = False
         # The packet authorized exactly the inspected questions; that stays the authority.
         self._filled = (form.scope.key, form.fingerprint)
+        self._filled_structure = observation_signature(model)
         after = await self._model(evidence=f"filled-step-{form.step}")
         await self._assert_fill_context()
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
-        if after.form is None or after.form.fingerprint != form.fingerprint:
+        if (after.form is None or after.form.fingerprint != form.fingerprint
+                or self._changed_since_fill(after.form)):
             results.extend(await self._contain_changed_questions(form, after))
             new_errors.append(
                 "questions on this step changed while filling; re-inspect and resolve again "
@@ -421,8 +603,32 @@ class GenericApplicationBrowser:
             self._inspected_after_loss = False
             raise PageContextLost("the page changed while filling; re-inspect before continuing")
 
-    async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
+    async def _assert_fill_freshness(self) -> None:
+        """Check trusted DOM constraints before every mutation, never reclassify.
+
+        This also runs between individual checkbox-group writes. An earlier input
+        handler may replace a later question without replacing the document.
+        """
         await self._assert_fill_context()
+        if self._active_fill_signature is None:
+            return
+        try:
+            snapshot = await self._snapshot()
+            fresh = build_page(snapshot, fallback_step=self._steps_advanced,
+                               http_status=self.driver.last_status)
+        except DriverError as exc:
+            raise PageContextLost(
+                "cannot re-observe field constraints before writing; re-inspect before continuing"
+            ) from exc
+        await self._assert_fill_context()
+        if observation_signature(fresh) != self._active_fill_signature:
+            raise PageContextLost(
+                "questions, bindings, actions, or employer context changed while filling; "
+                "remaining answers were not attempted; re-inspect and resolve again"
+            )
+
+    async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
+        await self._assert_fill_freshness()
         try:
             await operation()
         except PageContextLost:
@@ -497,6 +703,16 @@ class GenericApplicationBrowser:
             text = value.text.replace("\r\n", "\n")
             return result(isinstance(got, str) and got.replace("\r\n", "\n") == text, got)
         if isinstance(value, ChoiceValue) and ctype is ControlType.SELECT:
+            if binding.aria is not None:
+                selected: list[str] = []
+
+                async def select_accessible() -> None:
+                    selected.extend(await self.driver.select_accessible(
+                        binding.selector, [value.value], dict(binding.aria or {}),
+                        before_action=self._assert_fill_freshness))
+
+                await self._write(select_accessible)
+                return result(selected == [value.value], selected)
             await self._write(lambda: self.driver.select_values(binding.selector, [value.value]))
             got = (await self._read(binding.selector)).get("values")
             return result(got == [value.value], got)
@@ -551,7 +767,9 @@ class GenericApplicationBrowser:
         return (
             self._filled is not None
             and self._filled[0] == form.scope.key
-            and self._filled[1] != form.fingerprint
+            and (self._filled[1] != form.fingerprint
+                 or (self._filled_structure is not None and self._last is not None
+                     and self._filled_structure != observation_signature(self._last)))
         )
 
     # --- navigation -----------------------------------------------------------------
@@ -636,6 +854,11 @@ class GenericApplicationBrowser:
             return not_dispatched(
                 "required controls must be operated by the user first: "
                 + ", ".join(model.unsupported_pending),
+                next_state=NotSubmittedNext.NEEDS_INPUT,
+            )
+        if model.captcha.present and not model.captcha.solved:
+            return not_dispatched(
+                "a CAPTCHA on this form must be solved by the user before submitting",
                 next_state=NotSubmittedNext.NEEDS_INPUT,
             )
         invalid = await self.driver.evaluate(
@@ -842,7 +1065,13 @@ class GenericApplicationBrowser:
     # --- user interaction and reconciliation ------------------------------------------
 
     def _needs_user(self, model: PageModel) -> bool:
-        return model.inspection.kind in USER_ACTION_PAGES or bool(model.unsupported_pending)
+        # A pending CAPTCHA widget on a form is the user's to solve only when this
+        # session may submit; preparation never needs it and never waits for it.
+        return (
+            model.inspection.kind in USER_ACTION_PAGES
+            or bool(model.unsupported_pending)
+            or (self.options.allow_submission and model.inspection.captcha_pending)
+        )
 
     async def wait_for_user(self, reason: str, timeout_s: float | None = None) -> PageInspection:
         """Poll the live page until the user has finished (signed in, solved the

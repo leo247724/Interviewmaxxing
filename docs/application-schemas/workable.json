@@ -1,0 +1,88 @@
+{
+  "backend": "workable",
+  "schema_version": "0.1.0",
+  "generated_at_utc": "2026-09-23T23:52:00Z",
+  "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab DAD881D819255BA3BD8D9AA69DE16EEA",
+  "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+  "status": "observed",
+  "coverage": {"inventory_density": 43, "observed_examples": 3, "fully_mapped_examples": 3, "closed_samples": 1, "unresolved_variant": 1, "employers": ["ATAK Interactive", "ArcSite", "K1X"]},
+  "observed_samples": [
+    {"sample_id": "wk-01", "url": "https://apply.workable.com/atak-interactive/j/4D2899C4B9/apply/", "page_title": "Senior Marketing Strategist - ATAK Interactive - Application", "captured_at_utc": "2026-09-23T23:49:33Z", "evidence_private": [".imx/dynamic-applications/fable/evidence/workable-01-atak.controls.json", ".imx/dynamic-applications/fable/evidence/workable-01-atak.state.txt"], "steps_visited": ["blank /apply form"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "wk-02", "url": "https://apply.workable.com/arcsite/j/AD29CC0E77/apply/", "inventory_url": "https://apply.workable.com/arcsite/j/AD29CC0E77", "page_title": "User Acquisition Manager, PLG - ArcSite - Application", "captured_at_utc": "2026-09-23T23:49:52Z", "evidence_private": [".imx/dynamic-applications/fable/evidence/workable-02-arcsite.controls.json", ".imx/dynamic-applications/fable/evidence/workable-02-arcsite.state.txt"], "steps_visited": ["blank /apply form"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "wk-03", "url": "https://apply.workable.com/k1x/j/4246E71C5F/apply", "inventory_url": "https://apply.workable.com/j/4246E71C5F (short form redirects to /k1x/j/…)", "page_title": "Senior Director, Demand Generation - K1X - Application", "captured_at_utc": "2026-09-23T23:50:19Z", "evidence_private": [".imx/dynamic-applications/fable/evidence/workable-03-k1x.controls.json", ".imx/dynamic-applications/fable/evidence/workable-03-k1x.state.txt", ".imx/dynamic-applications/fable/evidence/workable-03-k1x-experience.controls.json"], "steps_visited": ["blank /apply form", "attempted '+ Add Experience' (no sub-form rendered)"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "wk-closed-flosum", "url": "https://apply.workable.com/flosum/j/575AF5CA79/", "result": "closed: redirected to https://apply.workable.com/flosum/?not_found=true (company openings list)", "captured_at_utc": "2026-09-23T23:49:58Z", "evidence_private": [".imx/dynamic-applications/fable/evidence/workable-03-flosum.controls.json"], "actual_observed_backend": "workable (job closed)"},
+    {"sample_id": "wk-04-view-variant", "url": "https://jobs.workable.com/view/fCR6E1sNfP7attKix7B9yC/remote-director-of-paid-media-in-united-states-at-freebird", "page_title": "Director of Paid Media | Freebird | Jobs by Workable", "captured_at_utc": "2026-09-23T23:50:31Z", "result": "job-board view page with an 'Apply now' button (duplicated by a hidden sticky copy). Clicking it reported success but produced no navigation in the owned tab; the target form URL was not resolved. Treat jobs.workable.com/view URLs as needing resolution to apply.workable.com/<org>/j/<id>/apply.", "evidence_private": [".imx/dynamic-applications/fable/evidence/workable-04-freebird-view.controls.json", ".imx/dynamic-applications/fable/evidence/workable-04-freebird-form.controls.json"]}
+  ],
+  "observed": {
+    "page_shape": {
+      "single_page_form": true,
+      "form": "one <form> (form_index 0, method get, action = same /apply URL) with submit button text 'Submit application'; sections 'Personal information', 'Profile', 'Details'; a 'Scroll progress' progressbar.",
+      "route": "apply.workable.com/<org>/j/<ID>/apply (job page at …/j/<ID>; short form apply.workable.com/j/<ID> redirects to org path).",
+      "cookie_dialog": "a cookie-consent dialog ('This website uses cookies…') is present on apply pages and may intercept clicks on secondary buttons."
+    },
+    "control_families": {
+      "text": "inputs with id=name (firstname, lastname, email, headline, address, city, postcode, country) and maxlength (127/255); label text prefixed '* ' when required, '(Optional)' suffix when optional; aria-labelledby gives the bare label.",
+      "phone": "div[role=combobox] aria-label 'Telephone country code' showing '+1' + input[type=tel] name=phone.",
+      "address": "input#address with describedby help 'Include your city, region, and country, so that employers can easily manage your application.' plus separate unlabeled city/postcode/country inputs (likely populated from an address autocomplete). Observed has_value=true on load in two samples (browser or geolocation prefill; value not captured).",
+      "file": "input[type=file] id=input_files_input_<random> labelled via aria-labelledby 'Resume' (accept .pdf,.doc,.docx,.odt,.rtf + mime types) or 'Photo' (accept jpg/jpeg/gif/png); 'Choose file' label text.",
+      "repeated_sections": "buttons aria-label 'Add Education' / 'Add Experience' (visible text '+ Add', marked (Optional)). Sub-form NOT observed: click did not render fields (cookie dialog suspected).",
+      "textarea": "textarea#summary 'Summary (Optional)', textarea#cover_letter 'Cover letter (Optional)' maxlength 200000, and custom question textareas id/name QA_<digits>.",
+      "screening_radio": "fieldset[role=radiogroup] aria-labelledby question; each option is a div[role=radio] wrapper (id wrapper_<rand>) around input[type=radio] name=QA_<digits> with labels YES / NO; required attr set.",
+      "submit": "button[type=submit] 'Submit application'"
+    },
+    "field_patterns": [
+      {"key": "first_name", "label_seen": "* First name", "control": "text", "required": true, "seen_in": ["wk-01","wk-02","wk-03"]},
+      {"key": "last_name", "label_seen": "* Last name", "control": "text", "required": true, "seen_in": ["wk-01","wk-02","wk-03"]},
+      {"key": "email", "label_seen": "* Email", "control": "email", "required": true, "seen_in": ["wk-01","wk-02","wk-03"]},
+      {"key": "headline", "label_seen": "Headline (Optional)", "control": "text", "required": false, "seen_in": ["wk-02","wk-03"]},
+      {"key": "phone", "label_seen": "Phone (Optional) +1 | * Phone +1", "control": "phone", "required": "wk-02 false, wk-03 true", "seen_in": ["wk-02","wk-03"]},
+      {"key": "address", "label_seen": "Address (Optional) | * Address", "control": "address", "required": "wk-02 false, wk-03 true", "seen_in": ["wk-02","wk-03"]},
+      {"key": "photo", "label_seen": "Photo", "control": "file (images)", "required": false, "seen_in": ["wk-03"]},
+      {"key": "education_repeated", "label_seen": "Add Education (Optional)", "control": "repeated section", "seen_in": ["wk-02","wk-03"], "sub_fields": "unobserved"},
+      {"key": "experience_repeated", "label_seen": "Add Experience (Optional)", "control": "repeated section", "seen_in": ["wk-02","wk-03"], "sub_fields": "unobserved"},
+      {"key": "summary", "label_seen": "Summary (Optional)", "control": "textarea", "required": false, "seen_in": ["wk-02","wk-03"], "benchmark_candidate": true},
+      {"key": "resume", "label_seen": "Resume", "control": "file", "required": true, "accept": ".pdf,.doc,.docx,.odt,.rtf", "seen_in": ["wk-01","wk-02","wk-03"]},
+      {"key": "cover_letter", "label_seen": "Cover letter (Optional)", "control": "textarea maxlength 200000", "required": false, "seen_in": ["wk-02","wk-03"], "benchmark_candidate": true},
+      {"key": "screening_yes_no", "control": "screening_radio", "required": true, "questions_seen": ["Do you acknowledge that the salary range of $90,000 to $110,000 for this position? By answering \"Yes,\" you wish to move forward with the process knowing this range. (wk-01)", "Do you currently live in the United States? (wk-01)", "Do you have experience managing acquisition specifically for a self-serve or product-led growth (PLG) motion? (wk-02)", "Do you have hands-on experience managing paid acquisition campaigns across platforms such as Google Ads, Meta Ads Manager, or Apple Search Ads? (wk-02)", "Do you have direct, hands-on experience managing App Store Optimization (ASO) across iOS, Android, or Windows platforms? (wk-02)", "Do you have 8+ years of experience in demand generation or growth marketing at a B2B SaaS company? (wk-03)", "Have you personally owned a pipeline/revenue number and been responsible for full-funnel reporting and forecasting? (wk-03)", "Are you legally authorized to work in the U.S. without current or future sponsorship, and are you comfortable in a fully remote work environment? (wk-03; compound two-part question)", "Do you have hands-on experience running hosted events (webinars, roundtables, and/or in-person) as a measurable pipeline-driving channel — not just brand awareness? (wk-03)"]},
+      {"key": "screening_narrative", "label_seen": "* Do you have experience managing and developing a team (i.e., people management experience), while still staying hands-on as an individual contributor? Please explain.", "control": "textarea name=QA_<digits>", "required": true, "seen_in": ["wk-03"], "benchmark_candidate": true}
+    ],
+    "step_patterns": [
+      {"step": "blank_form", "identity_hint": "url …/j/<ID>/apply; title '<job> - <company> - Application'; sections Personal information / Profile / Details", "observed": true},
+      {"step": "final_submit", "control": "button[type=submit] 'Submit application'", "observed": true, "STOP_BOUNDARY": true, "confidence": "high; single page; no captcha widget seen on load", "never_actuated": true}
+    ],
+    "conditional_patterns": [
+      {"trigger": "'+ Add' Education/Experience", "effect": "expected to reveal a repeated sub-form (title, company, dates, current checkbox, description)", "observed": "click succeeded, no fields rendered; UNVERIFIED"},
+      {"trigger": "address autocomplete", "effect": "city/postcode/country hidden inputs populated", "observed": "inputs present, mechanism not exercised"}
+    ],
+    "blockers": [
+      {"type": "captcha", "detail": "none on load", "observed": true},
+      {"type": "auth", "detail": "none", "observed": true},
+      {"type": "cookie_dialog", "detail": "cookie consent dialog present; may intercept clicks", "observed": true},
+      {"type": "closed_posting", "detail": "Flosum posting closed (not_found redirect); do not count in coverage", "observed": true},
+      {"type": "url_variant", "detail": "jobs.workable.com/view/... pages need resolution to apply.workable.com; 'Apply now' click did not navigate in a background tab", "observed": true}
+    ],
+    "runtime_observations": [
+      "Required marker is a leading '* ' in the label text; optional fields say '(Optional)'. required attr is also set.",
+      "Screening radios expose a wrapper div[role=radio] and an inner native radio; click the inner input or the wrapper, then verify checked state.",
+      "Question ids QA_<digits> are stable per posting but employer-specific; labels are the semantic key.",
+      "address may already have a value on a blank load; never treat has_value as user-entered."
+    ]
+  },
+  "inferred": {
+    "typical_stages_unverified": ["blank /apply form", "Submit application", "confirmation page 'Thank you' (UNVERIFIED)"],
+    "repeated_section_inference": "Workable experience blocks typically contain Title, Company, Industry, Summary, Start/End date (month/year), 'I currently work here' checkbox; education blocks School, Field of study, Degree, dates.",
+    "view_url_inference": "jobs.workable.com 'Apply now' likely opens apply.workable.com/<org>/j/<ID>/apply in a new window."
+  },
+  "provider_hint": {
+    "for_jev": "Workable single-page form: Personal information (first/last/email/headline/phone/address), Profile (education/experience repeated blocks, summary, resume, cover letter), Details (employer screening YES/NO radios named QA_<id> and occasional required narrative textarea). Required = leading '*'. Stop at 'Submit application'.",
+    "exact_copy_facts": ["first_name", "last_name", "email", "phone", "address/city/postcode/country", "headline (if a verified headline fact exists)"],
+    "option_choice_from_verified_facts": ["YES/NO screening on residency, work authorization, years of experience, channel experience — only when a verified fact answers the exact question; compound questions (authorization + remote comfort) need both facts"],
+    "escalate_to_writer_opus": ["Summary", "Cover letter", "narrative screening textarea (team management while hands-on)"],
+    "requires_human_input": ["salary-range acknowledgement", "photo", "resume file", "any screening question lacking a verified fact"]
+  },
+  "edge_cases": [
+    "Salary-range acknowledgement is phrased as a YES/NO gate; answering NO likely ends consideration.",
+    "A compound YES/NO question bundles two facts (work authorization without sponsorship AND remote comfort).",
+    "Short URL apply.workable.com/j/<ID> and org URL both resolve to the same form; document identity should use the job ID."
+  ]
+}

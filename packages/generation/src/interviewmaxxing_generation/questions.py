@@ -113,6 +113,22 @@ def is_neutral_hint(text: str | None) -> bool:
     return not has_digits or bool(_EXAMPLE_MARKER.search(hint))
 
 
+_EXAMPLE_ONLY_HELP = re.compile(r"^(?:e\.?g\.?|ex\.?|for example|examples?|such as)\b[\s:,.-]*")
+_CONSTRAINING_HELP = re.compile(r"[?$€£%<>=+]|\b(?:must|only|required|do not|don't|cannot|except|unless|at least|at most|minimum|maximum|no more|no less)\b")
+
+
+def is_example_only_help(text: str | None) -> bool:
+    """True when help text merely lists examples of acceptable answers ("e.g.,
+    LinkedIn, Indeed, Referral") and so does not change what the label asks. Any
+    question mark, comparison, currency or constraining word keeps it part of the
+    question, and a match needs some example content after the marker."""
+    hint = normalize_text(text or "").translate(_UNIFORM_DASHES)
+    marker = _EXAMPLE_ONLY_HELP.match(hint)
+    if marker is None or not hint[marker.end():].strip():
+        return False
+    return _CONSTRAINING_HELP.search(hint) is None
+
+
 def display_question(field: ApplicationField) -> str:
     """The complete question as the user sees it: core's ``field.question_text``
     (``render_question``: label, help text and placeholder, one per line, symbols
@@ -140,7 +156,8 @@ class QuestionText:
             help_text=wording_key(field.help_text),
             placeholder=wording_key(field.placeholder),
             rendered=wording_key(field.question_text),
-            label_is_complete=not wording_key(field.help_text)
+            label_is_complete=(not wording_key(field.help_text)
+                               or is_example_only_help(field.help_text))
             and is_neutral_hint(field.placeholder),
         )
 

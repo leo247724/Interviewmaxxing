@@ -1,0 +1,280 @@
+{
+ "backend": "kula",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:07:59Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 2,
+  "employers_in_inventory": 2,
+  "observed_examples": 2,
+  "fully_mapped_examples": 2,
+  "status": "observed",
+  "note": "Both employers mapped. React SPA; the application form is a second <form> on the posting page. Text inputs report a 0x0 bounding box (CSS layout) although the form text is rendered, so a naive visibility filter drops them — the raw controls.json keeps them with visible=false and their info.* ids. Requiredness comes from the trailing '*' in the label and 'This field is required' helper text; only the resume input and radios carry the required attribute. Google reCAPTCHA v2 anchor present; a textarea#g-recaptcha-response exists."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ku-01",
+   "url": "https://careers.kula.ai/linkby/39585",
+   "page_title": "Senior Manager - Demand Generation - Linkby",
+   "captured_at_utc": "2026-09-24T00:06:13.561Z",
+   "hosting_mode": "native careers.kula.ai/<company>/<id> (posting + 'Application form' panel on same page)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/kula-01-linkby.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/kula-01-linkby.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/kula-01-linkby.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/kula-01-linkby.formtext.txt"
+   ],
+   "steps_visited": [
+    "posting",
+    "clicked button[data-testid=apply-button] 'Apply for this position' (scroll/reveal of the in-page form; no submission)"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit (never clicked)"
+   ],
+   "classification_note": "Linkby: LinkedIn URL required, Photo upload (jpeg/png, 10 MB), Education/Experience 'Add' sub-forms, Portfolio / Writing Examples upload under ADDITIONAL INFORMATION; no employer questions.",
+   "option_lists_captured": "no selects; radio none"
+  },
+  {
+   "sample_id": "ku-02",
+   "url": "https://careers.kula.ai/propellic/19774",
+   "page_title": "SEO / GEO Manager - Propellic",
+   "captured_at_utc": "2026-09-24T00:06:05.661Z",
+   "hosting_mode": "native careers.kula.ai/<company>/<id> (posting + 'Application form' panel on same page)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/kula-02-propellic.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/kula-02-propellic.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/kula-02-propellic.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/kula-02-propellic.formtext.txt"
+   ],
+   "steps_visited": [
+    "posting",
+    "clicked button[data-testid=apply-button] 'Apply for this position' (scroll/reveal of the in-page form; no submission)"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit (never clicked)"
+   ],
+   "classification_note": "Propellic: 'Preferred Location*' react-select (options NOT captured — menu did not open on 2 attempts; kula-02-propellic.options.jsonl shows aria-expanded=false), 'Work Style Survey*' Yes/No radio with external Culture Index link; no Photo/Portfolio fields.",
+   "option_lists_captured": "Preferred Location options unobserved; radio Yes/No inline"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "Posting page shows tabs 'Job details' / 'Application form' and buttons 'Apply for this position' (top and bottom, data-testid=apply-button) that reveal/scroll to the form; no navigation.",
+   "form": "<form action='#'> sections: (Preferred Location*), 'Personal Information', 'Profile' (Education/Experience Add, Resume*, Cover Letter), 'ADDITIONAL INFORMATION' (employer extras), employer survey questions, submit 'Apply for this position'. Helper text 'Action required!' per section; 'This field is required' under required fields.",
+   "captcha": "Google reCAPTCHA v2 (key 6LdmwoIp…)",
+   "auth": "none"
+  },
+  "control_families": {
+   "text": "input id=name='info.first_name' | 'info.last_name' | 'info.email'(type=email) | 'info.linkedin_url'(type=url) | 'info.website_url'(type=url); placeholder 'Enter first name' etc.; label text 'First name*' precedes; NO required attr — use label '*'",
+   "phone": "input[type=tel]#phone with country-code button ('🇺🇸+1') and hidden input name='info-phone-e164'",
+   "react_select": "input#react-select-<r>-input (Preferred Location*); options load in a portal listbox only when opened — not captured",
+   "file": "input[type=file]#resume required accept pdf/docx (20 MB); #cover_letter optional; #photo accept jpeg/png (10 MB); #field-<r> custom uploads (e.g. 'Portfolio / Writing Examples'); dropzone copy 'Drag and drop files or click to upload — Supported files: .pdf & .docx, up to 20 MB'",
+   "subform_add": "'Education' / 'Experience' — button 'Add' opens inline sub-form (not exercised)",
+   "survey_radio": "div[role=radiogroup] with input[type=radio] name=radio-<r> labels Yes/No, required attr; question text + link precede (e.g. 'Please fill out the following work style survey and check yes when complete. https://go.cultureindex.com/…')",
+   "submit": "button[data-testid=apply-button] 'Apply for this position' inside the form (bottom)"
+  },
+  "field_patterns": [
+   {
+    "key": "preferred_location",
+    "label_seen": "Preferred Location *",
+    "control": "react_select",
+    "required": true,
+    "seen_in": [
+     "ku-02"
+    ],
+    "note": "options unobserved"
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email*",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone",
+    "control": "phone",
+    "required": false,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn URL (* on ku-01)",
+    "control": "url",
+    "required": "per employer",
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "website_url",
+    "label_seen": "Website URL",
+    "control": "url",
+    "required": false,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "photo",
+    "label_seen": "Photo",
+    "control": "file jpeg/png",
+    "required": false,
+    "seen_in": [
+     "ku-01"
+    ]
+   },
+   {
+    "key": "education",
+    "label_seen": "Education — Add",
+    "control": "subform_add",
+    "required": false,
+    "seen_in": [
+     "ku-01"
+    ]
+   },
+   {
+    "key": "experience",
+    "label_seen": "Experience — Add",
+    "control": "subform_add",
+    "required": false,
+    "seen_in": [
+     "ku-01"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume*",
+    "control": "file pdf/docx",
+    "required": true,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter",
+    "control": "file pdf/docx",
+    "required": false,
+    "seen_in": [
+     "ku-01",
+     "ku-02"
+    ]
+   },
+   {
+    "key": "portfolio",
+    "label_seen": "Portfolio / Writing Examples",
+    "control": "file pdf/docx",
+    "required": false,
+    "seen_in": [
+     "ku-01"
+    ]
+   },
+   {
+    "key": "work_style_survey",
+    "label_seen": "Work Style Survey* — Please fill out the following work style survey and check 'yes' when complete. https://go.cultureindex.com/p/… [Yes/No]",
+    "control": "survey_radio",
+    "required": true,
+    "seen_in": [
+     "ku-02"
+    ],
+    "note": "external assessment attestation — human action"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting_with_form",
+    "identity_hint": "careers.kula.ai/<co>/<id>; input#info.first_name; button[data-testid=apply-button]",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "bottom button[data-testid=apply-button] 'Apply for this position'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high (top button only reveals; bottom one submits)"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Add' in Education/Experience",
+    "effect": "inline sub-form",
+    "observed": "button only"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2",
+    "observed": true
+   },
+   {
+    "type": "external_assessment",
+    "detail": "Culture Index survey link with Yes/No attestation (Propellic)",
+    "observed": true
+   },
+   {
+    "type": "tooling",
+    "detail": "inputs report zero-size rects; react-select menu did not open via synthetic click",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Do not filter controls by bounding box on this site.",
+   "Two identical 'Apply for this position' buttons: the one inside the form submits.",
+   "Phone value is normalised into hidden info-phone-e164."
+  ]
+ },
+ "inferred": {
+  "confidence": "high for standard block",
+  "not_observed": [
+   "Preferred Location options",
+   "Education/Experience sub-form fields",
+   "post-submit"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Kula ATS (careers.kula.ai)",
+  "detect": "careers.kula.ai, input#info.first_name, button[data-testid=apply-button]",
+  "for_jev": "Kula: single in-page form. Optional 'Preferred Location' select (employer), first/last/email required, phone with country code, LinkedIn/Website URLs (LinkedIn required at some employers), optional Photo, Education/Experience add blocks, Resume pdf/docx required (20 MB), optional Cover Letter and Portfolio uploads, employer survey attestation radio (external Culture Index link). reCAPTCHA. Bottom 'Apply for this position' submits."
+ },
+ "edge_cases": [
+  {
+   "case": "external survey attestation",
+   "detail": "Propellic requires confirming completion of a Culture Index survey"
+  }
+ ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worker Resource Budget"
+  short_description: "Measure host pressure and pace parallel workers"
+  default_prompt: "Use $worker-resource-budget to check host pressure before I start more parallel workers."

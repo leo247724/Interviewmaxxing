@@ -1,0 +1,189 @@
+{
+ "backend": "freshteam",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:10:17Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 1,
+  "employers_in_inventory": 1,
+  "observed_examples": 1,
+  "fully_mapped_examples": 1,
+  "status": "observed",
+  "note": "Singleton coverage (DDMR). Form is embedded at the bottom of the posting page (anchor #applicant-form). Text inputs report 0x0 rects before the 'Apply Now' anchor scroll; raw controls.json keeps them (visible=false in first capture, later capture after reveal). Required = trailing '*' in label text (no required attr). Google reCAPTCHA v2 (anchor + bframe) present."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ft-01",
+   "url": "https://ddmr.freshteam.com/jobs/JOSVrfDwIrGe/performance-marketing-strategist",
+   "page_title": "DDMR Careers",
+   "captured_at_utc": "2026-09-24T00:09:39.523Z",
+   "hosting_mode": "native <tenant>.freshteam.com/jobs/<id>/<slug> (form on posting page)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/freshteam-01-ddmr.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/freshteam-01-ddmr.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/freshteam-01-ddmr.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/freshteam-01-ddmr.formtext.txt"
+   ],
+   "option_lists_captured": "no selects present",
+   "steps_visited": [
+    "posting; clicked in-page <a href='/#applicant-form'> 'Apply Now' (scroll only)",
+    "blank form 'Submit Your Application'"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Submit Application' (never clicked)"
+   ],
+   "classification_note": "Posting copy 'Crush the application process:' describes employer expectations; no custom question controls exist — only the standard block."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "<a href='/#applicant-form'> 'Apply Now' near title scrolls to form",
+   "form": "form[name=applicant_form] method=post action=/jobs/<id>/applicants; heading 'Submit Your Application'; error list placeholder 'You have errors in applying'; input[type=submit]#submit-button value 'Submit Application'",
+   "captcha": "reCAPTCHA v2 (key 6Lfx0SoU…) with textarea#g-recaptcha-response",
+   "auth": "none"
+  },
+  "control_families": {
+   "resume": "input[type=file]#uploadFile name applicant[lead_attributes[resumes_attributes][][content]] title 'Apply With Resume'; label 'Apply With Resume *'; accept doc/docx/pdf/txt/html/rtf/odt/wps (+octet-stream)",
+   "text": "input[type=text] name applicant[lead_attributes[<field>]] id applicant_lead_attributes[<field>]; label text precedes ('First Name*'); no required attr",
+   "profile_links": "input name applicant[lead_attributes][profile_links][][url] placeholder 'Hyperlink' under 'Social Network and Web Links — Provide us with links to see some of your work (Git/ Dribble/ Behance/ Pinterest/ Blog/ Medium)' with '+' button to add more",
+   "cover_letter": "input[type=file]#uploadCoverLetter accept pdf/doc/docx, label 'Attach a file < 2 MB'",
+   "submit": "input[type=submit]#submit-button[name=commit] 'Submit Application'"
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "Apply With Resume *",
+    "control": "resume",
+    "required": true,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "middle_name",
+    "label_seen": "Middle Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "mobile",
+    "label_seen": "Mobile",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "profile_links",
+    "label_seen": "Social Network and Web Links",
+    "control": "profile_links (repeatable)",
+    "required": false,
+    "seen_in": [
+     "ft-01"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter — Attach a file < 2 MB",
+    "control": "cover_letter",
+    "required": false,
+    "seen_in": [
+     "ft-01"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "form[name=applicant_form] on *.freshteam.com/jobs/",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "input#submit-button 'Submit Application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'+' button",
+    "effect": "adds another profile link input",
+    "observed": "button only"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Do not filter by bounding box before scrolling to the form.",
+   "Resume accept list is MIME-based and broad; pdf/docx are safe."
+  ]
+ },
+ "inferred": {
+  "confidence": "high for this tenant; other Freshteam tenants may add custom questions (unobserved)",
+  "not_observed": [
+   "custom questions",
+   "post-submit"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Freshteam (Freshworks)",
+  "detect": "*.freshteam.com/jobs/, form[name=applicant_form], input#uploadFile",
+  "for_jev": "Freshteam: form at bottom of posting — required resume upload, First/Last Name, Email required, Middle Name/Mobile/Phone optional, repeatable web/social links, optional cover letter file (<2 MB), reCAPTCHA, 'Submit Application'. No narrative questions on this tenant."
+ },
+ "edge_cases": []
+}

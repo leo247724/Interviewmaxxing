@@ -1,0 +1,327 @@
+{
+ "backend": "paycor",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:00:41Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 3,
+  "employers_in_inventory": 3,
+  "observed_examples": 3,
+  "fully_mapped_examples": 1,
+  "status": "partial",
+  "note": "Civitas: full blank 'Apply with a Resume' page mapped (step 1 of a multi-step flow). AccessHope: pre-screening questionnaire (8 Yes/No) shown BEFORE the resume page; questionnaire mapped, later steps gated behind 'Continue'. Harvest Group: tenant embeds the form in an iframe on harvestgroup.com and frame-busts direct navigation; bridge listed no cross-origin frame target, so the form was not observed."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "pc-01",
+   "url": "https://recruitingbypaycor.com/career/JobIntroduction.action?clientId=8a7883c67c102844017c138ec8eb000e&id=8a7883ac9cbb2ae3019cd4a1c7412082&lang=en",
+   "page_title": "Careers at Harvest Group | Work With Us",
+   "captured_at_utc": "2026-09-23T23:57:16.529Z",
+   "hosting_mode": "JobIntroduction -> redirect to employer site harvestgroup.com/careers/?gnk=apply&gni=<id> with SubmitResume.action inside an iframe",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/paycor-01-harvest-apply.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-01-harvest-apply.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-01-harvest-apply.options.json"
+   ],
+   "steps_visited": [
+    "JobIntroduction (div.gnewtonApplyBtn 'Apply for this Position' onclick formSubmitNoOverlay('gravityApplyJob'))",
+    "redirected to harvestgroup.com; iframe src recruitingbypaycor.com/career/SubmitResume.action?...&parentUrl=...",
+    "direct open of SubmitResume.action (with and without parentUrl) bounced back to harvestgroup.com"
+   ],
+   "gated_steps_not_visited": [
+    "resume/personal-info form",
+    "questionnaire",
+    "submit"
+   ],
+   "classification_note": "BLOCKED: form only renders inside employer-site iframe; OpenCLI 'frames' returned only an about:blank frame. Human/CDP frame targeting needed. Extra evidence: paycor-01-harvest.*, paycor-01-harvest-frame.*"
+  },
+  {
+   "sample_id": "pc-02",
+   "url": "https://recruitingbypaycor.com/career/JobIntroduction.action?clientId=8a7883c68b8cdc91018bb4d838d208e3&id=8a7887aca0abfca001a0c99f54b9075a&source=&lang=en",
+   "page_title": "AccessHope",
+   "captured_at_utc": "2026-09-23T23:58:24.512Z",
+   "hosting_mode": "native recruitingbypaycor.com SubmitResume.action (questionnaire-first variant)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/paycor-02-accesshope.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-02-accesshope.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-02-accesshope.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-02-accesshope.pagetext.txt"
+   ],
+   "steps_visited": [
+    "JobIntroduction",
+    "'Apply for this Position' -> pre-screening questionnaire page (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "'Continue' (posts SubmitQuestionnaire.action; never clicked)",
+    "resume/personal-info page",
+    "submit"
+   ],
+   "classification_note": "8 Yes/No screening questions rendered as div.gnewtonQuestionYes/.gnewtonQuestionNo > div.gnewtonYes/.gnewtonNo with onclick gnewtonChooseAnswer(this); each question has a hidden input named by a 32-hex question id inside form[name=gnewtonForm]; button 'Continue'. Questions (verbatim in pagetext.txt): 'Do you have the ability to work 100% remote with reliable internet service?', 'Are you available to work with individuals in multiple time-zones?', 'Do you currently participate in a OPT/STEM OPT/CPT training program(s)?', 'Does your education and/or experience meet the minimum requirements listed in the job description?', 'This role is fully remote. Do you have a reliable internet connection and a dedicated workspace for working from home?', 'Do you now, or will you in the future, require sponsorship for work authorization in the United States?', 'Are you able to perform the essential functions of the job for which you are applying, either with our without reasonable accomodation?', 'If offered a position, would you be able to provide documentation of your lawful U.S. work authorization, as required under the immigration Reform and Contract act to complete Form I-9?'"
+  },
+  {
+   "sample_id": "pc-03",
+   "url": "https://recruitingbypaycor.com/career/JobIntroduction.action?clientId=8a7883d08df214a3018dfc5f7aa00a66&id=8a78839e9fd3ba7b01a00c1b561356be",
+   "page_title": "Civitas Senior Living",
+   "captured_at_utc": "2026-09-23T23:57:50.529Z",
+   "hosting_mode": "native recruitingbypaycor.com SubmitResume.action (resume-first variant)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/paycor-03-civitas.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-03-civitas.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-03-civitas.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/paycor-03-civitas.pagetext.txt"
+   ],
+   "steps_visited": [
+    "JobIntroduction",
+    "'Apply for this Position' -> 'Apply with a Resume' + Personal/Contact Information page (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "'Submit' (posts ApplyJob.action; never clicked) — likely followed by questionnaire/EEO pages (unobserved)"
+   ],
+   "classification_note": "Full page mapped; state select options inline (63 US states/territories/military codes)."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "entry": "JobIntroduction.action posting with div.gnewtonBlueBtn.gnewtonApplyBtn text 'Apply for this Position' (NOT a button/anchor; onclick submits hidden form#gravityApplyJob to SubmitResume.action). 'Apply with Indeed' option also present (Indeed SmartApply preload iframe).",
+   "variant_resume_first": "(pc-03) headings 'Apply with a Resume', 'Personal Information', 'Contact Information', 'Comments', 'Opt in to Text Messages', 'Privacy Policy Acknowledgement'; three forms: gnewton_backToQuestionForm (hidden), form#uploadResume (input#uploadResumeInput[name=fileUpload] + Google Drive/Dropbox links + Fax Number), form[name=gnewtonForm] POST ApplyJob.action with the fields and button#gnewotn_input_14 'Submit'. Intro text: 'Thank you for your interest. Please complete the fields below and click \"Submit\".' Required marker: 'Required Fields are denoted with a \" \"' (asterisk glyph rendered via CSS).",
+   "variant_questionnaire_first": "(pc-02) 'In order to apply for this position, please answer the questions below.' + Yes/No div widgets + 'Continue' -> SubmitQuestionnaire.action.",
+   "variant_employer_iframe": "(pc-01) redirects to employer careers page that embeds SubmitResume.action in an iframe; parentUrl param drives frame-busting.",
+   "captcha": "none seen",
+   "auth": "none"
+  },
+  "control_families": {
+   "text": "input[type=text] with id=name (firstName, preferredName, lastName maxlength 30; address1 maxlength 75; city 30; zipCode 12); input[type=email]#email maxlength 75; input[type=tel]#mobile placeholder '(ddd) ddd-dddd'; <label for> bound; required attr.",
+   "select": "select#state (63 codes incl. AA/AE/AP military, territories) required",
+   "textarea": "textarea#originalComments under heading 'Comments' (optional)",
+   "file": "input[type=file]#uploadResumeInput[name=fileUpload] 'Choose a File' (text/word/pdf per copy; no accept attr) in a separate form#uploadResume; alternatives Google Drive / Dropbox; 'Fax Number' text field as a legacy alternative",
+   "radio_sms_optin": "input[type=radio][name=candidateTextMessagingOptIn] values true/false, required; question text 'Would you like to receive SMS messages from <Company> regarding your job application and interview process? Message frequency may vary. Message and data rates may apply. Reply STOP to unsubscribe or HELP for assistance.' labels Yes/No",
+   "consent_checkbox": "input[type=checkbox][name=ccpaDisclaimerAgree] required, value 'I have read and agree to this statement', under 'Privacy Policy Acknowledgement' paragraph (Paycor ATS privacy policy)",
+   "screening_yes_no": "div.gnewtonQuestionYes > div.gnewtonYes / div.gnewtonQuestionNo > div.gnewtonNo (onclick gnewtonChooseAnswer) writing to hidden input[name=<32-hex question id>]; question text is the preceding text node in the same table cell",
+   "submit": "button#gnewotn_input_14 'Submit' (resume page) / button 'Continue' (questionnaire page)"
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "Apply with a Resume — Choose a File",
+    "control": "file",
+    "required": false,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "fax_number",
+    "label_seen": "Fax Number",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "mobile_phone",
+    "label_seen": "Mobile Phone",
+    "control": "tel",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "address",
+    "label_seen": "Address",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "city",
+    "label_seen": "City",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "state",
+    "label_seen": "State",
+    "control": "select",
+    "required": true,
+    "options_total": 62,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Postal Code",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "comments",
+    "label_seen": "Comments",
+    "control": "textarea",
+    "required": false,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "sms_optin",
+    "label_seen": "Opt in to Text Messages … Yes/No",
+    "control": "radio_sms_optin",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "privacy_ack",
+    "label_seen": "Privacy Policy Acknowledgement — Acceptance: I have read and agree to this statement",
+    "control": "consent_checkbox",
+    "required": true,
+    "seen_in": [
+     "pc-03"
+    ]
+   },
+   {
+    "key": "screening_question",
+    "label_seen": "(8 employer Yes/No questions, see pc-02 note)",
+    "control": "screening_yes_no",
+    "required": "unknown (no DOM marker)",
+    "seen_in": [
+     "pc-02"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "JobIntroduction.action + div.gnewtonApplyBtn",
+    "observed": true
+   },
+   {
+    "step": "questionnaire",
+    "identity_hint": "SubmitResume.action page with div.gnewtonQuestionYes + button 'Continue' (tenant-dependent, may come first)",
+    "observed": true
+   },
+   {
+    "step": "resume_personal_info",
+    "identity_hint": "headings 'Apply with a Resume' / 'Personal Information' + form[name=gnewtonForm] action ApplyJob.action",
+    "observed": true
+   },
+   {
+    "step": "later_steps",
+    "observed": false,
+    "note": "after 'Submit' the flow may continue (EEO, questionnaire); unobserved"
+   },
+   {
+    "step": "final_submit",
+    "control": "unknown — 'Submit' on the resume page posts ApplyJob.action and may already create the application",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "low on whether more steps follow; treat 'Submit' and 'Continue' both as stop boundaries"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "tenant configuration",
+    "effect": "questionnaire-first vs resume-first vs employer-iframe hosting",
+    "observed": true
+   }
+  ],
+  "blockers": [
+   {
+    "type": "iframe",
+    "detail": "Harvest Group hosts the form in an iframe on its own domain with frame-busting; not observable via this bridge",
+    "observed": true
+   },
+   {
+    "type": "multi_step",
+    "detail": "Both native variants require posting a step ('Continue'/'Submit') to see the next page; not exercised",
+    "observed": true
+   },
+   {
+    "type": "eligibility_gate",
+    "detail": "Sponsorship / I-9 / OPT / remote-readiness Yes/No screening at AccessHope",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Apply control is a DIV with onclick; click by text or class .gnewtonApplyBtn.",
+   "Yes/No screening widgets are divs; do not look for radios. Question text precedes the widget within the same cell.",
+   "Resume upload lives in a separate form (#uploadResume) from the personal-info form.",
+   "Form element .id can be shadowed by an input named 'id' — read form ids via getAttribute."
+  ]
+ },
+ "inferred": {
+  "confidence": "medium for step-1 pages; low for later steps",
+  "not_observed": [
+   "pages after Continue/Submit",
+   "EEO questions",
+   "Harvest form"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Paycor Recruiting (Newton; recruitingbypaycor.com, 'gnewton' classes)",
+  "detect": "recruitingbypaycor.com /career/JobIntroduction.action, .gnewtonApplyBtn, form[name=gnewtonForm]",
+  "for_jev": "Paycor: multi-step. Some tenants first show a Yes/No screening questionnaire (remote readiness, time zones, OPT/CPT, minimum requirements, sponsorship, essential functions, I-9 documentation) then 'Continue'; others start with 'Apply with a Resume' (file/Drive/Dropbox/fax), Personal Information (first/preferred/last, email), Contact Information (mobile, address, city, state, zip), optional Comments textarea, required SMS opt-in Yes/No, required privacy acknowledgement checkbox, then 'Submit'. Later pages unobserved. Some employers embed the form on their own site in an iframe."
+ },
+ "edge_cases": [
+  {
+   "case": "employer iframe hosting",
+   "detail": "Harvest Group: harvestgroup.com/careers/?gnk=apply&gni=<id>"
+  }
+ ],
+ "human_action_needed": "Harvest Group: observe the form inside the employer-site iframe (needs frame-capable tooling); native tenants: a human must advance past Continue/Submit to reveal later steps."
+}

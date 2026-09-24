@@ -1,0 +1,464 @@
+{
+ "backend": "dayforce",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:12:29Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed_partial",
+ "coverage": {
+  "inventory_density": 7,
+  "observed_examples": 4,
+  "fully_mapped_examples": 0,
+  "employers_distinct": 4,
+  "note": "Dayforce Candidate Portal (jobs.dayforcehcm.com). <job>/apply shows 'Already Have an Account? Sign In' vs 'Apply without an Account'. The guest path opens a 3-step 'Manual Application' (Candidate Info -> Questionnaire -> Submit). Step 1 was observed blank on 3 employers; the Questionnaire and Submit steps are gated behind required step-1 fields and reCAPTCHA and were NOT visited. DeVry's /apply redirected back to the job page (no guest option reachable)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "df-01",
+   "url": "https://jobs.dayforcehcm.com/en-US/trinetx1/CANDIDATEPORTAL/jobs/1013",
+   "resolved_url": "https://jobs.dayforcehcm.com/en-US/trinetx1/CANDIDATEPORTAL/jobs/1013/apply/manualApplication?applicationSource=Manual",
+   "page_title": "Manual Application | Dayforce Jobs",
+   "captured_at_utc": "2026-09-24T00:08:00Z",
+   "hosting_mode": "candidate_portal_guest",
+   "entry": "job 'Apply' button ignored bridge click and element.click(); navigated to <job>/apply; 'Apply without an Account' required a full pointer-event sequence (pointerdown/mousedown/pointerup/mouseup/click) to activate",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-01-trinetx.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-01-trinetx-apply.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-01-trinetx-guest.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-01-trinetx-guest.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-01-trinetx-guest.options.jsonl"
+   ],
+   "option_lists_captured": "Preferred Contact Method, How did you hear about this job?, Prefix (antd dropdowns opened via synthetic mousedown; earlier lists stay in DOM so the jsonl entries accumulate — de-duplicate by subtracting the previous entry)",
+   "steps_visited": [
+    "job page",
+    "/apply account choice",
+    "Manual Application step 1 'Candidate Info' (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "Questionnaire",
+    "Submit"
+   ]
+  },
+  {
+   "sample_id": "df-02",
+   "url": "https://jobs.dayforcehcm.com/en-US/devry/CANDIDATEPORTAL/jobs/10062",
+   "page_title": "Remote Manager, Marketing SEO Analytics and Optimization | Dayforce Jobs",
+   "captured_at_utc": "2026-09-24T00:08:40Z",
+   "hosting_mode": "candidate_portal",
+   "entry": "<job>/apply redirected to the job page; no 'Apply without an Account' button rendered (only cookie buttons)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-02-devry.controls.json"
+   ],
+   "steps_visited": [
+    "job page"
+   ],
+   "gated_steps_not_visited": [
+    "all"
+   ],
+   "classification_note": "blocked: account-only or closed; human check needed"
+  },
+  {
+   "sample_id": "df-03",
+   "url": "https://jobs.dayforcehcm.com/en-US/humaneworld/CANDIDATEPORTAL/jobs/6556",
+   "resolved_url": "https://jobs.dayforcehcm.com/en-US/humaneworld/CANDIDATEPORTAL/jobs/6556/apply/manualApplication?applicationSource=Manual",
+   "page_title": "Manual Application | Dayforce Jobs",
+   "captured_at_utc": "2026-09-24T00:09:11Z",
+   "hosting_mode": "candidate_portal_guest",
+   "entry": "guest button pointer sequence; navigation completed after >7s",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-03-humaneworld.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-03-humaneworld.state.txt"
+   ],
+   "steps_visited": [
+    "Manual Application step 1 (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "Questionnaire",
+    "Submit"
+   ],
+   "note": "section order differs (Personal Information first); extra Fax/Pager fields; Education/Employment sub-forms collapsed behind 'Add ...' buttons"
+  },
+  {
+   "sample_id": "df-04",
+   "url": "https://jobs.dayforcehcm.com/en-US/accuris/CANDIDATEPORTAL/jobs/1750",
+   "resolved_url": "https://jobs.dayforcehcm.com/en-US/accuris/CANDIDATEPORTAL/jobs/1750/apply/manualApplication?applicationSource=Manual",
+   "page_title": "Manual Application | Dayforce Jobs",
+   "captured_at_utc": "2026-09-24T00:09:31Z",
+   "hosting_mode": "candidate_portal_guest",
+   "entry": "guest pointer sequence",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-04-accuris.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/dayforce-04-accuris.state.txt"
+   ],
+   "steps_visited": [
+    "Manual Application step 1 (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "Questionnaire",
+    "Submit"
+   ],
+   "note": "page also renders a 'Standard Privacy Policy' text block with headings 'Who we are', 'What personal data do we collect...'"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "wizard": "stepper 'Candidate Info | Questionnaire | Submit' (aria progress 'Candidate Info'); 'Next' button at the bottom of step 1",
+   "url_pattern": "https://jobs.dayforcehcm.com/en-US/<tenant>/CANDIDATEPORTAL/jobs/<id>  ->  /apply (account choice)  ->  /apply/manualApplication?applicationSource=Manual",
+   "forms": "several <form> elements per step: #personalInfo, #educationHistory-<n>, #workHistory-<n> (each with 'Update'/'Cancel' buttons — sub-form editors), files outside forms",
+   "captcha_widget": "reCAPTCHA (sitekey 6LefHBYn...) present on step 1",
+   "auth_required": "optional (Sign In) — guest path available",
+   "framework": "Ant Design (rc_select ids, input[type=search][role=combobox])"
+  },
+  "control_families": {
+   "text": "input[type=text] id=jobPostingApplication_personalInfo_<field> with <label for>; native required=true; maxlength present (128/250/70/30/2083).",
+   "combobox": "input[type=search][role=combobox] (antd Select) for Prefix, Suffix, Preferred Contact Method, Country, State/Province, How did you hear about this job?, Country dialing code (ids rc_select_<n>); options render in a detached dropdown (role=option/listbox) after mousedown; dropdowns persist in DOM after closing.",
+   "date": "input[type=date] for education/work start/end.",
+   "file": "input[type=file]#jobPostingApplication_files_resume label 'Attachment:' under heading 'Resume Upload' accept doc,docx,pdf,rtf (two inputs with the same id: one visible required, one hidden); #jobPostingApplication_files_coverLetter under 'Cover Letter' (button 'Add Cover Letter'); #jobPostingApplication_files_additionalDocument under 'Additional Documents' accept doc,docx,jpg,pdf,png,rtf,tif,tiff,xls,xlsx.",
+   "sub_forms": "'Add Education History' / 'Add Employment History' buttons; df-01 rendered one empty entry each (form ids educationHistory-0 / workHistory-0) with Update/Cancel; df-03 had them collapsed.",
+   "spinbutton": "input role=spinbutton 'G.P.A.'",
+   "textarea": "workHistory 'Reason For Leaving?' and 'Duties and Responsibilities'.",
+   "next": "button 'Next' (advances to Questionnaire; not final submit)."
+  },
+  "field_patterns": [
+   {
+    "key": "email",
+    "label_seen": "Email Address",
+    "control": "text max 250",
+    "required": true,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "email_confirm",
+    "label_seen": "Confirm Email Address",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "prefix",
+    "label_seen": "Prefix",
+    "control": "combobox",
+    "required": false,
+    "options": [
+     "Mr",
+     "Mrs",
+     "Miss",
+     "Ms",
+     "Dr",
+     "Father"
+    ],
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ],
+    "classification": "human"
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name",
+    "control": "text max 128",
+    "required": true,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "middle_name",
+    "label_seen": "Middle Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "suffix",
+    "label_seen": "Suffix",
+    "control": "combobox",
+    "required": false,
+    "options": "UNOBSERVED",
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn Profile",
+    "control": "text max 2083",
+    "required": false,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "home_phone",
+    "label_seen": "Home Phone Number (+ Country dialing code)",
+    "control": "text max 30",
+    "required": false,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "mobile_phone",
+    "label_seen": "Mobile Phone Number (+ Country dialing code)",
+    "control": "text max 30",
+    "required": true,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "fax_pager",
+    "label_seen": "Fax / Pager",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "df-03"
+    ]
+   },
+   {
+    "key": "preferred_contact_method",
+    "label_seen": "Preferred Contact Method",
+    "control": "combobox",
+    "required": true,
+    "options": [
+     "Email",
+     "Mobile Phone",
+     "Home Phone"
+    ],
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "address",
+    "label_seen": "Country / State/Province / Address Line 1 / Address Line 2 / City / County / Zip / Postal Code",
+    "control": "combobox + text",
+    "required": "country,state,address1,city,postal required",
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "source",
+    "label_seen": "How did you hear about this job?",
+    "control": "combobox",
+    "required": true,
+    "options": [
+     "Bayt",
+     "CareerBuilder",
+     "Company Website",
+     "Dice",
+     "Educational Institution",
+     "Employee Referral",
+     "Glassdoor",
+     "Handshake",
+     "Indeed",
+     "InfoJobs",
+     "LinkedIn",
+     "Monster",
+     "Other",
+     "Recruiter",
+     "StepStone",
+     "The Ladders",
+     "Xing",
+     "ZipRecruiter"
+    ],
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume Upload — Attachment:",
+    "control": "file doc,docx,pdf,rtf",
+    "required": true,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter — Add Cover Letter",
+    "control": "file",
+    "required": false,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "additional_documents",
+    "label_seen": "Additional Documents — Add Additional Documents",
+    "control": "file",
+    "required": false,
+    "seen_in": [
+     "df-01",
+     "df-03",
+     "df-04"
+    ]
+   },
+   {
+    "key": "education[]",
+    "label_seen": "Degree*, Not Completed, Major, Minor, Start Date*, End Date, School*, Country, State/Province, City, G.P.A.",
+    "control": "sub-form educationHistory-<n>",
+    "required": "degree/start/school when an entry exists",
+    "seen_in": [
+     "df-01"
+    ],
+    "classification": "fact_copy from resume"
+   },
+   {
+    "key": "employment[]",
+    "label_seen": "Position Title*, Current Job, Employer Name*, Start Date*, End Date, Country, State/Province, City, Division / Dept., Supervisor, Reason For Leaving?, Duties and Responsibilities",
+    "control": "sub-form workHistory-<n>",
+    "required": "title/employer/start when an entry exists",
+    "seen_in": [
+     "df-01"
+    ],
+    "classification": "fact_copy from resume (+ narrative duties)"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "identity_hint": "button aria-label 'Apply for <title>' (non-functional under bridge)",
+    "observed": true
+   },
+   {
+    "step": "account_choice",
+    "identity_hint": "URL <job>/apply; heading 'Already Have an Account?'; buttons 'Apply without an Account' and 'Sign In'",
+    "observed": true
+   },
+   {
+    "step": "manual_step1_candidate_info",
+    "identity_hint": "URL .../apply/manualApplication?applicationSource=Manual; title 'Manual Application | Dayforce Jobs'",
+    "observed": true
+   },
+   {
+    "step": "next",
+    "control": "button 'Next'",
+    "observed": true,
+    "never_actuated": true
+   },
+   {
+    "step": "questionnaire",
+    "observed": false,
+    "expected_unverified": [
+     "employer screening questions",
+     "EEO/voluntary self-ID"
+    ]
+   },
+   {
+    "step": "submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "note": "stepper label 'Submit'; control text unverified"
+   }
+  ],
+  "conditional_patterns": [
+   "'Not Completed' / 'Current Job' checkboxes likely disable End Date (unverified)."
+  ],
+  "blockers": [
+   {
+    "type": "click_events",
+    "detail": "Buttons need a pointerdown..click event sequence; plain click() and bridge clicks are ignored; navigation completes 6-10s later."
+   },
+   {
+    "type": "wizard_gated",
+    "detail": "Questionnaire/Submit steps need step-1 completion + reCAPTCHA."
+   },
+   {
+    "type": "tenant_variance",
+    "detail": "DeVry /apply redirected to job page — guest path unavailable."
+   }
+  ],
+  "runtime_observations": [
+   "Duplicate ids for the resume file input (visible + hidden). Bind to the visible one.",
+   "Option captures accumulate across dropdowns; de-duplicate.",
+   "Section order varies per tenant (Resume first vs Personal Information first)."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "Candidate Info",
+   "Questionnaire (employer questions, possibly EEO)",
+   "Submit/review",
+   "confirmation"
+  ],
+  "questionnaire_inference": "Dayforce questionnaires are per-requisition; expect Yes/No, single-select and free text. UNVERIFIED."
+ },
+ "provider_hint": {
+  "for_jev": "Dayforce guest Manual Application: step 1 is contact + address + source + resume + optional education/employment sub-forms. Native required attributes are reliable. Combobox options known for prefix/contact method/source; country/state lists standard. Questionnaire step is unobserved — request re-observation before answering. Stop at any 'Submit'.",
+  "exact_copy_facts": [
+   "name parts",
+   "email (+confirm)",
+   "phones",
+   "address",
+   "linkedin_url",
+   "education and employment entries from resume"
+  ],
+  "option_choice_from_verified_facts": [
+   "source of hire (user preference)",
+   "preferred contact method (user preference)"
+  ],
+  "escalate_to_writer_opus": [
+   "employment 'Duties and Responsibilities' text if enriched beyond resume"
+  ],
+  "requires_human_input": [
+   "prefix/suffix",
+   "resume/cover letter/additional documents",
+   "questionnaire (unobserved)",
+   "reCAPTCHA"
+  ]
+ },
+ "edge_cases": [
+  "Inventory has both CANDIDATEPORTAL and candidateportal paths and one KESTRACAREERSITE tenant site name; same portal expected, unverified for Kestra.",
+  "Privacy policy long-form text is inline on df-04."
+ ]
+}

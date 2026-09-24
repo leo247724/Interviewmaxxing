@@ -1,0 +1,130 @@
+{
+ "backend": "workatastartup",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:42:33Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "blocked",
+ "coverage": {
+  "inventory_density": 3,
+  "attempted_samples": 3,
+  "observed_examples": 0,
+  "fully_mapped_examples": 0,
+  "note": "All 3 assigned listings redirect to the Y Combinator account login gate before any application form renders. No blank form was observable without authentication. Not a mapped form."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "waas-01",
+   "listing_id": "lst_5dea0bf502e6c8ef1539ae30355a9130",
+   "url": "https://www.workatastartup.com/application?signup_job_id=107793",
+   "resolved_url": "https://account.ycombinator.com/?continue=https%3A%2F%2Fwww.workatastartup.com%2Fapplication%3Fsignup_job_id%3D107793",
+   "page_title": "Account | Y Combinator",
+   "captured_at_utc": "2026-09-23T23:38:19Z",
+   "status": "blocked_auth",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/workatastartup-01-answerthis.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/workatastartup-01-answerthis.state.txt"
+   ]
+  },
+  {
+   "sample_id": "waas-02",
+   "listing_id": "lst_5ea115478b56311a01bd7df66d292f55",
+   "url": "https://www.workatastartup.com/application?signup_job_id=100377",
+   "resolved_url": "https://account.ycombinator.com/?continue=...signup_job_id%3D100377",
+   "page_title": "Account | Y Combinator",
+   "captured_at_utc": "2026-09-23T23:38:34Z",
+   "status": "blocked_auth",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/workatastartup-02-fuseai.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/workatastartup-02-fuseai.state.txt"
+   ]
+  },
+  {
+   "sample_id": "waas-03",
+   "listing_id": "lst_deaca242e382cb1b3e4bdd60c8081d3c",
+   "url": "https://www.workatastartup.com/application?signup_job_id=96512",
+   "resolved_url": "https://account.ycombinator.com/?continue=...signup_job_id%3D96512",
+   "page_title": "Account | Y Combinator",
+   "captured_at_utc": "2026-09-23T23:38:39Z",
+   "status": "blocked_auth",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/workatastartup-03-mdalgorithms.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/workatastartup-03-mdalgorithms.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": null,
+   "login_gate": {
+    "form_id": "sign-in-card",
+    "heading": "Log in or sign up to access Work at a Startup",
+    "controls": [
+     {
+      "label": "Email or username",
+      "control": "text",
+      "name": "username",
+      "id": "ycid-input",
+      "required": false
+     },
+     {
+      "button": "Continue",
+      "type": "submit"
+     }
+    ],
+    "note": "Single-field identifier-first login; password/sign-up step not visited. No captcha widget in DOM at this step."
+   }
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "yc_account_login",
+    "identity_hint": "host account.ycombinator.com, form#sign-in-card, title 'Account | Y Combinator'",
+    "observed": true,
+    "gate": "auth"
+   },
+   {
+    "step": "waas_application_form",
+    "observed": false,
+    "gated_by": "yc_account_login"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Every /application?signup_job_id= URL 302s to account.ycombinator.com with a continue= parameter. Profile jgd7jms9 is not logged into YC. Not bypassed.",
+    "observed": true,
+    "human_action_needed": "User must log in to their own Y Combinator account (or create one) in the runtime profile before the WaaS application form can be observed or prepared."
+   }
+  ],
+  "runtime_observations": [
+   "Detect this gate by host==account.ycombinator.com and the presence of form#sign-in-card; surface blocker=auth_required and stop. Never type an email into the identifier field."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "YC account login/signup",
+   "WaaS profile (name, resume, links) possibly required before job-specific application",
+   "per-job application with a short note to the founders",
+   "submit"
+  ],
+  "note": "Public WaaS documentation suggests applications reuse a single WaaS profile plus an optional message; UNVERIFIED here."
+ },
+ "provider_hint": {
+  "for_jev": "workatastartup: application form is behind the YC account login gate. If the observed page is account.ycombinator.com, classify as auth_required and request human login; do not attempt field mapping. After login (human), re-observe; expect a profile-backed form with a free-text note to founders.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "(after login, unverified) note/message to founders"
+  ],
+  "requires_human_input": [
+   "Y Combinator account login",
+   "any profile completion steps"
+  ]
+ },
+ "edge_cases": [
+  "ycombinator.com company job pages link 'Apply to role \u203a' to account.ycombinator.com/authenticate?continue=workatastartup.com/application?signup_job_id=<id>, so the ycombinator bucket resolves to this same gated backend."
+ ]
+}

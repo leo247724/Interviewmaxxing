@@ -6,6 +6,8 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from interviewmaxxing_browser import (
     GenericAdapter,
     PlaywrightSessionFactory,
@@ -13,17 +15,23 @@ from interviewmaxxing_browser import (
     unsupported_control_needs,
     user_action_needs,
 )
+from interviewmaxxing_browser.normalize import clean_label
 from interviewmaxxing_core import (
+    AnswerScope,
     ApplicationBrowser,
     ApplicationForm,
     BrowserOptions,
     BrowserSessionFactory,
     ControlType,
+    FieldFillStatus,
     IdentityEvidenceKind,
     MissingReason,
     PageKind,
+    SavedAnswer,
     SemanticType,
+    utc_now,
 )
+from interviewmaxxing_generation.questions import QuestionText, saved_answer_matches
 
 
 async def _open(options: BrowserOptions, url: str) -> tuple[Any, Any]:
@@ -92,6 +100,9 @@ def test_posting_is_followed_to_a_normalized_form(kit: SimpleNamespace, server: 
     assert by_id["why_brambleway"].max_length == 5000
     assert by_id["resume"].accept == [".pdf", ".doc", ".docx", ".txt", "application/pdf", "text/plain"]
     assert by_id["resume"].help_text == "PDF, DOC, DOCX or TXT, up to 5 MB."
+    # The section heading is model context, not part of the question.
+    assert by_id["resume"].section_context == ["Application form"]
+    assert by_id["first_name"].help_text is None and by_id["first_name"].section_context == ["Application form"]
     # Machine values differ from visible labels; the placeholder is reported as it is.
     assert [(o.value, o.label) for o in by_id["work_authorization"].options or []] == [
         ("", "Select an answer"),
@@ -139,11 +150,13 @@ def test_agreement_terms_are_part_of_each_question(kit: SimpleNamespace, server:
         "Candidate declaration I confirm that I have never been dismissed from employment "
         "for misconduct."
     )
+    assert declaration.section_context == ["Application form", "Candidate declaration"]
     # aria-describedby text is captured.
     assert retention.help_text == (
         "Brambleway Analytics may keep my application on file for 12 months and contact "
         "me about other roles."
     )
+    assert retention.section_context == ["Application form"]
     assert declaration.fingerprint != retention.fingerprint
     assert declaration.semantic_type is SemanticType.ATTESTATION
     assert retention.semantic_type is SemanticType.CONSENT
@@ -164,7 +177,7 @@ def test_attestation_checkboxes_are_classified(kit: SimpleNamespace, server: Any
     assert all(f.required for f in attestation_fields(form))
 
 
-def test_custom_widget_is_unsupported_and_hidden_or_disabled_controls_are_ignored(
+def test_static_accessible_select_and_hidden_or_disabled_controls_are_ignored(
     kit: SimpleNamespace, server: Any, options: BrowserOptions
 ) -> None:
     async def scenario() -> tuple[ApplicationForm, ApplicationForm, list[Any]]:
@@ -185,13 +198,15 @@ def test_custom_widget_is_unsupported_and_hidden_or_disabled_controls_are_ignore
     assert "website_hp" not in ids  # visually hidden honeypot
     assert "referral_code" not in ids  # disabled
     office = before.field("preferred_office")
-    assert office.control_type is ControlType.UNSUPPORTED and office.required
-    assert office.label == "Preferred office" and office.options is None
-    needs = unsupported_control_needs(before)
-    assert [(n.field_id, n.reason) for n in needs] == [("preferred_office", MissingReason.UNSUPPORTED_CONTROL)]
-    # Same question (fingerprint), now operated by the user and no longer required.
+    assert office.control_type is ControlType.SELECT and office.required
+    assert office.label == "Preferred office"
+    assert [(option.value, option.label) for option in office.options or []] == [
+        ("office_den", "Denver, CO"), ("office_bou", "Boulder, CO"),
+    ]
+    assert unsupported_control_needs(before) == []
+    # Selecting a supported control does not change the question or requiredness.
     assert after.field("preferred_office").fingerprint == office.fingerprint
-    assert not after.field("preferred_office").required
+    assert after.field("preferred_office").required
     assert unsupported_control_needs(after) == []
     assert evidence
 
@@ -261,6 +276,120 @@ def test_generic_adapter_drives_a_playwright_page(kit: SimpleNamespace, server: 
 
     inspection = kit.run(scenario())
     assert inspection.kind is PageKind.APPLICATION_FORM and len(inspection.form.fields) == 13
+
+
+CARD = "cards[2a269d5e-6f40-4ed1-ae97-47dc53f45611]"
+
+
+def test_unlabeled_custom_questions_take_their_visible_wording(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions
+) -> None:
+    """Inputs named after an opaque card id, with the question in a preceding block
+    ending in a required marker: the visible wording is the question, the identifier
+    never enters it, and a saved answer on the bare wording matches."""
+    async def scenario() -> Any:
+        browser, inspection = await _open(options, server.url("/forms/unlabeled-custom-questions"))
+        try:
+            return inspection
+        finally:
+            await browser.close()
+
+    inspection = kit.run(scenario())
+    assert inspection.kind is PageKind.APPLICATION_FORM, inspection.message
+    form = inspection.form
+    expected = {
+        f"{CARD}[field1]": "How Did You Hear About Us?",
+        f"{CARD}[field2]": "What is your desired start date?",
+        f"{CARD}[field3]": "Are you willing to relocate?",
+    }
+    for field_id, question in expected.items():
+        f = form.field(field_id)
+        assert f.label == question and f.question_text == question, f
+        assert f.help_text is None and CARD not in f.question_text
+        assert f.required is True  # from the marker; the control has no required attribute
+        saved = SavedAnswer(id=f"sa.{field_id[-6:]}", scope=AnswerScope.GLOBAL, question=question,
+                            value="Yes", confirmed_at=utc_now())
+        assert saved_answer_matches(saved, QuestionText.of(f))
+    select = form.field(f"{CARD}[field3]")
+    assert select.control_type is ControlType.SELECT
+    assert [o.label for o in select.options or []] == ["Select...", "Yes", "No"]
+    assert form.field(f"{CARD}[field1]").semantic_type is SemanticType.REFERRAL_SOURCE
+    # Labelled controls keep their labels.
+    assert form.field("name").label == "Full name" and form.field("email").required
+    # Yes/no radio groups labelled only by their options: the question shown before
+    # the group (inside its block, or as a preceding sibling) is the question.
+    yes_no = {
+        "CA_9001": "Do you currently live in the United States?",
+        "CA_9002": "Are you legally authorized to work in the United States?",
+        "CA_9003": "Will you now or in the future require sponsorship?",
+    }
+    for field_id, question in yes_no.items():
+        f = form.field(field_id)
+        assert f.control_type is ControlType.RADIO
+        assert f.label == question and f.question_text == question, f
+        assert [o.label for o in f.options or []] == ["YES", "NO"]
+        assert [o.value for o in f.options or []] == ["yes", "no"]
+        assert f.required is True  # leading "*" on the question; no required attribute
+        saved = SavedAnswer(id=f"sa.{field_id}", scope=AnswerScope.GLOBAL, question=question,
+                            value="Yes", confirmed_at=utc_now())
+        assert saved_answer_matches(saved, QuestionText.of(f))
+    assert form.field("CA_9002").semantic_type is SemanticType.WORK_AUTHORIZATION
+    assert form.field("CA_9003").semantic_type is SemanticType.SPONSORSHIP
+
+
+def test_choice_groups_without_values_stay_selectable(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions
+) -> None:
+    """Radio members sharing a name with empty values get stable synthetic values, all
+    options are kept, and a choice by label selects (and reads back) the right input."""
+    async def scenario() -> tuple[Any, Any, Any]:
+        browser, inspection = await _open(options, server.url("/forms/choices-without-values"))
+        try:
+            form = inspection.form
+            years, platform = form.fields
+            packet = kit.build(form, {years.id: "3\u20135 years",
+                                      platform.id: "Pardot / Account Engagement"}).packet
+            fill = await browser.fill(form, packet)
+            checked = await browser.page.evaluate(
+                "() => Array.from(document.querySelectorAll('input[type=radio]:checked'))"
+                ".map((r) => r.closest('label').textContent.trim())"
+            )
+            return inspection, fill, checked
+        finally:
+            await browser.close()
+
+    inspection, fill, checked = kit.run(scenario())
+    assert inspection.kind is PageKind.APPLICATION_FORM, inspection.message
+    years, platform = inspection.form.fields
+    assert years.label == "How many years of marketing experience do you have?"
+    assert years.control_type is ControlType.RADIO
+    assert [o.label for o in years.options or []] == [
+        "Less than 3 years", "3\u20135 years", "6\u20138 years", "9+ years"]
+    assert [o.value for o in years.options or []] == [f"{years.id}#{i}" for i in range(4)]
+    assert platform.label == "Which marketing automation platform have you used most?"
+    assert [o.label for o in platform.options or []] == [
+        "HubSpot", "Marketo", "Pardot / Account Engagement", "Other", "None"]
+    assert [o.value for o in platform.options or []] == [
+        "opt-hubspot", "opt-marketo", "opt-pardot", "opt-other", "opt-none"]
+    assert fill.ok and [f.status for f in fill.fields] == [FieldFillStatus.FILLED] * 2
+    assert checked == ["3\u20135 years", "Pardot / Account Engagement"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("How Did You Hear About Us? \u2731", "How Did You Hear About Us?"),
+        ("Full name \uff0a", "Full name"),
+        ("Phone (required)", "Phone"),
+        ("City - required", "City"),
+        ("Email *:", "Email"),
+        ("Notes:", "Notes"),
+        ("Rate 1 * 5", "Rate 1 * 5"),
+        ("  Spaced   label * ", "Spaced label"),
+    ],
+)
+def test_clean_label_strips_required_markers(text: str, expected: str) -> None:
+    assert clean_label(text) == expected
 
 
 def test_status_lookup_and_error_pages_are_not_application_forms(

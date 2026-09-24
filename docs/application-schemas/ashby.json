@@ -1,0 +1,83 @@
+{
+  "backend": "ashby",
+  "schema_version": "0.1.0",
+  "generated_at_utc": "2026-09-23T23:40:00Z",
+  "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab DAD881D819255BA3BD8D9AA69DE16EEA",
+  "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative. No selectors or scripts.",
+  "status": "observed",
+  "coverage": {"inventory_density": 170, "observed_examples": 3, "fully_mapped_examples": 3, "employers": ["Canals", "Tempo", "Compyl"]},
+  "observed_samples": [
+    {"sample_id": "ab-01", "url": "https://jobs.ashbyhq.com/canals/71fef8ca-7c37-41d7-ae2b-80fa0930c6a2", "form_url": "https://jobs.ashbyhq.com/canals/71fef8ca-7c37-41d7-ae2b-80fa0930c6a2/application", "page_title": "Demand Generation Manager @ Canals", "captured_at_utc": "2026-09-23T23:37:44Z", "entry": "clicked 'Apply for this Job' button on job page (SPA route to /application)", "evidence_private": [".imx/dynamic-applications/fable/evidence/ashby-01-canals.controls.json", ".imx/dynamic-applications/fable/evidence/ashby-01-canals-form.controls.json", ".imx/dynamic-applications/fable/evidence/ashby-01-canals-form.state.txt"], "steps_visited": ["job page", "blank application form"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "ab-02", "url": "https://jobs.ashbyhq.com/tempo-io/a3a1dd8d-4a05-4dfc-bcd4-4879dc4aaae4/application", "page_title": "Senior Growth Marketing Manager @ Tempo", "captured_at_utc": "2026-09-23T23:38:39Z", "entry": "direct /application URL", "evidence_private": [".imx/dynamic-applications/fable/evidence/ashby-02-tempo.controls.json", ".imx/dynamic-applications/fable/evidence/ashby-02-tempo.state.txt"], "steps_visited": ["blank application form"], "gated_steps_not_visited": ["post-submit"]},
+    {"sample_id": "ab-03", "url": "https://jobs.ashbyhq.com/compyl/7ba76a90-b8ff-4678-a7c3-8b73e61b5f73/application", "page_title": "Marketing Manager @ Compyl", "captured_at_utc": "2026-09-23T23:38:34Z", "entry": "direct /application URL", "evidence_private": [".imx/dynamic-applications/fable/evidence/ashby-03-compyl.controls.json", ".imx/dynamic-applications/fable/evidence/ashby-03-compyl.state.txt"], "steps_visited": ["blank application form"], "gated_steps_not_visited": ["post-submit"]}
+  ],
+  "observed": {
+    "page_shape": {
+      "single_page_form": true,
+      "no_form_element": "controls are not wrapped in a <form>; form_index is null for every control. Group by the page, not by form.",
+      "route": "job page at /<org>/<uuid>; blank form at /<org>/<uuid>/application. Job page has one 'Apply for this Job' button; both routes share document.title '<title> @ <company>'.",
+      "sections_seen": ["Autofill from resume", "(system fields)", "(custom questions)", "Diversity Survey (ab-02 only)"],
+      "autofill_block": "An 'Autofill from resume' file input (accept pdf/doc/docx/odt/rtf/txt/md) with 'Upload file' button precedes the form on all 3 samples. It parses a resume to prefill fields; it is NOT the resume field."
+    },
+    "control_families": {
+      "text": "input[type=text|email|tel|url] with placeholder 'Type here...' / 'hello@example.com...' / '1-415-555-1234...' / 'https://example.com...'; label via <label for>. System fields have ids _systemfield_name, _systemfield_email; custom fields have UUID ids/names.",
+      "location_typeahead": "input[role=combobox] placeholder 'Start typing...' labelled 'Location'; no static options; requires typing to populate (not exercised).",
+      "file": "input[type=file]#_systemfield_resume labelled 'Resume' with 'Upload File' button; accept includes pdf, doc, docx, odt, rtf, txt, md AND image/*, video/*, audio/*; multiple=false.",
+      "textarea": "textarea with UUID id for long-form custom questions (ab-01).",
+      "radio_group": "native input[type=radio] sharing a UUID name per question; each option has its own <label for>; the question text is a sibling label/element ABOVE the group, not a fieldset legend.",
+      "checkbox_group": "native input[type=checkbox] where input.name equals the OPTION LABEL (e.g. name='Yes', name='White'); question text is a sibling element above the group. Yes/No questions may be rendered as a checkbox pair (ab-03 sponsorship), not radios.",
+      "submit": "button[type=submit] text 'Submit Application' at the bottom."
+    },
+    "field_patterns": [
+      {"key": "full_name", "label_seen": "Name", "control": "text", "required": true, "seen_in": ["ab-01","ab-02","ab-03"], "note": "single full-name field, not first/last"},
+      {"key": "email", "label_seen": "Email", "control": "email", "required": true, "seen_in": ["ab-01","ab-02","ab-03"]},
+      {"key": "phone", "label_seen": "Phone | Phone Number", "control": "tel | text", "required": "varies (ab-01 optional, ab-02 required tel, ab-03 required text)", "seen_in": ["ab-01","ab-02","ab-03"]},
+      {"key": "linkedin", "label_seen": "LinkedIn | LinkedIn URL | LinkedIn Profile", "control": "text | url", "required": "varies", "seen_in": ["ab-01","ab-02","ab-03"]},
+      {"key": "location", "label_seen": "Location", "control": "location_typeahead", "required": false, "seen_in": ["ab-01","ab-02","ab-03"]},
+      {"key": "resume", "label_seen": "Resume", "control": "file", "required": "ab-01 true, ab-02 true, ab-03 false", "seen_in": ["ab-01","ab-02","ab-03"]},
+      {"key": "narrative_question", "label_seen": "In your own words, why do you want to join Canals specifically and what makes you a great fit?", "control": "textarea", "required": false, "seen_in": ["ab-01"], "benchmark_candidate": true},
+      {"key": "compensation_expectation", "label_seen": "What is your expected salary? | What are your target compensation expectations (base and/or OTE, if applicable)?", "control": "text", "required": true, "seen_in": ["ab-02","ab-03"], "benchmark_candidate": true},
+      {"key": "work_authorization_freetext", "label_seen": "Are you legally authorized to work in the country this position is posted?", "control": "text (free text, not select)", "required": true, "seen_in": ["ab-02"]},
+      {"key": "sponsorship", "label_seen": "Do you now or in the future require sponsorship from an employer in the country this position is posted in? | Will you now or in the future require sponsorship?", "control": "text (ab-02) | checkbox_group Yes/No (ab-03)", "required": "ab-02 true; ab-03 not marked", "seen_in": ["ab-02","ab-03"]},
+      {"key": "portfolio_or_cover_letter_url", "label_seen": "Portfolio/Cover Letter/Supporting Documents", "control": "url", "required": false, "seen_in": ["ab-02"], "note": "cover letter requested as a URL, not an upload"},
+      {"key": "diversity_survey_custom", "section": "Diversity Survey", "required": false, "seen_in": ["ab-02"], "groups": {"What is your current age?": {"control": "radio", "options": ["Under 30","30-39","40-49","50-59","60 or older","I prefer not to answer"]}, "What is your gender identity?": {"control": "radio", "options": ["Man","Woman","Non-Binary","Another Gender Identity","I prefer not to answer"]}, "Do you identify as transgender?": {"control": "radio", "options": ["Yes","No","I prefer not to answer"]}, "How do you identify your sexual orientation? Please select all that apply.": {"control": "checkbox", "options": ["Bisexual","Lesbian","Gay","Queer","Heterosexual / straight","Other","I prefer not to answer"]}, "Which ethnicity(ies) do you identify with? Please select all that apply.": {"control": "checkbox", "options": ["Asian or Asian American","Black or African American","Hispanic or Latine","Indigenous or Native American","Native Hawaiian or Other Pacific Islander","White","Other","I prefer not to answer"]}, "Which of the following communities do you belong to? Please select all that apply.": {"control": "checkbox", "options": ["Person with disability","Neurodiverse","Veteran","Parent","Refugee or immigrant","None of the above","I prefer not to answer"]}}},
+      {"key": "eeoc_system", "seen_in": ["ab-02"], "required": false, "name_suffixes_seen": ["_systemfield_eeoc_gender", "_systemfield_eeoc_race", "_systemfield_eeoc_veteran_status"], "groups": {"Gender": ["Male","Female","Decline to self-identify"], "Race": ["Hispanic or Latino","White (Not Hispanic or Latino)","Black or African American (Not Hispanic or Latino)","Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)","Asian (Not Hispanic or Latino)","American Indian or Alaska Native (Not Hispanic or Latino)","Two or More Races (Not Hispanic or Latino)","Decline to self-identify"], "Veteran Status": ["I identify as one or more of the classifications of protected veteran listed above","I am not a protected veteran","I decline to self-identify for protected veteran status"]}}
+    ],
+    "step_patterns": [
+      {"step": "job_page", "identity_hint": "url /<org>/<uuid> without /application; single 'Apply for this Job' button", "observed": true, "safe_to_click": true},
+      {"step": "blank_form", "identity_hint": "url ends with /application; 'Autofill from resume' heading; '_systemfield_name' input", "observed": true},
+      {"step": "final_submit", "control": "button[type=submit] 'Submit Application'", "observed": true, "STOP_BOUNDARY": true, "confidence": "high; single-page, no review step observed", "never_actuated": true}
+    ],
+    "conditional_patterns": [
+      {"trigger": "Autofill from resume upload", "effect": "prefills name/email/phone/etc. from parsed resume (not exercised)", "observed": "control present only"}
+    ],
+    "blockers": [
+      {"type": "captcha", "detail": "reCAPTCHA v2 anchor iframe (recaptcha.net/api2) on every /application page; expect token check at submit; not triggered", "observed": true},
+      {"type": "auth", "detail": "none; blank form viewable without login", "observed": true}
+    ],
+    "runtime_observations": [
+      "Custom field ids/names are UUIDs and CHANGED between two loads of the same Tempo form (survey group prefix d9fe43ea… then d93b485c…). Never persist Ashby ids; bind by label text each observation.",
+      "A 'Loading...' progress cue is present in the DOM even after render; do not use it as a readiness signal.",
+      "required is expressed via the required attribute on the input (aria-required not used); labels carry no '*'.",
+      "Checkbox option inputs use name=<option label>, so name is NOT a group key; group by the nearest question text above the options.",
+      "Yes/No screening may be a checkbox pair, which allows both or neither to be checked; runtime must enforce exactly-one for such questions."
+    ]
+  },
+  "inferred": {
+    "typical_stages_unverified": ["job page", "Apply for this Job", "single blank form", "Submit Application", "reCAPTCHA check", "confirmation (UNVERIFIED)"],
+    "location_typeahead_inference": "Typing likely triggers a place-autocomplete list; selecting an option probably required for the value to commit.",
+    "resume_required_inference": "When Resume is required and Autofill is used, the autofill file may also populate the resume field (unverified)."
+  },
+  "provider_hint": {
+    "for_jev": "Ashby single-page form, no <form> element. Bind by visible label text; ids are unstable UUIDs. Name is one full-name field. Yes/No screening may be checkbox pairs. Free-text inputs are used even for yes/no-style questions (work authorization, sponsorship) on some employers, so classify by label semantics not control type. Stop at 'Submit Application'.",
+    "exact_copy_facts": ["full_name", "email", "phone", "linkedin url", "portfolio url", "location (city typed then selected)"],
+    "option_choice_from_verified_facts": ["sponsorship Yes/No", "work authorization (free-text 'Yes' or 'No' if verified fact)"],
+    "escalate_to_writer_opus": ["'why do you want to join <company> and what makes you a great fit' textarea", "compensation expectation phrasing when user provides a range and the field is free text"],
+    "requires_human_input": ["all Diversity Survey and EEOC selections", "compensation expectation if no verified fact", "resume file choice", "captcha if presented"]
+  },
+  "edge_cases": [
+    "Cover letter may be requested as a URL field ('Portfolio/Cover Letter/Supporting Documents') rather than an upload.",
+    "Resume accept list includes image/video/audio types; do not treat 'accept' as a strict document filter.",
+    "Same employer may mark phone/LinkedIn required on one posting and optional on another."
+  ]
+}

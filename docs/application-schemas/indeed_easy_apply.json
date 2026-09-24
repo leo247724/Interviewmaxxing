@@ -1,0 +1,144 @@
+{
+ "backend": "indeed_easy_apply",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:49:02Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "blocked",
+ "actual_observed_backend": "SimplyHired job pages (9/10 of inventory) whose 'Quick Apply' is Indeed Apply (page data indeedApply:true); indeed.com itself served a Cloudflare 'Additional Verification Required' challenge",
+ "coverage": {
+  "inventory_density": 10,
+  "attempted_samples": 3,
+  "observed_examples": 3,
+  "fully_mapped_examples": 0,
+  "note": "3 employers attempted (Growth Hacking LLC, Marriott via SimplyHired; LegalEdge via indeed.com). No application form was observable: SimplyHired's Quick Apply requires a SimplyHired/Indeed account (unauthenticated /out link 307s to /api/auth/logout; page shows 'Sign In / Create Account' and 'We are partnering with Indeed to provide you with one account for both platforms'), and the direct indeed.com listing is behind a bot challenge that was not bypassed. Not a mapped form."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ia-01",
+   "listing_id": "lst_16f2a2d115d3b4d1611ed5d07721e604",
+   "url": "https://www.simplyhired.com/job/Lse14zgGqlBaC4FEsqfTYW9wl0FFj4J0WBJFLJAty2PG_kbHdA9YWQ",
+   "company": "Growth Hacking LLC",
+   "page_title": "CRO Lead - Growth Hacking LLC | Austin, TX",
+   "captured_at_utc": "2026-09-23T23:44:40Z",
+   "status": "blocked_auth",
+   "apply_control": "a 'Quick Apply' href=/out?r=<token> rel=nofollow data-testid=viewJobHeaderFooterApplyButton (2 copies: header and footer)",
+   "follow_result": "opening /out?r= directly in the owned tab landed on the SimplyHired home page (no referer/session); curl with referer: 307 -> /api/auth/logout",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/indeed-01-growthhacking-simplyhired.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/indeed-01-growthhacking-simplyhired.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/indeed-01-growthhacking-quickapply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/indeed-01-growthhacking-quickapply.state.txt"
+   ]
+  },
+  {
+   "sample_id": "ia-02",
+   "listing_id": "lst_95b8dbad48106ec412592af568537ae7",
+   "url": "https://www.simplyhired.com/job/MgzX8yyHCS56zHElNAp9EVzegBo_zM7YEftz63eKy3LUpL-Dvjq95Q",
+   "company": "Marriott",
+   "page_title": "Marketing Manager - Marriott | Cedar Park, TX",
+   "captured_at_utc": "2026-09-23T23:47:13Z",
+   "status": "blocked_auth",
+   "apply_control": "same 'Quick Apply' anchor (no target attr)",
+   "follow_result": "in-tab click on the anchor did not navigate the owned tab (JS-intercepted; possibly opened elsewhere); __NEXT_DATA__ shows indeedApply:true, sponsored:true, no applyUrl/applyType keys, apply ping URL is an /out?r= token",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/indeed-02-marriott-simplyhired.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/indeed-02-marriott-simplyhired.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/indeed-02-marriott-quickapply.controls.json"
+   ]
+  },
+  {
+   "sample_id": "ia-03",
+   "listing_id": "lst_b7fce9e34afb3759f9d32706151c5eb3",
+   "url": "https://www.indeed.com/viewjob?jk=947be63aa15be682",
+   "company": "LegalEdge Services",
+   "page_title": "Just a moment...",
+   "captured_at_utc": "2026-09-23T23:45:52Z",
+   "status": "blocked_bot_challenge",
+   "follow_result": "Cloudflare interstitial 'Additional Verification Required'; 0 forms/controls; not bypassed",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/indeed-04-legaledge-viewjob.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/indeed-04-legaledge-viewjob.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "simplyhired_job_page": {
+    "forms": "1 (search form: q/l comboboxes + 'Search Jobs'); NOT an application form; must be excluded by form identity",
+    "other_controls": [
+     "'Sign In / Create Account' submit button",
+     "'Sign In or Sign Up to Create Alert' button under a job-alert heading",
+     "Country selector <select> (23 options) in the footer, pre-set to United States"
+    ],
+    "apply_entry": "'Quick Apply' anchor (Indeed Apply jobs) or 'Apply Now' text seen in HTML of other listings (external apply)"
+   }
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "simplyhired_job_page",
+    "identity_hint": "host www.simplyhired.com path /job/<token>, title '<title> - <company> | <location>'",
+    "observed": true
+   },
+   {
+    "step": "quick_apply_out_redirect",
+    "identity_hint": "/out?r=<opaque token>",
+    "observed": true,
+    "gate": "auth (307 to /api/auth/logout when no session)"
+   },
+   {
+    "step": "indeed_apply_flow",
+    "observed": false,
+    "gated_by": "SimplyHired/Indeed account + indeed.com bot challenge"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "listing has indeedApply:false in page data",
+    "effect": "button text becomes 'Apply Now' and the /out link goes to the employer site (seen in curl HTML for other listings; not followed)",
+    "observed": "HTML grep only"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "SimplyHired Quick Apply requires the shared SimplyHired/Indeed account; profile jgd7jms9 is not logged in.",
+    "observed": true,
+    "human_action_needed": "User logs into their Indeed/SimplyHired account in the runtime profile; then re-observe the Indeed Apply modal/steps."
+   },
+   {
+    "type": "bot_challenge",
+    "detail": "indeed.com/viewjob served Cloudflare 'Additional Verification Required'.",
+    "observed": true,
+    "human_action_needed": "Human completes the challenge in the runtime profile if Indeed access is needed; never automated."
+   }
+  ],
+  "runtime_observations": [
+   "The only application-relevant control on a SimplyHired page is the anchor with data-testid viewJobHeaderFooterApplyButton (two copies). Its href is an opaque redirect token; the destination cannot be predicted from the page.",
+   "Clicking the anchor in-tab did not change the owned tab's URL; the runtime must verify navigation (URL/title change) after any apply click and must check for new tabs.",
+   "Do not confuse the site search form or the job-alert signup with an application form."
+  ]
+ },
+ "inferred": {
+  "indeed_apply_unverified": "Indeed Apply (after login) is a multi-step modal: contact info (prefilled from Indeed profile), resume choice (Indeed resume vs upload), employer screener questions (yes/no, numeric, free text), optional cover letter, review page with a 'Submit your application' control. UNVERIFIED here; treat as blocked until observed."
+ },
+ "provider_hint": {
+  "for_jev": "indeed_easy_apply: no form is observable without an Indeed/SimplyHired login and passing Indeed's bot challenge. Classify SimplyHired/Indeed pages as auth_required; never map the search or job-alert forms. After human login, re-observe before any mapping.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "(unverified) Indeed Apply free-text screener answers and optional cover letter"
+  ],
+  "requires_human_input": [
+   "Indeed/SimplyHired login",
+   "Cloudflare verification",
+   "resume selection"
+  ]
+ },
+ "edge_cases": [
+  "Inventory tagged 9/10 SimplyHired URLs as indeed_easy_apply; page data confirms indeedApply:true for the two inspected, but listings with indeedApply:false show 'Apply Now' and redirect to the employer ATS instead."
+ ]
+}

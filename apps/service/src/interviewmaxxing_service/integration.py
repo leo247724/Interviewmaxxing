@@ -132,7 +132,7 @@ def _runner_module() -> Any:
     return importlib.import_module("interviewmaxxing_cli.runner")
 
 
-def runner_problem() -> str | None:
+def runner_problem(config: ServiceConfig | None = None) -> str | None:
     """Why the I1 runner cannot be used, or None. Checked before any application
     request is recorded, so an unavailable runner fails truthfully and does nothing."""
     try:
@@ -141,7 +141,39 @@ def runner_problem() -> str | None:
         return "The application runner isn't installed in this service yet. Nothing was sent."
     if not hasattr(module, "create_runner") and not hasattr(module, "LocalApplicationRunner"):
         return "The installed application runner has no usable entry point. Nothing was sent."
+    if config is not None and config.dynamic_runtime:
+        factory = getattr(module, "create_runner", None)
+        if factory is None or "dynamic_options" not in inspect.signature(factory).parameters:
+            return "The installed application runner does not support the configured dynamic runtime. Nothing was sent."
+        try:
+            # Local dependency/config/credential checks only: never construct a
+            # provider, open a browser or load the candidate for health/preflight.
+            _dynamic_options(config).validate()
+            if config.rag_connection_file is not None:
+                from interviewmaxxing_browser.ai.knowledge_runtime import connection_settings
+
+                connection_settings(config.rag_connection_file)
+            if config.ai_routing:
+                from interviewmaxxing_selection.credentials import CredentialError, load_api_key
+
+                importlib.import_module("interviewmaxxing_browser.ai")
+                try:
+                    load_api_key(env_file=config.ai_env_file)
+                except CredentialError:
+                    return "Dynamic AI credentials are unavailable or invalid. Check the configured env file. Nothing was sent."
+        except (ImportError, ValueError, OSError):
+            return "The configured dynamic runtime dependencies or options are unavailable. Nothing was sent."
     return None
+
+
+def _dynamic_options(config: ServiceConfig) -> Any:
+    from interviewmaxxing_cli.dynamic import DynamicOptions
+
+    return DynamicOptions(browser="opencli" if config.browser == "opencli" else "playwright",
+                          opencli_profile=config.opencli_profile,
+                          ai_routing=config.ai_routing, env_file=config.ai_env_file,
+                          writer_model=config.writer_model,
+                          rag_connection_file=config.rag_connection_file)
 
 
 def runner_factory(config: ServiceConfig) -> ExecutorFactory:
@@ -154,9 +186,15 @@ def runner_factory(config: ServiceConfig) -> ExecutorFactory:
     def make(interaction: ServiceInteraction) -> ApplicationExecutor:
         module = _runner_module()
         runner: ApplicationExecutor
+        kwargs: dict[str, Any] = {}
+        if config.dynamic_runtime:
+            problem = runner_problem(config)
+            if problem:
+                raise RuntimeError(problem)
+            kwargs["dynamic_options"] = _dynamic_options(config)
         if hasattr(module, "create_runner"):
             runner = module.create_runner(
-                config.paths, headless=config.headless, interaction=interaction
+                config.paths, headless=config.headless, interaction=interaction, **kwargs
             )
         else:
             runner = module.LocalApplicationRunner(

@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             candidates=candidates,
             dispatcher=Dispatcher(runner_factory(config)),
             profile_loader=lambda: candidates.profile(config.candidate_id),
-            runner_problem=runner_problem,
+            runner_problem=lambda: runner_problem(config),
             unavailable=unavailable,
             **backends,
         )

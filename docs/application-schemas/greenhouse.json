@@ -1,0 +1,400 @@
+{
+ "backend": "greenhouse",
+ "schema_version": "0.1.1",
+ "generated_at_utc": "2026-09-23T23:40:00Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "coverage": {
+  "inventory_density": 191,
+  "observed_examples": 3,
+  "fully_mapped_examples": 2,
+  "note": "2 of 3 samples are native Greenhouse job-boards forms. The third (?gh_jid= on an employer domain) rendered a NON-Greenhouse third-party careers-site form; see edge_cases."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "gh-01",
+   "url": "https://job-boards.greenhouse.io/firmpilotailawfirmmarketing/jobs/5425748008",
+   "page_title": "Job Application for Director, Paid Media at FirmPilot",
+   "captured_at_utc": "2026-09-23T23:00:55Z",
+   "hosting_mode": "native_job_boards",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/greenhouse-01-firmpilot.controls.json",
+    ".imx/dynamic-applications/fable/evidence/greenhouse-01-firmpilot.state.txt",
+    ".imx/dynamic-applications/fable/evidence/greenhouse-01-firmpilot.options.jsonl"
+   ],
+   "option_lists_captured": "all 6 comboboxes",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit confirmation (never triggered)"
+   ],
+   "reobserved_at_utc": "2026-09-23T23:39:19Z",
+   "extractor_version": "v2-2000char-forms"
+  },
+  {
+   "sample_id": "gh-02",
+   "url": "https://job-boards.greenhouse.io/vercel/jobs/6011904004",
+   "page_title": "Job Application for Performance Marketing Manager at Vercel",
+   "captured_at_utc": "2026-09-23T23:02:41Z",
+   "hosting_mode": "native_job_boards",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/greenhouse-02-vercel.controls.json",
+    ".imx/dynamic-applications/fable/evidence/greenhouse-02-vercel.state.txt",
+    ".imx/dynamic-applications/fable/evidence/greenhouse-02-vercel.options.jsonl"
+   ],
+   "option_lists_captured": "3 of 15 comboboxes (state-residency yes/no, source-of-hire, gender identity); the remaining menus toggled closed on click and were NOT captured",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit confirmation (never triggered)"
+   ],
+   "reobserved_at_utc": "2026-09-23T23:39:24Z",
+   "extractor_version": "v2-2000char-forms"
+  },
+  {
+   "sample_id": "gh-03",
+   "url": "https://careers.upstart.com/jobs?gh_jid=8191363",
+   "resolved_url": "https://careers.upstart.com/jobs/performance-marketing-manager-emerging-products?gh_jid=8191363",
+   "page_title": "Performance Marketing Manager, Emerging Products -",
+   "captured_at_utc": "2026-09-23T23:02:47Z",
+   "hosting_mode": "employer_domain_third_party_careers_site",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/greenhouse-03-upstart.controls.json",
+    ".imx/dynamic-applications/fable/evidence/greenhouse-03-upstart.state.txt"
+   ],
+   "option_lists_captured": "all native <select> lists captured inline",
+   "steps_visited": [
+    "single page blank form (two forms on page: job-alert signup + application)"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ],
+   "classification_note": "Inventory tagged this as greenhouse because of gh_jid. The rendered form posts to careers.upstart.com/call_to_actions/.../form_submissions, has no #grnhse_iframe and no Greenhouse field ids. Vendor not identified (AWS WAF script present). Treat as backend=custom_careers_site_greenhouse_synced.",
+   "reobserved_at_utc": "2026-09-23T23:39:30Z",
+   "extractor_version": "v2-2000char-forms"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "form_id_seen": "application-form",
+   "form_method_attr": "get (submission is JS-driven; do not rely on native form action)",
+   "apply_entry": "An 'Apply' button (aria-label Apply) exists at top; the full blank form is already rendered in the same document on load in both native samples.",
+   "section_headings_seen": [
+    "Apply for this job",
+    "Phone",
+    "Voluntary Self-Identification",
+    "U.S. Standard Demographic Questions"
+   ],
+   "autofill_button_seen": {
+    "gh-01": "Autofill my application",
+    "gh-02": false
+   },
+   "form_index_note": "native Greenhouse: single form_index 0 with submit text Submit application; gh-03 third-party site: form_index 0 favourites, 1 job alerts (SUBMIT), 2 application (APPLY)"
+  },
+  "control_families": {
+   "text": "input[type=text] with id first_name/last_name/email/preferred_name; label text ends with '*' when required; autocomplete hints given-name/family-name/email; maxlength 255 seen on gh-02",
+   "phone": "fieldset legend 'Phone' containing an intl-tel-input country-code combobox (hidden listbox id iti-0__country-listbox, 244 options 'Country +code') and input[type=tel]#phone",
+   "combobox_react_select": "input[role=combobox].select__input inside div.select__control; options appear ONLY while open in a portal listbox whose id is react-select-<inputId>-listbox; aria-expanded on the input reflects state; the visible placeholder text is 'Select...'",
+   "file": "div[role=group] labelled 'Resume/CV' / 'Cover Letter' with buttons Attach | Dropbox | Google Drive | Enter manually, and a hidden input[type=file]#resume / #cover_letter accept=.pdf,.doc,.docx,.txt,.rtf multiple=false. 'Enter manually' reveals a textarea alternative (not exercised).",
+   "textarea": "textarea with id question_<digits> used for free-text custom questions (gh-01: 'Full Home Address*')",
+   "submit": "button[type=submit] text 'Submit application' at the bottom of the form"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred First Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "gh-01"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email*",
+    "control": "text(autocomplete=email)",
+    "required": true,
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ]
+   },
+   {
+    "key": "country",
+    "label_seen": "Country*",
+    "control": "combobox_react_select",
+    "required": true,
+    "options_total": "~245, first option 'United States +1'",
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ],
+    "note": "Option label includes dial code text; value mapping must strip it or select by label"
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone*",
+    "control": "phone",
+    "required": true,
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ]
+   },
+   {
+    "key": "candidate_location",
+    "label_seen": "Location (City)*",
+    "control": "combobox_react_select (async city typeahead)",
+    "required": true,
+    "seen_in": [
+     "gh-02"
+    ],
+    "note": "Options not captured; expected to require typing to populate"
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume/CV*",
+    "control": "file",
+    "required": "gh-01 true, gh-02 not marked",
+    "accept": ".pdf,.doc,.docx,.txt,.rtf",
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter",
+    "control": "file",
+    "required": false,
+    "accept": ".pdf,.doc,.docx,.txt,.rtf",
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ]
+   },
+   {
+    "key": "custom_question",
+    "id_pattern_seen": "question_<digits>",
+    "control": "text | textarea | combobox_react_select",
+    "required": "per-label '*'",
+    "seen_in": [
+     "gh-01",
+     "gh-02"
+    ],
+    "examples_seen": [
+     "LinkedIn Profile*",
+     "Full Home Address*",
+     "Are you legally authorized to work in the United States?* [Yes,No]",
+     "Will you now or in the future require sponsorship...* [Yes,No]",
+     "Are you currently based in any of these countries?...*",
+     "Will you require Visa Sponsorship now, or in the future?*",
+     "Your authorization to work in the country where you live...*",
+     "Do you live in one of the following states? ...* [Yes,No]",
+     "LinkedIn Profile / Twitter / Github / Website (optional text)",
+     "Where did you first hear about this role?* [14 options incl. 'LLMs (ChatGPT, etc.)', 'Other']",
+     "By submitting my application, I acknowledge ... Privacy Notice *",
+     "Please double-check all the information provided above ...*"
+    ]
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "Gender",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "Male",
+     "Female",
+     "Decline To Self Identify"
+    ],
+    "seen_in": [
+     "gh-01"
+    ],
+    "id_seen": "gender"
+   },
+   {
+    "key": "eeo_hispanic",
+    "label_seen": "Are you Hispanic/Latino?",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "Yes",
+     "No",
+     "Decline To Self Identify"
+    ],
+    "seen_in": [
+     "gh-01"
+    ],
+    "id_seen": "hispanic_ethnicity"
+   },
+   {
+    "key": "eeo_veteran",
+    "label_seen": "Veteran Status",
+    "control": "combobox_react_select",
+    "required": false,
+    "options": [
+     "I am not a protected veteran",
+     "I identify as one or more of the classifications of a protected veteran",
+     "I don't wish to answer"
+    ],
+    "seen_in": [
+     "gh-01"
+    ],
+    "id_seen": "veteran_status"
+   },
+   {
+    "key": "demographic_custom",
+    "section": "U.S. Standard Demographic Questions",
+    "control": "combobox_react_select (mark-all-that-apply wording implies multi-select)",
+    "required": false,
+    "id_pattern_seen": "<10 digits>",
+    "labels_seen": [
+     "How would you describe your gender identity? (mark all that apply)",
+     "How would you describe your racial/ethnic background? (mark all that apply)",
+     "How would you describe your sexual orientation? (mark all that apply)",
+     "Do you identify as transgender?",
+     "Do you have a disability or chronic condition ...",
+     "Are you a veteran or active member of the United States Armed Forces?"
+    ],
+    "options_captured": {
+     "gender identity": [
+      "Man",
+      "Non-binary",
+      "Woman",
+      "I prefer to self-describe",
+      "I don't wish to answer"
+     ]
+    },
+    "seen_in": [
+     "gh-02"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "document.title 'Job Application for <title> at <company>' + form#application-form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Submit application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high that this single control is the irreversible action; there is no separate review page in the native single-page layout",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Enter manually' button under Resume/CV or Cover Letter",
+    "effect": "reveals a text alternative to file upload",
+    "observed": "button present; expansion not exercised"
+   },
+   {
+    "trigger": "gh-02 'Are you currently based in any of these countries?' and 'Do you live in one of the following states?'",
+    "effect": "eligibility screening; unknown whether a 'No' answer disables submission",
+    "observed": "questions present only"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA Enterprise anchor iframe (recaptcha.net, invisible/badge style) present on both native samples. Expect a challenge or token check at submit; not triggered.",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "No login required to view the blank form.",
+    "observed": true
+   },
+   {
+    "type": "eligibility_gate",
+    "detail": "Employer custom yes/no screening questions (work authorization, sponsorship, country/state residency) are required and may be disqualifying.",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "react-select menus toggle: a click on an already-focused control closes the menu. Before reading options, verify aria-expanded=true or presence of #react-select-<id>-listbox; if absent, click once more. Reading options requires opening the menu (portal), which is safe and does not commit a value.",
+   "The intl-tel-input hidden country listbox (244 entries) is always in the DOM and will pollute naive [role=option] scans; scope to the target combobox's own listbox id.",
+   "Custom question ids are numeric and per-employer; labels are the only stable semantic key.",
+   "Each employer's custom question set differs in count (gh-01: 4 custom; gh-02: 11 custom) and includes attestation-style questions whose only acceptable answers are consent statements (e.g. privacy notice acknowledgement, 'please double-check' acknowledgement)."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "blank form on job page",
+   "(optional) Autofill from resume parse",
+   "single Submit application click",
+   "reCAPTCHA token validation",
+   "confirmation banner/page 'Thank you for applying' (UNVERIFIED, never visited)"
+  ],
+  "embedded_hosting_variant_unverified": "Many Greenhouse employers embed the same form in an iframe (#grnhse_iframe from boards.greenhouse.io/embed/job_app) on their own domain. Not observed in these three samples; the gh_jid sample here was a different vendor. Runtime should detect the iframe and read within it via OpenCLI frames/eval --frame.",
+  "required_marker_inference": "A trailing '*' in the label text and aria-required=true co-occur; treat either as required.",
+  "multi_select_inference": "Demographic questions worded '(mark all that apply)' are likely multi-select react-select (aria-multiselectable was null in DOM; unverified).",
+  "location_typeahead_inference": "'Location (City)' likely queries an async endpoint as the user types; do not expect a static option list."
+ },
+ "provider_hint": {
+  "for_jev": "Greenhouse native form: single page. Map by visible label text, not id. Required = label ends with '*' or aria-required. Combobox options are only readable while the menu is open; the runtime supplies option texts. Custom questions look like question_<digits>; classify each as fact_copy | option_choice | free_text | attestation | eligibility. Stop at 'Submit application'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "preferred_name",
+   "email",
+   "phone",
+   "country",
+   "candidate_location (city)",
+   "linkedin_url",
+   "website/github/twitter urls",
+   "full home address (only if a verified address fact exists)"
+  ],
+  "option_choice_from_verified_facts": [
+   "work_authorization yes/no",
+   "sponsorship_required yes/no",
+   "residency in listed countries/states",
+   "previously employed here yes/no",
+   "source of hire (user preference, else 'Other')"
+  ],
+  "escalate_to_writer_opus": [
+   "cover letter text if 'Enter manually' is chosen",
+   "any textarea custom question that asks for narrative (why this role, describe experience)"
+  ],
+  "requires_human_input": [
+   "all EEO / demographic / veteran / disability selections (never infer)",
+   "attestation acknowledgements (privacy notice, accuracy confirmation) unless the user pre-authorized them",
+   "any eligibility question whose truthful answer is not a verified fact",
+   "file selection for resume/cover letter",
+   "captcha challenge if presented"
+  ]
+ },
+ "edge_cases": [
+  "gh_jid URL on employer domain may be a third-party careers site (gh-03) with Rails-style names form_submission[fields_attributes][i][...] and job_questions[<hash>], native <select> lists with an empty first option, checkbox groups for office location, and a separate job-alert signup form that also contains First/Last/Email. A naive 'first email field' mapping would target the job-alert form. Two submit buttons: 'SUBMIT' (job alerts) and 'APPLY' (application). Both are stop boundaries.",
+  "gh-03 resume accept list is broader (PDF/DOC/DOCX/RTF/ODT/XML/DOT/PNG/GIF/JPG/JPEG/ZIP per description text) and the file input is required.",
+  "gh-03 EEO fields (Veteran Status, Race, Gender) are REQUIRED selects, unlike native Greenhouse where they are optional; 'Decline To Self Identify' is available.",
+  "Option text may embed extra tokens (country dial codes) that must not be treated as part of the semantic value."
+ ],
+ "status": "observed_partial"
+}

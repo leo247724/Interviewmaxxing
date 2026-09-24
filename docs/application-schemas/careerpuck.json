@@ -1,0 +1,139 @@
+{
+ "backend": "careerpuck",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed",
+ "status_reason": "Blank form rendered inline on the job page; fully observed.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 1
+ },
+ "observed_samples": [
+  {
+   "sample_id": "cp-01",
+   "url": "https://app.careerpuck.com/job-board/sky-society/job/5TRbO7zs",
+   "page_title": "Sky Society Director of Growth",
+   "captured_at_utc": "2026-09-23T23:54:17Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/careerpuck-01-skysociety.controls.json",
+    ".imx/dynamic-applications/fable/evidence/careerpuck-01-skysociety.state.txt"
+   ],
+   "steps_visited": [
+    "job page with inline blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "no_form_element": true,
+   "sections": [
+    "job description",
+    "Start your application (* Required)"
+   ],
+   "top_apply_button": "'Apply' (aria-label 'Apply to <title>') scrolls to the inline form"
+  },
+  "control_families": {
+   "text": "unlabeled inputs identified by placeholder and nearby label text 'First name*', 'Last name*', 'Email address*', 'LinkedIn profile' (placeholder https://www.linkedin.com/in/yourusername), 'Portfolio'; required marker is a trailing '*' in nearby label; no required attr",
+   "file": "input[type=file] accept pdf/doc/docx, multiple=true, 'Upload file' button, label 'Upload resume/CV*'",
+   "submit": "button[type=submit] 'Apply' at the bottom of the form"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First name*",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name*",
+    "required": true
+   },
+   {
+    "key": "email",
+    "label_seen": "Email address*",
+    "required": true
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn profile",
+    "required": false
+   },
+   {
+    "key": "resume",
+    "label_seen": "Upload resume/CV*",
+    "control": "file multiple",
+    "required": true
+   },
+   {
+    "key": "portfolio_url",
+    "label_seen": "Portfolio",
+    "required": false
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "app.careerpuck.com/job-board/<org>/job/<id>; heading 'Start your application'",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Apply' (bottom)",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high; two 'Apply' buttons exist, the top one is a scroll/anchor action, the bottom one submits",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Inputs have no id/name/label association; bind by placeholder + adjacent label text.",
+   "Two buttons read 'Apply'; disambiguate by position and aria-label."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "inline form",
+   "Apply",
+   "confirmation (UNVERIFIED)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Careerpuck: 6-field inline form (first, last, email, LinkedIn, resume multi-file, portfolio). Required = '*' in label. Stop at bottom 'Apply'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "linkedin_url",
+   "portfolio_url"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "resume file"
+  ]
+ },
+ "edge_cases": [
+  "Duplicate 'Apply' button text (anchor vs submit)."
+ ]
+}

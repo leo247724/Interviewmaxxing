@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from functools import cache
 from importlib.resources import files
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +59,10 @@ class DomControl(_Raw):
     group_described: list[DomDescription]
     adjacent: list[str]
     adjacent_errors: list[str]
+    section_context: list[str] = Field(default_factory=list)
+    preceding: str = ""
+    """Visible text of the nearest previous sibling block of the control's own box (or
+    of its group's container): a question shown before an unlabeled control."""
     label_selector: str | None
     required: bool
     disabled: bool
@@ -77,6 +82,8 @@ class DomControl(_Raw):
     image_alts: list[str]
     form_index: int
     has_value: bool
+    aria: dict[str, Any] | None = None
+    """Ephemeral, exact owned-listbox observation; absent for ambiguous widgets."""
 
 
 class DomButton(_Raw):
@@ -174,9 +181,15 @@ class DomSnapshot(_Raw):
     captcha_frames: list[DomCaptchaFrame]
     captcha_tokens: list[DomCaptchaToken]
     captcha_widget: bool
+    loading_indicator: bool = False
+    """Visible "loading"/"fetching" wording, an ``aria-busy="true"`` element or a
+    progress bar: the page may still be rendering (used only to delay readiness)."""
 
 
 @cache
 def inspector_script() -> str:
     """The JavaScript function expression that produces a ``DomSnapshot``."""
-    return files("interviewmaxxing_browser").joinpath("inspect.js").read_text(encoding="utf-8")
+    from .aria import ARIA_HELPERS
+
+    script = files("interviewmaxxing_browser").joinpath("inspect.js").read_text(encoding="utf-8")
+    return script.replace("/* ARIA_HELPERS */", ARIA_HELPERS)

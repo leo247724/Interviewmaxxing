@@ -263,7 +263,12 @@ _STATE_MESSAGES: dict[ApplicationState, str] = {
 
 
 class LocalApplicationRunner:
-    """Concrete ``ApplicationRunner`` over local storage and a real browser."""
+    """Concrete ``ApplicationRunner`` over local storage and a real browser.
+
+    Preparation is the default: complete known fields and stop before final submit.
+    ``prepare_only=False`` is reserved for explicitly authorized submission callers
+    and synthetic tests; it never overrides a stored preparation-only restriction.
+    """
 
     def __init__(
         self,
@@ -274,6 +279,7 @@ class LocalApplicationRunner:
         browser_factory: BrowserSessionFactory | None = None,
         candidates: SavedAnswerStore | None = None,
         resolver: PacketResolver | None = None,
+        prepare_only: bool = True,
         limits: RunLimits | None = None,
         owner: str | None = None,
         clock: Callable[[], datetime] = utc_now,
@@ -284,6 +290,7 @@ class LocalApplicationRunner:
         self.browser_factory = browser_factory or PlaywrightSessionFactory()
         self.candidates: SavedAnswerStore = candidates or LocalCandidateStore.from_paths(paths)
         self.resolver = resolver or FactualPacketResolver()
+        self.prepare_only = prepare_only
         self.limits = limits or RunLimits()
         self.owner = owner or f"runner:{socket.gethostname()}:{os.getpid()}"
         self.clock = clock
@@ -378,11 +385,14 @@ class LocalApplicationRunner:
             store.close()
 
     async def _start_browser(self, application_id: str) -> ApplicationBrowser:
+        with self._store() as store:
+            allow_submission = not (self.prepare_only or store.is_preparation_only(application_id))
         return await self.browser_factory.start(BrowserOptions(
             artifacts_dir=self.paths.application_artifacts(application_id),
             artifacts_root=self.paths.artifacts_dir,
             profile_dir=self.paths.browser_dir,
             headless=self.headless,
+            allow_submission=allow_submission,
         ))
 
     @staticmethod
@@ -442,6 +452,8 @@ class LocalApplicationRunner:
                     app = store.get_application(app_id)
                     if app.state in SUBMISSION_BLOCKING_STATES or app.state in TERMINAL_STATES:
                         return _outcome(store, app_id, _STATE_MESSAGES.get(app.state, ""))
+                    if self.prepare_only:
+                        store.require_preparation_only(claim)
                     try:
                         candidate = self.candidates.load(app.candidate_id)
                     except (CandidateNotFound, CandidateProfileInvalid) as exc:
@@ -831,6 +843,41 @@ class _Run:
         return nav.inspection
 
     async def _submit(self, packet: ApplicationPacket) -> PageInspection:
+        if self.store.is_preparation_only(self.app_id):
+            # Re-read after filling. A changed final step must be resolved again;
+            # never record a successful preparation from a stale observation.
+            prepare_review = getattr(self.browser, "prepare_review", self.browser.inspect)
+            page = await prepare_review()
+            if (page.form is None or page.form.is_final_step is not True
+                    or packet.problems_against(page.form)):
+                self._to(S.INSPECTING)
+                return page
+            if page.form.page_errors or any(f.validation_error for f in page.form.fields):
+                raise self._stop(S.NEEDS_INPUT,
+                                 "Stopped before submission: the final form has validation errors.",
+                                 reason="final form needs correction")
+            await self._verify_expected_page()
+            if page.evidence:
+                self.store.add_evidence(self.claim, page.evidence)
+            keep_for_review = getattr(self.browser, "keep_for_review", None)
+            location = keep_for_review() if callable(keep_for_review) else None
+            self.store.append_event(self.claim, "preparation.ready", {
+                "form_url": page.form.url,
+                "form_step": page.form.step,
+                "form_fingerprint": page.form.fingerprint,
+                "packet_id": packet.id,
+                "submitted": False,
+                "browser_location": location,
+                "captcha_pending": page.captcha_pending,
+            })
+            captcha_note = (" A CAPTCHA on this form must be solved in the browser before it can "
+                            "be submitted." if page.captcha_pending else "")
+            raise self._stop(S.NEEDS_INPUT,
+                             "Prepared to the final review step. Nothing was submitted. "
+                             "Submission remains disabled when this application is resumed."
+                             + captcha_note
+                             + (f" Review the open page in {location}." if location else ""),
+                             reason="prepared for final review; submission disabled")
         has_expected_job = self.store.expected_job_identity(self.app_id) is not None
         if has_expected_job:
             await self.interaction.progress("Submitting the application")
@@ -863,7 +910,24 @@ class _Run:
             raise _Stop(_outcome(self.store, self.app_id,
                                  f"Not submitted: {app.failure_reason or observation.detail}"))
         # FILLING or NEEDS_INPUT: the site showed the form again (definitely not received).
-        return await self.browser.inspect()
+        page = await self.browser.inspect()
+        if (app.state is S.NEEDS_INPUT and page.kind is PageKind.APPLICATION_FORM
+                and page.captcha_pending):
+            # The browser refused to dispatch because the form's embedded CAPTCHA widget
+            # is unsolved. That is the user's action, recorded (or waited for) exactly
+            # like a CAPTCHA page; the packet has no question for it.
+            needs = [MissingInput(
+                field_id=None, label="Solve the CAPTCHA", reason=MissingReason.USER_ACTION,
+                prompt="Solve the CAPTCHA on the application form in the browser window; the "
+                       "form cannot be submitted until it is solved.")]
+            page = await self._user_action(page, needs)
+            if page.kind is not PageKind.APPLICATION_FORM or page.form is None:
+                return page
+            if page.captcha_pending:
+                raise self._stop(S.NEEDS_INPUT, "Still waiting for you in the browser: "
+                                 + needs[0].prompt, reason="user action not completed",
+                                 missing=needs)
+        return page
 
 
 def create_runner(
@@ -872,10 +936,18 @@ def create_runner(
     headless: bool,
     interaction: UserInteraction,
     limits: RunLimits | None = None,
+    dynamic_options: Any = None,
 ) -> LocalApplicationRunner:
-    """The production runner: local candidate store, factual resolver and Playwright."""
+    """Production preparation-only runner with an explicitly selected runtime."""
+    factory = None
+    resolver = None
+    if dynamic_options is not None:
+        from .dynamic import runtime_components
+
+        factory, resolver = runtime_components(dynamic_options)
     return LocalApplicationRunner(paths=paths, interaction=interaction, headless=headless,
-                                  limits=limits)
+                                  limits=limits, browser_factory=factory, resolver=resolver,
+                                  prepare_only=True)
 
 
 class NoninteractiveInteraction:

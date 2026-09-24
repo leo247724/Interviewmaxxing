@@ -1,0 +1,177 @@
+{
+ "backend": "ukg",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:43:54Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 4,
+  "employers_in_inventory": 4,
+  "observed_examples": 4,
+  "fully_mapped_examples": 0,
+  "status": "blocked",
+  "blocker": "auth",
+  "note": "All 4 samples (3 UKG Pro Recruiting tenants on recruiting.ultipro.com / rec.pro.ukg.net, 1 UKG Ready tenant on saashr.com) redirect the Apply action to an account login/sign-up gate before any application question is rendered. No account was created. The blank application form was NOT observed; nothing below about the form itself is mapped."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ukg-01",
+   "url": "https://recruiting.ultipro.com/UNI1053/JobBoard/9b1b7eec-8714-d785-6d27-8ee3d0405521/OpportunityDetail?opportunityId=4eea98bb-2d62-424c-a947-1384c0bfda9f",
+   "page_title": "Paid Media Specialist - Temp | Career Opportunities",
+   "captured_at_utc": null,
+   "hosting_mode": "ukg_pro_recruiting_jobboard",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/ukg-01-ufcu.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/ukg-01-ufcu.state.txt"
+   ],
+   "option_lists_captured": "n/a (no application form reached)",
+   "steps_visited": [
+    "posting (OpportunityDetail)",
+    "click 'Apply now' (ukg-button shadow DOM)",
+    "Auth0 login page signin-us.ultipro.com/u/login"
+   ],
+   "gated_steps_not_visited": [
+    "sign up / account creation",
+    "every application step"
+   ],
+   "classification_note": "Login page: Email address* + Password* + 'Sign in'; 'Sign up' link to /u/signup. Extra evidence: ukg-01-ufcu-posting.*, ukg-01-ufcu-login.*"
+  },
+  {
+   "sample_id": "ukg-02",
+   "url": "https://mcclatchy.rec.pro.ukg.net/MCC1008MCLTC/JobBoard/ff11d963-22db-4278-a2b7-709f3b882262/OpportunityDetail?opportunityId=8c49b517-0b8b-4645-a75e-b3d932a41f7e",
+   "page_title": "SEO/TEO Operations Lead | Job Board",
+   "captured_at_utc": "2026-09-23T23:42:29.520Z",
+   "hosting_mode": "ukg_pro_recruiting_jobboard_ukg_net",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/ukg-02-mcclatchy.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/ukg-02-mcclatchy.state.txt"
+   ],
+   "option_lists_captured": "n/a (no application form reached)",
+   "steps_visited": [
+    "posting",
+    "click 'Apply now'",
+    "Auth0 login signin-us.ukg.net/u/login",
+    "opened 'Sign up' page (viewed only)"
+   ],
+   "gated_steps_not_visited": [
+    "account creation (Continue never clicked)",
+    "every application step"
+   ],
+   "classification_note": "Sign-up page 'Create your account': Email address* + Password* + 'Continue'. Extra evidence: ukg-02-mcclatchy-posting.*, ukg-02-mcclatchy-signup.*"
+  },
+  {
+   "sample_id": "ukg-03",
+   "url": "https://secure7.saashr.com/ta/6207834.careers?ApplyToJob=604484945",
+   "page_title": "Sign In / Register - Job Candidate Account",
+   "captured_at_utc": "2026-09-23T23:42:45.519Z",
+   "hosting_mode": "ukg_ready_saashr_candidate_portal",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/ukg-03-dragonshield.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/ukg-03-dragonshield.state.txt"
+   ],
+   "option_lists_captured": "n/a (no application form reached)",
+   "steps_visited": [
+    "ApplyToJob URL lands directly on candidate sign-in/register page"
+   ],
+   "gated_steps_not_visited": [
+    "'Create a new account' (never clicked)",
+    "every application step"
+   ],
+   "classification_note": "Form name=TheForm POST; Username* (maxlength 128) + Password* (maxlength 65) + 'Sign In' + button#CreateAccountButton 'Create a new account'; copy 'Have you worked here before? …'. Employer legal entity shown as BKX Holdings, LLC."
+  },
+  {
+   "sample_id": "ukg-04",
+   "url": "https://recruiting.ultipro.com/ONE1018ONSO/JobBoard/1955ffa6-bda6-4c95-8412-2c731d693ab2/OpportunityDetail?opportunityId=970fd734-7ca8-4746-b9fe-6f2e7176eddb",
+   "page_title": "Senior AEO & Organic Growth Manager | OneStream Careers Page",
+   "captured_at_utc": "2026-09-23T23:43:11.525Z",
+   "hosting_mode": "ukg_pro_recruiting_jobboard",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/ukg-04-onestream.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/ukg-04-onestream.state.txt"
+   ],
+   "option_lists_captured": "n/a (no application form reached)",
+   "steps_visited": [
+    "posting",
+    "click 'Apply now'",
+    "Auth0 login signin-us.ultipro.com"
+   ],
+   "gated_steps_not_visited": [
+    "sign up",
+    "every application step"
+   ],
+   "classification_note": "Same gate as ukg-01. Extra evidence: ukg-04-onestream-posting.*"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "posting": "UKG Pro: OpportunityDetail page, headings Posting Details/Locations/Job Details/Description/Qualifications/Skills/Behaviors/Motivations/Education/Experience/Licenses & Certifications; 'Apply now' is a <ukg-button> web component whose real <button> is inside a shadowRoot (snapshot refs are stale; click host.shadowRoot.querySelector('button')). 'Sign In' link also in header.",
+   "gate_ukg_pro": "Auth0 Universal Login at signin-us.ultipro.com or signin-us.ukg.net: form POST, input#username (Email address*, autocomplete=email), input#password, button 'Sign in', link 'Forgot your password?', link 'Sign up' -> /u/signup with input#email + input#password + 'Continue'.",
+   "gate_ukg_ready": "saashr.com candidate portal: form[name=TheForm] with Username*, Password*, 'Sign In', 'Create a new account' submit button, forgot username/password links; hidden ApplyToJob id carried in form.",
+   "captcha": "none seen on any gate page",
+   "iframes": "posting page embeds a same-origin JobBoard iframe + twitter widget; gate pages have none"
+  },
+  "control_families": {
+   "login_text": "input#username / input[name=Username]",
+   "login_password": "input#password / input[name=PasswordView]",
+   "signup": "input#email + input#password + Continue (Auth0)"
+  },
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "URL contains /JobBoard/<guid>/OpportunityDetail?opportunityId=<guid> (Pro) or /ta/<id>.careers?ApplyToJob=<id> (Ready)",
+    "observed": true
+   },
+   {
+    "step": "auth_gate",
+    "identity_hint": "document.title 'Log in' on signin-us.ultipro.com|signin-us.ukg.net, or 'Sign In / Register - Job Candidate Account' on saashr.com",
+    "observed": true,
+    "HUMAN_ACTION": "candidate must sign in or create an account; runtime must stop here in prepare-only mode"
+   },
+   {
+    "step": "application_form",
+    "observed": false,
+    "note": "not reachable without account"
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Account login/sign-up required before any application content; 4/4 samples, 2 UKG products",
+    "observed": true
+   },
+   {
+    "type": "tooling",
+    "detail": "'Apply now' is inside a <ukg-button> shadow root; text/ref selectors fail, JS click on shadow button works",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Do not follow the Apply click in prepare-only mode: it navigates to a third-party Auth0 host with a state token.",
+   "Product detection: hostname recruiting.ultipro.com or *.rec.pro.ukg.net => UKG Pro Recruiting; *.saashr.com /ta/<n>.careers => UKG Ready."
+  ]
+ },
+ "inferred": {
+  "expected_after_login": "UKG Pro Recruiting typically shows a multi-step candidate profile (resume upload/parse, contact info, work history, education, questionnaire, EEO, review) — NOT observed here; treat as unknown.",
+  "confidence": "none for form fields; high for the auth gate"
+ },
+ "provider_hint": {
+  "vendor": "UKG (Pro Recruiting; Ready)",
+  "detect": "hostnames above; <ukg-button> web components",
+  "for_jev": "UKG: application is behind a candidate-account login (Auth0 on ultipro.com/ukg.net, or saashr candidate portal). No form questions observed. Human must create/sign in to an account; runtime stops at the gate. Expect (unverified) a multi-page profile flow after login."
+ },
+ "edge_cases": [
+  {
+   "case": "UKG Ready ApplyToJob deep link",
+   "detail": "lands directly on the sign-in/register page, not on a posting"
+  }
+ ],
+ "human_action_needed": "Sign in or create a UKG candidate account for each tenant (per-tenant accounts), then re-observe the blank form."
+}

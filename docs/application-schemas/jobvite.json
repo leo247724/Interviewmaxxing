@@ -1,0 +1,351 @@
+{
+ "backend": "jobvite",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:11:55Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 04FD50C2CB395FB8DDCFF3271D407217",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed_partial",
+ "status_reason": "Two employers yielded a full step-1 form (LegalZoom after its Data Consent gate, Varonis directly); step 2 (after \"Next\") was not observable because Next validates required fields. Three tenants (LegalZoom, Ziff Davis, NinjaOne) show a Data Consent location/language gate before the form.",
+ "coverage": {
+  "inventory_density": 5,
+  "observed_examples": 4,
+  "fully_mapped_examples": 2,
+  "employers": [
+   "LegalZoom",
+   "Varonis",
+   "Ziff Davis",
+   "NinjaOne",
+   "NP Digital"
+  ]
+ },
+ "observed_samples": [
+  {
+   "sample_id": "jv-01",
+   "employer": "LegalZoom",
+   "url": "https://jobs.jobvite.com/legalzoom/job/oRtEAfwi",
+   "form_url": "https://jobs.jobvite.com/legalzoom/job/oRtEAfwi/apply",
+   "captured_at_utc": "2026-09-24T00:04:56Z",
+   "gate": "Data Consent: select 'Location of Residence and Language' (options: All Other Locations, United States of America (USA) - English, Poland (English), Poland …) then 'I Accept' (button type=submit). Selecting US-English and clicking I Accept was performed as a page-level consent to reveal the blank form; no candidate data involved.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/jobvite-01-legalzoom.controls.json",
+    ".imx/dynamic-applications/fable/evidence/jobvite-01-legalzoom-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/jobvite-01-legalzoom-consent.controls.json",
+    ".imx/dynamic-applications/fable/evidence/jobvite-01-legalzoom-form.controls.json",
+    ".imx/dynamic-applications/fable/evidence/jobvite-01-legalzoom-form.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "Data Consent gate",
+    "step 1 form"
+   ],
+   "gated_steps_not_visited": [
+    "step 2+ (Next)",
+    "Send Application"
+   ]
+  },
+  {
+   "sample_id": "jv-02",
+   "employer": "Varonis",
+   "url": "https://jobs.jobvite.com/varonis/job/oZJvAfwx/apply",
+   "captured_at_utc": "2026-09-24T00:03:26Z",
+   "gate": "none (form renders directly)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/jobvite-02-varonis-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/jobvite-02-varonis-apply.state.txt",
+    ".imx/dynamic-applications/fable/evidence/jobvite-02-varonis-step2.controls.json"
+   ],
+   "steps_visited": [
+    "step 1 form",
+    "Next pressed on blank form: 5 'Please provide this information.' validation messages, no navigation"
+   ],
+   "gated_steps_not_visited": [
+    "step 2+",
+    "Send Application"
+   ]
+  },
+  {
+   "sample_id": "jv-03",
+   "employer": "Ziff Davis",
+   "url": "https://jobs.jobvite.com/ziffdavis/job/ou0zzfwm/apply",
+   "captured_at_utc": "2026-09-24T00:03:55Z",
+   "gate": "Data Consent select: US / Canadian-French / European Economic Area / Other Areas (not passed)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/jobvite-03-ziffdavis-apply.controls.json"
+   ],
+   "steps_visited": [
+    "gate only"
+   ]
+  },
+  {
+   "sample_id": "jv-04",
+   "employer": "NinjaOne",
+   "url": "https://jobs.jobvite.com/ninjaone/job/oMPMAfwH/apply",
+   "captured_at_utc": "2026-09-24T00:04:18Z",
+   "gate": "Data Consent select with a single option 'Global NINJAONE APPLICANT AND CANDIDATE PRIVACY POLICY' (not passed)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/jobvite-04-ninjaone-apply.controls.json"
+   ],
+   "steps_visited": [
+    "gate only"
+   ]
+  },
+  {
+   "sample_id": "jv-05",
+   "employer": "NP Digital",
+   "url": "https://npdigital.com/careers/?p=job%2FoocNAfwH#open-positions",
+   "result": "not visited (employer-embedded Jobvite widget; bounded run)",
+   "captured_at_utc": null,
+   "steps_visited": []
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "route": "jobs.jobvite.com/<org>/job/<id> (job page with 'Apply' link and 'Apply Later' mailto) then /apply",
+   "gate": "Data Consent page: select#jv-country-select 'Location of Residence and Language:' (required), consent text, button 'I Accept' (type=submit)",
+   "form": "AngularJS single page; several <form> elements (form_index 0 = application, submit 'Send Application'; form_index 1 'Save' = cover-letter/portfolio paste modal); sections 'Add Resume*', 'Personal Information', 'Social Profile (optional)', 'Additional Files (optional)'; 'Next' button reveals later sections/steps only when required fields are valid; reCAPTCHA v2 iframes present"
+  },
+  "control_families": {
+   "text": "input#jv-field-<hash> name=input-<hash> with <label for> text ending '*' when required (required attr also set), maxlength 100",
+   "select": "native selects with first option 'Select an option...'; Country (250 opts, US/Canada/UK first), State (53 opts incl. 'Not Applicable')",
+   "radio": "custom: <i role=radio aria-selected> next to a hidden native input[type=radio] value=Yes/No name=<hash> aria-required; question text is a fieldset legend ending with a '*' span",
+   "textarea": "conditional follow-ups labelled 'If yes, please explain.' / 'If yes, please provide additional context (company, dates, title, etc).'",
+   "file": "hidden input[type=file]#file-input-0/1/2 behind 'SELECT'/'Add Cover Letter'/'Add Portfolio' buttons; each also offers a 'Type or paste your Cover Letter/Portfolio here' textarea modal with 'Save'",
+   "submit": "button[type=submit] aria-label 'Send Application' (text 'Send Application' / 'Sending Application')"
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "Add Resume*",
+    "control": "file",
+    "required": true,
+    "seen_in": [
+     "jv-01",
+     "jv-02"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "Legal First Name* | First Name*",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Legal Last Name* | Last Name*",
+    "required": true
+   },
+   {
+    "key": "preferred_first_name",
+    "label_seen": "Preferred First Name",
+    "seen_in": [
+     "jv-01"
+    ]
+   },
+   {
+    "key": "preferred_last_name",
+    "label_seen": "Preferred Last Name",
+    "seen_in": [
+     "jv-01"
+    ]
+   },
+   {
+    "key": "address",
+    "label_seen": "Address* | Address",
+    "required": "varies"
+   },
+   {
+    "key": "address2",
+    "label_seen": "Address 2 | Address2"
+   },
+   {
+    "key": "country",
+    "label_seen": "Country*",
+    "control": "select 250",
+    "required": true
+   },
+   {
+    "key": "city",
+    "label_seen": "City* | City",
+    "required": "varies"
+   },
+   {
+    "key": "state",
+    "label_seen": "State* | State",
+    "control": "select 53",
+    "required": "varies"
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Zip Code* | Zip/Postal Code",
+    "required": "varies"
+   },
+   {
+    "key": "email",
+    "label_seen": "Personal Email Address* | Email*",
+    "required": true
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone Number* | Phone*",
+    "control": "tel",
+    "required": true
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn Profile",
+    "seen_in": [
+     "jv-01"
+    ]
+   },
+   {
+    "key": "referral",
+    "label_seen": "Were you referred by an employee? If so, please list their name here.",
+    "seen_in": [
+     "jv-01"
+    ]
+   },
+   {
+    "key": "salary_expectation",
+    "label_seen": "What is your desired salary?",
+    "seen_in": [
+     "jv-01"
+    ],
+    "benchmark_candidate": true
+   },
+   {
+    "key": "noncompete",
+    "label_seen": "Are you subject to a noncompete agreement that may impact your ability to work at LegalZoom? *",
+    "control": "radio Yes/No + conditional textarea 'If yes, please explain.'",
+    "required": true,
+    "seen_in": [
+     "jv-01"
+    ]
+   },
+   {
+    "key": "prior_employment",
+    "label_seen": "Have you worked for LegalZoom or any of its affiliates in the past? *",
+    "control": "radio Yes/No + conditional textarea",
+    "required": true,
+    "seen_in": [
+     "jv-01"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Add Cover Letter (file or 'Type or paste your Cover Letter here')",
+    "benchmark_candidate": true
+   },
+   {
+    "key": "portfolio",
+    "label_seen": "Add Portfolio (file or paste)"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "data_consent_gate",
+    "observed": true,
+    "note": "tenant-specific; passing requires selecting a region and clicking I Accept (page-level consent)"
+   },
+   {
+    "step": "step_1_form",
+    "observed": true
+   },
+   {
+    "step": "next_steps",
+    "observed": false,
+    "gated_reason": "'Next' validates required fields; later sections (likely EEO/voluntary self-identification, questions) unobserved"
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] aria-label 'Send Application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high; present in DOM on step 1 (may be hidden until last step)",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "Yes on noncompete / prior employment radios",
+    "effect": "free-text explanation textarea becomes relevant",
+    "observed": "textareas present"
+   },
+   {
+    "trigger": "Add Cover Letter / Add Portfolio",
+    "effect": "popup with file upload or paste textarea + Save",
+    "observed": true
+   }
+  ],
+  "blockers": [
+   {
+    "type": "consent_gate",
+    "detail": "Data Consent region/language select + I Accept on 3 of 4 tenants",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2 on forms",
+    "observed": true
+   },
+   {
+    "type": "validation_gate",
+    "detail": "Next requires all required fields",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Field ids/names are per-form hashes; bind by label.",
+   "Radios are custom <i role=radio> elements wrapping hidden native radios; verify via aria-selected or the native input's checked state.",
+   "'Send Application' button exists in the DOM at step 1; runtime must not click it even if visible."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "consent gate",
+   "step 1 (resume, personal info, questions)",
+   "Next: EEO / voluntary self-identification / more questions",
+   "Send Application",
+   "confirmation"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Jobvite: optional Data Consent gate, then a hashed-id form with resume, legal/preferred names, full address, email, phone, LinkedIn, employer questions (noncompete, prior employment Yes/No with explanations, referral, desired salary). Custom radios. Stop at 'Send Application'; do not press Next in prepare-only unless authorised.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "preferred names",
+   "address",
+   "city",
+   "state",
+   "postal_code",
+   "country",
+   "email",
+   "phone",
+   "linkedin_url"
+  ],
+  "option_choice_from_verified_facts": [
+   "country",
+   "state",
+   "noncompete Yes/No",
+   "prior employment Yes/No"
+  ],
+  "escalate_to_writer_opus": [
+   "cover letter paste",
+   "noncompete/prior-employment explanations if Yes",
+   "desired salary phrasing"
+  ],
+  "requires_human_input": [
+   "consent gate region selection",
+   "resume",
+   "captcha",
+   "salary if no verified fact"
+  ]
+ },
+ "edge_cases": [
+  "Employer-embedded Jobvite (npdigital.com ?p=job/...) not observed; likely iframe or JS widget.",
+  "NinjaOne's gate has a single policy option, effectively an attestation."
+ ]
+}

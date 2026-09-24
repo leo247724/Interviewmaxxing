@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from interviewmaxxing_browser.driver import DriverError
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_core import (
     AnswerReuse,
@@ -33,6 +34,7 @@ from interviewmaxxing_core import (
     ClaimUnavailable,
     InvalidApplicationUrl,
     LocalPaths,
+    MissingInput,
     MissingReason,
     Receipt,
     StoreError,
@@ -66,11 +68,11 @@ EXIT_INTERRUPTED = 130
 
 PROG = "interviewmaxxing"
 DESCRIPTION = """\
-Submit job applications you choose, using your verified profile and resume.
+Prepare job applications you choose, using your verified profile and resume.
 
-Your request to apply authorizes submission; you are only asked for missing
-required information or for actions such as sign-in or CAPTCHA. An application
-is reported as submitted only after the site's confirmation is observed.
+Runs stop at the final review step without submitting. You are asked for missing
+required information or for actions such as sign-in or CAPTCHA. Resuming a
+preparation-only application keeps submission disabled.
 """
 EPILOG = """\
 typical flow:
@@ -159,6 +161,35 @@ def _next_steps(outcome: ApplyOutcome) -> list[str]:
     return []
 
 
+PREPARED_MESSAGE_PREFIX = "Prepared to the final review step"
+
+
+def _preparation_lines(state: ApplicationState, events: Sequence[Any],
+                       waiting: Sequence[MissingInput]) -> list[str]:
+    """Status lines for an application that reached its final review step and stopped
+    without submitting (state NEEDS_INPUT, nothing asked, a ``preparation.ready``
+    event). Empty for every other application."""
+    if state is not S.NEEDS_INPUT or waiting:
+        return []
+    ready = [e for e in events if getattr(e, "event", None) == "preparation.ready"]
+    if not ready:
+        return []
+    metadata = getattr(ready[-1], "metadata", {}) or {}
+    step = metadata.get("form_step")
+    lines = ["prepared:     final review step reached"
+             + (f" (form step {step})" if step is not None else "")
+             + "; nothing was submitted"]
+    if metadata.get("captcha_pending"):
+        lines.append("captcha:      a CAPTCHA on this form must be solved in the browser before submission")
+    return lines
+
+
+def _review_steps(application_id: str, artifacts_dir: Path) -> list[str]:
+    return [f"review the filled form evidence under {artifacts_dir / application_id}/",
+            f"{PROG} events {application_id}   (preparation.ready records the final step)",
+            f"{PROG} resume {application_id}   (re-prepares from the site; submission stays disabled)"]
+
+
 def _print_receipt(receipt: Receipt) -> None:
     print(f"SUBMITTED  {receipt.application_id}")
     job = " - ".join(x for x in (receipt.company, receipt.title) if x) or receipt.job_id
@@ -191,7 +222,11 @@ def _print_outcome(outcome: ApplyOutcome, *, as_json: bool) -> None:
         for item in outcome.missing_inputs:
             text = describe(item) if item.field_id else f"{item.label}\n  {item.prompt}"
             print("- " + text.replace("\n", "\n  "))
-    steps = _next_steps(outcome)
+    if (outcome.state is S.NEEDS_INPUT and not outcome.missing_inputs
+            and outcome.message.startswith(PREPARED_MESSAGE_PREFIX)):
+        steps = _review_steps(outcome.application_id, LocalPaths.from_env().artifacts_dir)
+    else:
+        steps = _next_steps(outcome)
     if steps:
         print("\nnext:")
         for step in steps:
@@ -222,10 +257,44 @@ def _check_run_options(parser: argparse.ArgumentParser, args: argparse.Namespace
                      "drop --headless (or drop --act to stop as NEEDS_INPUT instead)")
     if getattr(args, "interactive", False) and not sys.stdin.isatty():
         parser.error("--interactive needs a terminal; use `answer` and `resume` instead")
+    if hasattr(args, "browser"):
+        try:
+            _dynamic_options(args).validate()
+        except ValueError as exc:
+            parser.error(str(exc))
+
+
+def _dynamic_options(args: argparse.Namespace) -> Any:
+    from .dynamic import DynamicOptions
+
+    return DynamicOptions(browser=args.browser, opencli_profile=args.opencli_profile,
+                          ai_routing=args.ai_routing,
+                          env_file=Path(args.env_file) if args.env_file else None,
+                          writer_model=args.writer_model,
+                          rag_connection_file=Path(args.rag_connection_file) if args.rag_connection_file else None)
 
 
 def _runner(args: argparse.Namespace) -> LocalApplicationRunner:
-    return create_runner(_paths(args), headless=args.headless, interaction=_interaction(args))
+    kwargs: dict[str, Any] = {}
+    if args.ai_routing or args.browser != "playwright":
+        kwargs["dynamic_options"] = _dynamic_options(args)
+    return create_runner(_paths(args), headless=args.headless, interaction=_interaction(args), **kwargs)
+
+
+def cmd_classify(args: argparse.Namespace) -> int:
+    from .dynamic import classify_url
+
+    try:
+        url = normalize_application_url(args.url)
+        result = asyncio.run(classify_url(
+            url, options=_dynamic_options(args), headless=args.headless,
+            artifacts_dir=_paths(args).artifacts_dir / "classification",
+        ))
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(json.dumps(result, indent=2, default=str))
+    return EXIT_OK
 
 
 def _run(call: Callable[[], Awaitable[ApplyOutcome]]) -> ApplyOutcome:
@@ -302,7 +371,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     if _open_existing(paths) is None:
         print("No state database.", file=sys.stderr)
         return EXIT_ERROR
-    runner = create_runner(paths, headless=args.headless, interaction=NoninteractiveInteraction())
+    runner = _runner(args)
     try:
         outcome = _run(lambda: runner.reconcile(args.application_id))
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -446,9 +515,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             for item in waiting:
                 text = describe(item) if item.field_id else f"{item.label}\n  {item.prompt}"
                 print("- " + text.replace("\n", "\n  "))
+        prepared = _preparation_lines(app.state, events, waiting)
+        for line in prepared:
+            print(line)
         print(f"events:       {len(events)} ({PROG} events {app.id})")
-        steps = _next_steps(ApplyOutcome(application_id=app.id, state=app.state,
-                                         missing_inputs=waiting))
+        steps = (_review_steps(app.id, paths.artifacts_dir) if prepared
+                 else _next_steps(ApplyOutcome(application_id=app.id, state=app.state,
+                                               missing_inputs=waiting)))
         for step in steps:
             print(f"next:         {step}")
     return EXIT_OK
@@ -491,6 +564,85 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _csv(value: str | None) -> set[str] | None:
+    if value is None:
+        return None
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def cmd_prepare_batch(args: argparse.Namespace) -> int:
+    """Prepare every matching inventory row through ``apply`` subprocesses; see
+    ``interviewmaxxing_cli.batch``. Always headless; never submits."""
+    from pydantic import ValidationError
+
+    from .batch import (
+        BatchOptions,
+        LedgerEntry,
+        default_batch_id,
+        format_entry,
+        read_inventory,
+        render_summary_markdown,
+        run_batch,
+    )
+
+    paths = _paths(args)
+    try:
+        rows, invalid = read_inventory(Path(args.inventory), backends=_csv(args.backends),
+                                       statuses=_csv(args.statuses) or set(), limit=args.limit)
+        options = BatchOptions(
+            paths=paths, candidate_id=args.candidate or paths.candidate_id,
+            batch_id=args.batch_id or default_batch_id(), workers=args.workers,
+            per_job_timeout_s=args.per_job_timeout, retry_retryable=args.retry_retryable,
+            max_prepared=args.max_prepared, include_existing=args.include_existing,
+            browser=args.browser, opencli_profile=args.opencli_profile,
+            ai_routing=args.ai_routing, env_file=Path(args.env_file) if args.env_file else None,
+            writer_model=args.writer_model,
+            rag_connection_file=Path(args.rag_connection_file) if args.rag_connection_file else None,
+        )
+    except ValidationError as exc:
+        problems = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
+        print(f"error: {problems}", file=sys.stderr)
+        return EXIT_USAGE
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not rows:
+        print(f"error: no inventory rows match (skipped {invalid} without a valid URL)",
+              file=sys.stderr)
+        return EXIT_USAGE
+    progress = sys.stderr if args.json else sys.stdout
+
+    def show(entry: LedgerEntry) -> None:
+        print(format_entry(entry), file=progress, flush=True)
+
+    async def batch() -> Any:
+        task = asyncio.current_task()
+        assert task is not None
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        try:
+            return await run_batch(options, rows, on_entry=show, skipped_invalid_url=invalid)
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+    print(f"batch {options.batch_id}: {len(rows)} row(s), {options.workers} worker(s), "
+          f"preparation only; ledger in {options.batch_dir}", file=progress, flush=True)
+    try:
+        with asyncio.Runner() as runner:
+            summary = runner.run(batch())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print(f"Interrupted. Finished jobs are in {options.batch_dir}; run the same "
+              f"--batch-id again to continue.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    if args.json:
+        print(_dump(summary))
+    else:
+        print()
+        print(render_summary_markdown(summary), end="")
+        print(f"batch directory: {options.batch_dir}")
+    return EXIT_OK if sum(summary.totals.values()) else EXIT_ERROR
+
+
 def cmd_paths(args: argparse.Namespace) -> int:
     paths = _paths(args)
     data = {
@@ -512,7 +664,30 @@ def cmd_paths(args: argparse.Namespace) -> int:
 # --- parser ----------------------------------------------------------------------
 
 
+def _dynamic_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--browser", choices=["playwright", "opencli"], default="playwright")
+    p.add_argument("--opencli-profile", help="connected OpenCLI browser profile alias")
+    p.add_argument("--ai-routing", action="store_true", help="opt in to bounded Jev semantic routing")
+    p.add_argument("--env-file", help="explicit OpenRouter credential env file for AI routing")
+    p.add_argument("--writer-model", help="explicit narrative writer model ID for AI routing")
+    p.add_argument("--rag-connection-file", help="absolute private JSON connection file for Supabase retrieval")
+
+
+def _int_range(low: int, high: int) -> Callable[[str], int]:
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}") from None
+        if not low <= value <= high:
+            raise argparse.ArgumentTypeError(f"expected {low}..{high}, got {value}")
+        return value
+
+    return parse
+
+
 def _run_options(p: argparse.ArgumentParser, *, interactive: bool = True) -> None:
+    _dynamic_flags(p)
     p.add_argument("--headless", action="store_true",
                    help="hide the browser window (sign-in, CAPTCHA and custom controls then stop "
                         "as NEEDS_INPUT; cannot be combined with --act)")
@@ -540,17 +715,55 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "apply",
-        help="apply to the job at an application URL (submits when complete)",
-        description="Apply to the job at APPLICATION_URL with your verified profile. Your "
-        "request authorizes submission. The run stops, with a recorded result, when a "
-        "required answer is missing or the site needs you (sign-in, CAPTCHA); nothing "
-        "is submitted until every required question is answered. SUBMITTED is reported "
-        "only after the site's confirmation tied to this job is observed.",
+        help="prepare the application and stop before final submission",
+        description="Prepare the job application at APPLICATION_URL with your verified profile. "
+        "Stop at the final review step without submitting. Missing required answers or browser "
+        "actions stop the run earlier. The no-submit restriction is preserved on resume.",
     )
     p.add_argument("url", metavar="APPLICATION_URL")
     p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
     _run_options(p)
     p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser(
+        "prepare-batch",
+        help="prepare many Saved jobs from an inventory file (headless; never submits)",
+        description="Run `apply` for every matching row of a JSON inventory, at most "
+        "--workers at a time, each worker with its own browser profile. Every application "
+        "stops at its final review step or earlier (NEEDS_INPUT); nothing is submitted. "
+        "Finished jobs are recorded in $IMX_HOME/batches/<batch id>/ledger.jsonl; running "
+        "the same --batch-id again skips them and retries failures. Sign-in, CAPTCHA and "
+        "custom controls stop as NEEDS_INPUT; finish them later with `resume APP --act`.",
+    )
+    p.add_argument("--inventory", required=True, metavar="FILE",
+                   help="JSON list of Saved jobs (listing_id, source_application_url, "
+                        "backend, status, company, title)")
+    p.add_argument("--backends", metavar="A,B,C", help="only these backends")
+    p.add_argument("--statuses", metavar="A,B", default="resolved",
+                   help="only these inventory statuses (default: resolved)")
+    p.add_argument("--limit", type=_int_range(1, 1_000_000), metavar="N",
+                   help="at most N rows, after filtering")
+    p.add_argument("--workers", type=_int_range(1, 8), default=1, metavar="N",
+                   help="concurrent applications, each in its own browser profile (1..8)")
+    p.add_argument("--retry-retryable", type=_int_range(0, 2), default=1, metavar="N",
+                   help="extra attempts for retryable failures and errors (0..2)")
+    p.add_argument("--max-prepared", type=_int_range(1, 1_000_000), metavar="N",
+                   help="stop launching once N applications are prepared in this batch")
+    p.add_argument("--per-job-timeout", type=float, default=900.0, metavar="SECONDS",
+                   help="kill a job that runs longer than this (default 900)")
+    p.add_argument("--batch-id", metavar="ID", help="name of the batch (default: UTC timestamp); "
+                                                    "reuse it to resume")
+    p.add_argument("--include-existing", action="store_true",
+                   help="also run URLs that already have an application in the store")
+    p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
+    _dynamic_flags(p)
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
+    p.set_defaults(func=cmd_prepare_batch)
+
+    p = sub.add_parser("classify", help="observe one URL without filling or advancing forms")
+    p.add_argument("url", metavar="APPLICATION_URL")
+    _run_options(p, interactive=False)
+    p.set_defaults(func=cmd_classify)
 
     p = sub.add_parser("resume", help="continue a stopped application from the site",
                        description="Re-inspect the site and continue, using answers saved "
@@ -614,7 +827,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _check_run_options(parser, args)
     try:
         code: int = args.func(args)
-    except StoreError as exc:
+    except (StoreError, DriverError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     return code

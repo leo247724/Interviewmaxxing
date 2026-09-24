@@ -15,6 +15,7 @@ import hashlib
 import os
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any
@@ -180,6 +181,45 @@ def test_live_accepted_submission_with_structured_commands(
     assert path == "/o1/apply"
     assert body == {"email": ["avery.quill@example.test"], "auth": ["ys"], "sponsor": ["s_no"],
                     "relocate": ["yes"], "why": ["I build data platforms."]}
+
+
+def test_live_preparation_stops_without_post_and_preserves_review_tab(
+    kit: SimpleNamespace, form_site: FormSite, options: BrowserOptions
+) -> None:
+    async def scenario() -> None:
+        browser = await OpenCliSessionFactory(CONFIG).start(
+            replace(options, allow_submission=False))
+        owned_tab: str | None = None
+        try:
+            page = await browser.open(f"{form_site.origin}/o1/form")
+            owned_tab = browser.driver.tab
+            assert owned_tab and owned_tab not in CONFIG.protected_tabs
+            packet = kit.build(page.form, ANSWERS).packet
+            fill = await browser.fill(page.form, packet)
+            assert fill.ok, [(r.field_id, r.status, r.detail) for r in fill.fields]
+            review = await browser.prepare_review()
+            assert review.form.is_final_step is True and not review.form.page_errors
+            assert review.evidence
+            assert not (await browser.submit()).dispatched
+            assert form_site.posts == []
+            browser.keep_for_review()
+            await browser.close()
+            # Fresh observation proves normal runner cleanup kept the review page.
+            tabs = await browser.driver._call(browser.driver._argv(["tab", "list"], pin=False))
+            [tab] = [t for t in tabs if t.get("page") == owned_tab]
+            assert tab["url"] == page.observed_url
+            assert form_site.posts == []
+            print("\n[live] Final review retained; final submit refused; employer POST count: 0")
+        finally:
+            if owned_tab is not None:
+                # This test's fictional page is no longer needed after verification.
+                await browser.driver._call(browser.driver._argv(
+                    ["tab", "close"], positionals=[owned_tab], pin=False))
+                browser.driver._tab = None
+                await browser.driver._call(browser.driver._argv(["close"], pin=False))
+            else:
+                await browser.close()
+    kit.run(scenario())
 
 
 def test_live_uncertain_outcome_is_never_submitted_twice(

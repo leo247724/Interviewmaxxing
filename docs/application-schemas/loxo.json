@@ -1,0 +1,155 @@
+{
+ "backend": "loxo",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed",
+ "status_reason": "Job page links to /form?source_type=app which renders the full blank form.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 1
+ },
+ "observed_samples": [
+  {
+   "sample_id": "lx-01",
+   "url": "https://pod1.app.loxo.co/job/MzI2ODctZXBhMnhmdWpva2Yyem0xYw==",
+   "form_url": "https://pod1.app.loxo.co/job/MzI2ODctZXBhMnhmdWpva2Yyem0xYw==/form?source_type=app",
+   "page_title": "Director of Lifecycle Marketing | Creative People Inc",
+   "captured_at_utc": "2026-09-23T23:55:18Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/loxo-01-creativepeople.controls.json",
+    ".imx/dynamic-applications/fable/evidence/loxo-01-creativepeople-form.controls.json",
+    ".imx/dynamic-applications/fable/evidence/loxo-01-creativepeople-form.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "/form blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit (/finish)"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "forms": "one <form> (form_index 0) POST …/finish?source_type=app; submit is input[type=submit] value 'Apply'",
+   "route": "/job/<base64id> → 'Apply for this job' → /job/<id>/form?source_type=app"
+  },
+  "control_families": {
+   "text": "name (placeholder 'Your Full Name'), email ('Your Email Address'), phone ('Your Phone Number'); labels are not associated (extractor fell back to nearby text)",
+   "file": "resume_uploaded_file[] (accept attr absent)",
+   "custom_questions": "input name=custom_question_<digits> with question text as nearby label: 'Title *', 'Location *', 'Linkedin *', 'Portfolio link (if applicable)'; required attr set on the three with '*'",
+   "checkbox": "#contact-consent-box name=contact_consent 'Yes, Creative People Inc can contact me about job opportunities.' with long consent text (phone/text communications)",
+   "submit": "input[type=submit] 'Apply'"
+  },
+  "field_patterns": [
+   {
+    "key": "full_name",
+    "placeholder_seen": "Your Full Name"
+   },
+   {
+    "key": "email",
+    "placeholder_seen": "Your Email Address"
+   },
+   {
+    "key": "phone",
+    "placeholder_seen": "Your Phone Number"
+   },
+   {
+    "key": "resume",
+    "control": "file"
+   },
+   {
+    "key": "current_title",
+    "label_seen": "Title *",
+    "required": true
+   },
+   {
+    "key": "location",
+    "label_seen": "Location *",
+    "required": true
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "Linkedin *",
+    "required": true
+   },
+   {
+    "key": "portfolio_url",
+    "label_seen": "Portfolio link (if applicable)",
+    "required": false
+   },
+   {
+    "key": "contact_consent",
+    "control": "checkbox",
+    "required": false
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "input[type=submit] 'Apply'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high; single form posting to /finish",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "No label-for associations; question text precedes each input.",
+   "Base64 job id in URL."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "form",
+   "Apply",
+   "/finish confirmation (UNVERIFIED)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Loxo apply form: full name, email, phone, resume, custom questions (title, location, LinkedIn, portfolio), contact consent. Stop at 'Apply'.",
+  "exact_copy_facts": [
+   "full_name",
+   "email",
+   "phone",
+   "current_title",
+   "location",
+   "linkedin_url",
+   "portfolio_url"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "contact consent",
+   "resume"
+  ]
+ },
+ "edge_cases": [
+  "Custom question ids are numeric per job."
+ ]
+}

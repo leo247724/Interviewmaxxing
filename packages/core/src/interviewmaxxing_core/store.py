@@ -203,6 +203,11 @@ CREATE TRIGGER IF NOT EXISTS events_are_append_only_u BEFORE UPDATE ON events
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_are_append_only_d BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS preparation_blocks_submission
+BEFORE INSERT ON submission_attempts
+WHEN EXISTS (SELECT 1 FROM events WHERE application_id = NEW.application_id
+             AND event = 'application.preparation_only')
+BEGIN SELECT RAISE(ABORT, 'preparation-only application cannot be submitted'); END;
 CREATE TRIGGER IF NOT EXISTS submitted_is_final BEFORE UPDATE OF state ON applications
 WHEN OLD.state = 'SUBMITTED' AND NEW.state <> 'SUBMITTED'
 BEGIN SELECT RAISE(ABORT, 'SUBMITTED is final'); END;
@@ -1026,6 +1031,28 @@ class ApplicationStore:
 
     # --- submission ------------------------------------------------------------------
 
+    def is_preparation_only(self, application_id: str) -> bool:
+        """A persisted restriction, never implicitly cleared by apply or resume."""
+        return self._conn.execute(
+            "SELECT 1 FROM events WHERE application_id = ?"
+            " AND event = 'application.preparation_only' LIMIT 1", (application_id,),
+        ).fetchone() is not None
+
+    def require_preparation_only(self, claim: Claim) -> None:
+        """Persist the user's no-submit boundary before any browser work.
+
+        This monotonic restriction has no automatic expiry or resume override.
+        It cannot retract a submission which has already started.
+        """
+        now = self._now()
+        with self._tx() as c:
+            row = self._check_claim(c, claim, now)
+            if S(row["state"]) not in PRE_SUBMISSION_STATES:
+                raise SubmissionBlocked("cannot prepare an application after submission or closure")
+            if not self.is_preparation_only(row["id"]):
+                self._event(c, row["id"], "application.preparation_only", now=now,
+                            actor=claim.owner, metadata={"submission_authorized": False})
+
     def begin_submission(
         self, claim: Claim, *, packet_id: str | None = None, lease: timedelta = SUBMISSION_LEASE
     ) -> SubmissionAttempt:
@@ -1038,6 +1065,8 @@ class ApplicationStore:
         now = self._now()
         with self._tx() as c:
             row = self._check_claim(c, claim, now)
+            if self.is_preparation_only(row["id"]):
+                raise SubmissionBlocked("preparation-only application cannot be submitted")
             state = S(row["state"])
             if state in SUBMISSION_BLOCKING_STATES:
                 raise SubmissionBlocked(f"{row['id']} is {state}; it must not be submitted again")

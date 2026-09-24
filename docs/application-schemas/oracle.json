@@ -1,0 +1,185 @@
+{
+ "backend": "oracle",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:11:55Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 04FD50C2CB395FB8DDCFF3271D407217",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "blocked_identity_gate",
+ "status_reason": "Oracle Cloud Recruiting (CandidateExperience): APPLY NOW leads to /job/<id>/apply/email, an \"Authentication screen. You don't need to have an account\" asking for Email Address (with honeypot, captcha and Terms and Conditions \"Agree\") before NEXT. Continuing triggers email verification, so it was not advanced. Observed identically on two tenants; the APPLY NOW click itself produced no navigation in a background tab (route opened directly).",
+ "coverage": {
+  "inventory_density": 5,
+  "observed_examples": 3,
+  "fully_mapped_examples": 0,
+  "employers": [
+   "Alorica",
+   "Icertis",
+   "UL Solutions"
+  ]
+ },
+ "observed_samples": [
+  {
+   "sample_id": "or-01",
+   "employer": "Alorica",
+   "url": "https://fa-euxw-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/241460",
+   "gate_url": "https://fa-euxw-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/241460/apply/email",
+   "captured_at_utc": "2026-09-24T00:07:30Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/oracle-01-alorica.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-01-alorica-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-01-alorica-applyemail.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-01-alorica-applyemail.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "APPLY NOW click (no change)",
+    "/apply/email gate"
+   ],
+   "gated_steps_not_visited": [
+    "verification code",
+    "application steps"
+   ]
+  },
+  {
+   "sample_id": "or-02",
+   "employer": "Icertis",
+   "url": "https://iaaviz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Jobs-at-Icertis/job/7285",
+   "gate_url": "https://iaaviz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Jobs-at-Icertis/job/7285/apply/email",
+   "captured_at_utc": "2026-09-24T00:07:55Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/oracle-02-icertis.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-02-icertis-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-02-icertis-applyemail.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-02-icertis-applyemail.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "APPLY NOW click (no change)",
+    "/apply/email gate (needed selector wait; first load rendered headings only)"
+   ],
+   "gated_steps_not_visited": [
+    "verification code",
+    "application steps"
+   ]
+  },
+  {
+   "sample_id": "or-03",
+   "employer": "UL Solutions",
+   "url": "https://fa-eups-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/ULSolutionsCareers/job/10020",
+   "captured_at_utc": "2026-09-24T00:07:13Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/oracle-03-ul.controls.json",
+    ".imx/dynamic-applications/fable/evidence/oracle-03-ul-apply.controls.json"
+   ],
+   "steps_visited": [
+    "job page",
+    "APPLY NOW click (no change)"
+   ],
+   "gated_steps_not_visited": [
+    "gate not opened for this tenant (bounded)"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "job_page": "SPA with two 'APPLY NOW' buttons (header + sticky), 'Add Job to My Job Selections', an idle dialog 'Are You Still With Us?', optional 'Ask Me Something' file input (AI assistant), YouTube embeds",
+   "gate": "/apply/email: headings 'Job application form', \"Authentication screen. You don't need to have an account\", 'Terms and Conditions'; controls input#primary-email-0 name=primary-email 'Email Address' (required), input#honey-pot-1 name=honey-pot (honeypot), buttons 'Agree' (terms) and 'NEXT'; 'Back to Job Details' link; captcha widget detected"
+  },
+  "control_families": {
+   "email": "single required email input",
+   "honeypot": "text input named honey-pot; never fill",
+   "attestation": "'Agree' button for Terms and Conditions",
+   "nav": "NEXT"
+  },
+  "field_patterns": [
+   {
+    "key": "email",
+    "label_seen": "Email Address",
+    "required": true,
+    "gate_field": true
+   },
+   {
+    "key": "honeypot",
+    "label_seen": "honeypot",
+    "never_fill": true
+   },
+   {
+    "key": "terms_agree",
+    "control": "button 'Agree'",
+    "gate_field": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "apply_email_gate",
+    "identity_hint": "url ends /apply/email",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "reason": "NEXT sends a verification code to the email (identity creation); Terms 'Agree' is an attestation",
+    "confidence": "high"
+   },
+   {
+    "step": "application_steps",
+    "observed": false
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "identity_verification",
+    "detail": "email + verification code before any form",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "captcha widget on gate",
+    "observed": true
+   },
+   {
+    "type": "honeypot",
+    "detail": "present",
+    "observed": true
+   },
+   {
+    "type": "ui_click_no_nav",
+    "detail": "APPLY NOW click reported success without navigation in a background tab; open /apply/email directly",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Semantic locator 'APPLY NOW' is ambiguous (2 buttons); use find + visible ref.",
+   "Gate renders asynchronously; wait for input[type=email] before snapshot.",
+   "Idle dialog 'Are You Still With Us?' may appear during long sessions."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "email gate then 6-digit verification code",
+   "resume autofill / upload",
+   "personal info, address",
+   "work experience & education (repeated)",
+   "questions",
+   "EEO/diversity",
+   "review",
+   "submit"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Oracle Cloud Recruiting: stop at the email authentication gate (email, terms Agree, NEXT, captcha, honeypot). Ask the user to complete verification, then re-observe.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "email verification",
+   "terms agreement",
+   "captcha"
+  ]
+ },
+ "edge_cases": [
+  "Mailgun/Sinch URL uses /requisitions/job/1468 (different route shape); not visited.",
+  "Tenant hosts vary (fa-*.fa.ocs.oraclecloud.com, *.fa.us2.oraclecloud.com)."
+ ]
+}

@@ -1,0 +1,435 @@
+{
+ "backend": "jobscore",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:05:59Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 2,
+  "employers_in_inventory": 2,
+  "observed_examples": 2,
+  "fully_mapped_examples": 2,
+  "status": "observed",
+  "note": "Both employers mapped. Classic Rails form; no DOM required attributes at all (validation is JS/server side), so requiredness is unknown from markup. reCAPTCHA v2 anchors present."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "js-01",
+   "url": "https://careers.jobscore.com/careers/obility/jobs/geo-seo-strategy-director-czRp0YNNroMOs3cbJIvLs0",
+   "resolved_url": "https://careers.jobscore.com/apply_flow/standard_applications/apply?job_id=czRp0YNNroMOs3cbJIvLs0",
+   "page_title": "JobScore JobSeeker, powered by JobScore",
+   "captured_at_utc": "2026-09-24T00:03:21.608Z",
+   "hosting_mode": "native careers.jobscore.com apply_flow/standard_applications/apply?job_id=",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-01-obility.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-01-obility.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-01-obility.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-01-obility.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore.questions.json"
+   ],
+   "option_lists_captured": "all native <select> lists inline (incl. hidden source sub-selects and experience/education date/degree selects)",
+   "steps_visited": [
+    "posting (<a name=apply-now> 'Apply for this job' -> /apply_flow/applications/go?job_id=)",
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "'ADD RESUME' picker (not opened)",
+    "post-'SUBMIT' (never clicked)",
+    "'Log in' / social register (not used)"
+   ],
+   "custom_questions": 1,
+   "classification_note": "Obility: one narrative textarea question (full text in jobscore.questions.json), optional Password field (creates JobScore account), LinkedIn/Google register buttons, pre-checked JobScore Network opt-in checkbox."
+  },
+  {
+   "sample_id": "js-02",
+   "url": "https://careers.jobscore.com/careers/unified/jobs/campaign-manager-remote-cJT61mFOPipQRHcJ6xk0mF",
+   "resolved_url": "https://careers.jobscore.com/apply_flow/standard_applications/apply?job_id=cJT61mFOPipQRHcJ6xk0mF",
+   "page_title": "JobScore JobSeeker, powered by JobScore",
+   "captured_at_utc": "2026-09-24T00:03:27.617Z",
+   "hosting_mode": "native careers.jobscore.com apply_flow/standard_applications/apply?job_id=",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-02-unified.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-02-unified.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-02-unified.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore-02-unified.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/jobscore.questions.json"
+   ],
+   "option_lists_captured": "all native <select> lists inline (incl. hidden source sub-selects and experience/education date/degree selects)",
+   "steps_visited": [
+    "posting (<a name=apply-now> 'Apply for this job' -> /apply_flow/applications/go?job_id=)",
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "'ADD RESUME' picker (not opened)",
+    "post-'SUBMIT' (never clicked)",
+    "'Log in' / social register (not used)"
+   ],
+   "custom_questions": 2,
+   "classification_note": "Unified: two Yes/No select questions (sponsorship, work authorization); rich-text COVER LETTER editor (contenteditable with toolbar); no password/network opt-in."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "posting page has <a name=apply-now> and <a name=secondary-apply-now> 'Apply for this job' -> /apply_flow/applications/go?job_id=<id> -> redirects to /apply_flow/standard_applications/apply?job_id=<id>; also 'Join our Talent Network' link. Posting notice: 'Your browser cookies must be enabled in order to apply for this job.'",
+   "form": "form#newApplication method=post action=/apply_flow/applications; sections RESUME ('ADD RESUME' button), COVER LETTER (js-02, rich-text), CONTACT, source ('How did you first hear about us?' with dependent sub-selects), custom candidate_answer questions, Work Authorization / Visa Type / Security Clearance, EEO selects (Gender/Race/Veteran/Disability), optional Password (js-01), network opt-in (js-01), button#apply-button 'SUBMIT'. 'Log in' link at top.",
+   "captcha": "reCAPTCHA v2 anchor iframes (recaptcha.net, key 6Ld0C1Is…) x3",
+   "auth": "optional: Log in, LinkedIn/Google register buttons, Password field"
+  },
+  "control_families": {
+   "text": "input[type=text] name candidate_card[<field>] id candidate_card_<field> with <label for> ending ':'; NO required attr anywhere",
+   "select": "native <select> name candidate_card[<field>_id]; option[0] '- select -' or a default such as 'None Specified' / \"I don't wish to answer\" (pre-selected)",
+   "dependent_selects": "hidden until parent chosen: source_social_network_name, source_board_name, source_career_fair_name, source_database_name, source_search_firm_id, source_ats_user_id (depend on source_id); work_authorization_visa_type_id (depends on work authorization = visa holder)",
+   "custom_question": "textarea name candidate_answer[<id>] id candidate_answer_<id> (narrative) OR select id/name candidate_answer_<id> (choice); <label for> holds the full question text",
+   "resume": "'ADD RESUME' button; file input created on demand (not in DOM)",
+   "cover_letter_richtext": "contenteditable editor with toolbar (Undo/Redo/Bold/…/Insert Link) under 'COVER LETTER' (js-02)",
+   "experience_education_hidden": "hidden templates with selects position_start_date/position_end_date (year lists, 'pres'), education_graduation_date_1i (year), education_degree_id (13 degrees) — for optional add-experience/education blocks",
+   "password": "input#password 'Password:' (js-01) — optional account creation; help text 'Or register with:'",
+   "social_register": "button#register-linkedin / #register-google (forms facebook-register/google-register)",
+   "network_optin": "input[type=checkbox]#candidate_network_opt_in 'Recommend me for jobs at other employers.' PRE-CHECKED (js-01); help: '<Company> is a member of the JobScore Network. By clicking finish you agree to JobScore's candidate data…'",
+   "submit": "button[type=submit]#apply-button 'SUBMIT'"
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "RESUME — ADD RESUME",
+    "control": "resume",
+    "required": "unknown",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "COVER LETTER",
+    "control": "cover_letter_richtext",
+    "required": "unknown",
+    "seen_in": [
+     "js-02"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "street1",
+    "label_seen": "Street Address:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "street2",
+    "label_seen": "Street Address 2:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "city",
+    "label_seen": "City:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "state",
+    "label_seen": "State or Province:",
+    "control": "select",
+    "options_total": 51,
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Zip:",
+    "control": "text",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "country",
+    "label_seen": "Country:",
+    "control": "select",
+    "options_total": 250,
+    "default": "United States",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "source",
+    "label_seen": "How did you first hear about us?",
+    "control": "select",
+    "options": [
+     "Company Website",
+     "Job Board",
+     "Referral",
+     "Social Network",
+     "Email",
+     "Event",
+     "Other"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ],
+    "note": "dependent 'Which Social Network? / Which Job Board? / Which Event? / Which Database? / Which Search Firm? / Which User?' selects; 'Which User?' lists employer staff names (do not surface)"
+   },
+   {
+    "key": "custom_question",
+    "control": "custom_question",
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ],
+    "examples_seen": [
+     "No need for a long cover letter. Instead, send your resume along with a paragraph that hits two things: 1. How you use an AI tool like Claude to run an SEO and GEO search program for your clients. Tell us what you built, what it automated, and what changed as a result. 2. A client win (big or small) that shows off your SEO and GEO chops. Think of it as your \"show, don't tell\" moment. Help us see how you think, execute, and get things done with data and storytelling:",
+     "Will you now or in the future require Unified to commence (“sponsor”) an immigration case in order to employ you (for example, H-1B or other employment-based immigration case)? This is sometimes called “sponsorship” for an employment-based visa status:",
+     "Are you authorized to work lawfully in the United States for Unified?"
+    ]
+   },
+   {
+    "key": "work_authorization",
+    "label_seen": "Work Authorization:",
+    "control": "select",
+    "options": [
+     "United States Citizen or Permanent Resident",
+     "US Work Visa Holder",
+     "No Visa: Seeking Work Authorization"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ],
+    "dependent": "Visa Type: [H-1B, H-1B1, H-2A, H-2B, L-1, L-2, O-1, O-2, TN, E-1, E-2, … 23 total]"
+   },
+   {
+    "key": "security_clearance",
+    "label_seen": "Security Clearance:",
+    "control": "select",
+    "options": [
+     "None Specified",
+     "No Clearance",
+     "Active Confidential",
+     "Active Secret",
+     "Active Top Secret",
+     "Active Top Secret SCI",
+     "Inactive Confidential",
+     "Inactive Secret",
+     "Inactive Top Secret",
+     "Inactive Top Secret SCI"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "Gender:",
+    "control": "select",
+    "options": [
+     "I don't wish to answer",
+     "Female",
+     "Male"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "eeo_race",
+    "label_seen": "Race:",
+    "control": "select",
+    "options": [
+     "I don't wish to answer",
+     "White (Not of Hispanic Origin)",
+     "Black or African American (Not of Hispanic Origin)",
+     "Hispanic or Latino",
+     "Asian (Not of Hispanic Origin)",
+     "Pacific Islander (Not of Hispanic Origin)",
+     "American Indian (Not of Hispanic Origin)",
+     "Native Alaskan (Not of Hispanic Origin)",
+     "Native Hawaiian (Not of Hispanic Origin)",
+     "Two or more races (Not of Hispanic Origin)"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "eeo_veteran",
+    "label_seen": "Veteran status:",
+    "control": "select",
+    "options": [
+     "Decline to Identify",
+     "Disabled Veteran",
+     "Recently separated Veteran",
+     "Active duty, wartime, or campaign badge Veteran",
+     "Armed Forces service medal Veteran",
+     "One or more classifications of protected Veterans listed above",
+     "Other protected Veteran",
+     "I am not a Protected Veteran"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "eeo_disability",
+    "label_seen": "Disability status:",
+    "control": "select",
+    "options": [
+     "I do not want to answer",
+     "Yes, I have a disability, or have had one in the past",
+     "No, I do not have a disability and have not had one in the past"
+    ],
+    "seen_in": [
+     "js-01",
+     "js-02"
+    ]
+   },
+   {
+    "key": "password",
+    "label_seen": "Password:",
+    "control": "password",
+    "required": false,
+    "seen_in": [
+     "js-01"
+    ],
+    "note": "optional account creation — leave blank"
+   },
+   {
+    "key": "network_optin",
+    "label_seen": "Recommend me for jobs at other employers.",
+    "control": "network_optin (pre-checked)",
+    "seen_in": [
+     "js-01"
+    ],
+    "note": "data-sharing opt-in — human decision"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "careers.jobscore.com/careers/<co>/jobs/<slug-id> + a[name=apply-now]",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "form#newApplication on /apply_flow/standard_applications/apply",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button#apply-button 'SUBMIT'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "source select",
+    "effect": "reveals matching 'Which …?' sub-select",
+    "observed": "hidden selects present"
+   },
+   {
+    "trigger": "Work Authorization = US Work Visa Holder",
+    "effect": "Visa Type select",
+    "observed": "hidden select present"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "optional only",
+    "observed": true
+   },
+   {
+    "type": "requiredness_unknown",
+    "detail": "no required/aria-required markers in DOM",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "EEO/clearance selects come pre-selected with decline/none values — leaving them is acceptable.",
+   "Uncheck network opt-in only on human instruction.",
+   "Country select has a separator option '────' — skip it."
+  ]
+ },
+ "inferred": {
+  "confidence": "high for layout; requiredness unknown",
+  "not_observed": [
+   "resume picker",
+   "rich-text editor internals",
+   "post-submit"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "JobScore",
+  "detect": "careers.jobscore.com, form#newApplication, input[name^='candidate_card[']",
+  "for_jev": "JobScore: single page — ADD RESUME, optional rich-text cover letter, contact block (name, email, phone, address, state, zip, country), 'How did you first hear about us?' with dependent sub-select, employer questions (narrative textarea e.g. Obility's paragraph on how you use an AI tool like Claude for SEO/GEO plus a client win; Yes/No selects on sponsorship and work authorization), Work Authorization/Visa Type/Security Clearance selects, EEO selects pre-set to decline, optional password, pre-checked JobScore Network opt-in, reCAPTCHA, 'SUBMIT'. Requiredness not marked in DOM."
+ },
+ "edge_cases": [
+  {
+   "case": "'Which User?' sub-select",
+   "detail": "exposes employer staff names as referral sources"
+  }
+ ]
+}

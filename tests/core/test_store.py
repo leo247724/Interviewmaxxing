@@ -61,6 +61,40 @@ def _packet_for(mock_packet, app):
 # --- state machine table -----------------------------------------------------------
 
 
+def test_preparation_only_survives_reopen_and_blocks_submission(isolated_imx_home):
+    isolated_imx_home.ensure()
+    path = isolated_imx_home.state_db
+    with ApplicationStore.open(path) as store:
+        app = store.record_request(CAND, URL).application
+        claim = _to_filling(store, app.id)
+        store.require_preparation_only(claim)
+        store.require_preparation_only(claim)
+        store.release(claim)
+    with ApplicationStore.open(path) as store:
+        claim = store.claim(app.id, "new-process")
+        assert store.is_preparation_only(app.id)
+        with pytest.raises(SubmissionBlocked, match="preparation-only"):
+            store.begin_submission(claim)
+        assert store.get_application(app.id).state is S.FILLING
+        assert store.list_attempts(app.id) == [] and store.get_receipt(app.id) is None
+        assert _events(store, app.id).count("application.preparation_only") == 1
+    # Even an older runner which omits the Python guard cannot insert an attempt.
+    with sqlite3.connect(path) as conn, pytest.raises(sqlite3.IntegrityError, match="preparation-only"):
+        conn.execute(
+            "INSERT INTO submission_attempts (id, application_id, attempt_number, owner, started_at)"
+            " VALUES ('blocked-attempt', ?, 1, 'legacy', '2026-09-23T23:00:00Z')", (app.id,),
+        )
+
+
+def test_preparation_policy_requires_live_claim(store, clock):
+    app = store.record_request(CAND, URL).application
+    claim = store.claim(app.id, "worker", ttl=timedelta(seconds=1))
+    clock.advance(seconds=2)
+    with pytest.raises(ClaimLost):
+        store.require_preparation_only(claim)
+    assert not store.is_preparation_only(app.id)
+
+
 def test_transition_table_covers_every_state():
     assert set(TRANSITIONS) == set(ApplicationState)
     for state in TERMINAL_STATES:

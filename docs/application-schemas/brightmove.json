@@ -1,0 +1,89 @@
+{
+ "backend": "brightmove",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "blocked_auth",
+ "status_reason": "BrightMove portal offers \"Option 1: Create a New Profile\" (Create Profile and Apply to Job) or \"Option 2: Login and Apply\" (username/password). No application fields are visible without a profile.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "bm-01",
+   "url": "https://portal.brightmove.com/jb.do?reqGK=27783838",
+   "page_title": "Digital Marketing Associate - Austin, TX",
+   "captured_at_utc": "2026-09-23T23:57:33Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/brightmove-01-ifs.controls.json",
+    ".imx/dynamic-applications/fable/evidence/brightmove-01-ifs.state.txt"
+   ],
+   "steps_visited": [
+    "job page with profile/login options"
+   ],
+   "gated_steps_not_visited": [
+    "profile creation",
+    "application"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "forms": "form#PublicRequirementSearchForm (search), form POST /PortalApply.do (Create Profile and Apply to Job), login form (username, passwd, 'Submit')",
+   "sessionid_in_action": true
+  },
+  "control_families": {
+   "auth": "input#username 'Username', input#passwd 'Password'"
+  },
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "create_profile_or_login",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "reason": "profile creation prohibited",
+    "confidence": "high"
+   },
+   {
+    "step": "application",
+    "observed": false
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth_account_required",
+    "detail": "Create Profile and Apply / Login and Apply",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Form actions embed ;jsessionid; do not persist URLs."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "create profile (contact, resume)",
+   "application questions",
+   "submit"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "BrightMove: blocked at profile creation/login. Ask the user to create or sign in.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "profile creation or login"
+  ]
+ },
+ "edge_cases": []
+}

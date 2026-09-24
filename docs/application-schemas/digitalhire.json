@@ -1,0 +1,93 @@
+{
+ "backend": "digitalhire",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "blocked_auth",
+ "status_reason": "Listing page links \"Apply to Job\" to beta.app.digitalhire.com/job-detail/<id>?apply=true (target _blank) next to a \"Sign in\" link (auth=signin). The apply target opens the DigitalHire app which requires sign-in; not followed because it opens a new window and requires an account.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "dh-01",
+   "url": "https://jobs.digitalhire.com/job-listing/opening/7L53dmZlJdf7WxnomB97tE",
+   "page_title": "Integrated Media Director job in Austin, TX, United States at Sherry Matthews Group",
+   "captured_at_utc": "2026-09-23T23:57:37Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/digitalhire-01-sherrymatthews.controls.json",
+    ".imx/dynamic-applications/fable/evidence/digitalhire-01-sherrymatthews.state.txt"
+   ],
+   "steps_visited": [
+    "listing page"
+   ],
+   "gated_steps_not_visited": [
+    "app apply flow (sign-in)"
+   ],
+   "apply_href": "https://beta.app.digitalhire.com/job-detail/7L53dmZlJdf7WxnomB97tE?apply=true&external_url=…"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "links": [
+    "Sign in → beta.app.digitalhire.com/ai?auth=signin (target _blank)",
+    "Apply to Job → beta.app.digitalhire.com/job-detail/<id>?apply=true (target _blank)"
+   ],
+   "auth_cue": true
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "listing_page",
+    "observed": true
+   },
+   {
+    "step": "app_signin",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "reason": "account/sign-in required (candidate profile app)",
+    "confidence": "medium: inferred from Sign in link and app domain; the apply page itself was not loaded"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth_account_likely",
+    "detail": "apply routes into beta.app.digitalhire.com with a sign-in entry point",
+    "observed": "links observed; app page not loaded"
+   },
+   {
+    "type": "new_window",
+    "detail": "Apply link target=_blank",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Open the apply href in the owned tab rather than clicking (target _blank)."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "sign in / create candidate profile",
+   "video-interview style application (DigitalHire product)",
+   "submit"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "DigitalHire: apply requires the DigitalHire candidate app (sign-in). Stop and ask the user.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "account sign-in"
+  ]
+ },
+ "edge_cases": [
+  "A follow-up read-only load of the apply href in the owned tab could confirm whether a guest form exists; not done in this bounded run."
+ ]
+}

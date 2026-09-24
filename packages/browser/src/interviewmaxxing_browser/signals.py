@@ -86,9 +86,15 @@ ALREADY_APPLIED = _rx(
     r"you already have an application|application (?:for this (?:job|role|position) )?already exists"
 )
 JOB_CLOSED = _rx(
-    r"no longer accepting applications|(?:job|position|posting|role) (?:is|has been) "
-    r"(?:closed|filled|removed)|this job is closed|no longer available"
+    r"\bno longer (?:accepting applications|available|active)\b|"
+    r"\b(?:job|position|posting|role|opening|requisition)(?: posting)? (?:is|has been|was) "
+    r"(?:closed|filled|removed|no longer active|not currently active)\b|"
+    r"\bthis job is closed\b|"
+    r"\b(?:job|position|posting|role|opening|requisition)(?: posting)? has expired\b|"
+    r"\bdoes not exist or is not currently active\b|\bis not currently active\b"
 )
+"""Wording that says the job itself is gone (closed, filled, expired, inactive). Tied
+to job words where the verb alone is ambiguous: a session, not a job, "has expired"."""
 PENDING = _rx(r"still processing|being processed|cannot confirm|can't confirm|pending review")
 ERROR_HEADING = _rx(
     r"something went wrong|error|not found|unavailable|try again later|bad gateway|timed? ?out"
@@ -97,7 +103,17 @@ CAPTCHA_TEXT = _rx(
     r"captcha|verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|not a robot|"
     r"characters (?:shown|in the image)|security check|checking your browser"
 )
-APPLY_LINK = _rx(r"^\s*(?:apply(?: now| for this (?:job|role|position))?|start (?:your )?application|i'?m interested)\s*$")
+APPLY_LINK = _rx(
+    r"^(?!.*\bsubmit\b)(?!.*\bapply (?:with|using|via)\b)(?!.*\buse my\b)\s*(?:"
+    r"apply(?: now| here| online| today)?"
+    r"|apply (?:for|to) (?:this |the )?(?:job|role|position|opening)"
+    r"|(?:start|begin) (?:your |my )?application"
+    r"|continue to (?:the |your )?application"
+    r"|i'?m interested)\s*[\u00bb\u203a>\u2192]?\s*$"
+)
+"""Text of a control that leads to the application form (a posting's apply link or
+button). Third-party flows ("Apply with LinkedIn", "Use my Indeed resume") and
+anything mentioning "submit" are excluded."""
 STATUS_LINK = _rx(
     r"application status|check (?:your )?status|already applied|my applications|candidate (?:home|portal)"
 )

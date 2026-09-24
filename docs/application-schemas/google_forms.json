@@ -1,0 +1,309 @@
+{
+ "backend": "google_forms",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed_partial",
+ "status_reason": "Page 1 of a multi-page Google Form fully captured (21 questions, all required, no sign-in required, email not prefilled). Page 2+ (behind \"Next\") and the Submit control were not visited because Next validates required fields.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "gf-01",
+   "url": "https://forms.gle/kDMcQHUztTV7VqvJA",
+   "resolved_url": "https://docs.google.com/forms/d/e/1FAIpQLSedvpvb7mQMZfHdz83IPZ9tFKG7vdkdJJEkitb1bCvv9DQ-Dg/viewform",
+   "page_title": "Digital Marketing Manager Application",
+   "captured_at_utc": "2026-09-23T23:57:41Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/googleforms-01-sharonmcmahon.controls.json",
+    ".imx/dynamic-applications/fable/evidence/googleforms-01-sharonmcmahon.state.txt",
+    ".imx/dynamic-applications/fable/evidence/googleforms-01-sharonmcmahon.questions.json"
+   ],
+   "steps_visited": [
+    "page 1"
+   ],
+   "gated_steps_not_visited": [
+    "page 2+ (Next)",
+    "Submit"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "form": "form#mG61Hd POST …/formResponse; questions are [role=listitem] blocks with a [role=heading] question text ending in ' *' when required",
+   "buttons": [
+    "Next",
+    "Clear form",
+    "Contact form owner"
+   ],
+   "pages": "multi-page (Next present, no Submit on page 1)"
+  },
+  "control_families": {
+   "text": "input[type=email] aria-label 'Your email' (collects email; not prefilled), input[type=text] with aria-labelledby question text",
+   "radio": "div[role=radiogroup] aria-required + div[role=radio] aria-label = option text; 'Other:' option reveals text input aria-label 'Other response'",
+   "checkbox": "div[role=checkbox] aria-label = option; 'Other:' reveals text",
+   "textarea": "aria-label 'Your answer' with aria-labelledby question",
+   "submit": "not on page 1"
+  },
+  "field_patterns": [
+   {
+    "key": "email",
+    "label_seen": "Email *",
+    "required": true
+   },
+   {
+    "key": "full_name",
+    "label_seen": "What is your full name? *",
+    "required": true
+   },
+   {
+    "key": "years_experience",
+    "label_seen": "How many years professional marketing experience do you have in the digital space? *",
+    "control": "checkbox (single expected)",
+    "options": [
+     "1 to 3",
+     "3 to 5",
+     "5 to 8",
+     "More than 8"
+    ]
+   },
+   {
+    "key": "familiar_with_founder",
+    "label_seen": "Are you familiar with Sharon's work? *",
+    "control": "checkbox",
+    "options": [
+     "Yes, I've followed her for a while.",
+     "I'm new to her work but support her mission."
+    ]
+   },
+   {
+    "key": "work_arrangement",
+    "label_seen": "Which best describes your current or most recent work arrangement? *",
+    "control": "radio",
+    "options": [
+     "Full-time in-house marketing professional",
+     "Fractional marketer or consultant",
+     "Marketing agency employee",
+     "Founder or self-employed operator",
+     "Freelance contractor",
+     "Other:"
+    ]
+   },
+   {
+    "key": "audiences_marketed",
+    "label_seen": "Which types of businesses or audiences have you marketed to? Select all that apply. *",
+    "control": "checkbox",
+    "options_total": 9
+   },
+   {
+    "key": "meta_ads_ownership",
+    "label_seen": "Have you personally launched, managed, and optimized paid campaigns directly inside Meta Ads Manager? *",
+    "control": "radio",
+    "options": [
+     "Yes, I have owned campaigns end to end",
+     "Yes, but I primarily supported another person or agency",
+     "I have reviewed Meta reporting but have not managed campaigns directly",
+     "No"
+    ]
+   },
+   {
+    "key": "paid_platforms",
+    "label_seen": "Which paid advertising platforms have you personally managed directly in-platform? Select all that apply. *",
+    "control": "checkbox",
+    "options": [
+     "Meta Ads Manager",
+     "Google Ads",
+     "YouTube Ads",
+     "TikTok Ads Manager",
+     "LinkedIn Campaign Manager",
+     "Reddit Ads",
+     "Other",
+     "I have not directly managed paid advertising platforms"
+    ]
+   },
+   {
+    "key": "max_monthly_budget",
+    "label_seen": "What is the largest total monthly paid-media budget you have personally managed or materially influenced? *",
+    "control": "radio",
+    "options": [
+     "Under $1,000 per month",
+     "$1,000-$3,000 per month",
+     "$3,000-$5,000 per month",
+     "$5,000-$10,000 per month",
+     "$10,000-$25,000 per month",
+     "$25,000+ per month",
+     "I have not managed paid-media budgets"
+    ]
+   },
+   {
+    "key": "testing_experience",
+    "label_seen": "Which statement best reflects your experience with campaign testing? *",
+    "control": "radio",
+    "options_total": 4
+   },
+   {
+    "key": "partnership_campaigns",
+    "label_seen": "Have you personally managed influencer, creator, affiliate, ambassador, or brand-partnership campaigns from outreach through post-campaign reporting? *",
+    "control": "radio",
+    "options_total": 4
+   },
+   {
+    "key": "narrative_partnership",
+    "label_seen": "In 100–200 words, describe a creator, affiliate, or brand partnership you managed. What was the goal, how did you select the partner, what did you personally… (full in evidence)",
+    "control": "textarea",
+    "required": true,
+    "benchmark_candidate": true
+   },
+   {
+    "key": "email_marketing_scope",
+    "label_seen": "Which email-marketing responsibilities have you personally owned? Select all that apply. *",
+    "control": "checkbox",
+    "options_total": 11
+   },
+   {
+    "key": "organic_social",
+    "label_seen": "Which statement best describes your experience with organic social strategy? *",
+    "control": "radio",
+    "options_total": 4
+   },
+   {
+    "key": "narrative_social_to_conversion",
+    "label_seen": "In less than 175 words, imagine that a brand has strong social engagement but weak conversion into email subscribers, purchases, or subscriptions. What three… (full in evidence)",
+    "control": "textarea",
+    "required": true,
+    "benchmark_candidate": true
+   },
+   {
+    "key": "role_sought",
+    "label_seen": "Which best describes the kind of role you are seeking next? *",
+    "control": "radio",
+    "options_total": 5
+   },
+   {
+    "key": "self_description_boxes",
+    "label_seen": "Check the boxes that best describe you *",
+    "control": "checkbox",
+    "options_total": 7,
+    "personality": true
+   },
+   {
+    "key": "working_style",
+    "label_seen": "What's your working style? *",
+    "control": "checkbox",
+    "options_total": 6,
+    "personality": true
+   },
+   {
+    "key": "three_words",
+    "label_seen": "What three words would you use to describe yourself *",
+    "control": "text",
+    "benchmark_candidate": true
+   },
+   {
+    "key": "time_zone",
+    "label_seen": "What time zone are you located in? *",
+    "control": "text"
+   },
+   {
+    "key": "us_resident",
+    "label_seen": "Are you a US resident? *",
+    "control": "checkbox Yes/No"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "page_1",
+    "observed": true
+   },
+   {
+    "step": "next_pages",
+    "observed": false,
+    "gated_reason": "Next validates all required fields on page 1"
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "expected_control_unverified": "div[role=button] 'Submit' on the last page",
+    "confidence": "high prior for Google Forms, unobserved here"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Other:' radio/checkbox",
+    "effect": "reveals 'Other response' text input",
+    "observed": true
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "no Google sign-in required; email collected via field",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "multi_page",
+    "detail": "page 2+ unobserved",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Google Forms controls are ARIA divs, not native inputs (except text/email/textarea); use aria-checked to verify.",
+   "Yes/No and single-answer questions may be implemented as checkboxes allowing multiple selections; enforce single choice by semantics.",
+   "Question text is the [role=heading] inside each [role=listitem]; options carry aria-label."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "page 1",
+   "Next → page 2 (unknown questions)",
+   "Submit",
+   "'Your response has been recorded'"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Google Form intake: 21 required questions on page 1 mixing facts (name, email, time zone, US residency), self-assessment single/multi-choice, personality checkboxes, and two word-limited narratives (100–200 words; <175 words). Options are aria-labelled divs. Page 2+ unknown. Never press Next/Submit in prepare-only mode.",
+  "exact_copy_facts": [
+   "full_name",
+   "email",
+   "time_zone",
+   "us_resident"
+  ],
+  "option_choice_from_verified_facts": [
+   "years_experience",
+   "work_arrangement",
+   "paid_platforms",
+   "max_monthly_budget",
+   "meta_ads_ownership",
+   "partnership_campaigns",
+   "email_marketing_scope",
+   "organic_social",
+   "testing_experience",
+   "audiences_marketed"
+  ],
+  "escalate_to_writer_opus": [
+   "partnership narrative (100–200 words)",
+   "social-to-conversion essay (<175 words)",
+   "three words"
+  ],
+  "requires_human_input": [
+   "personality/working-style checkboxes",
+   "familiarity with founder",
+   "role sought",
+   "any self-assessment lacking a verified fact"
+  ]
+ },
+ "edge_cases": [
+  "Short link forms.gle redirects to docs.google.com viewform; document identity should use the form id."
+ ]
+}

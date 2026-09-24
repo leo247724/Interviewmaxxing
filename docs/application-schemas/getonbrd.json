@@ -1,0 +1,229 @@
+{
+ "backend": "getonbrd",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:42:33Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "partial",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0,
+  "singleton_coverage": true,
+  "note": "Singleton. Step 1 of 3 ('Experience') fully observed blank. Steps 2 ('Basic information') and 3 ('Preview') are server-gated behind completing step 1 (min 300/100 chars in rich-text editors) and were NOT visited; a direct GET with ?step=basic was redirected back to step 1. The runtime profile is already logged into Get on Board as the user; the page footer shows profile name/email that will be shared with the employer (redacted in evidence)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "gob-01",
+   "listing_id": "lst_c10b6cb2a470b8792f4529d708f4ad5c",
+   "url": "https://www.getonbrd.com/jobs/digital-marketing-lead-autoraptor-remote/applications/new?raw_referrer=https%3A%2F%2Fwww.linkedin.com%2F&ref=www.linkedin.com",
+   "page_title": "Apply to Digital Marketing Lead | Get on Board",
+   "captured_at_utc": "2026-09-23T23:39:48Z",
+   "hosting_mode": "native_getonbrd_logged_in",
+   "steps_visited": [
+    "1 Experience (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "2 Basic information",
+    "3 Preview",
+    "submit"
+   ],
+   "option_lists_captured": "English level (6 options, opened menu)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/getonbrd-01-autoraptor.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/getonbrd-01-autoraptor.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/getonbrd-01-autoraptor.options.jsonl",
+    ".imx/dynamic-applications/fable_d/evidence/getonbrd-02-autoraptor-step-basic.controls.json (redirected to step 1)"
+   ],
+   "redaction": "profile name and email strings replaced with [REDACTED_*] in evidence"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "multi_step": {
+    "steps": [
+     "1 Experience",
+     "2 Basic information",
+     "3 Preview"
+    ],
+    "step_state_carrier": "hidden input job_application[step] (value 'experience' on step 1)",
+    "nav": "step links href /?step=experience|basic; step 3 has no href"
+   },
+   "form": {
+    "form_index": 0,
+    "id": "job-application-form",
+    "method": "post",
+    "action": "/jobs/<job-slug>/applications",
+    "hidden_fields": [
+     "authenticity_token",
+     "answers (id question-answers, empty on step 1)",
+     "job_application[invited_webpro]",
+     "job_application[referrer]",
+     "job_application[raw_referrer]",
+     "job_application[step]"
+    ]
+   },
+   "banner": "'<Employer> requires your application to be sent in English.'",
+   "profile_share_notice": "'We will also share your profile info with <Employer>.' followed by the logged-in user's name and email and an 'Edit your professional profile \u2197' link"
+  },
+  "control_families": {
+   "rich_text_trix": "<trix-editor role=textbox> bound to a hidden input via input= attribute (job_application[professional_background], job_application[academic_background]); toolbar buttons Bold/Italic/Strikethrough/Link/Heading/Quote/Code/Bullets/Numbers/levels/Attach Files/Undo/Redo are all type=button (not submit). A live character counter span (#<field>_counter) and help text state min/max characters. Warnings 'Please add more text.' / 'Please remove text.' are pre-rendered hidden divs.",
+   "custom_dropdown": "hidden input webpro[english_level] + a clickable span 'Select your English level' that opens an inline list; each option carries data-value plus a one-line description.",
+   "submit": "button#submit-btn name=button type=submit text 'Next' (advances step; not the final submit)"
+  },
+  "field_patterns": [
+   {
+    "key": "professional_background",
+    "label_seen": "Tell us about your experience.",
+    "placeholder": "What are your skills and achievements? What have you been responsible for? Have any side projects?",
+    "help": "Ensure the length is between 300 and 2000 characters. We will save this field for future applications.",
+    "control": "rich_text_trix",
+    "required": "effectively (min 300 chars enforced client-side)",
+    "min_chars": 300,
+    "max_chars": 2000,
+    "seen_in": [
+     "gob-01"
+    ],
+    "classification": "free_text_narrative",
+    "narrative_benchmark": true
+   },
+   {
+    "key": "academic_background",
+    "label_seen": "Tell us about your education and academic background.",
+    "placeholder": "Mention formal studies, courses and self-learning efforts relevant to this position.",
+    "help": "Ensure the length is between 100 and 2000 characters. We will also save this field for future applications.",
+    "control": "rich_text_trix",
+    "required": "effectively (min 100 chars)",
+    "min_chars": 100,
+    "max_chars": 2000,
+    "seen_in": [
+     "gob-01"
+    ],
+    "classification": "free_text_narrative",
+    "narrative_benchmark": true
+   },
+   {
+    "key": "english_level",
+    "label_seen": "English level",
+    "help": "We suggest taking a standardized test, such as the free EF SET test \u2197, and reporting the results here.",
+    "control": "custom_dropdown",
+    "required": "not marked",
+    "options": [
+     {
+      "label": "Beginner (A1)",
+      "value": "beginner"
+     },
+     {
+      "label": "Elementary (A2)",
+      "value": "elementary"
+     },
+     {
+      "label": "Intermediate (B1)",
+      "value": "intermediate"
+     },
+     {
+      "label": "Upper intermediate (B2)",
+      "value": "upper_intermediate"
+     },
+     {
+      "label": "Advanced (C1)",
+      "value": "advanced"
+     },
+     {
+      "label": "Proficient (C2)",
+      "value": "proficient"
+     }
+    ],
+    "option_source": "opened_menu",
+    "seen_in": [
+     "gob-01"
+    ],
+    "classification": "option_choice (self-assessment; needs a verified fact or human input)"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "experience",
+    "identity_hint": "form#job-application-form + hidden job_application[step]=experience + h1 'Apply to <title>'",
+    "observed": true,
+    "advance_control": "button#submit-btn 'Next'"
+   },
+   {
+    "step": "basic",
+    "observed": false,
+    "gated_by": "client-side min-length validation on step 1 and server redirect (GET ?step=basic returned step 1)"
+   },
+   {
+    "step": "preview",
+    "observed": false,
+    "gated_by": "steps 1-2"
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "note": "Final control text unknown; expected on 'Preview' step. Treat any submit-type button on step 3 as the stop boundary."
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "character count outside [min,max] on a Trix field",
+    "effect": "hidden warning div (#editor-character-warning-too_short / too_long) is shown; Next is expected to be blocked",
+    "observed": "warning markup present; not exercised"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Page rendered in a logged-in Get on Board session (profile jgd7jms9). Logged-out behaviour not observed; the profile-share notice implies an account is required.",
+    "observed": true
+   },
+   {
+    "type": "gated_steps",
+    "detail": "Steps 2-3 require step-1 text; not typed by policy.",
+    "observed": true,
+    "human_action_needed": "Human or approved runtime must supply narrative text for step 1 before steps 2-3 can be observed."
+   },
+   {
+    "type": "private_prefill_exposure",
+    "detail": "Logged-in profile name/email are rendered on the page and 'will be shared'; runtime must not export them.",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "The '?step=basic' anchor is not a safe way to peek at step 2; the server bounces to step 1.",
+   "Rich text fields persist to the user's profile ('We will save this field for future applications'), so writes here have side effects beyond this application.",
+   "Trix toolbar buttons are <button> without type=submit; the only submit control on step 1 is 'Next'.",
+   "A Hotjar iframe (about:blank) is present; no captcha widget on step 1."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "step 2 'Basic information': likely contact/location/salary expectation/availability (UNVERIFIED)",
+   "step 3 'Preview' with the irreversible send control (UNVERIFIED)",
+   "employer-specific screening questions may appear via the hidden 'answers' input (UNVERIFIED)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "getonbrd: 3-step, logged-in form. Step 1 has two rich-text narrative fields with hard min/max character limits (experience 300-2000, education 100-2000) and an English-level self-assessment dropdown. Classify the two editors as free_text_narrative -> writer with explicit length constraints; english_level is option_choice requiring a verified fact. Never read or export the profile name/email shown on the page. Stop before any submit on the Preview step.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [
+   "english_level (CEFR band) only if the candidate profile states it"
+  ],
+  "escalate_to_writer_opus": [
+   "professional_background (300-2000 chars, plain prose acceptable in Trix)",
+   "academic_background (100-2000 chars)"
+  ],
+  "requires_human_input": [
+   "confirmation that profile fields may be overwritten (fields persist to profile)",
+   "steps 2-3 content until observed"
+  ]
+ },
+ "edge_cases": [
+  "Character limits are counted on text content, but the hidden input stores Trix HTML; writer output must be measured as plain text.",
+  "The form's hidden 'answers' input suggests employer questions may be serialised as JSON rather than as individual controls on later steps."
+ ]
+}

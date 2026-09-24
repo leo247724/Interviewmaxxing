@@ -1,0 +1,252 @@
+{
+ "backend": "teamtailor",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:11:55Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 04FD50C2CB395FB8DDCFF3271D407217",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed",
+ "status_reason": "Three employer career sites on Teamtailor render the same single-page application form at /jobs/<id>-<slug>/applications/new; fully observed including employer questions and consent checkboxes.",
+ "coverage": {
+  "inventory_density": 5,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "employers": [
+   "JUICE",
+   "Carr Talent",
+   "Rankings.io"
+  ]
+ },
+ "observed_samples": [
+  {
+   "sample_id": "tt-01",
+   "employer": "JUICE",
+   "url": "https://careers.thinkjuice.com/jobs/7645370-account-manager-digital-marketing",
+   "form_url": "https://careers.thinkjuice.com/jobs/7645370-account-manager-digital-marketing/applications/new",
+   "captured_at_utc": "2026-09-24T00:05:55Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/teamtailor-01-juice.controls.json",
+    ".imx/dynamic-applications/fable/evidence/teamtailor-01-juice-form.controls.json",
+    ".imx/dynamic-applications/fable/evidence/teamtailor-01-juice-form.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "tt-02",
+   "employer": "Carr Talent",
+   "url": "https://jobs.carrtalent.com/jobs/697366-director-of-paid-media",
+   "form_url": "https://jobs.carrtalent.com/jobs/697366-director-of-paid-media/applications/new",
+   "captured_at_utc": "2026-09-24T00:05:58Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/teamtailor-02-carr.controls.json",
+    ".imx/dynamic-applications/fable/evidence/teamtailor-02-carr-form.controls.json",
+    ".imx/dynamic-applications/fable/evidence/teamtailor-02-carr-form.state.txt"
+   ],
+   "steps_visited": [
+    "job page",
+    "blank form"
+   ]
+  },
+  {
+   "sample_id": "tt-03",
+   "employer": "Rankings.io",
+   "url": "https://careers.rankings.io/jobs/699889-law-firm-digital-strategist",
+   "form_url": "https://careers.rankings.io/jobs/699889-law-firm-digital-strategist/applications/new",
+   "captured_at_utc": "2026-09-24T00:06:02Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/teamtailor-03-rankings-form.controls.json",
+    ".imx/dynamic-applications/fable/evidence/teamtailor-03-rankings-form.state.txt"
+   ],
+   "steps_visited": [
+    "blank form"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "route": "employer domain (careers.<co>.com / jobs.<co>.com / <co>.teamtailor.com) /jobs/<id>-<slug> with button 'Apply for this job' then /jobs/<id>-<slug>/applications/new",
+   "form": "form#job-application-form POST /applications (form_index 0), submit input[type=submit] name=commit 'Submit application'; sections: employer questions (top), 'Personal information', consent block, cookie banner; hidden 'Log in as employee' / 'Log in to Connect' links are not gates"
+  },
+  "control_families": {
+   "text": "candidate[first_name], candidate[last_name] (maxlength 50), candidate[email], candidate[phone] (aria 'Phone number with country code', placeholder '+1 201-555-0123'); required shown as label suffix '* Required' (no required attr on these)",
+   "file": "candidate_resume_remote_url 'Upload CV* Required' / 'Upload resume* Required' accept .doc,.docx,.pptx,.pdf,.pages,.txt,.rtf (required attr set); candidate_file_remote_url 'Additional files'",
+   "textarea": "candidate[job_applications_attributes][0][cover_letter] 'Cover letter'",
+   "questions_text": "candidate[answers_attributes][n][text] as input[type=text] (JUICE, Carr) or textarea (Rankings)",
+   "questions_boolean": "radio pairs Yes/No name=candidate[answers_attributes][n][boolean] ids boolean-<qid>-true/false; question text above group ending '* Required' when required",
+   "questions_number": "input[type=number] candidate[answers_attributes][n][number]",
+   "consent": "checkboxes candidate[consent_given] ('Required. By submitting this application, I agree that I have read the Privacy Policy…'), candidate[consent_given_future_jobs], candidate[consent_given_sms] (Carr)",
+   "linkedin": "'Apply with LinkedIn' button",
+   "submit": "input[type=submit] 'Submit application'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "required": true
+   },
+   {
+    "key": "email",
+    "required": true
+   },
+   {
+    "key": "phone",
+    "required": true
+   },
+   {
+    "key": "resume",
+    "control": "file",
+    "required": true
+   },
+   {
+    "key": "additional_files",
+    "control": "file",
+    "required": false
+   },
+   {
+    "key": "cover_letter",
+    "control": "textarea",
+    "required": false,
+    "benchmark_candidate": true
+   },
+   {
+    "key": "employer_questions_text",
+    "labels_seen": [
+     "What is your average monthly media budget that you work with?* Required",
+     "What is your experience is Paid Search and Paid Social? Please provide details of how you've worked with both.* Required",
+     "Do you have experience leading a digital marketing team? If so, where? How many people and accounts were you responsible for?* Required",
+     "What are your salary expectations and availability to start?* Required",
+     "Have you previously worked in a client facing role? If so, to what extent?* Required",
+     "City* Required",
+     "State* Required",
+     "What is your expected salary range for this role?",
+     "Do you currently know anyone who works at Rankings?"
+    ],
+    "control": "text | textarea",
+    "benchmark_candidate": true
+   },
+   {
+    "key": "employer_questions_boolean",
+    "labels_seen": [
+     "Are you legally authorized to work in the United States without requiring current or future visa sponsorship?* Required",
+     "If extended a verbal offer, would you be able to successfully complete a background check?* Required",
+     "As part of our interview process, selected candidates will be asked to complete a one-way interview for the Hi… (full text in evidence)* Required"
+    ],
+    "control": "radio Yes/No"
+   },
+   {
+    "key": "salary_expectation_number",
+    "label_seen": "To ensure alignment early in the process, please share your salary expectation for this opportunity.* Required",
+    "control": "number"
+   },
+   {
+    "key": "privacy_consent",
+    "label_seen": "Required. By submitting this application, I agree that I have read the Privacy Policy and confirm that <company> store my personal details to be a… (full in evidence)",
+    "control": "checkbox",
+    "required": true,
+    "seen_in": [
+     "tt-02"
+    ]
+   },
+   {
+    "key": "future_jobs_consent",
+    "control": "checkbox",
+    "seen_in": [
+     "tt-02"
+    ]
+   },
+   {
+    "key": "sms_consent",
+    "control": "checkbox",
+    "seen_in": [
+     "tt-02"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "url ends /applications/new; form#job-application-form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "input[type=submit] 'Submit application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high; single page",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none (employee/Connect logins irrelevant)",
+    "observed": true
+   },
+   {
+    "type": "cookie_banner",
+    "detail": "cookie consent banner on all three",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Requiredness is in label text ('* Required'), not attributes, except the resume input.",
+   "Employer questions precede personal info in DOM order.",
+   "Text-type questions may expect long answers despite being input[type=text] (JUICE)."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "form",
+   "Submit application",
+   "'Thank you' page + confirmation email"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Teamtailor: single form; employer questions first (text, Yes/No, number), then first/last/email/phone, resume, additional files, cover letter, consent checkboxes. Required = '* Required' in label. Stop at 'Submit application'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "phone",
+   "city",
+   "state"
+  ],
+  "option_choice_from_verified_facts": [
+   "work authorization Yes/No",
+   "background check Yes/No",
+   "one-way interview willingness (user preference)"
+  ],
+  "escalate_to_writer_opus": [
+   "cover letter",
+   "experience/leadership/client-facing narrative questions",
+   "salary + availability phrasing"
+  ],
+  "requires_human_input": [
+   "privacy/SMS/future-jobs consents",
+   "resume",
+   "salary if no verified fact"
+  ]
+ },
+ "edge_cases": [
+  "Domains vary per employer; detect Teamtailor by form#job-application-form and candidate[...] names."
+ ]
+}

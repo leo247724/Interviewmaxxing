@@ -1,0 +1,270 @@
+{
+ "backend": "gusto",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:55:49Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 3,
+  "employers_in_inventory": 2,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "status": "observed",
+  "note": "Both employers mapped (Padel39 x2 postings, Keep Aware). Rails form; clean <label for> bindings."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "gu-01",
+   "url": "https://jobs.gusto.com/postings/padel39-director-of-marketing-4eed2f0c-50a4-42e7-8e23-0f83ed374501/applicants/new",
+   "page_title": "Apply for Director Of Marketing",
+   "captured_at_utc": "2026-09-23T23:54:31.523Z",
+   "hosting_mode": "native jobs.gusto.com/postings/<slug-uuid>/applicants/new",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/gusto-01-padel39-dir.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/gusto-01-padel39-dir.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/gusto-01-padel39-dir.options.json"
+   ],
+   "option_lists_captured": "radio options inline; no selects",
+   "steps_visited": [
+    "posting (<a> 'Apply for <job>' -> /applicants/new)",
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Submit your application' (never clicked)"
+   ],
+   "custom_questions": 7,
+   "classification_note": "7 employer questions incl. single-choice relocation radio; cover letter optional"
+  },
+  {
+   "sample_id": "gu-02",
+   "url": "https://jobs.gusto.com/postings/keep-aware-growth-marketing-manager-114b51c8-a8b5-46cc-b465-d5774dc0e725/applicants/new",
+   "page_title": "Apply for Growth Marketing Manager",
+   "captured_at_utc": "2026-09-23T23:54:36.499Z",
+   "hosting_mode": "native jobs.gusto.com/postings/<slug-uuid>/applicants/new",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/gusto-02-keepaware.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/gusto-02-keepaware.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/gusto-02-keepaware.options.json"
+   ],
+   "option_lists_captured": "radio options inline; no selects",
+   "steps_visited": [
+    "posting (<a> 'Apply for <job>' -> /applicants/new)",
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Submit your application' (never clicked)"
+   ],
+   "custom_questions": 0,
+   "classification_note": "No employer questions; cover letter REQUIRED"
+  },
+  {
+   "sample_id": "gu-03",
+   "url": "https://jobs.gusto.com/postings/padel39-growth-marketer-61ca9eae-98cb-498e-b7e4-f0424d4a6207/applicants/new",
+   "page_title": "Apply for Growth Marketer",
+   "captured_at_utc": "2026-09-23T23:54:51.513Z",
+   "hosting_mode": "native jobs.gusto.com/postings/<slug-uuid>/applicants/new",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/gusto-03-padel39-growth.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/gusto-03-padel39-growth.state.txt"
+   ],
+   "option_lists_captured": "radio options inline; no selects",
+   "steps_visited": [
+    "posting (<a> 'Apply for <job>' -> /applicants/new)",
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Submit your application' (never clicked)"
+   ],
+   "custom_questions": 5,
+   "classification_note": "5 employer questions (subset of gu-01)"
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "Posting page has <a> 'Apply for <job title>' -> /postings/<slug-uuid>/applicants/new",
+   "form": "form#job-applicant-form method=post action=/postings/<slug>/applicants; sections 'Profile', 'Contact Information', 'Application Details', 'Applicant details', 'Employer Questions'; submit input[type=submit][name=commit] value 'Submit your application'. OneTrust cookie preference center present (Privacy Preference Center headings).",
+   "captcha": "none seen",
+   "iframes": "one empty iframe"
+  },
+  "control_families": {
+   "text": "input[type=text|email] name job_applicant[<field>] id job_applicant_<field>; <label for> text; '(optional)' suffix on optional labels; required via native required attr.",
+   "textarea": "textarea#job_applicant_additional_information 'Additional information (optional)'",
+   "file": "input[type=file]#job_applicant_resume (required) and #job_applicant_cover_letter (optional or required per employer); no accept attr; label text 'Upload your resume PDF, up to 10MB'; dropzone copy 'Click or drag over to replace the file'.",
+   "custom_text": "input[type=text] name job_applicant[custom_form_response_attributes][answers_attributes][<i>][text]; question label is a preceding <label> (not for-linked) — hidden inputs [<i>][question_uuid] and [<i>][question_type]=text accompany it.",
+   "custom_single_choice": "hidden [<i>][question_type]=single_choice + <label for=…_<i>_selected_option_uuids> question text + radios name …[<i>][selected_option_uuids][] value=<option uuid> wrapped in <label> with <span> option text; required attr on radios.",
+   "submit": "input[type=submit][name=commit] 'Submit your application'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "middle_name",
+    "label_seen": "Middle name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone (optional)",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "additional_information",
+    "label_seen": "Additional information (optional)",
+    "control": "textarea",
+    "required": false,
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Upload your cover letter (optional) PDF, up to 10MB | Upload your cover letter PDF, up to 10MB",
+    "control": "file",
+    "required": "gu-02 TRUE; others optional",
+    "accept": "PDF (label only)",
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Upload your resume PDF, up to 10MB",
+    "control": "file",
+    "required": true,
+    "accept": "PDF (label only)",
+    "seen_in": [
+     "gu-01",
+     "gu-02",
+     "gu-03"
+    ]
+   },
+   {
+    "key": "custom_question",
+    "control": "custom_text | custom_single_choice",
+    "required": true,
+    "seen_in": [
+     "gu-01",
+     "gu-03"
+    ],
+    "examples_seen": [
+     "How many years of relevant experience do you have? [text]",
+     "What is the earliest date you are available to start this position? [text]",
+     "Which ad platforms have you personally run campaigns in, and for how many years? [text]",
+     "What is the largest monthly ad budget you have personally managed? [text]",
+     "Which analytics or attribution tools have you set up and used yourself? [text]",
+     "Are you currently based in Austin? If not, how soon would you be relocating? [single_choice: 'Yes, based in Austin' | 'Actively moving, 1 month' | 'Plan to move, 2-3 months' | 'Need to move, 3+ months']",
+     "What excites you about joining the Padel39 family? [text — narrative in a single-line input]"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "jobs.gusto.com/postings/<slug> with <a> 'Apply for …'",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "document.title 'Apply for <job>' + form#job-applicant-form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "input[type=submit][name=commit] value 'Submit your application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   },
+   {
+    "type": "file_required",
+    "detail": "Resume always required; cover letter required on some employers",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Narrative questions are single-line text inputs (no maxlength attr) — long answers still fit but render on one line.",
+   "Single-choice radios carry multiple=multiple attr oddly; treat as radio by type.",
+   "Question text for custom fields is the nearest preceding <label> without for= (text) or with for=…_selected_option_uuids (choice)."
+  ]
+ },
+ "inferred": {
+  "confidence": "high (identical template on 3/3)",
+  "not_observed": [
+   "post-submit",
+   "file type enforcement"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "Gusto Hiring (jobs.gusto.com)",
+  "detect": "form#job-applicant-form, input[name^='job_applicant[']",
+  "for_jev": "Gusto: single page. First/Last/Email required, middle name and phone optional, 'Additional information' textarea optional, Resume PDF required (10MB), cover letter PDF optional or required, then employer questions as required short-text (years of experience, start date, platforms, budget, tools, motivation narrative) and single-choice radios (relocation). No captcha/login. Stop at 'Submit your application'."
+ },
+ "edge_cases": [
+  {
+   "case": "cover letter required",
+   "detail": "Keep Aware marks cover letter file required"
+  }
+ ]
+}

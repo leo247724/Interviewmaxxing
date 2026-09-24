@@ -46,6 +46,10 @@ class PageInspection(Contract):
     message: str | None = None
     evidence: list[EvidenceRef] = Field(default_factory=list)
     inspected_at: UtcDatetime = Field(default_factory=utc_now)
+    captcha_pending: bool = False
+    """An ``APPLICATION_FORM`` carries an embedded CAPTCHA widget (badge, checkbox or
+    token field) that is not solved yet. The form can be filled and prepared; the
+    site's own submit needs the user to solve the CAPTCHA first."""
 
     @model_validator(mode="after")
     def _form_iff_form_page(self) -> Self:

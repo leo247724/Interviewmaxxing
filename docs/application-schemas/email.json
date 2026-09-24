@@ -1,0 +1,270 @@
+{
+ "backend": "email",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:53:58Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "email",
+ "coverage": {
+  "inventory_density": 5,
+  "attempted_samples": 5,
+  "observed_examples": 5,
+  "fully_mapped_examples": 5,
+  "note": "5 of 5 listings (4 employers) observed. None has a web application form; each instructs the candidate to email a mailbox. Requirements were read from the rendered page text. No email was composed or sent."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "em-01",
+   "listing_id": "lst_f60ae512e0fc48825ace3df163fb8598",
+   "url": "https://www.brandogdigital.com/senior-digital-marketing-manager-paid-social-aug-2026",
+   "company": "Brandog Digital",
+   "page_title": "Jobs at Brandog - Senior Digital Marketing Manager - Paid Social \u2014 BRANDOG Digital",
+   "captured_at_utc": "2026-09-23T23:52:01Z",
+   "status": "email_observed",
+   "forms_on_page": 0,
+   "email_application": {
+    "to": "jobs@brandogdigital.com",
+    "subject_hint": null,
+    "required_attachments_and_content": [
+     "resume",
+     "cover letter"
+    ],
+    "narrative_prompts": [
+     "Cover letter outlining your experience managing performance marketing campaigns and any notable results you've driven for clients or brands."
+    ],
+    "mailto_present": false
+   },
+   "notes": "Address appears as plain text under heading 'Ready to Apply?' (no mailto anchor). EEO statement follows; eligibility phrase: 'eligible to work in the United States or their country of residence in Latin America'.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/email-01-brandog.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/email-01-brandog.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/email-01-brandog.apply_text.json"
+   ]
+  },
+  {
+   "sample_id": "em-02",
+   "listing_id": "lst_73c34ff5f78eb7fbfa35e3fc1db0b4fd",
+   "url": "https://evron.marketing/careers.html",
+   "company": "Evron",
+   "page_title": "Careers \u00b7 Evron Revenue Engineering",
+   "captured_at_utc": "2026-09-23T23:52:06Z",
+   "status": "email_observed",
+   "forms_on_page": 0,
+   "email_application": {
+    "to": "careers@evron.marketing",
+    "subject_hint": "Paid Media Manager (pre-filled by the role's APPLY mailto: ?subject=Paid%20Media%20Manager)",
+    "required_attachments_and_content": [
+     "not stated on page (no instructions beyond the APPLY mailto)"
+    ],
+    "narrative_prompts": [],
+    "mailto_present": true
+   },
+   "notes": "Careers page lists several roles; each has its own 'APPLY' mailto with a subject preset. Secondary 'SEND AN INTRO' / 'EMAIL CAREERS' mailtos without subject. No requirements text observed; content expectations unknown.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/email-02-evron.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/email-02-evron.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/email-02-evron.apply_text.json"
+   ]
+  },
+  {
+   "sample_id": "em-03",
+   "listing_id": "lst_a50663c165c77029ac6a4c57a5ec61ba",
+   "url": "https://www.massconvert.com/careers/digital-marketing-manager/",
+   "company": "MassConvert",
+   "page_title": "Digital Marketing Manager Job | MassConvert Austin Careers",
+   "captured_at_utc": "2026-09-23T23:52:14Z",
+   "status": "email_observed",
+   "forms_on_page": 0,
+   "email_application": {
+    "to": "hello@massconvert.com",
+    "subject_hint": "Digital Marketing Manager application (preset by mailto)",
+    "required_attachments_and_content": [
+     "resume",
+     "short note"
+    ],
+    "narrative_prompts": [
+     "A short note on the account you're proudest of, the channel mix you ran, and what changed because you were on it."
+    ],
+    "mailto_present": true
+   },
+   "notes": "Heading 'How to apply' + 'Apply by email \u2192' mailto with subject preset.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/email-03-massconvert-dmm.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/email-03-massconvert-dmm.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/email-03-massconvert-dmm.apply_text.json"
+   ]
+  },
+  {
+   "sample_id": "em-04",
+   "listing_id": "lst_e2082abeb732a5cc739fef6f49912f13",
+   "url": "https://www.massconvert.com/careers/facebook-ads-manager/",
+   "company": "MassConvert",
+   "page_title": "Facebook Ads Manager Job | MassConvert Austin Careers",
+   "captured_at_utc": "2026-09-23T23:52:19Z",
+   "status": "email_observed",
+   "forms_on_page": 0,
+   "email_application": {
+    "to": "hello@massconvert.com",
+    "subject_hint": "Facebook Ads Manager application (preset by mailto)",
+    "required_attachments_and_content": [
+     "resume",
+     "one paragraph"
+    ],
+    "narrative_prompts": [
+     "One paragraph on the most interesting Meta campaign you've ever run, the decision you'd make differently today, and why."
+    ],
+    "mailto_present": true
+   },
+   "notes": "Same template as em-03 with a different narrative prompt.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/email-04-massconvert-fb.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/email-04-massconvert-fb.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/email-04-massconvert-fb.apply_text.json"
+   ]
+  },
+  {
+   "sample_id": "em-05",
+   "listing_id": "lst_ec4ba692d5d6922fcf45c82d19e1414b",
+   "url": "https://healthcaresuccess.com/about/careers/paid-media-specialist",
+   "company": "Healthcare Success",
+   "page_title": "Paid Media Specialist in Healthcare Excellence",
+   "captured_at_utc": "2026-09-23T23:52:27Z",
+   "status": "email_observed",
+   "forms_on_page": "1 (site search only)",
+   "email_application": {
+    "to": "emma@healthcaresuccess.com (named recruiter mailbox; info@ is the generic contact)",
+    "subject_hint": null,
+    "required_attachments_and_content": [
+     "short cover letter",
+     "resume"
+    ],
+    "narrative_prompts": [
+     "Short cover letter demonstrating your qualifications and interest (after reading the job description and browsing the website)."
+    ],
+    "mailto_present": true
+   },
+   "notes": "Instruction paragraph appears twice (above and below the description). curl HTML referenced HubSpot forms script but no application form rendered; only the site search form exists.",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/email-05-healthcaresuccess.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/email-05-healthcaresuccess.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/email-05-healthcaresuccess.apply_text.json"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "forms_on_page": "0 (Healthcare Success has a site-search form that must be ignored)",
+   "apply_entry": "either a mailto: anchor (Evron 'APPLY', MassConvert 'Apply by email \u2192') with an optional ?subject= preset, or a plain-text address inside a 'Ready to Apply?' / 'How to apply' / 'To apply for this position' paragraph (Brandog, Healthcare Success)"
+  },
+  "control_families": {
+   "mailto_anchor": "a[href^=mailto:] possibly with ?subject=<role>; clicking would hand off to the OS mail client (never clicked).",
+   "instruction_paragraph": "heading matching /ready to apply|how to apply|to apply/ followed by 1-3 <p> siblings that name the address, attachments and narrative prompt."
+  },
+  "field_patterns": [
+   {
+    "key": "to_address",
+    "source": "mailto href or plain text",
+    "required": true,
+    "seen_in": [
+     "em-01",
+     "em-02",
+     "em-03",
+     "em-04",
+     "em-05"
+    ]
+   },
+   {
+    "key": "subject",
+    "source": "mailto ?subject= when present, else role title",
+    "required": "recommended",
+    "seen_in": [
+     "em-02",
+     "em-03",
+     "em-04"
+    ]
+   },
+   {
+    "key": "resume_attachment",
+    "required": true,
+    "seen_in": [
+     "em-01",
+     "em-03",
+     "em-04",
+     "em-05"
+    ],
+    "note": "Evron page states no requirement"
+   },
+   {
+    "key": "cover_letter_or_note",
+    "required": true,
+    "control": "email body or attachment",
+    "seen_in": [
+     "em-01",
+     "em-03",
+     "em-04",
+     "em-05"
+    ],
+    "classification": "free_text_narrative",
+    "narrative_benchmark": true,
+    "prompts": [
+     "Cover letter outlining your experience managing performance marketing campaigns and any notable results you've driven for clients or brands.",
+     "A short note on the account you're proudest of, the channel mix you ran, and what changed because you were on it.",
+     "One paragraph on the most interesting Meta campaign you've ever run, the decision you'd make differently today, and why.",
+     "Short cover letter demonstrating your qualifications and interest (after reading the job description and browsing the website)."
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page_with_email_instructions",
+    "identity_hint": "0 application forms; mailto anchor or 'apply'+'@' text in the same paragraph",
+    "observed": true
+   },
+   {
+    "step": "compose_email",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "note": "Sending the email is the irreversible action; in prepare-only mode the runtime may draft subject/body/attachments for human review only."
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "manual",
+    "detail": "No web form to fill; application happens over email, outside the browser executor.",
+    "observed": true,
+    "human_action_needed": "Human reviews and sends the drafted email with the resume attached."
+   }
+  ],
+  "runtime_observations": [
+   "Detect this backend from the rendered page, not the URL: zero application forms plus an apply-intent paragraph containing an email address.",
+   "Prefer the mailto ?subject= preset when present; MassConvert presets differ per role.",
+   "Two of five pages contain a second, generic mailbox (howdy@/hello@/info@); the application address is the one inside the apply paragraph or the APPLY anchor, not the footer contact.",
+   "Healthcare Success names an individual recruiter mailbox; treat as the application address but do not scrape any other personal data."
+  ]
+ },
+ "inferred": {
+  "body_shape_unverified": "Short cover-letter body (3-6 paragraphs), resume as PDF attachment, subject '<Role> application' when no preset; UNVERIFIED preference of these employers."
+ },
+ "provider_hint": {
+  "for_jev": "email backend: there is no form. Extract {to, subject, required attachments, narrative prompt} from the apply paragraph/mailto. Route the narrative prompt to the writer with the exact prompt text and job context. Output a draft for human review; never send.",
+  "exact_copy_facts": [
+   "candidate name/email as sender (from verified facts only)"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "cover letter / note answering the page's narrative prompt (see field_patterns.cover_letter_or_note.prompts)"
+  ],
+  "requires_human_input": [
+   "final review and send",
+   "resume file choice"
+  ]
+ },
+ "edge_cases": [
+  "Brandog's address is plain text, not a mailto, so anchor-only scanners miss it.",
+  "Evron's careers page hosts multiple roles; the mailto subject disambiguates the role.",
+  "MassConvert's Facebook Ads role asks for 'one paragraph' (length constraint) while the DMM role asks for a 'short note' with three specific points."
+ ]
+}

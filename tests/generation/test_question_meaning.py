@@ -179,3 +179,39 @@ def test_unit_placeholder_blocks_label_only_reuse_and_is_prompted(
     assert packet.answer_for("notice_plain").provenance.reference_ids == ["sa.notice"]
     item = next(m for m in packet.missing_inputs if m.field_id == "notice")
     assert "Notice period\nContractual notice only.\nin weeks" in item.prompt
+
+
+@pytest.mark.parametrize("help_text", [
+    "e.g., LinkedIn, Indeed, ZipRecruiter, Wellfound, Slack, Recruiter, Referral",
+    "For example: a job board, a referral or our careers page",
+    "Examples: LinkedIn, Glassdoor",
+])
+def test_example_only_help_text_leaves_the_label_as_the_whole_question(help_text: str) -> None:
+    from interviewmaxxing_core import ApplicationField, ControlType
+    from interviewmaxxing_generation.questions import QuestionText, is_example_only_help
+
+    assert is_example_only_help(help_text)
+    field = ApplicationField(id="source", label="How did you hear about this job listing?",
+                             control_type=ControlType.TEXT, selector="#source",
+                             help_text=help_text, placeholder="Type here...")
+    question = QuestionText.of(field)
+    assert question.label_is_complete
+    assert question.label in question.keys
+
+
+@pytest.mark.parametrize("help_text", [
+    "e.g. LinkedIn. Do not list recruiters.",
+    "For example, do you require sponsorship?",
+    "e.g. at least $100,000",
+    "e.g.",
+    "Please list every platform you have used",
+    "Only one answer is accepted, e.g. LinkedIn",
+])
+def test_constraining_or_empty_help_text_stays_part_of_the_question(help_text: str) -> None:
+    from interviewmaxxing_core import ApplicationField, ControlType
+    from interviewmaxxing_generation.questions import QuestionText, is_example_only_help
+
+    assert not is_example_only_help(help_text)
+    field = ApplicationField(id="source", label="How did you hear about this job listing?",
+                             control_type=ControlType.TEXT, selector="#source", help_text=help_text)
+    assert not QuestionText.of(field).label_is_complete

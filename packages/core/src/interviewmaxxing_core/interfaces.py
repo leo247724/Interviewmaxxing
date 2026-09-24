@@ -141,6 +141,9 @@ class BrowserOptions:
     headless: bool = False
     """The MVP shows the browser so the user can sign in or solve a CAPTCHA."""
     slow_mo_ms: int = 0
+    allow_submission: bool = True
+    """Whether this run may dispatch the final submit. The application runner sets
+    this false for preparation-only requests, including later resumptions."""
 
 
 @runtime_checkable

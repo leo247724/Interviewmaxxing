@@ -1,0 +1,16 @@
+{
+  "title_phrases": [
+    "paid media manager",
+    "performance marketing manager",
+    "growth marketing manager",
+    "demand generation manager",
+    "digital marketing manager",
+    "marketing director"
+  ],
+  "role_focus": "Own paid acquisition, performance marketing, growth experiments, demand generation, lifecycle conversion, or campaign operations with measurable pipeline or revenue responsibility.",
+  "onsite": [{"location": "Austin, TX", "arrangements": ["ONSITE", "HYBRID"]}],
+  "remote": null,
+  "minimum_compensation": {"amount": 100000, "currency": "USD", "period": "YEAR"},
+  "sources": ["linkedin", "google", "builtin"],
+  "max_results_per_source": 150
+}

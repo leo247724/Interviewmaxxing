@@ -1,0 +1,428 @@
+{
+ "backend": "hibob",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:02:12Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 2,
+  "employers_in_inventory": 2,
+  "observed_examples": 2,
+  "fully_mapped_examples": 2,
+  "status": "observed",
+  "note": "Both employers mapped. Angular/React SPA; multiple <form> wrappers without action; inputs named by JSON-pointer-like paths (/candidate/firstName, /question/<id>, bfe-… for EEO)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "hb-01",
+   "url": "https://paradium.careers.hibob.com/jobs/9da86884-4462-4124-a9bb-037a8d867b9b/apply?utm_medium=…&utm_source=linkedin (tracking params elided)",
+   "page_title": "Careers",
+   "captured_at_utc": "2026-09-24T00:00:48.519Z",
+   "hosting_mode": "native <tenant>.careers.hibob.com/jobs/<uuid>/apply",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/hibob-01-paradium.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/hibob-01-paradium.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/hibob-01-paradium.pagetext.txt",
+    ".imx/dynamic-applications/fable_c/evidence/hibob-01-paradium-experience.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/hibob-01-paradium-experience.state.txt"
+   ],
+   "option_lists_captured": "radio/checkbox options inline; Skills combobox not opened",
+   "steps_visited": [
+    "/apply page loads the blank form directly (Back button to posting)"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' (never clicked)"
+   ],
+   "classification_note": "No questionnaire/EEO; employer custom fields Legal Name/State/Zip Code (field_<id>); Education/Experience/Associations/Qualifications 'Add' sub-forms. Experience sub-form opened blank and captured (hibob-01-paradium-experience.*)"
+  },
+  {
+   "sample_id": "hb-02",
+   "url": "https://mythicalgames.careers.hibob.com/jobs/653c29fa-35b9-4443-94b7-8c9359815d14/apply",
+   "page_title": "Careers",
+   "captured_at_utc": "2026-09-24T00:01:11.353Z",
+   "hosting_mode": "native <tenant>.careers.hibob.com/jobs/<uuid>/apply",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/hibob-02-mythical.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/hibob-02-mythical.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/hibob-02-mythical.pagetext.txt"
+   ],
+   "option_lists_captured": "radio/checkbox options inline; Skills combobox not opened",
+   "steps_visited": [
+    "/apply page loads the blank form directly (Back button to posting)"
+   ],
+   "gated_steps_not_visited": [
+    "post-'Apply' (never clicked)"
+   ],
+   "classification_note": "Questionnaire (1 required textarea + sponsorship Yes/No) and Equal employment opportunity block (gender radios, race/ethnicity checkboxes multi, veteran radios, disability radios). 'State' label present in text but no visible input captured (likely combobox rendered on focus)."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "entry": "/jobs/<uuid>/apply renders the form directly; 'Back' returns to posting",
+   "sections_seen": [
+    "Personal information",
+    "Professional profile (Skills, Education, Experience, Professional Associations / Memberships, Qualifications / Licenses)",
+    "Resume — 'Upload your resume' + 'Add file' button",
+    "Questionnaire (employer)",
+    "Equal employment opportunity (voluntary, with EEO statement)",
+    "Bob Hiring privacy notice (platform provider) + consent checkbox",
+    "Apply button#apply-to-job-btn"
+   ],
+   "captcha": "none",
+   "iframes": "none"
+  },
+  "control_families": {
+   "text": "input[type=text] id=name='/candidate/<field>' with <label for>; required attr; no '*' in label",
+   "custom_field": "input '/candidate/field_<digits>' (employer profile fields e.g. Legal Name, State, Zip Code)",
+   "combobox": "input[role=combobox] '/candidate/skills' (tag picker; options not opened)",
+   "number": "input[type=tel][role=spinbutton] name 'bsiss-/application/desiredSalary' maxlength 22 under label 'Desired salary'",
+   "date": "input '/application/dateAvailable' placeholder dd-mm-yyyy; sub-form dates '/candidateExperience/startDate|endDate'",
+   "subform_add": "button#addButton 'Add' per section opens inline blank sub-form with button#save-btn 'Save' (Experience: Title*, Company*, Industry, Summary textarea, Start date* dd-mm-yyyy, End date, 'Is current' checkbox required)",
+   "file": "button 'Add file' under 'Resume / Upload your resume'; no input[type=file] in DOM until clicked (not exercised)",
+   "question_textarea": "textarea id=name='/question/<id>' required, <label for> question text",
+   "question_radio": "div[role=radiogroup]#bfe-<x>-<n> with input[type=radio] name=bfe-<x>-<n> value=<option id>, label via aria-labelledby; question text is the preceding text (not linked)",
+   "eeo_checkbox_multi": "input[type=checkbox] name=bfe-<x>-<n> one per option (race/ethnicity multi-select)",
+   "consent_checkbox": "input[type=checkbox]#initialConsent 'By checking this box, I consent to the use of my personal data in accordance with the privacy policies outlined above.' (not DOM-required; likely enforced on Apply)",
+   "submit": "button#apply-to-job-btn 'Apply' (type=button; JS submit)"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "street_address",
+    "label_seen": "Street Address",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "city",
+    "label_seen": "City",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "state",
+    "label_seen": "State",
+    "control": "text (hb-01 custom field) / unobserved control (hb-02)",
+    "required": true,
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "legal_name",
+    "label_seen": "Legal Name",
+    "control": "custom_field",
+    "required": true,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Zip Code",
+    "control": "custom_field",
+    "required": true,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "linkedin",
+    "label_seen": "LinkedIn",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "website",
+    "label_seen": "Personal website",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "desired_salary",
+    "label_seen": "Desired salary",
+    "control": "number",
+    "required": true,
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "date_available",
+    "label_seen": "Date available",
+    "control": "date dd-mm-yyyy",
+    "required": false,
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "skills",
+    "label_seen": "Skills",
+    "control": "combobox",
+    "required": false,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "education",
+    "label_seen": "Education — Add",
+    "control": "subform_add",
+    "required": false,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "experience",
+    "label_seen": "Experience — Add",
+    "control": "subform_add",
+    "required": false,
+    "seen_in": [
+     "hb-01"
+    ],
+    "subfields": [
+     "Title*",
+     "Company*",
+     "Industry",
+     "Summary",
+     "Start date*",
+     "End date",
+     "Is current"
+    ]
+   },
+   {
+    "key": "associations",
+    "label_seen": "Professional Associations / Memberships — Add",
+    "control": "subform_add",
+    "required": false,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "qualifications",
+    "label_seen": "Qualifications / Licenses — Add",
+    "control": "subform_add",
+    "required": false,
+    "seen_in": [
+     "hb-01"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume — Upload your resume — Add file",
+    "control": "file(button)",
+    "required": "unknown (no DOM marker)",
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   },
+   {
+    "key": "custom_question",
+    "control": "question_textarea | question_radio",
+    "seen_in": [
+     "hb-02"
+    ],
+    "examples_seen": [
+     "What’s one interesting way you’ve used AI in work? [textarea, required]",
+     "Do you now or in the future require sponsorship to work in the country of employment? [radio Yes/No]"
+    ]
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "What is your Gender?",
+    "control": "question_radio",
+    "required": false,
+    "options": [
+     "Male",
+     "Female",
+     "I choose not to self-identify"
+    ],
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "eeo_race",
+    "label_seen": "(race/ethnicity, select all that apply)",
+    "control": "eeo_checkbox_multi",
+    "required": false,
+    "options": [
+     "Hispanic or Latino",
+     "White",
+     "Black or African American",
+     "Asian",
+     "Native Hawaiian or Pacific Islander",
+     "American Indian or Alaska Native",
+     "Middle Eastern/North African",
+     "I do not wish to disclose"
+    ],
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "eeo_veteran",
+    "control": "question_radio",
+    "required": false,
+    "options": [
+     "I am not a protected veteran",
+     "I identify as one or more of the classifications of a protected veteran",
+     "I do not wish to answer"
+    ],
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "eeo_disability",
+    "control": "question_radio",
+    "required": false,
+    "options": [
+     "Yes, I have a disability (or previously had a disability)",
+     "No, I don't have a disability (or previously had a disability)",
+     "I do not wish to answer"
+    ],
+    "seen_in": [
+     "hb-02"
+    ]
+   },
+   {
+    "key": "privacy_consent",
+    "label_seen": "By checking this box, I consent to the use of my personal data in accordance with the privacy policies outlined above.",
+    "control": "consent_checkbox",
+    "required": "enforced on Apply (assumed)",
+    "seen_in": [
+     "hb-01",
+     "hb-02"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "hostname *.careers.hibob.com path /jobs/<uuid>/apply; input[name^='/candidate/']",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button#apply-to-job-btn 'Apply'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true,
+    "confidence": "high"
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Add' buttons",
+    "effect": "inline sub-forms (Education/Experience/…) with Save",
+    "observed": true
+   },
+   {
+    "trigger": "'Add file'",
+    "effect": "opens file picker (input created dynamically)",
+    "observed": "button only"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none",
+    "observed": true
+   },
+   {
+    "type": "tooling",
+    "detail": "resume input not in DOM until 'Add file' clicked; EEO question titles not label-linked (read preceding text)",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Read EEO/question titles from preceding_label in evidence; option labels are aria-labelledby-linked.",
+   "Desired salary is a numeric spinbutton input[type=tel]; digits only.",
+   "Dates use dd-mm-yyyy placeholders."
+  ]
+ },
+ "inferred": {
+  "confidence": "high for standard block; employer custom fields and questionnaire vary",
+  "not_observed": [
+   "Skills picker options",
+   "file picker",
+   "State control on hb-02",
+   "post-Apply"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "HiBob Hiring (careers.hibob.com)",
+  "detect": "*.careers.hibob.com, input[name^='/candidate/'], button#apply-to-job-btn",
+  "for_jev": "HiBob: single page. Personal info (first/last/email/phone/city required; address/state/zip/legal name or LinkedIn/website/desired salary/date available per employer), optional profile sub-forms (Education, Experience with Title/Company/Industry/Summary/dates), Resume via 'Add file', employer Questionnaire (narrative textarea e.g. 'one interesting way you’ve used AI in work', sponsorship Yes/No), voluntary EEO (gender, race multi-select, veteran, disability), privacy consent checkbox, then 'Apply'. No captcha/login."
+ },
+ "edge_cases": [
+  {
+   "case": "employer custom profile fields",
+   "detail": "field_<id> inputs labelled Legal Name/State/Zip Code (Paradium)"
+  }
+ ]
+}

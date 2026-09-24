@@ -1,0 +1,335 @@
+{
+ "backend": "taleo",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:11:21Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab E5F0FF755A27795EB7679FECDE900939",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed_behind_registration",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "singleton_coverage": true,
+  "note": "Singleton (Candela Medical, Taleo Business Edition careers v2). The job page has 0 forms; 'Apply Now' -> applyRequisition renders ONE document (form#TBE_theForm, 143 elements) containing all 6 steps; steps 2-6 are hidden until step 1 'Register' (email + new password) is completed. Registration creates an account, which is prohibited, so nothing was entered; but every step's blank questions/options were captured from the hidden DOM."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "tl-01",
+   "listing_id": "lst_120e51405bdda8108059e30b8a3e1d7d",
+   "url": "https://lde.tbe.taleo.net/lde02/ats/careers/v2/viewRequisition?org=SYNEMEDI&cws=37&rid=3014",
+   "apply_url": "https://lde.tbe.taleo.net/lde02/ats/careers/v2/applyRequisition?org=SYNEMEDI&cws=37&rid=3014",
+   "company": "Candela Medical",
+   "page_titles": [
+    "Position Description",
+    "Register"
+   ],
+   "captured_at_utc": "2026-09-24T00:07:13Z",
+   "status": "observed_behind_registration",
+   "steps_visited": [
+    "job description",
+    "apply page step 1 'Register' (visible) + steps 2-6 (hidden in same DOM, read via extractor)"
+   ],
+   "gated_steps_not_visited": [
+    "steps 2-6 as rendered/validated views",
+    "final Submit"
+   ],
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/taleo-01-candela.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/taleo-01-candela.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/taleo-01-candela-apply.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/taleo-01-candela-apply.state.txt (140 KB)"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": "one form#TBE_theForm (method post to .../voluntaryInfo) holding 6 stepped sections; progress cue '1 of 6'",
+   "steps": [
+    "1. Register",
+    "2. Your Information",
+    "3. Attachments and Questions",
+    "4. Work and Education History",
+    "5. Other History",
+    "6. Review and Submit"
+   ],
+   "apply_entry": "'Apply Now' anchor on viewRequisition -> applyRequisition (same host)",
+   "buttons_seen": [
+    "Upload resume",
+    "Browse",
+    "Clear",
+    "Cancel",
+    "Save Draft",
+    "Submit"
+   ]
+  },
+  "control_families": {
+   "registration": "Email* (max 75) + Password* (max 30) + 'Re-type new password:*' \u2014 creates a Taleo candidate account (STOP: account creation prohibited).",
+   "text": "input[type=text] with label[for] and matching aria-label; required flagged via required attr AND red asterisk.",
+   "native_select": "State/Territory (71 incl. 'Outside of US or CANADA'), Country (185), Source (16, employer-specific incl. 'Other (Please Specify)'), Work Authorization (4), yes/no (3 with 'Please select'), month/year pickers.",
+   "checkbox_group": "Overtime Availability CUSTOM_1098 [Weekdays, Weekends, Not Available] with hidden _total field.",
+   "date_picker": "Date Available for Work (CUSTOM_1096) text + month/year selects.",
+   "textarea": "custom questions CUSTOM_1100/1102/1103/1106; Work history Description.",
+   "file": "attachment_template accept .gif,.rtf,.doc,.pdf,.zip,.docx,.csv,.txt,.gz,.xlsx,.xls,.ppt,.pptx (resume upload 'Save Time' + additional attachments; 10MB total).",
+   "repeaters": "Work History (last 4 employers), Education History, Certificates and Licenses \u2014 each a group with Save/Cancel/Add.",
+   "esignature": "Candidate eSignature* (text, max 100) + Candidate eSignature Date* on step 6 \u2014 attestation."
+  },
+  "field_patterns": [
+   {
+    "key": "email",
+    "step": 1,
+    "required": true
+   },
+   {
+    "key": "password",
+    "step": 1,
+    "required": true,
+    "classification": "account_creation -> STOP"
+   },
+   {
+    "key": "first_name/middle/last_name",
+    "step": 2,
+    "required": "first,last"
+   },
+   {
+    "key": "phone",
+    "labels": [
+     "Primary Phone #*",
+     "Alternate Phone #"
+    ],
+    "step": 2
+   },
+   {
+    "key": "address",
+    "labels": [
+     "Street address*",
+     "City*",
+     "State/Territory*",
+     "ZIP/Postal code*",
+     "Country*"
+    ],
+    "step": 2
+   },
+   {
+    "key": "source",
+    "label": "Source*",
+    "options": [
+     "--None--",
+     "Candela.de",
+     "Employee Referral",
+     "Eric Backen",
+     "Indeed.com",
+     "LinkedIn AD",
+     "Med Reps",
+     "Militaryhire.com",
+     "Monster",
+     "Other (Please Specify)",
+     "Robert",
+     "Sonstige",
+     "Stepstone",
+     "Syneron Candela NA",
+     "Xing"
+    ],
+    "followups": [
+     "Other (Specify Source)",
+     "Referred By"
+    ],
+    "step": 2
+   },
+   {
+    "key": "date_available",
+    "label": "Date Available for Work",
+    "step": 2
+   },
+   {
+    "key": "age_18",
+    "label": "Are you at least 18 years",
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "step": 2,
+    "classification": "eligibility"
+   },
+   {
+    "key": "other_names",
+    "label": "Please list any other name(s) which is (are) necessary for us to know in order for us to verify your employment or educational record. Indicate N/A, if not applicable.",
+    "control": "textarea",
+    "step": 2
+   },
+   {
+    "key": "overtime_availability",
+    "label": "Please indicate if you are available to work overtime as needed.",
+    "options": [
+     "Weekdays",
+     "Weekends",
+     "Not Available"
+    ],
+    "control": "checkbox_group",
+    "step": 2
+   },
+   {
+    "key": "worked_or_applied_before",
+    "label": "If you have ever previously worked for or applied for a position with Candela, in any of our locations either as an employee or through an employment agency, please explain when and, if employed, in w[...]",
+    "control": "textarea",
+    "step": 2,
+    "classification": "free_text (fact-based)"
+   },
+   {
+    "key": "friends_relatives",
+    "label": "Please list any relatives or friends now employed at Candela? Include state name(s) and where they are located. (This will not automatically disqualify you from the position for which you are applying[...]",
+    "control": "textarea",
+    "step": 2
+   },
+   {
+    "key": "work_authorization",
+    "label": "Work Authorization*",
+    "options": [
+     "I am authorized to work in this country for any employer",
+     "I require sponsorship to work in this country",
+     "My status to work in this country is unknown"
+    ],
+    "step": 2,
+    "classification": "eligibility"
+   },
+   {
+    "key": "job_related_skills",
+    "label": "Please summarize your job-related skills and qualifications:",
+    "control": "textarea",
+    "step": 3,
+    "classification": "free_text_narrative",
+    "narrative_benchmark": true
+   },
+   {
+    "key": "attachments",
+    "step": 3,
+    "note": "resume + additional attachments with Description text"
+   },
+   {
+    "key": "work_history",
+    "step": 4,
+    "fields": [
+     "Company Name*",
+     "Company Phone",
+     "Company Street Address",
+     "Position Title*",
+     "Description",
+     "Date From* (month/year)",
+     "Date To* (month/year incl. 'To Present')",
+     "Reason For Leaving [Laid Off, Promoted, Resigned, Terminated, Career Advancement, Professional Development]",
+     "Direct Supervisor",
+     "Supervisor Title",
+     "Ok To Contact (checkbox: 'May we contact your current employer prior to any offer of employment?')",
+     "Explain"
+    ],
+    "note": "'Please specify your last 4 employers, including self-employment.'"
+   },
+   {
+    "key": "education_history",
+    "step": 4,
+    "fields": [
+     "School Name*",
+     "City",
+     "State/Territory",
+     "Number of Years Completed",
+     "Degree Achieved*",
+     "Field of Study"
+    ]
+   },
+   {
+    "key": "certificates_licenses",
+    "step": 5,
+    "fields": [
+     "Certificate Name",
+     "Issuing Body",
+     "Year"
+    ]
+   },
+   {
+    "key": "candidate_sign_off",
+    "step": 6,
+    "fields": [
+     "Candidate eSignature*",
+     "Candidate eSignature Date*"
+    ],
+    "classification": "attestation -> human",
+    "note": "'This application will only be considered for 30 days...'"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "register",
+    "observed": true,
+    "gate": "account_creation",
+    "STOP_BOUNDARY": true,
+    "note": "Prepare-only runtime must stop here unless the user already has a Taleo account for this org (login variant not observed)."
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Submit' (step 6) + 'Save Draft'",
+    "observed": "present in DOM, hidden",
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "Source = 'Other (Please Specify)'",
+    "effect": "'Other (Specify Source)' text expected to become relevant",
+    "observed": "field present"
+   },
+   {
+    "trigger": "Ok To Contact unchecked",
+    "effect": "'Explain' text",
+    "observed": "field present"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Step 1 requires creating a candidate account (email + password) before any other step is shown/validated.",
+    "observed": true,
+    "human_action_needed": "User registers/logs in on this Taleo careers site in the runtime profile."
+   }
+  ],
+  "runtime_observations": [
+   "All six steps exist in the DOM at once; hidden-step controls are readable for mapping but must not be treated as fillable until their step is active.",
+   "Required-ness is reliable here (required attribute + asterisk).",
+   "Custom question ids are CUSTOM_<n>; labels/aria-labels are the stable key."
+  ]
+ },
+ "inferred": {
+  "login_variant_unverified": "Existing-account login path (instead of Register) was not observed."
+ },
+ "provider_hint": {
+  "for_jev": "taleo (TBE careers v2): six-step single-form document. Stop at step 1 Register (account creation). If the user is logged in, map by label/aria-label; classify: fact_copy (name/phone/address/links), option_choice (state/country/source/work authorization from verified facts), eligibility (18+, work authorization), free_text (previous employment at Candela, relatives, other names -> facts or 'N/A' only when verified), free_text_narrative (job-related skills summary -> writer), repeaters (work/education history from verified facts), attestation (eSignature/date -> human). Stop before 'Submit'.",
+  "exact_copy_facts": [
+   "name",
+   "phones",
+   "street address/city/state/zip/country",
+   "date available",
+   "employment and education history entries"
+  ],
+  "option_choice_from_verified_facts": [
+   "state",
+   "country",
+   "source",
+   "work authorization",
+   "reason for leaving"
+  ],
+  "escalate_to_writer_opus": [
+   "Please summarize your job-related skills and qualifications"
+  ],
+  "requires_human_input": [
+   "account registration",
+   "eSignature and date",
+   "overtime availability",
+   "other names / relatives / prior application disclosures",
+   "ok-to-contact current employer"
+  ]
+ },
+ "edge_cases": [
+  "The Source list contains recruiter names and German-language entries (employer-specific); do not normalise.",
+  "Date pickers use year lists starting at 1931; a naive 'first option' pick is wrong.",
+  "State list includes 'Outside of US or CANADA' as the second option."
+ ]
+}

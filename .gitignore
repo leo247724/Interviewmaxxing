@@ -36,3 +36,7 @@ env.local
 
 # End-to-end failure artifacts (screenshots, HTML, CLI logs)
 /e2e/.artifacts/
+
+# Browser tooling artifacts (playwright-cli / playwright-mcp sessions)
+/.playwright-cli/
+/.playwright-mcp/

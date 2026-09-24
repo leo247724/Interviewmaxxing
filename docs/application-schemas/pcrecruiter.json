@@ -1,0 +1,183 @@
+{
+ "backend": "pcrecruiter",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed",
+ "status_reason": "Employer page embeds the PCRecruiter job board in a cross-origin iframe; the form was captured by opening the iframe URL directly. Title reads \"Registration Form\": submitting registers the candidate and applies.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 1
+ },
+ "observed_samples": [
+  {
+   "sample_id": "pcr-01",
+   "url": "https://brainworksinc.com/job/senior-performance-marketing-manager-remote-63291124595/",
+   "apply_url": "…?apply=y (embeds iframe)",
+   "form_url": "https://www2.pcrecruiter.net/pcrbin/jobboard.aspx?action=detail&recordid=499245027064467&apply=y&uid=BrainWorks.brainworks&src=%7C%7C%7C%7C",
+   "page_title": "Registration Form",
+   "captured_at_utc": "2026-09-23T23:56:36Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/pcrecruiter-01-brainworks.controls.json",
+    ".imx/dynamic-applications/fable/evidence/pcrecruiter-01-brainworks-apply.controls.json",
+    ".imx/dynamic-applications/fable/evidence/pcrecruiter-01-brainworks-form.controls.json",
+    ".imx/dynamic-applications/fable/evidence/pcrecruiter-01-brainworks-form.state.txt"
+   ],
+   "steps_visited": [
+    "employer job page",
+    "?apply=y page (iframe)",
+    "iframe form opened directly"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "iframe": "employer site (WordPress) → iframe www2.pcrecruiter.net/pcrbin/jobboard.aspx; cross-origin, so read via OpenCLI frames/eval --frame or open the iframe URL",
+   "forms": "form#returntoresults (nav) and form#regForm (form_index 1, POST /pcrbin/jobboard.aspx, submit 'Submit')",
+   "heading": "Please Complete This Form"
+  },
+  "control_families": {
+   "text": "inputs id=name (First_Name, Last_Name, Home_Phone labelled 'Cell Phone*', City, Email_Address, Zip) with required shown as '*' in placeholder/nearby text; no required attr",
+   "select": "#State 72 options, first option is the placeholder text 'State*' (US states + territories/provinces)",
+   "file": "input[type=file] aria-label 'Upload Resume*' accept .doc,.docx,.rtf,.txt,.pdf,.htm,.html,.odt",
+   "textarea": "Reg_Memo_Field1 'How did you hear about us?', Reg_Memo_Field2 'Questions/Comments'",
+   "submit": "button[type=submit] 'Submit'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name*",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name*",
+    "required": true
+   },
+   {
+    "key": "phone",
+    "label_seen": "Cell Phone*",
+    "name": "Home_Phone",
+    "required": true
+   },
+   {
+    "key": "email",
+    "label_seen": "Email Address*",
+    "required": true
+   },
+   {
+    "key": "city",
+    "label_seen": "City*",
+    "required": true
+   },
+   {
+    "key": "state",
+    "label_seen": "State*",
+    "control": "select 72",
+    "required": true
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Zip*",
+    "required": true
+   },
+   {
+    "key": "resume",
+    "label_seen": "Upload Resume*",
+    "control": "file",
+    "required": true
+   },
+   {
+    "key": "source_of_hire",
+    "label_seen": "How did you hear about us?",
+    "control": "textarea",
+    "required": false
+   },
+   {
+    "key": "comments",
+    "label_seen": "Questions/Comments",
+    "control": "textarea",
+    "required": false,
+    "benchmark_candidate": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "employer_job_page",
+    "observed": true
+   },
+   {
+    "step": "iframe_registration_form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button 'Submit' in form#regForm",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "confidence": "high; single form, registration + apply in one submit",
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "cross_origin_iframe",
+    "detail": "form not in top document",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Field name Home_Phone is labelled 'Cell Phone*': trust labels over names.",
+   "Select placeholder is a real first option ('State*') that must not be submitted."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "registration form",
+   "Submit",
+   "confirmation (UNVERIFIED)"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "PCRecruiter iframe registration form: name, cell phone, email, city, state, zip, resume, two optional textareas. Required = '*' in placeholder. Stop at 'Submit'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "phone",
+   "email",
+   "city",
+   "state",
+   "postal_code"
+  ],
+  "option_choice_from_verified_facts": [
+   "state"
+  ],
+  "escalate_to_writer_opus": [
+   "Questions/Comments (optional pitch)"
+  ],
+  "requires_human_input": [
+   "resume",
+   "source of hire if unknown"
+  ]
+ },
+ "edge_cases": [
+  "Inventory bucket 'pcrecruiter' is correct, but the URL is an employer WordPress page; actual form origin is www2.pcrecruiter.net."
+ ]
+}

@@ -41,6 +41,8 @@ from typing import Any, Literal
 
 from interviewmaxxing_core import BrowserOptions
 
+from .annotations import FormAnnotator, SchemaHintLoader
+from .aria import ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE
 from .driver import _FILE_DIGEST, DriverError, NotActionable, PageContextLost
 from .runtime import (
     _DOCUMENT_IDENTITY,
@@ -196,7 +198,7 @@ _ACTIONABLE = (
 _HTML = "() => document.documentElement.outerHTML"
 
 _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
-    inspector_script(), _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
+    inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
@@ -404,6 +406,14 @@ class OpenCliDriver:
             # OpenCLI matches labels before values; never accept a different option.
             raise UnverifiedAction(f"select {selector}: selected {state.get('values')!r}, not {values!r}")
 
+    async def select_accessible(
+        self, selector: str, values: list[str], binding: dict[str, Any],
+        *, before_action: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[str]:
+        from .aria import select_accessible
+
+        return await select_accessible(self, selector, values, binding, before_action=before_action)
+
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None:
         envelope = self._check_match(
             await self._call(self._argv(["check" if checked else "uncheck"], positionals=[selector])),
@@ -512,10 +522,17 @@ class OpenCliDriver:
             f"{self.session!r} ({self._doc.url or 'not opened yet'}) yourself"
         )
 
-    async def release(self) -> None:
-        """Close this driver's own tab, then release the session lease only when the
-        session is uniquely ours. A failed tab close keeps ownership available for retry."""
+    async def release(self, *, keep_tab: bool = False) -> None:
+        """Release this driver's owned lease, normally closing its tab first.
+
+        ``keep_tab`` retains both page and lease for the user's review. Failed operations
+        retain ownership for retry. Unowned tabs and sessions are never touched.
+        """
         if self._tab is None:
+            return
+        if keep_tab:
+            # OpenCLI close/unbind removes managed pages from their session. Keep
+            # the lease with the recorded tab so review remains possible.
             return
         await self._call(self._argv(["tab", "close"], positionals=[self._tab], pin=False))
         self._tab = None
@@ -528,9 +545,13 @@ class OpenCliApplicationBrowser(GenericApplicationBrowser):
     driver: OpenCliDriver
 
     def __init__(self, driver: OpenCliDriver, options: BrowserOptions, *,
-                 settle_timeout_s: float, policy: ActionPolicy | None = None) -> None:
-        super().__init__(driver, options, settle_timeout_s=settle_timeout_s, policy=policy)
+                 settle_timeout_s: float, policy: ActionPolicy | None = None,
+                 annotator: FormAnnotator | None = None,
+                 schema_hint_loader: SchemaHintLoader | None = None) -> None:
+        super().__init__(driver, options, settle_timeout_s=settle_timeout_s, policy=policy,
+                         annotator=annotator, schema_hint_loader=schema_hint_loader)
         self.driver = driver
+        self._keep_for_review = False
 
     @property
     def location(self) -> str:
@@ -539,8 +560,12 @@ class OpenCliApplicationBrowser(GenericApplicationBrowser):
         return (f"Chrome profile {cfg.profile or '(default)'}, OpenCLI session {self.driver.session!r}, "
                 f"tab {self.driver.tab or '(not opened)'} at {self.driver.url or 'no page yet'}")
 
+    def keep_for_review(self) -> str:
+        self._keep_for_review = True
+        return self.location
+
     async def close(self) -> None:
-        await self.driver.release()
+        await self.driver.release(keep_tab=self._keep_for_review)
 
 
 class OpenCliSessionFactory:
@@ -552,11 +577,15 @@ class OpenCliSessionFactory:
     ``headless`` means "do not try to focus the window"."""
 
     def __init__(self, config: OpenCliConfig | None = None, *, runner: Runner | None = None,
-                 settle_timeout_s: float = 15.0, policy: ActionPolicy | None = None) -> None:
+                 settle_timeout_s: float = 15.0, policy: ActionPolicy | None = None,
+                 annotator: FormAnnotator | None = None,
+                 schema_hint_loader: SchemaHintLoader | None = None) -> None:
         self.config = config or OpenCliConfig()
         self.runner = runner
         self.settle_timeout_s = settle_timeout_s
         self.policy = policy
+        self.annotator = annotator
+        self.schema_hint_loader = schema_hint_loader
 
     async def start(self, options: BrowserOptions) -> OpenCliApplicationBrowser:
         driver = OpenCliDriver(self.config, runner=self.runner)
@@ -572,4 +601,5 @@ class OpenCliSessionFactory:
                 "Run `opencli doctor`."
             ) from exc
         return OpenCliApplicationBrowser(driver, options, settle_timeout_s=self.settle_timeout_s,
-                                         policy=self.policy)
+                                         policy=self.policy, annotator=self.annotator,
+                                         schema_hint_loader=self.schema_hint_loader)

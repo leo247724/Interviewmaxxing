@@ -25,6 +25,7 @@ import ipaddress
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from interviewmaxxing_core import LocalPaths
@@ -78,8 +79,18 @@ class ServiceConfig:
     """``TEST_ONLY`` (default): application runs, resumes and site rechecks may only
     target loopback test sites; job discovery and selection are unaffected. ``LIVE``
     must be chosen explicitly (``IMX_SERVICE_APPLICATION_MODE=LIVE``)."""
+    browser: str = "playwright"
+    opencli_profile: str | None = None
+    ai_routing: bool = False
+    ai_env_file: Path | None = None
+    writer_model: str | None = None
+    rag_connection_file: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.rag_connection_file is not None and (
+            not self.ai_routing or not self.rag_connection_file.is_absolute()
+        ):
+            raise ConfigError("IMX_SERVICE_RAG_CONNECTION_FILE requires AI routing and an absolute path")
         if not is_loopback_host(self.host):
             raise ConfigError(f"refusing to bind a non-loopback address {self.host!r}")
         if not 0 <= self.port <= 65535:
@@ -94,6 +105,22 @@ class ServiceConfig:
         if mode not in ("TEST_ONLY", "LIVE"):
             raise ConfigError("IMX_SERVICE_APPLICATION_MODE must be TEST_ONLY or LIVE")
         object.__setattr__(self, "application_mode", mode)
+        if self.browser not in ("playwright", "opencli"):
+            raise ConfigError("IMX_SERVICE_BROWSER must be playwright or opencli")
+        if (self.opencli_profile is not None
+                and (not self.opencli_profile.strip() or self.browser != "opencli")):
+            raise ConfigError("IMX_SERVICE_OPENCLI_PROFILE requires browser opencli and a nonempty alias")
+        if self.ai_routing:
+            if self.ai_env_file is None or not self.ai_env_file.is_absolute():
+                raise ConfigError("IMX_SERVICE_AI_ROUTING requires an absolute IMX_SERVICE_AI_ENV_FILE")
+            if self.writer_model != "anthropic/claude-opus-5.5":
+                raise ConfigError("IMX_SERVICE_AI_ROUTING requires IMX_SERVICE_WRITER_MODEL=anthropic/claude-opus-5.5")
+        elif self.ai_env_file is not None or self.writer_model is not None:
+            raise ConfigError("AI env file and writer model require IMX_SERVICE_AI_ROUTING=1")
+
+    @property
+    def dynamic_runtime(self) -> bool:
+        return self.browser == "opencli" or self.ai_routing
 
     @property
     def candidate_id(self) -> str:
@@ -112,6 +139,10 @@ class ServiceConfig:
             max_upload = int(env.get("IMX_SERVICE_MAX_UPLOAD", str(DEFAULT_MAX_UPLOAD)))
         except ValueError as exc:
             raise ConfigError("IMX_SERVICE_PORT and IMX_SERVICE_MAX_UPLOAD must be integers") from exc
+        ai_flag = env.get("IMX_SERVICE_AI_ROUTING", "0").strip().lower()
+        if ai_flag not in ("0", "false", "no", "off", "1", "true", "yes", "on"):
+            raise ConfigError("IMX_SERVICE_AI_ROUTING must be an explicit boolean (0 or 1)")
+        ai_file = env.get("IMX_SERVICE_AI_ENV_FILE", "").strip()
         return cls(
             paths=LocalPaths.from_env(env),
             allowed_origin=origin,
@@ -121,4 +152,11 @@ class ServiceConfig:
             headless=env.get("IMX_SERVICE_HEADLESS", "0") in ("1", "true", "yes"),
             max_upload_bytes=max_upload,
             application_mode=env.get("IMX_SERVICE_APPLICATION_MODE", "TEST_ONLY"),
+            browser=env.get("IMX_SERVICE_BROWSER", "playwright").strip().lower(),
+            opencli_profile=env.get("IMX_SERVICE_OPENCLI_PROFILE", "").strip() or None,
+            ai_routing=ai_flag in ("1", "true", "yes", "on"),
+            ai_env_file=Path(ai_file).expanduser() if ai_file else None,
+            writer_model=env.get("IMX_SERVICE_WRITER_MODEL", "").strip() or None,
+            rag_connection_file=(Path(env["IMX_SERVICE_RAG_CONNECTION_FILE"]).expanduser()
+                                 if env.get("IMX_SERVICE_RAG_CONNECTION_FILE", "").strip() else None),
         )

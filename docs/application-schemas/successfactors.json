@@ -1,0 +1,663 @@
+{
+ "backend": "successfactors",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:48:59Z",
+ "author": "fable_c (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-c, profile jgd7jms9, tab 7FCCB0F4D469158007256D923413E9E2",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script. Read-only observation: no submit, no typing, no upload, no account.",
+ "coverage": {
+  "inventory_density": 4,
+  "employers_in_inventory": 4,
+  "observed_examples": 4,
+  "fully_mapped_examples": 1,
+  "status": "partial",
+  "note": "Bausch + Lomb: full blank combined register+apply page mapped (all picklists opened except 3 dependent/disabled). Hexagon: tenant configured sign-in-first; Create-Account page viewed (no application questions before account). Ottobock: position filled. Farmers: /talentcommunity/apply deep link bounces to careers home without the posting-page referral; no posting URL in inventory."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "sf-01",
+   "url": "https://career5.successfactors.eu/sfcareer/jobreqcareer?company=Ottobock&jobId=7223",
+   "resolved_url": "https://jobs.ottobock.com/job/Austin-Performance-Marketing-Manager-TX-78758/1110682801/",
+   "page_title": "Performance Marketing Manager Job Details | ottobock",
+   "captured_at_utc": "2026-09-23T23:44:05.496Z",
+   "hosting_mode": "career_site_builder_employer_domain",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/sf-01-ottobock.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-01-ottobock.state.txt"
+   ],
+   "option_lists_captured": "n/a",
+   "steps_visited": [
+    "posting (redirected)"
+   ],
+   "gated_steps_not_visited": [
+    "all"
+   ],
+   "classification_note": "Page text: 'Sorry, this position has been filled.' No Apply control. Closed."
+  },
+  {
+   "sample_id": "sf-02",
+   "url": "https://careers.bauschlomb.com/job/USA-Remote-Senior-Manager%2C-Retail-Media-and-Commerce-Activation/1372507457/",
+   "resolved_url": "https://career2.successfactors.eu/careers?company=BauschLomb",
+   "page_title": "Career Opportunities: Senior Manager, Retail Media and Commerce Activation (19707)",
+   "captured_at_utc": "2026-09-23T23:45:18.956Z",
+   "hosting_mode": "career_site_builder -> SF Recruiting 'Career Opportunities' apply page (career2.successfactors.eu)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/sf-02-bausch.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-02-bausch.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/sf-02-bausch.options.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-02-bausch.picklists.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-02-bausch.options.jsonl",
+    ".imx/dynamic-applications/fable_c/evidence/sf-02-bausch.pagetext-tail.txt"
+   ],
+   "option_lists_captured": "11 of 14 picklists opened and read (options.jsonl). NOT captured: 'If no, what is your ethnicity?' (21:_input), 'Source' (37:_input), 'State / Province' (13:_input) — dependent on a parent selection, menu did not open; their jsonl rows contain stale aggregated text and must be ignored. Native selects (country code, country of residence) read inline.",
+   "steps_visited": [
+    "posting (cookie banner accepted)",
+    "clicked 'Apply now »' -> combined Create-Account + Application single page (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "'Upload a Resume' dialog (not opened)",
+    "data-privacy statement dialog (link only)",
+    "post-'Apply' (never clicked; that button both creates the account and submits)"
+   ],
+   "classification_note": "Direct navigation to /talentcommunity/apply/<id>/ without posting referral bounced to careers home; must click Apply from the posting page."
+  },
+  {
+   "sample_id": "sf-03",
+   "url": "https://careers-manufacturing.hexagon.com/job/Alpharetta-Digital-Marketing-Lead-GA-30022/3179-en_GB/",
+   "resolved_url": "https://career74.sapsf.eu/careers?company=hexagon",
+   "page_title": "Career Opportunities: Sign In",
+   "captured_at_utc": "2026-09-23T23:47:11.566Z",
+   "hosting_mode": "career_site_builder -> SF Recruiting sign-in-first (career74.sapsf.eu)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/sf-03-hexagon.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-03-hexagon.state.txt",
+    ".imx/dynamic-applications/fable_c/evidence/sf-03-hexagon-register.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-03-hexagon-register.state.txt"
+   ],
+   "option_lists_captured": "country select on Create Account page read inline (246)",
+   "steps_visited": [
+    "posting",
+    "clicked 'Apply now' -> Sign In page",
+    "clicked 'Create an account' -> Create an Account page (viewed only)"
+   ],
+   "gated_steps_not_visited": [
+    "Create Account submit (never clicked)",
+    "application questions (behind account)"
+   ],
+   "classification_note": "Tenant setting 'sign in before apply' — application questions not observable without an account."
+  },
+  {
+   "sample_id": "sf-04",
+   "url": "https://jobs.farmersinsurance.com/talentcommunity/apply/1371768957/?locale=en_US",
+   "resolved_url": "https://jobs.farmersinsurance.com/",
+   "page_title": "(careers home)",
+   "captured_at_utc": "2026-09-23T23:47:29.968Z",
+   "hosting_mode": "career_site_builder_employer_domain",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_c/evidence/sf-04-farmers.controls.json",
+    ".imx/dynamic-applications/fable_c/evidence/sf-04-farmers.state.txt"
+   ],
+   "option_lists_captured": "n/a",
+   "steps_visited": [
+    "deep link bounced to careers home"
+   ],
+   "gated_steps_not_visited": [
+    "all"
+   ],
+   "classification_note": "Inventory holds only the apply deep link; without the posting page the apply route is not reachable. Banner: system upgrade notice. Human action: open the job posting on jobs.farmersinsurance.com and click Apply."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "entry": "Career Site Builder posting page (employer domain, /job/<slug>/<id>/) with <a> 'Apply now »' href /talentcommunity/apply/<id>/?locale=xx_XX; a cookie-consent banner ('Accept All Cookies') overlays first. The link redirects to the SF Recruiting host (careerN.successfactors.eu | careerN.sapsf.eu | careerN.successfactors.com) /careers?company=<tenant>.",
+   "variant_A_combined": "(sf-02) Single page titled 'Career Opportunities: <job> (<req id>)' with form#careerform POST: 'Already a registered user? Please sign in' link; Resume / CV (required, 'Upload a Resume' opens a dialog) + Cover Letter (optional dialog); account fields (email, retype email, password, retype password with policy text); name; phone (country code select + number); profile fields (preferred name, home phone, country picklist, address lines, city, state picklist, zip); VOLUNTARY PRE-EMPLOYMENT INFORMATION (Hispanic/Latino, ethnicity, gender, veteran); APPLICATION QUESTIONS (employer custom); Country/Region of Residence select; notification checkboxes (pre-checked ON); Terms of Use 'Read and accept the data privacy statement' required link; single 'Apply' submit.",
+   "variant_B_signin_first": "(sf-03) 'Career Opportunities: Sign In' page (Email/Password/Sign In, 'Forgot your password?', 'Create an account') -> 'Career Opportunities: Create an Account' (email x2, password x2, first/last name, country of residence, 2 notification checkboxes unchecked, 'Create Account'). Questions only after account.",
+   "captcha": "sf-02: an input#recaptcha_response_field_signin_modal exists inside the hidden sign-in modal only; no captcha on the apply form itself. sf-03: none.",
+   "iframes": "only the employer cookie-manager iframe"
+  },
+  "control_families": {
+   "account_text": "input[name=fbclc_userName|fbclc_emailConf] maxlength 99; input[type=password][name=fbclc_pwd|fbclc_pwdConf] with aria-describedby policy text (14–18 chars at Bausch; 8–18 at Hexagon); label text 'Email Address: *' etc. (colon + space + asterisk).",
+   "name_text": "input[name=fbclc_fName|fbclc_mName|fbclc_lName] maxlength 40",
+   "phone": "select[name=fbclc_ituCode] 'Country/Region Code:*' (64 options 'Name (+code)') + input[name=fbclc_phoneNumber]",
+   "profile_text": "input[name^=tor__f…] maxlength 100 with <label>; e.g. tor__fpreferredName, tor__faddress, tor__fcity, tor__fzip, tor__fsalaryExpect",
+   "paginated_picklist": "input#<n>:_input.paginatedPicklistContainer with aria-label = question, aria-owns '<n+1>:_listSelect'. Options are NOT in the DOM until the input is clicked/focused; then a listbox of li/option appears with 'No Selection' first. Dependent picklists (ethnicity after Hispanic, Source after 'how did you hear', State after Country) stay closed/disabled until the parent has a value. Required = aria-required=true.",
+   "native_select": "select[name=fbclc_country] 'Country/Region of Residence:*'",
+   "file": "'Upload a Resume' / 'Attach a Cover Letter' buttons open a dialog; no input[type=file] in the base DOM. Accepted: DOCX, PDF, Image and Text (MSG, PPT, XLS rejected).",
+   "checkbox": "input[type=checkbox][name=fbclc_emailEnabled|fbclc_campaignEmailEnabled] (marketing/notification; pre-checked on Bausch, unchecked on Hexagon)",
+   "consent_link": "a#dataPrivacyId 'Read and accept the data privacy statement.' aria-label ends 'Required' — opens a statement dialog that must be accepted before Apply",
+   "submit": "button[type=submit]#fbqa_apply text 'Apply' (variant A) — creates the account AND submits the application in one action"
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "* Resume / CV — Upload a Resume",
+    "control": "file(dialog)",
+    "required": true,
+    "accept": "DOCX, PDF, Image, Text",
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter — Attach a Cover Letter",
+    "control": "file(dialog)",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email Address: *",
+    "control": "account_text",
+    "required": true,
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ]
+   },
+   {
+    "key": "email_confirm",
+    "label_seen": "Retype Email Address: *",
+    "control": "account_text",
+    "required": true,
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ]
+   },
+   {
+    "key": "password",
+    "label_seen": "Choose Password: * / Retype Password: *",
+    "control": "password",
+    "required": true,
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ],
+    "note": "policy text via aria-describedby; account creation — route to human"
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name: *",
+    "control": "name_text",
+    "required": true,
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ]
+   },
+   {
+    "key": "middle_name",
+    "label_seen": "Middle Name",
+    "control": "name_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name: *",
+    "control": "name_text",
+    "required": true,
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ]
+   },
+   {
+    "key": "phone_country_code",
+    "label_seen": "Country/Region Code:*",
+    "control": "native_select",
+    "required": true,
+    "options_total": 63,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone Number:*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred First Name",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "home_phone",
+    "label_seen": "Home Phone",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "country",
+    "label_seen": "Country*",
+    "control": "paginated_picklist",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ],
+    "note": "options not read (not opened)"
+   },
+   {
+    "key": "address_line1",
+    "label_seen": "Address Line 1*",
+    "control": "profile_text",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "address_line2",
+    "label_seen": "Address Line 2",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "city",
+    "label_seen": "City*",
+    "control": "profile_text",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "state",
+    "label_seen": "State / Province*",
+    "control": "paginated_picklist (dependent on Country)",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ],
+    "note": "menu did not open while Country empty"
+   },
+   {
+    "key": "postal_code",
+    "label_seen": "Zip / Postal Code*",
+    "control": "profile_text",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "eeo_hispanic",
+    "label_seen": "Are you Hispanic or Latino?",
+    "control": "paginated_picklist",
+    "required": false,
+    "options": [
+     "Yes",
+     "No",
+     "I don't wish to answer"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "eeo_ethnicity",
+    "label_seen": "If no, what is your ethnicity?*",
+    "control": "paginated_picklist (dependent)",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ],
+    "note": "options not observed; DOM-required although conditionally applicable"
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "Gender*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "Female",
+     "Male",
+     "Others",
+     "Undeclared",
+     "Unknown"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "eeo_veteran",
+    "label_seen": "Veteran Status*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "I don't wish to answer",
+     "I am not a protected veteran",
+     "I identify as one or more of the classifications of protected veteran listed above"
+    ],
+    "seen_in": [
+     "sf-02"
+    ],
+    "note": "long Section 4212 explanatory text precedes it (see pagetext-tail)"
+   },
+   {
+    "key": "source_how_heard",
+    "label_seen": "How did you hear about this opportunity?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "Agency",
+     "College/University Career Center",
+     "Company Website",
+     "Current Employee",
+     "Employee Referral",
+     "Government Unemployment Office",
+     "Internal",
+     "Internet Job Board",
+     "Job Fair/Recruiting Event",
+     "Newspaper Ad",
+     "Other",
+     "Professional Association/Order",
+     "Rehire",
+     "Social Network",
+     "Temp/Contractor"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "source_detail",
+    "label_seen": "Source",
+    "control": "paginated_picklist (dependent)",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "source_other_text",
+    "label_seen": "If source is not listed, enter here",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "referral_name",
+    "label_seen": "If referred by a current Bausch + Lomb (or any affiliates) employee, please provide the employee's name",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "work_authorization",
+    "label_seen": "Are you legally authorized to work in the United States?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "permanent_right_to_work",
+    "label_seen": "If so, do you have the permanent right to work in the United States? (i.e. Are you a U.S. Citizen, U.S. national, permanent resident, temporary resident, asylee, or refugee status)*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "sponsorship",
+    "label_seen": "Do you now or will you in the future require company sponsorship for a visa or employment authorization?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "visa_status_text",
+    "label_seen": "If yes, please indicate Visa status",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "relatives_employed",
+    "label_seen": "Do you have relatives employed by Bausch + Lomb or any affiliates?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ],
+    "followups": [
+     "If yes, what department and what country?",
+     "If yes, what is the relationship"
+    ]
+   },
+   {
+    "key": "former_employee",
+    "label_seen": "Have you been employed with Bausch + Lomb or any affiliates before?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ],
+    "followups": [
+     "If yes above, please give the date(s), location(s), position(s) held"
+    ]
+   },
+   {
+    "key": "confidentiality_agreement",
+    "label_seen": "Are you under any confidentiality agreement with a former or current employer?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "non_compete",
+    "label_seen": "Are you under any non-compete agreement with a former or current employer?*",
+    "control": "paginated_picklist",
+    "required": true,
+    "options": [
+     "No",
+     "Yes"
+    ],
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "salary_expectations",
+    "label_seen": "What are your salary expectations? (include currency)",
+    "control": "profile_text (maxlength 100)",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ]
+   },
+   {
+    "key": "esignature_full_name",
+    "label_seen": "Full Name (followed by read-only 'Current Date')",
+    "control": "profile_text",
+    "required": false,
+    "seen_in": [
+     "sf-02"
+    ],
+    "note": "attestation-style e-signature; route to human"
+   },
+   {
+    "key": "country_of_residence",
+    "label_seen": "Country/Region of Residence:*",
+    "control": "native_select",
+    "required": true,
+    "options_total": "63 (Bausch) / 245 (Hexagon)",
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ]
+   },
+   {
+    "key": "notification_optin",
+    "label_seen": "Notification: Receive new job posting notifications / Hear more about career opportunities",
+    "control": "checkbox",
+    "required": false,
+    "seen_in": [
+     "sf-02",
+     "sf-03"
+    ],
+    "note": "pre-checked at Bausch; marketing opt-in — human decision"
+   },
+   {
+    "key": "data_privacy_consent",
+    "label_seen": "Terms of Use:* Read and accept the data privacy statement.",
+    "control": "consent_link(dialog)",
+    "required": true,
+    "seen_in": [
+     "sf-02"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "posting",
+    "identity_hint": "employer domain /job/<slug>/<id>/ + <a> 'Apply now' href /talentcommunity/apply/",
+    "observed": true
+   },
+   {
+    "step": "cookie_banner",
+    "identity_hint": "'Accept All Cookies' button",
+    "observed": true
+   },
+   {
+    "step": "combined_register_apply",
+    "identity_hint": "title 'Career Opportunities: <job> (<id>)' + form#careerform + button#fbqa_apply",
+    "observed": true
+   },
+   {
+    "step": "signin_first",
+    "identity_hint": "title 'Career Opportunities: Sign In' / 'Create an Account'",
+    "observed": true,
+    "HUMAN_ACTION": "account creation"
+   },
+   {
+    "step": "final_submit",
+    "control": "button#fbqa_apply 'Apply' (variant A) — also creates the account",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "parent picklist empty",
+    "effect": "dependent picklists (ethnicity, Source, State/Province) do not open",
+    "observed": true
+   },
+   {
+    "trigger": "'If yes…' free-text follow-ups",
+    "effect": "always visible; semantically conditional on the preceding Yes/No picklist",
+    "observed": true
+   }
+  ],
+  "blockers": [
+   {
+    "type": "auth",
+    "detail": "Variant B tenants require sign-in/account before questions (Hexagon). Variant A creates the account at Apply time (password fields on the blank form).",
+    "observed": true
+   },
+   {
+    "type": "deep_link",
+    "detail": "/talentcommunity/apply/<id>/ bounces to careers home without posting referral (Bausch, Farmers)",
+    "observed": true
+   },
+   {
+    "type": "closed",
+    "detail": "Ottobock filled",
+    "observed": true
+   },
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA field only inside sign-in modal; none seen on apply form",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Always enter via the posting page's Apply link; accept the cookie banner first or the click may be intercepted.",
+   "Picklist reading: focus+click input#<n>:_input, wait ~2s, read li/option under aria-owns target, Escape. Verify aria-expanded=true; a closed dependent list yields stale text from other lists.",
+   "Labels come from aria-label on the picklist input and <label> for tor__f* fields; required is aria-required or trailing '*'.",
+   "Resume upload only via dialog button, not a direct file input."
+  ]
+ },
+ "inferred": {
+  "confidence": "medium: one full form; custom APPLICATION QUESTIONS block is employer-specific; Career Site Builder + SF Recruiting layout is standard across tenants",
+  "not_observed": [
+   "Upload dialog internals",
+   "data privacy dialog text",
+   "post-Apply flow",
+   "questions behind sign-in-first tenants"
+  ]
+ },
+ "provider_hint": {
+  "vendor": "SAP SuccessFactors Recruiting (Career Site Builder front + careerN.successfactors.eu/.com or sapsf.eu apply host)",
+  "detect": "form#careerform, input[name^=fbclc_], input[name^=tor__f], paginatedPicklistContainer, title 'Career Opportunities:'",
+  "for_jev": "SuccessFactors: after cookie banner and Apply link, either (A) one long page that creates an account (email x2, password x2) AND asks the application: required resume via dialog, name, phone with country code, full address, voluntary EEO picklists (some tenants mark Gender/Veteran/Ethnicity required), custom yes/no picklists on work authorization, permanent right to work, sponsorship, relatives at company, former employment, confidentiality and non-compete agreements, plus free-text follow-ups, salary expectations with currency, an e-signature Full Name, marketing opt-ins pre-checked, and a required data-privacy acceptance; or (B) sign-in/create-account first with questions hidden. Runtime must stop before account creation/Apply."
+ },
+ "edge_cases": [
+  {
+   "case": "filled position",
+   "detail": "Career Site Builder shows 'Sorry, this position has been filled.' with no Apply control"
+  },
+  {
+   "case": "system upgrade banner",
+   "detail": "Farmers site shows scheduled maintenance banner"
+  }
+ ]
+}

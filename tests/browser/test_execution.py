@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 
 from interviewmaxxing_browser import (
+    ActionPolicy,
     AmbiguousAction,
     ConfirmationTie,
     PlaywrightSessionFactory,
@@ -46,6 +48,29 @@ def _evidence_files_exist(options: BrowserOptions, evidence: list[Any]) -> None:
             assert ref.path.startswith("app_test/")
             path = options.artifacts_root / ref.path
             assert path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == ref.sha256
+
+
+def test_preparation_browser_refuses_submit_even_with_permissive_factory_policy(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions
+) -> None:
+    async def scenario() -> None:
+        browser = await PlaywrightSessionFactory(
+            policy=ActionPolicy(automation_may_submit=True),
+        ).start(replace(options, allow_submission=False))
+        try:
+            page = await browser.open(server.url("/jobs/standard"))
+            packet = kit.build(page.form, {**kit.CORE, **kit.STANDARD}).packet
+            assert (await browser.fill(page.form, packet)).ok
+            review = await browser.prepare_review()
+            assert review.form.is_final_step is True and not review.form.page_errors
+            assert review.evidence
+            _evidence_files_exist(options, review.evidence)
+            assert not (await browser.submit()).dispatched
+            assert server.submissions()["accepted_count"] == 0
+            assert browser.page.url == page.observed_url
+        finally:
+            await browser.close()
+    kit.run(scenario())
 
 
 def test_standard_application_is_filled_submitted_and_confirmed(
@@ -228,6 +253,12 @@ def test_multistep_navigation_review_and_submit(kit: SimpleNamespace, server: An
             seen["blocked_nav"] = await browser.advance()
             # A site that skips browser validation rejects the step server-side instead.
             await browser.page.evaluate("() => { document.forms[0].noValidate = true; }")
+            # Changing validation constraints invalidates the previous fill even
+            # when the visible questions and their canonical fingerprint match.
+            with pytest.raises(ValueError, match="changed after filling"):
+                await browser.advance()
+            form = (await browser.inspect()).form
+            await browser.fill(form, kit.build(form, {"first_name": "Avery"}).packet)
             nav = await browser.advance()
             seen["rejected_nav"] = nav
             while True:

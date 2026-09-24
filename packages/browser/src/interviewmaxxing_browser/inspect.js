@@ -6,6 +6,7 @@
 // buttons; links; headings; status regions; structured data; CAPTCHA widgets.
 // All interpretation happens in Python (interviewmaxxing_browser.normalize).
 () => {
+  /* ARIA_HELPERS */
   const MAX_TEXT = 20000;
   const NATIVE = new Set(["INPUT", "SELECT", "TEXTAREA"]);
   const SKIP_TYPES = new Set(["hidden", "submit", "button", "reset", "image"]);
@@ -122,7 +123,7 @@
   }
   // Popups (listbox, menu) owned by a combobox belong to it.
   const ownedIds = new Set();
-  for (const w of customWidgets) {
+  for (const w of [...customWidgets, ...nativeControls.filter(el => el.getAttribute("role") === "combobox")]) {
     for (const attr of ["aria-controls", "aria-owns"]) {
       for (const id of (w.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) ownedIds.add(id);
     }
@@ -165,6 +166,8 @@
       const el = node;
       if (exclude.has(el)) return;
       if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "SELECT", "TEXTAREA", "INPUT", "OPTION", "BUTTON", "LEGEND", "LABEL"].includes(el.tagName)) return;
+      // Headings are section context (sectionContextOf), not the control's description.
+      if (el.matches('h1,h2,h3,h4,h5,h6,[role="heading"]')) return;
       if (el.getAttribute("aria-hidden") === "true" || el.hidden) return;
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return;
@@ -190,8 +193,61 @@
     const byLabelledby = byIds(g.getAttribute("aria-labelledby")).map((n) => textOf(n)).join(" ").trim();
     return [byLabelledby || (g.getAttribute("aria-label") || "").trim() || null, described(g)];
   };
+  const sectionContextOf = (el) => {
+    // Subject and timeframe may live in a section heading, while the control is
+    // simply labelled "Email" or "City". Only use scoped ancestor headings that
+    // precede this control; never borrow a neighbouring form/section's text.
+    const parts = [];
+    const boundary = el.form || el.closest("form") || document.body;
+    let child = el;
+    for (let parent = el.parentElement, depth = 0;
+         parent && parent !== document.body && depth < 12;
+         child = parent, parent = parent.parentElement, depth++) {
+      const preceding = [];
+      for (const sibling of parent.children) {
+        if (sibling === child) break;
+        if (visible(sibling) && sibling.matches('h1,h2,h3,h4,h5,h6,[role="heading"],legend')) {
+          const value = textOf(sibling).slice(0, 2000);
+          if (value) preceding.push(value);
+        }
+      }
+      if (preceding.length) parts.unshift(preceding[preceding.length - 1]);
+      if (parent.matches('section,[role="group"],[role="radiogroup"]')) {
+        const value = byIds(parent.getAttribute("aria-labelledby"))
+          .filter(visible).map(n => textOf(n)).join(" ") || parent.getAttribute("aria-label");
+        if (value) parts.unshift(value.slice(0, 2000));
+      }
+      if (parent === boundary) break;
+    }
+    return Array.from(new Set(parts)).slice(-6);
+  };
   const imgAlts = (container) =>
     container ? Array.from(container.querySelectorAll("img[alt]")).map((i) => i.alt).filter(Boolean) : [];
+  // The nearest previous sibling block with visible text, next to the control's own
+  // exclusive box (or its group's container). Stops at another field's block; skips
+  // headings (section context) and live regions. A question shown before an unlabeled control.
+  const precedingTextOf = (members, container) => {
+    let start = container;
+    if (!start) {
+      start = members[0];
+      while (start.parentElement && start.parentElement !== document.body && start.parentElement.tagName !== "FORM") {
+        const parent = start.parentElement;
+        let exclusive = true;
+        for (const f of fieldEls) if (f !== members[0] && parent.contains(f)) { exclusive = false; break; }
+        if (!exclusive) break;
+        start = parent;
+      }
+    }
+    for (let sib = start.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      if (!visible(sib)) continue;
+      if (sib.matches('script,style,template,button,label,legend,h1,h2,h3,h4,h5,h6,[role="heading"],[role="alert"],[role="status"],[aria-live]')) continue;
+      for (const f of fieldEls) if (sib.contains(f)) return "";
+      if (sib.querySelector("button, a[href]")) continue;
+      const t = textOf(sib);
+      if (t) return t.slice(0, 500);
+    }
+    return "";
+  };
 
   const describeNative = (el) => {
     const members = groupMembers(el);
@@ -227,6 +283,8 @@
       legend_described: legendDescribed,
       group_label: groupLabel,
       group_described: groupDescribed,
+      section_context: sectionContextOf(el),
+      preceding: precedingTextOf(members, container),
       adjacent,
       adjacent_errors: adjacentErrors,
       label_selector: el.labels && el.labels.length ? selectorFor(el.labels[0]) : null,
@@ -256,6 +314,7 @@
       image_alts: imgAlts(fs || container),
       form_index: formIndex(el),
       has_value: false,
+      aria: ariaObserve(el),
     };
   };
 
@@ -290,6 +349,8 @@
       legend_described: legendDescribed,
       group_label: null,
       group_described: [],
+      section_context: sectionContextOf(el),
+      preceding: precedingTextOf([el], container),
       adjacent,
       adjacent_errors: adjacentErrors,
       label_selector: null,
@@ -311,6 +372,7 @@
       image_alts: [],
       form_index: form ? forms.indexOf(form) : -1,
       has_value: hasValue,
+      aria: ariaObserve(el),
     };
   };
 
@@ -433,12 +495,18 @@
   const tokens = Array.from(document.querySelectorAll('[name="g-recaptcha-response"], [name="h-captcha-response"], [name="cf-turnstile-response"]'))
     .map((t) => ({ name: t.getAttribute("name"), filled: !!t.value }));
 
+  const bodyText = (document.body ? document.body.innerText || "" : "").slice(0, MAX_TEXT);
+  // Loading signals only delay readiness (bounded) for a page that does not classify yet.
+  const LOADING_TEXT = /\b(?:loading|fetching|please wait|one moment)\b/i;
+  const loadingIndicator = LOADING_TEXT.test(bodyText) ||
+    Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"]')).some(visible);
+
   return {
     url: location.href,
     title: document.title || "",
     headings,
     regions,
-    body_text: (document.body ? document.body.innerText || "" : "").slice(0, MAX_TEXT),
+    body_text: bodyText,
     record_members: recordMembers,
     confirmation_scopes: confirmationScopes.slice(0, 600),
     ld_json: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((s) => s.textContent || ""),
@@ -461,5 +529,6 @@
     captcha_frames: captchaFrames,
     captcha_tokens: tokens,
     captcha_widget: !!document.querySelector(".g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]"),
+    loading_indicator: loadingIndicator,
   };
 }

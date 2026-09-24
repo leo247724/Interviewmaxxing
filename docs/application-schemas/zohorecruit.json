@@ -1,0 +1,100 @@
+{
+ "backend": "zohorecruit",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "blocked_ui",
+ "status_reason": "The only apply control (\"I'm interested\", two copies) reported a successful click twice but produced no navigation, dialog, iframe, or new form in the owned background tab. The guessed /apply route returned \"Page not found\". No form was observed.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "zr-01",
+   "url": "https://myamazonguy.zohorecruit.com/jobs/Careers/770609000012738857/Head-of-Performance-Marketing",
+   "page_title": "My Amazon Guy - Head of Performance Marketing - Remote Job",
+   "captured_at_utc": "2026-09-23T23:57:02Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/zohorecruit-01-myamazonguy.controls.json",
+    ".imx/dynamic-applications/fable/evidence/zohorecruit-01-myamazonguy-form.controls.json"
+   ],
+   "steps_visited": [
+    "job page"
+   ],
+   "gated_steps_not_visited": [
+    "apply form (not reachable in this run)"
+   ],
+   "attempts": [
+    "click 'I'm interested' ref 6 (semantic locator ambiguous, 2 copies) + 6s wait",
+    "retry click ref 1 after reload + 6s wait",
+    "open …/Head-of-Performance-Marketing/apply?source=CareerSite → Page not found"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "job_page": "sections Job Information / Job Description / Requirements / Benefits; cookie banner (Accept all / Decline non-essential / Manage cookies); two 'I'm interested' buttons (top + bottom), share links",
+   "apply_control": "button 'I'm interested' with no href"
+  },
+  "control_families": {},
+  "field_patterns": [],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "observed": true
+   },
+   {
+    "step": "apply_form",
+    "observed": false,
+    "gated_reason": "click did not render anything observable; possibly opens a new window or requires cookie acceptance/foreground focus"
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "expected_control_unverified": "Zoho Recruit 'Submit' at end of its apply form"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "ui_no_response",
+    "detail": "'I'm interested' produced no observable change in a background tab (2 attempts)",
+    "observed": true
+   },
+   {
+    "type": "cookie_banner",
+    "detail": "present; may intercept",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Treat as needing a foreground tab or cookie acceptance before the apply drawer renders; re-observe with a fresh snapshot after accepting cookies (non-sensitive action)."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "job page",
+   "I'm interested → apply form (name, email, phone, resume, LinkedIn, custom questions, consent)",
+   "Submit",
+   "confirmation"
+  ],
+  "zoho_form_inference": "Zoho Recruit career-site apply forms usually render in the same page under the job or at …/jobs/Careers/<id>/<slug>/apply, with a resume-parse autofill and reCAPTCHA."
+ },
+ "provider_hint": {
+  "for_jev": "Zoho Recruit: apply form not observed. Do not assume fields. Request re-observation after cookie acceptance in a foreground tab.",
+  "exact_copy_facts": [],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [],
+  "requires_human_input": [
+   "human to open the apply form once so it can be observed"
+  ]
+ },
+ "edge_cases": [
+  "Semantic locator for 'I'm interested' is ambiguous (2 matches); use ref from find with visible=true."
+ ]
+}

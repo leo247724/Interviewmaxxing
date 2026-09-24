@@ -1,0 +1,161 @@
+{
+ "backend": "trinethire",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:11:21Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab E5F0FF755A27795EB7679FECDE900939",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "singleton_coverage": true,
+  "note": "Singleton (LawLytics, TriNet Hire). The job page renders the blank application form inline (form#new_applicant, method post). No login, no captcha, no required attributes; the page shows no asterisks either, so required-ness is unknown until server validation."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "tn-01",
+   "listing_id": "lst_3113094444a55d930227a9e1fba0d159",
+   "url": "https://app.trinethire.com/companies/28896/jobs/32970-demand-generation-director",
+   "company": "LawLytics",
+   "page_title": "Demand Generation Director",
+   "captured_at_utc": "2026-09-24T00:06:41Z",
+   "status": "observed",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ],
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/trinethire-01-lawlytics.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/trinethire-01-lawlytics.state.txt"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "form_id_seen": "new_applicant",
+   "form_action": "/companies/<id>-<slug>/jobs/<id>-<slug> (post)",
+   "section_heading": "Apply for this job",
+   "submit": "input[type=submit]#apply_candidate value 'Submit Application'"
+  },
+  "control_families": {
+   "text": "Rails-style names applicant[first_name|last_name|email|address|city|state|postal|phone|linkedin]; labels via <label for> for most, placeholders (Address/City/State/Postal) for the location sub-fields.",
+   "file": "applicant_resumes[resume] ('Resume' / 'Attach resume'), attach_other_files[attach_another_file_1] ('Attach another file' + hidden 'Add another' button), applicant_cover_letters[cover_letter] ('Attach your Cover Letter - or:'); no accept attribute.",
+   "textarea": "applicant[cover_letter] 'Cut and Paste your Cover Letter below:'",
+   "linkedin_dialog": "hidden bootbox dialog with input name=linkedin 'Linkedin url' and format help 'Should be {http://www.linkedin.com/pub/[member-name/]x/y/z} or {http://www.linkedin.com/in/string}'"
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First name"
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last name"
+   },
+   {
+    "key": "email",
+    "label_seen": "Email address"
+   },
+   {
+    "key": "location",
+    "labels": [
+     "Location",
+     "Address",
+     "City",
+     "State",
+     "Postal (max 50)"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone number",
+    "maxlength": 50
+   },
+   {
+    "key": "resume",
+    "control": "file"
+   },
+   {
+    "key": "other_file",
+    "control": "file",
+    "repeatable": "'Add another'"
+   },
+   {
+    "key": "linkedin",
+    "label_seen": "What is your Linkedin Profile URL?",
+    "maxlength": 190
+   },
+   {
+    "key": "cover_letter",
+    "controls": [
+     "file 'Attach Cover Letter'",
+     "textarea 'Cut and Paste your Cover Letter below:'"
+    ],
+    "classification": "free_text_narrative (writer) or file",
+    "narrative_benchmark": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "host app.trinethire.com, form#new_applicant, heading 'Apply for this job'",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "control": "input[type=submit] 'Submit Application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Add another' (hidden until first attachment)",
+    "effect": "additional attach_other_files inputs",
+    "observed": "button present, hidden"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "none",
+    "detail": "No auth, no captcha, no required markers observed.",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "No required attributes or asterisks: treat name/email/resume as required by convention and expect server-side validation errors after submit (not observed).",
+   "Location is split into four inputs identified only by placeholder text.",
+   "No employer custom questions on this listing."
+  ]
+ },
+ "inferred": {
+  "validation_unverified": "Which fields are mandatory is unknown; TriNet Hire typically requires name, email and resume."
+ },
+ "provider_hint": {
+  "for_jev": "trinethire: single page, Rails-named fields, labels via for/placeholder. fact_copy for name/email/phone/address/linkedin; file for resume/cover letter; the cover-letter textarea is free_text_narrative -> writer. Stop at 'Submit Application'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "address, city, state, postal",
+   "phone",
+   "linkedin_url"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "cover letter (textarea)"
+  ],
+  "requires_human_input": [
+   "resume/attachment selection"
+  ]
+ },
+ "edge_cases": [
+  "Cover letter can be given either as a file or pasted text; do not fill both.",
+  "The hidden LinkedIn dialog duplicates the LinkedIn field with a different name (linkedin vs applicant[linkedin]); map only the visible one."
+ ]
+}

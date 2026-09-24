@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fast Job Batches"
+  short_description: "Reduce repeated work and browser contention during job search"
+  default_prompt: "Use $find-jobs-fast-batches to improve throughput without weakening job review."

@@ -52,8 +52,10 @@ SIGNIN_EMAIL = "avery.quill@example.test"
 SIGNIN_PASSWORD = "fixture-password-123"
 CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 HONEYPOT_FIELD = "website_hp"
+CAPTCHA_WIDGET_FIELD = "g-recaptcha-response"
+CONSENT_COOKIE = "bwa_consent"
 INTERNAL_FIELDS = frozenset(
-    {"resume_upload_id", "captcha_token", "captcha_answer", HONEYPOT_FIELD}
+    {"resume_upload_id", "captcha_token", "captcha_answer", CAPTCHA_WIDGET_FIELD, HONEYPOT_FIELD}
 )
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 US_PHONE_RE = re.compile(r"^\d{10}$")
@@ -298,6 +300,12 @@ class Job:
     """Adds a visually hidden anti-spam input; any value is rejected."""
     generic_thanks: bool = False
     """Acceptance returns a bare "Thank you!" page with no job or reference."""
+    captcha_widget: bool = False
+    """Embeds an invisible reCAPTCHA-style badge; only its token is checked, on submit."""
+    spa_loading: bool = False
+    """Page script renders the form 1.5 s after load, behind a loading indicator."""
+    cookie_banner: bool = False
+    """A modal cookie-consent dialog covers the page (main is inert) until dismissed."""
 
     @property
     def multistep(self) -> bool:
@@ -325,6 +333,9 @@ class Job:
             "visible_confirmation": self.visible_confirmation,
             "honeypot": self.honeypot,
             "generic_thanks": self.generic_thanks,
+            "captcha_widget": self.captcha_widget,
+            "spa_loading": self.spa_loading,
+            "cookie_banner": self.cookie_banner,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -337,6 +348,23 @@ def _single(*fields: Field) -> tuple[Step, ...]:
     return (Step("Application", fields),)
 
 
+STANDARD_FIELDS = _single(
+    FIRST_NAME,
+    LAST_NAME,
+    EMAIL,
+    PHONE,
+    LINKEDIN,
+    RESUME,
+    WORK_AUTHORIZATION,
+    YEARS_EXPERIENCE,
+    SPONSORSHIP,
+    SKILLS,
+    WORK_ARRANGEMENTS,
+    OPEN_TO_RELOCATION,
+    WHY_BRAMBLEWAY,
+)
+
+
 JOBS: dict[str, Job] = {
     job.slug: job
     for job in (
@@ -347,21 +375,7 @@ JOBS: dict[str, Job] = {
             "Engineering",
             "Denver, CO (Hybrid)",
             "Single-page form with every native control type; accepted with a visible confirmation.",
-            _single(
-                FIRST_NAME,
-                LAST_NAME,
-                EMAIL,
-                PHONE,
-                LINKEDIN,
-                RESUME,
-                WORK_AUTHORIZATION,
-                YEARS_EXPERIENCE,
-                SPONSORSHIP,
-                SKILLS,
-                WORK_ARRANGEMENTS,
-                OPEN_TO_RELOCATION,
-                WHY_BRAMBLEWAY,
-            ),
+            STANDARD_FIELDS,
         ),
         Job(
             "multistep",
@@ -474,6 +488,39 @@ JOBS: dict[str, Job] = {
             "confirmation. A test-only reveal later exposes the receipt on the status page.",
             _single(*CORE_FIELDS),
             visible_confirmation=False,
+        ),
+        Job(
+            "captcha-widget",
+            "BWA-FE-112",
+            "Frontend Platform Engineer",
+            "Engineering",
+            "Remote (US)",
+            "The standard form plus an invisible reCAPTCHA-style badge; the POST is accepted "
+            "only with a non-empty g-recaptcha-response token.",
+            STANDARD_FIELDS,
+            captcha_widget=True,
+        ),
+        Job(
+            "spa-loading",
+            "BWA-DE-113",
+            "Data Platform Engineer",
+            "Engineering",
+            "Denver, CO (Hybrid)",
+            "The standard form is injected by page script 1.5 s after load, behind a "
+            "\"Fetching application form\" indicator.",
+            STANDARD_FIELDS,
+            spa_loading=True,
+        ),
+        Job(
+            "cookie-banner",
+            "BWA-AE-114",
+            "Analytics Platform Engineer",
+            "Data",
+            "Remote (US)",
+            "The standard form under a modal cookie-consent dialog (Cookies settings, Accept "
+            "all, Decline all) that must be dismissed before the form can be used.",
+            STANDARD_FIELDS,
+            cookie_banner=True,
         ),
     )
 }
@@ -926,7 +973,9 @@ dl.review dd{margin:0}
 """
 
 
-def page(title: str, body: str, head_extra: str = "") -> str:
+def page(
+    title: str, body: str, head_extra: str = "", *, main_attrs: str = "", after_main: str = ""
+) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -938,9 +987,10 @@ def page(title: str, body: str, head_extra: str = "") -> str:
 </head>
 <body>
 <header class="site"><a href="/">{COMPANY} Careers</a></header>
-<main id="main">
+<main id="main"{main_attrs}>
 {body}
 </main>
+{after_main}
 <footer class="site">Fictional employer for local software testing. Applications here are not sent to anyone.</footer>
 </body>
 </html>
@@ -1148,6 +1198,72 @@ def render_captcha(token: str, error: str | None) -> str:
     )
 
 
+def render_captcha_widget(error: str | None) -> str:
+    """An invisible reCAPTCHA-style badge: the sitekey container, a small badge iframe
+    and the hidden token textarea the real widget fills. Nothing is solved on the page;
+    the server checks only that the token is non-empty when the form is posted."""
+    err = (
+        f'<p class="error" id="{CAPTCHA_WIDGET_FIELD}-error"><span class="visually-hidden">Error: '
+        f"</span>{esc(error)}</p>"
+        if error
+        else ""
+    )
+    return (
+        '<div class="captcha-widget">'
+        f'<label for="{CAPTCHA_WIDGET_FIELD}" hidden>reCAPTCHA response</label>'
+        '<div class="g-recaptcha" data-sitekey="fixture-site-key" data-size="invisible"></div>'
+        f'<textarea id="{CAPTCHA_WIDGET_FIELD}" name="{CAPTCHA_WIDGET_FIELD}" '
+        'style="display:none" required></textarea>'
+        '<iframe src="/captcha/widget.html" title="reCAPTCHA" width="256" height="60" '
+        'style="position:fixed;right:1rem;bottom:1rem;border:0"></iframe>'
+        f"{err}</div>"
+    )
+
+
+def render_delayed(form_html: str) -> str:
+    """An SPA-style page: a loading indicator first, the form injected by page script
+    1.5 s later (no network involved)."""
+    return (
+        '<p id="application-loading" aria-busy="true">Fetching application form</p>'
+        f'<template id="application-template">{form_html}</template>'
+        "<script>setTimeout(function () {"
+        'var loading = document.getElementById("application-loading");'
+        'var template = document.getElementById("application-template");'
+        "loading.replaceWith(template.content.cloneNode(true));"
+        "template.remove();"
+        "}, 1500);</script>"
+    )
+
+
+def render_cookie_banner() -> str:
+    """A modal consent dialog over the whole viewport. The page's ``main`` is inert and
+    aria-hidden while it is shown; accepting or declining removes it, restores ``main``
+    and sets the consent cookie so later visits show no banner."""
+    return (
+        '<div id="cookie-banner" role="dialog" aria-modal="true" aria-labelledby="cookie-title" '
+        'style="position:fixed;inset:0;z-index:1000;background:rgba(29,35,48,.6);display:flex;'
+        'align-items:flex-end;justify-content:center">'
+        '<div style="background:#fff;padding:1rem 1.5rem;margin:1rem;max-width:40rem;border-radius:6px">'
+        '<h2 id="cookie-title">This website uses cookies</h2>'
+        "<p>We use cookies to remember your preferences and to measure how the careers site "
+        "is used.</p>"
+        '<button type="button" id="cookie-settings">Cookies settings</button> '
+        '<button type="button" id="cookie-accept">Accept all</button> '
+        '<button type="button" id="cookie-decline">Decline all</button>'
+        "</div></div>"
+        "<script>(function () {"
+        "function consent(choice) {"
+        f'document.cookie = "{CONSENT_COOKIE}=" + choice + "; path=/; max-age=86400";'
+        'document.getElementById("cookie-banner").remove();'
+        'var main = document.getElementById("main");'
+        'main.removeAttribute("inert"); main.removeAttribute("aria-hidden");'
+        "}"
+        'document.getElementById("cookie-accept").addEventListener("click", function () { consent("accepted"); });'
+        'document.getElementById("cookie-decline").addEventListener("click", function () { consent("declined"); });'
+        "})();</script>"
+    )
+
+
 def captcha_svg(answer: str) -> str:
     glyphs = []
     for i, ch in enumerate(answer):
@@ -1203,6 +1319,13 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/login", "GET", "get_login"),
         (r"/login", "POST", "post_login"),
         (r"/captcha/(?P<token>cap_\d{6})\.svg", "GET", "get_captcha_svg"),
+        (r"/captcha/widget\.html", "GET", "get_captcha_widget"),
+        (r"/closed", "GET", "get_closed"),
+        (r"/postings/with-select", "GET", "get_posting_with_select"),
+        (r"/forms/unlabeled-custom-questions", "GET", "get_unlabeled_custom_questions"),
+        (r"/forms/choices-without-values", "GET", "get_choices_without_values"),
+        (r"/postings/apply-wording", "GET", "get_apply_wording_posting"),
+        (r"/postings/go-apply", "POST", "post_go_apply"),
         (r"/__test__/health", "GET", "test_health"),
         (r"/__test__/jobs", "GET", "test_jobs"),
         (r"/__test__/submissions", "GET", "test_submissions"),
@@ -1353,6 +1476,14 @@ class Handler(BaseHTTPRequestHandler):
     def _redirect_to_login(self, job: Job) -> None:
         self._redirect(f"/login?next={quote(f'/jobs/{job.slug}/apply')}")
 
+    def _consented(self) -> bool:
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return False
+        morsel = cookie.get(CONSENT_COOKIE)
+        return bool(morsel and morsel.value in ("accepted", "declined"))
+
     # public pages
     def get_index(self) -> None:
         items = "".join(
@@ -1444,6 +1575,8 @@ class Handler(BaseHTTPRequestHandler):
                 errors["captcha_answer"] = captcha_error
         if job.honeypot and (form.get(HONEYPOT_FIELD) or [""])[0].strip():
             errors[HONEYPOT_FIELD] = "Your submission was flagged as automated."
+        if job.captcha_widget and not (form.get(CAPTCHA_WIDGET_FIELD) or [""])[0].strip():
+            errors[CAPTCHA_WIDGET_FIELD] = "Please complete the CAPTCHA."
         if errors:
             self.store.add_rejection(job, errors)
             self._render_single(
@@ -1488,6 +1621,8 @@ class Handler(BaseHTTPRequestHandler):
         entries = _summary_entries(job.fields, errors)
         if captcha_error:
             entries.append(("f-captcha_answer", "Characters shown in the image", captcha_error))
+        if errors.get(CAPTCHA_WIDGET_FIELD):
+            entries.append((CAPTCHA_WIDGET_FIELD, "CAPTCHA", errors[CAPTCHA_WIDGET_FIELD]))
         fields_html = "".join(
             render_field(f, values, errors.get(f.name), retained.get(f.name)) for f in job.fields
         )
@@ -1502,17 +1637,23 @@ class Handler(BaseHTTPRequestHandler):
                 f'<input type="text" id="f-{HONEYPOT_FIELD}" name="{HONEYPOT_FIELD}" '
                 'tabindex="-1" autocomplete="off"></div>'
             )
-        body = (
-            _job_heading(job)
-            + render_error_summary(entries)
-            + f'<form method="post" action="/jobs/{job.slug}/apply" enctype="multipart/form-data" '
+        if job.captcha_widget:
+            fields_html += render_captcha_widget(errors.get(CAPTCHA_WIDGET_FIELD))
+        form_html = (
+            f'<form method="post" action="/jobs/{job.slug}/apply" enctype="multipart/form-data" '
             'aria-labelledby="form-title"><h2 id="form-title">Application form</h2>'
             '<p class="hint">Fields marked with * are required.</p>'
             + fields_html
             + '<button type="submit">Submit application</button></form>'
         )
+        if job.spa_loading and status == HTTPStatus.OK:
+            form_html = render_delayed(form_html)
+        body = _job_heading(job) + render_error_summary(entries) + form_html
+        main_attrs, after_main = "", ""
+        if job.cookie_banner and not self._consented():
+            main_attrs, after_main = ' inert aria-hidden="true"', render_cookie_banner()
         title = f"Apply: {job.title}" if not errors else f"Error: Apply: {job.title}"
-        self._send_html(status, page(title, body))
+        self._send_html(status, page(title, body, main_attrs=main_attrs, after_main=after_main))
 
     # multistep
     def _draft(self, job: Job, draft_id: str) -> dict[str, Any]:
@@ -1782,6 +1923,167 @@ class Handler(BaseHTTPRequestHandler):
         if challenge is None:
             raise HttpError(HTTPStatus.NOT_FOUND)
         self._send(HTTPStatus.OK, captcha_svg(challenge["answer"]).encode(), "image/svg+xml")
+
+    def get_posting_with_select(self) -> None:
+        # The `standard` posting the way some ATS vendors render it: "Apply now" buttons
+        # that navigate by script, a share widget and a language select, all outside
+        # any form. It is a job description, not an application form.
+        job = JOBS["standard"]
+        apply_button = (
+            '<button type="button" class="apply" '
+            f"onclick=\"location.href='/jobs/{job.slug}/apply'\">Apply now</button>"
+        )
+        body = (
+            _job_heading(job)
+            + f"<p>{apply_button}</p>"
+            + f"<h2>About the role</h2><p>{COMPANY} builds forecasting tools for regional "
+            f"logistics networks. As a {esc(job.title)} you will design, build and operate "
+            "production systems with a small, collaborative group.</p>"
+            '<div class="share" aria-label="Share this job"><span>Share:</span> '
+            '<button type="button">Share</button> <button type="button">Copy link</button></div>'
+            + f"<p>{apply_button}</p>"
+            '<div class="locale"><label for="locale">Language</label>'
+            '<select id="locale" name="locale">'
+            '<option value="en-US" selected>United States (English)</option>'
+            '<option value="fr-CA">Canada (Français)</option></select></div>'
+        )
+        self._send_html(HTTPStatus.OK, page(job.title, body))
+
+    def get_unlabeled_custom_questions(self) -> None:
+        # Custom questions the way some ATS vendors render them: no <label>, the visible
+        # question in a preceding block ending with a required marker, and inputs named
+        # after an opaque card id. Only the two contact fields carry a required attribute.
+        card = "cards[2a269d5e-6f40-4ed1-ae97-47dc53f45611]"
+
+        def yes_no(name: str) -> str:
+            return (
+                f'<label><input type="radio" name="{name}" value="yes">YES</label>'
+                f'<label><input type="radio" name="{name}" value="no">NO</label>'
+            )
+
+        def question(text: str, control: str) -> str:
+            return (
+                '<li class="application-question custom-question">'
+                f'<div class="application-label">{esc(text)} \u2731</div>'
+                f'<div class="application-field">{control}</div></li>'
+            )
+
+        body = (
+            "<h1>Customer Success Manager</h1>"
+            f'<p class="meta">{COMPANY} \u00b7 Customer \u00b7 Remote (US) \u00b7 Job ID BWA-CSM-115</p>'
+            '<form method="post" action="/forms/unlabeled-custom-questions" '
+            'aria-labelledby="form-title"><h2 id="form-title">Application</h2>'
+            '<div class="field"><label for="f-full_name">Full name <span aria-hidden="true">*</span>'
+            '</label><input type="text" id="f-full_name" name="name" required autocomplete="name"></div>'
+            '<div class="field"><label for="f-email">Email <span aria-hidden="true">*</span></label>'
+            '<input type="email" id="f-email" name="email" required autocomplete="email"></div>'
+            '<ul class="custom-questions">'
+            + question("How Did You Hear About Us?", f'<input type="text" name="{card}[field1]">')
+            + question("What is your desired start date?", f'<input type="text" name="{card}[field2]">')
+            + question(
+                "Are you willing to relocate?",
+                f'<select name="{card}[field3]"><option value="">Select...</option>'
+                '<option value="yes">Yes</option><option value="no">No</option></select>',
+            )
+            # Yes/no radio groups the way some ATS vendors render them: no fieldset or
+            # legend, each radio labelled only by its option text, the question in a
+            # block before the group with a leading required marker, no required attribute.
+            + '<li class="application-question">'
+            '<div class="application-label">* Do you currently live in the United States?</div>'
+            f'<div class="application-field">{yes_no("CA_9001")}</div></li>'
+            + '</ul><div class="flat-questions">'
+            '<p class="application-label">* Are you legally authorized to work in the United States?</p>'
+            + yes_no("CA_9002")
+            + '<p class="application-label">* Will you now or in the future require sponsorship?</p>'
+            + yes_no("CA_9003")
+            + '</div><button type="submit">Submit application</button></form>'
+        )
+        self._send_html(HTTPStatus.OK, page("Apply: Customer Success Manager", body))
+
+    def get_choices_without_values(self) -> None:
+        # Radio groups whose members share an opaque name and carry no value attribute
+        # (the label is posted separately by page script); the question is a block
+        # before the group. The second group's inputs have ids, the first's do not.
+        years = "1b346bc6-2f2e-4c37-9d0f-3a1b2c4d5e6f_b888cd37-7b1a-4b6e-8f2a-9c0d1e2f3a4b"
+        platform = "1b346bc6-2f2e-4c37-9d0f-3a1b2c4d5e6f_c9a1e0d2-3f4b-4c5d-8e6f-7a8b9c0d1e2f"
+
+        def group(question: str, name: str, labels: list[tuple[str, str]]) -> str:
+            radios = "".join(
+                f'<label><input type="radio" name="{name}" value=""{f" id={esc(i)}" if i else ""}>'
+                f"{esc(label)}</label>"
+                for i, label in labels
+            )
+            return (
+                f'<div class="choice-question"><div class="choice-label">{esc(question)}</div>'
+                f'<div class="choice-options">{radios}</div></div>'
+            )
+
+        body = (
+            "<h1>Marketing Operations Lead</h1>"
+            f'<p class="meta">{COMPANY} \u00b7 Marketing \u00b7 Remote (US) \u00b7 Job ID BWA-MKT-116</p>'
+            '<form method="post" action="/forms/choices-without-values" aria-labelledby="form-title">'
+            '<h2 id="form-title">Application</h2>'
+            + group("How many years of marketing experience do you have?", years,
+                    [("", "Less than 3 years"), ("", "3\u20135 years"), ("", "6\u20138 years"),
+                     ("", "9+ years")])
+            + group("Which marketing automation platform have you used most?", platform,
+                    [("opt-hubspot", "HubSpot"), ("opt-marketo", "Marketo"),
+                     ("opt-pardot", "Pardot / Account Engagement"), ("opt-other", "Other"),
+                     ("opt-none", "None")])
+            + '<button type="submit">Submit application</button></form>'
+        )
+        self._send_html(HTTPStatus.OK, page("Apply: Marketing Operations Lead", body))
+
+    def get_apply_wording_posting(self) -> None:
+        # The `standard` posting with one apply control of the requested wording and
+        # kind: a link, a script-navigating button, or a submit button in a form with
+        # no fillable field (a navigation form posting to /postings/go-apply).
+        text = (self.query.get("text") or ["Apply now"])[0][:80]
+        kind = (self.query.get("kind") or ["link"])[0]
+        job = JOBS["standard"]
+        if kind == "button":
+            control = (
+                f"<button type=\"button\" onclick=\"location.href='/jobs/{job.slug}/apply'\">"
+                f"{esc(text)}</button>"
+            )
+        elif kind == "form":
+            control = (
+                '<form method="post" action="/postings/go-apply">'
+                f'<input type="hidden" name="job" value="{job.slug}">'
+                f'<button type="submit">{esc(text)}</button></form>'
+            )
+        else:
+            control = f'<a class="button" href="/jobs/{job.slug}/apply">{esc(text)}</a>'
+        body = (
+            _job_heading(job)
+            + f"<h2>About the role</h2><p>{COMPANY} builds forecasting tools for regional "
+            "logistics networks.</p>"
+            + f"<div>{control}</div>"
+        )
+        self._send_html(HTTPStatus.OK, page(job.title, body))
+
+    def post_go_apply(self) -> None:
+        form, _ = self._read_form()
+        job = self._job((form.get("job") or ["standard"])[0])
+        self._redirect(f"/jobs/{job.slug}/apply")
+
+    def get_captcha_widget(self) -> None:
+        # The badge iframe of the fixture widget: a tiny static document.
+        body = (
+            '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>reCAPTCHA</title>'
+            '</head><body style="margin:0;background:#f9f9f9;font:12px system-ui">'
+            '<p style="margin:.5rem">Fixture badge</p></body></html>'
+        )
+        self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def get_closed(self) -> None:
+        # A job that is gone, worded the way some ATS vendors word it (HTTP 200).
+        body = (
+            "<h1>Careers</h1>"
+            "<p>We're sorry, that job does not exist or is not currently active.</p>"
+            '<p><a href="/">See all open roles</a></p>'
+        )
+        self._send_html(HTTPStatus.OK, page("Job not available", body))
 
     # test-only API: assertions and fixture control, never product runtime
     def test_health(self) -> None:

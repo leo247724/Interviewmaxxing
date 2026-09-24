@@ -1,0 +1,488 @@
+{
+ "backend": "paylocity",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:00:44Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed_partial",
+ "coverage": {
+  "inventory_density": 15,
+  "observed_examples": 3,
+  "fully_mapped_examples": 0,
+  "employers_distinct": 3,
+  "note": "Paylocity is a multi-step wizard (Step 1 of 4/5/6 depending on employer). Only Step 1 (contact/profile) was observed blank; later steps are gated behind required Step-1 fields and 'Next Step' and were NOT visited. react-widgets dropdown option lists could not be opened by click/keyboard/picker through the bridge (aria-expanded stayed false), so their options are unobserved."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "pl-01",
+   "url": "https://recruiting.paylocity.com/Recruiting/Jobs/Details/4512227",
+   "resolved_url": "https://recruiting.paylocity.com/Recruiting/Jobs/Apply/4512227",
+   "page_title": "GRID ALTERNATIVES, Careers Page - Director of Client Acquisition & Marketing Application",
+   "captured_at_utc": "2026-09-24T00:00:26Z",
+   "hosting_mode": "native_recruiting_paylocity",
+   "entry": "Details page has two anchor 'Apply' links -> /Recruiting/Jobs/Apply/<id>; navigated to that href",
+   "steps_total_seen": "Step 1 of 5",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-01-grid.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-01-grid.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-01-grid.options.jsonl",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-01-grid-education.controls.json"
+   ],
+   "option_lists_captured": "radiogroup 'How did you hear about us?' (static). NOT captured: SMS permission, Desired Salary Type (react-widgets dropdownlist). 'Add Education' button clicked once; no new inputs appeared within 2s.",
+   "steps_visited": [
+    "job details page",
+    "Step 1 blank"
+   ],
+   "gated_steps_not_visited": [
+    "Steps 2-5 (behind required fields + 'Next Step'; likely Education/Work History/Questions/Review — UNVERIFIED)"
+   ],
+   "note": "re-observed with extractor v4"
+  },
+  {
+   "sample_id": "pl-02",
+   "url": "https://recruiting.paylocity.com/Recruiting/Jobs/Details/4464941",
+   "resolved_url": "https://recruiting.paylocity.com/Recruiting/Jobs/Apply/4464941",
+   "page_title": "Vanco Payment Solutions, Inc. - Director, Demand Generation Application",
+   "captured_at_utc": "2026-09-23T23:50:06Z",
+   "hosting_mode": "native_recruiting_paylocity",
+   "entry": "direct /Recruiting/Jobs/Apply/<id>",
+   "steps_total_seen": "Step 1 of 6",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-02-vanco.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-02-vanco.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-02-vanco.options.jsonl"
+   ],
+   "option_lists_captured": "radiogroup source list (static). NOT captured: 4 dropdownlists (SMS, salary type, applied before, worked before).",
+   "steps_visited": [
+    "Step 1 blank (includes an inline Work History block with one empty entry)"
+   ],
+   "gated_steps_not_visited": [
+    "Steps 2-6"
+   ]
+  },
+  {
+   "sample_id": "pl-03",
+   "url": "https://recruiting.paylocity.com/recruiting/jobs/Details/4457872/Brkthru/",
+   "resolved_url": "https://recruiting.paylocity.com/Recruiting/Jobs/Apply/4457872",
+   "page_title": "Brkthru - Senior SEM Specialist Application",
+   "captured_at_utc": "2026-09-23T23:50:53Z",
+   "hosting_mode": "native_recruiting_paylocity",
+   "entry": "direct /Recruiting/Jobs/Apply/<id>",
+   "steps_total_seen": "Step 1 of 4",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-03-brkthru.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-03-brkthru.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/paylocity-03-brkthru.dropdown-probe.json"
+   ],
+   "option_lists_captured": "employer-custom required source radiogroup (10 options, static). Dropdownlists unobserved; probe shows aria-owns='info.smsOptedIn__listbox' and no popup rendered.",
+   "steps_visited": [
+    "Step 1 blank"
+   ],
+   "gated_steps_not_visited": [
+    "Steps 2-4"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": false,
+   "wizard": "'Step N of M' text (M=4,5,6 seen) under the job title; button#btn-submit 'Next Step' advances",
+   "url_pattern": "https://recruiting.paylocity.com/Recruiting/Jobs/Details/<id>[/<Company>/]  ->  /Recruiting/Jobs/Apply/<id>",
+   "form_element": "NO <form> element; controls are loose React inputs (form_index null)",
+   "captcha_widget": false,
+   "auth_required": false,
+   "cookie_banner": "OneTrust 'Privacy Preference Center' present",
+   "apply_with_resume_block": "top section 'Apply with resume' — file input#btn-forceResume + button 'Upload Resume' (auto-fill); second file input#btn-resume + 'Select Resume to Upload' with checkbox#useAttachedResumeToFillOutApplication 'Fill out application with my resume' checked by default"
+  },
+  "control_families": {
+   "text": "input[type=text] id='info.<camelCase>' (contains a dot; CSS must use [id='info.email']); label is a preceding text node/div reading '<Label> (required)' — required NOT set as attribute for info.* fields.",
+   "address_block": "input ids public-site-address-{country,address-1,address-2,city,county,zip,us-state} with native required=true; label text 'Country United States' / 'State Select a state' indicate combo-like pickers; address-1 has role=combobox (autocomplete). Same block repeats per work-history entry as public-candidate-work-history-address-<n>-*.",
+   "dropdownlist": "div[role=combobox].rw-dropdownlist (react-widgets) id='info.<field>' with data-for='<full question text>' and aria-owns='<id>__listbox'; child span.rw-select 'open dropdown'. Displayed value '--' when blank. Options could NOT be observed via bridge click/ArrowDown/picker click.",
+   "radiogroup": "div[role=radiogroup] wrapping native input[type=radio] name='info.howDidYouHearAboutUs' with label text = value; employer-custom option sets; pl-03 marked aria-required=true.",
+   "file": "input[type=file] accept=.doc,.docx,.pdf for resume/cover letter; #btn-additionalFiles (no accept) 'Upload Additional Files' + 'Select File(s)'. DISAMBIGUATION (re-observed 2026-09-24T00:00:26Z, extractor v4): #btn-forceResume = AUTOFILL PARSER (section heading 'Apply with resume', text \"Upload your resume and we'll automatically fill out your application\", button 'Upload Resume'); #btn-resume = RESUME ATTACHMENT (nearby text 'Fill out application with my resume', button 'Select Resume to Upload'); #btn-coverLetter = COVER LETTER (heading 'Upload Cover Letter'). Do not send a resume to #btn-forceResume unless auto-parse is intended.",
+   "date": "text inputs with placeholder MM/DD/YYYY (Available to Start) or MM/YYYY (work history dates).",
+   "textarea": "workHistory.responsibilities.<n>",
+   "tags": "input#info.skills placeholder 'Type a skill and press enter' (chip/tag input).",
+   "next": "button#btn-submit type=submit text 'Next Step' (advances wizard; not the final submit)."
+  },
+  "field_patterns": [
+   {
+    "key": "resume",
+    "label_seen": "Apply with resume / Fill out application with my resume",
+    "control": "file(.doc,.docx,.pdf)",
+    "required": "unmarked",
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name (required)",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name (required)",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "middle_name",
+    "label_seen": "Middle Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "preferred_name",
+    "label_seen": "Preferred First Name",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email Address (required)",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "mobile_phone",
+    "label_seen": "Mobile Number",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "home_phone",
+    "label_seen": "Home Phone Number",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "applied_before",
+    "label_seen": "Have you applied for a job with us before?",
+    "control": "dropdownlist",
+    "required": false,
+    "options": "UNOBSERVED (likely Yes/No)",
+    "seen_in": [
+     "pl-02",
+     "pl-03"
+    ],
+    "classification": "fact_copy"
+   },
+   {
+    "key": "sms_permission",
+    "label_seen": "We may use SMS during the hiring process. Do you give us permission to text you? (required)",
+    "control": "dropdownlist",
+    "required": true,
+    "options": "UNOBSERVED (likely Yes/No)",
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn Profile URL",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "address",
+    "label_seen": "Country / Address Line 1 / Address Line 2(optional) / City / County / State / Zip Code",
+    "control": "address_block",
+    "required": true,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "available_to_start",
+    "label_seen": "Available to Start",
+    "control": "date MM/DD/YYYY",
+    "required": false,
+    "seen_in": [
+     "pl-01"
+    ]
+   },
+   {
+    "key": "desired_salary_type",
+    "label_seen": "Desired Salary Type (required on pl-02)",
+    "control": "dropdownlist",
+    "required": "varies",
+    "options": "UNOBSERVED (likely Hourly/Salary)",
+    "seen_in": [
+     "pl-01",
+     "pl-02"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "salary_range",
+    "label_seen": "Salary Range (required on pl-02)",
+    "control": "two text inputs info.minimumDesiredSalary / info.maximumDesiredSalary",
+    "required": "varies",
+    "seen_in": [
+     "pl-01",
+     "pl-02"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "source",
+    "label_seen": "How did you hear about us?(optional)",
+    "control": "radiogroup",
+    "required": "pl-03 required",
+    "options": {
+     "pl-01": [
+      "Online Job Board",
+      "Company Website",
+      "Friend or Family Member",
+      "Current Employee",
+      "Other"
+     ],
+     "pl-02": [
+      "Online Job Board",
+      "Company Website",
+      "Friend or Family Member",
+      "Current Employee",
+      "Job fair or Recruiting event",
+      "Agency",
+      "Other"
+     ],
+     "pl-03": [
+      "Brkthru Website",
+      "LinkedIn Job Opening",
+      "LinkedIn Post/Marketing",
+      "Career Fair or Networking Event",
+      "Indeed",
+      "Google Job Board",
+      "Other Career Site Job Board",
+      "Word of Mouth",
+      "Referred by Current Employee",
+      "Other"
+     ]
+    },
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "referred_by",
+    "label_seen": "Referred by",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "worked_before",
+    "label_seen": "Have you worked with us before? (required on pl-02)",
+    "control": "dropdownlist",
+    "required": "varies",
+    "options": "UNOBSERVED",
+    "seen_in": [
+     "pl-02",
+     "pl-03"
+    ],
+    "classification": "fact_copy"
+   },
+   {
+    "key": "skills",
+    "label_seen": "Skills",
+    "control": "tag input",
+    "required": false,
+    "seen_in": [
+     "pl-01"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Upload Cover Letter",
+    "control": "file(.doc,.docx,.pdf)",
+    "required": false,
+    "seen_in": [
+     "pl-01",
+     "pl-02",
+     "pl-03"
+    ]
+   },
+   {
+    "key": "additional_files",
+    "label_seen": "Upload Additional Files",
+    "control": "file (multi)",
+    "required": false,
+    "seen_in": [
+     "pl-02"
+    ]
+   },
+   {
+    "key": "work_history[]",
+    "label_seen": "Company Name (required), Position (required), Company Website, Responsibilities, address block, Start Date MM/YYYY, End Date MM/YYYY, Reason for Leaving, Currently Working Here",
+    "control": "repeating block workHistory.*.<n>",
+    "required": "company+position when a block exists",
+    "seen_in": [
+     "pl-02"
+    ],
+    "classification": "fact_copy from resume"
+   },
+   {
+    "key": "education[]",
+    "label_seen": "Education History — 'Add Education' button",
+    "control": "repeating block (fields UNOBSERVED; button click revealed nothing within 2s)",
+    "required": false,
+    "seen_in": [
+     "pl-01"
+    ]
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "details_page",
+    "identity_hint": "URL /Recruiting/Jobs/Details/<id>; anchors text 'Apply' href /Recruiting/Jobs/Apply/<id>",
+    "observed": true
+   },
+   {
+    "step": "step_1_profile",
+    "identity_hint": "text 'Step 1 of N'; heading 'Apply with resume'; document.title ends with ' Application'",
+    "observed": true
+   },
+   {
+    "step": "next_step",
+    "control": "button#btn-submit 'Next Step'",
+    "observed": true,
+    "never_actuated": true,
+    "note": "advances wizard; client-side validation expected"
+   },
+   {
+    "step": "steps_2_to_N",
+    "observed": false,
+    "gated_by": "required Step-1 fields",
+    "expected_unverified": [
+     "Education/Work history",
+     "Employer questions",
+     "EEO/voluntary",
+     "Review & Submit"
+    ]
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "note": "final control text UNVERIFIED (never reached)"
+   }
+  ],
+  "conditional_patterns": [
+   "'Fill out application with my resume' checkbox (default checked) implies resume parse may prefill Step 1 fields.",
+   "'Referred by' text follows the source radiogroup; likely relevant only for 'Current Employee'/'Referred' choices."
+  ],
+  "blockers": [
+   {
+    "type": "dropdown_options_unobserved",
+    "detail": "react-widgets DropdownList popups never rendered under bridge click / focus+ArrowDown / picker-span click (aria-expanded stayed 'false'). Human or a different event strategy (mousedown/pointerdown) needed."
+   },
+   {
+    "type": "wizard_gated",
+    "detail": "Steps 2..N require completing Step 1 required fields; not attempted (no typing)."
+   }
+  ],
+  "runtime_observations": [
+   "Required-ness for info.* fields is only in the visible label suffix '(required)'; address inputs use native required=true.",
+   "Ids contain dots (info.firstName) — escape in CSS.",
+   "data-for attribute on dropdownlists holds the full question text; use as label source."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "Details -> Apply",
+   "Step 1 profile",
+   "Step 2 education/work history",
+   "Step 3 questions",
+   "Step 4 EEO/voluntary",
+   "Step N review + submit"
+  ],
+  "dropdown_option_inference": "SMS permission / applied before / worked before are almost certainly Yes/No; Desired Salary Type likely 'Annual/Hourly'. UNVERIFIED.",
+  "eeo_inference": "Paylocity commonly places EEO/veteran/disability self-ID on a later step. UNVERIFIED."
+ },
+ "provider_hint": {
+  "for_jev": "Paylocity: multi-step wizard, no <form>. Step 1 = contact + address + salary + source + optional work history. Labels are plain text with '(required)' suffix; dropdown labels are in data-for. Dropdown option lists are unknown to the runtime until a human opens them — do not guess; request observation. 'Next Step' is not the final submit; the final control was never observed, so treat every submit-looking button after Step 1 as a stop boundary.",
+  "exact_copy_facts": [
+   "first/middle/last/preferred name",
+   "email",
+   "mobile/home phone",
+   "country/address/city/county/state/zip",
+   "linkedin_url",
+   "available_to_start",
+   "work history entries from resume (company, title, dates, responsibilities)"
+  ],
+  "option_choice_from_verified_facts": [
+   "applied before yes/no",
+   "worked here before yes/no",
+   "source of hire (user preference)"
+  ],
+  "escalate_to_writer_opus": [
+   "work history 'Responsibilities' if the user wants richer text than the resume bullets"
+  ],
+  "requires_human_input": [
+   "SMS permission",
+   "desired salary type + range",
+   "resume/cover letter/additional file uploads",
+   "all later-step questions (unobserved)",
+   "dropdown selections until options are observed"
+  ]
+ },
+ "edge_cases": [
+  "Inventory contains both /Recruiting/Jobs/Details/<id> and lowercase /recruiting/jobs/Details/<id>/<Company>/ plus a direct /Apply/<id>/<slug> URL and a 2000recruiting.paylocity.com host — same template expected, unverified for the 2000 host.",
+  "Step counts differ per employer (4/5/6)."
+ ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Save Reviewed Job Batches"
+  short_description: "Save reviewed jobs with bounded, recoverable batches"
+  default_prompt: "Use $find-jobs-save-batches to save these reviewed candidates and reconcile the verified count."

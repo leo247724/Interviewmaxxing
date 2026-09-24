@@ -1,0 +1,209 @@
+{
+ "backend": "attrax",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:12:18Z",
+ "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab E5F0FF755A27795EB7679FECDE900939",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed_redirect",
+ "coverage": {
+  "inventory_density": 1,
+  "attempted_samples": 1,
+  "observed_examples": 1,
+  "singleton_coverage": true,
+  "note": "Singleton (Wise, wise.jobs on Attrax). The Attrax job page has no form; its 'Apply' links (/Workflow?workflowId=...&vacancyId=4069) redirect to SmartRecruiters 'Easy apply' (jobs.smartrecruiters.com/oneclick-ui/...). The SmartRecruiters form is built from web components (shadow DOM); a shadow-DOM walker captured the blank fields. Backend actually observed: smartrecruiters (mapped by worker fable_b); fields recorded here as evidence of the redirect destination."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "ax-01",
+   "listing_id": "lst_47ff97d3bd1c8de275bf594795729b9e",
+   "url": "https://wise.jobs/job/regional-marketing-lead-canada-in-austin-jid-4069",
+   "company": "Wise",
+   "page_title": "Regional Marketing Lead, Canada job in Austin | Wise",
+   "captured_at_utc": "2026-09-24T00:06:49Z",
+   "status": "redirect_observed",
+   "apply_href": "/Workflow?workflowId=e845dd41-c192-48c4-80f2-85eafdf6039b&vacancyId=4069",
+   "resolved_url": "https://jobs.smartrecruiters.com/oneclick-ui/company/Wise/publication/7f403a51-67f1-40b8-bcd9-57b5ffa76e77?dcr_ci=Wise&sid=...",
+   "resolved_captured_at_utc": "2026-09-24T00:08:14Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_d/evidence/attrax-01-wise.controls.json",
+    ".imx/dynamic-applications/fable_d/evidence/attrax-01-wise.state.txt",
+    ".imx/dynamic-applications/fable_d/evidence/attrax-01-wise-workflow.controls.json (top document: 1 control)",
+    ".imx/dynamic-applications/fable_d/evidence/attrax-01-wise-workflow-shadow.controls.json (shadow DOM walk)"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "attrax_job_page": {
+    "forms": 0,
+    "controls": "site keyword search only",
+    "captcha": "reCAPTCHA anchor iframe present on the Attrax page",
+    "apply_entry": "three 'Apply' anchors to /Workflow?workflowId=<guid>&vacancyId=<id> (same-tab)"
+   },
+   "smartrecruiters_easy_apply": {
+    "single_page_form": true,
+    "title": "Easy apply - <role> - Wise",
+    "sections": [
+     "autocomplete: 'Apply With Indeed' button",
+     "Personal information ('Fields marked with * are required')",
+     "Experience (Add)",
+     "Education (Add)",
+     "Your Profiles",
+     "Resume *",
+     "Message to the Hiring Team",
+     "Next"
+    ],
+    "shadow_hosts": [
+     "spl-form-field",
+     "spl-input",
+     "spl-autocomplete",
+     "spl-phone-field",
+     "spl-dropzone",
+     "spl-textarea",
+     "spl-button"
+    ]
+   }
+  },
+  "control_families": {
+   "shadow_input": "<spl-input> hosting <input> with ids like first-name-input; label text inside the same shadow root ends with '*' when required and required attr is set.",
+   "phone": "<spl-phone-field>: country/region search input ('Search by country/region or code') + tel input 'Phone number'.",
+   "city_autocomplete": "<spl-autocomplete> 'City*' text input (typeahead).",
+   "dropzone": "<spl-dropzone> file input 'Choose a file or drop it here' with a very long accept list (documents, images, audio, video, calendar files); appears twice (resume autocomplete at top and 'Resume *' section).",
+   "textarea": "hiring-manager-message-input 'Let the company know about your interest working there' (section 'Message to the Hiring Team').",
+   "advance": "'Next' button text present (inside spl-button shadow); further steps not observed."
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label": "First name*",
+    "required": true
+   },
+   {
+    "key": "last_name",
+    "label": "Last name*",
+    "required": true
+   },
+   {
+    "key": "email",
+    "label": "Email*",
+    "required": true
+   },
+   {
+    "key": "confirm_email",
+    "label": "Confirm your email*",
+    "required": true
+   },
+   {
+    "key": "city",
+    "label": "City*",
+    "required": true,
+    "control": "autocomplete"
+   },
+   {
+    "key": "phone",
+    "label": "Phone number",
+    "control": "phone (country search + tel)"
+   },
+   {
+    "key": "profiles",
+    "labels": [
+     "LinkedIn",
+     "Facebook",
+     "X (fka Twitter)",
+     "Website"
+    ]
+   },
+   {
+    "key": "resume",
+    "label": "Resume *",
+    "control": "dropzone file"
+   },
+   {
+    "key": "experience/education",
+    "control": "'Add' repeaters (sub-form not opened)"
+   },
+   {
+    "key": "message_to_hiring_team",
+    "label": "Let the company know about your interest working there",
+    "control": "textarea",
+    "classification": "free_text_narrative",
+    "narrative_benchmark": true
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "attrax_job_page",
+    "observed": true
+   },
+   {
+    "step": "smartrecruiters_easy_apply_page1",
+    "observed": true,
+    "advance_control": "'Next'"
+   },
+   {
+    "step": "later_steps",
+    "observed": false,
+    "gated_by": "page 1 required fields"
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true
+   }
+  ],
+  "conditional_patterns": [
+   {
+    "trigger": "'Apply With Indeed'",
+    "effect": "autocomplete from Indeed profile (OAuth) \u2014 never used",
+    "observed": "button"
+   }
+  ],
+  "blockers": [
+   {
+    "type": "none_on_page1",
+    "detail": "No login required for page 1; later pages unobserved.",
+    "observed": true
+   },
+   {
+    "type": "tooling",
+    "detail": "Form is invisible to light-DOM extractors (0 inputs); shadow-DOM traversal is required.",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Backend must be re-derived after the Workflow redirect: URL bucket 'attrax' rendered a SmartRecruiters form.",
+   "OpenCLI state/eval on the top document sees only the 'Apply With Indeed' button; use a shadow-aware walker (evidence file shows the shape).",
+   "Two identical file inputs exist; the top one is the 'autocomplete from resume' helper, the lower one is the required Resume field."
+  ]
+ },
+ "inferred": {
+  "later_pages_unverified": "SmartRecruiters one-click flows usually add screening questions and a privacy consent before submit."
+ },
+ "provider_hint": {
+  "for_jev": "attrax: job page only; follow the Workflow 'Apply' link and re-classify (smartrecruiters observed). On the SmartRecruiters page map shadow-DOM fields by their label text; fact_copy name/email/confirm email/city/phone/links; file resume; message to hiring team -> writer. Never submit.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email (twice)",
+   "city",
+   "phone",
+   "linkedin/facebook/x/website"
+  ],
+  "option_choice_from_verified_facts": [
+   "phone country/region"
+  ],
+  "escalate_to_writer_opus": [
+   "Let the company know about your interest working there"
+  ],
+  "requires_human_input": [
+   "resume file",
+   "Indeed autocomplete (never)",
+   "later-step consents"
+  ]
+ },
+ "edge_cases": [
+  "Attrax pages embed reCAPTCHA even though the application happens off-site.",
+  "The accept list of the SmartRecruiters dropzone includes .mp3/.mp4/.png etc.; the runtime should still only offer the resume PDF."
+ ],
+ "actual_observed_backend": "smartrecruiters (Easy apply one-click UI) after Attrax Workflow redirect"
+}

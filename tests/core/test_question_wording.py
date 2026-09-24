@@ -148,3 +148,15 @@ def test_label_only_fields_are_unchanged(mock_form, mock_packet):
     assert [m.label for m in mock_packet.missing_inputs] == [
         mock_form.field(m.field_id).label for m in mock_packet.missing_inputs
     ]
+
+
+def test_section_context_is_model_context_not_question_identity() -> None:
+    from interviewmaxxing_core import ApplicationField, ControlType
+
+    bare = ApplicationField(id="work_auth", label="Are you legally authorized to work in the United States?",
+                            control_type=ControlType.TEXT, selector="#work_auth")
+    sectioned = bare.model_copy(update={"section_context": ["Application form", "Eligibility"]})
+    assert sectioned.section_context == ["Application form", "Eligibility"]
+    assert sectioned.fingerprint == bare.fingerprint
+    assert sectioned.question_text == bare.question_text
+    assert "Application form" not in sectioned.question_text

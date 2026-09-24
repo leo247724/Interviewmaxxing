@@ -39,6 +39,7 @@ class MockServer:
     """``scripts/mock_ats.py`` as a separate process (never the in-process class)."""
 
     def __init__(self, state_dir: Path) -> None:
+        self.state_dir = state_dir
         ready = state_dir.parent / "mock-ready.json"
         self.proc = subprocess.Popen(
             [sys.executable, str(MOCK_ATS), "--state-dir", str(state_dir),
@@ -71,6 +72,13 @@ class MockServer:
 
     def submissions(self, job: str) -> dict[str, Any]:
         return self.get(f"/__test__/submissions?job_id={job}")  # type: ignore[no-any-return]
+
+    def drafts(self, job: str) -> list[dict[str, Any]]:
+        """The multistep drafts the mock saved for ``job`` (its ``state.json`` is
+        rewritten atomically after every step): what a prepare-only run actually
+        sent before stopping at the review step."""
+        state = json.loads((self.state_dir / "state.json").read_text())
+        return [d for d in state["drafts"].values() if d["job_id"] == job]
 
     def stop(self) -> None:
         if self.proc.poll() is None:
@@ -170,3 +178,26 @@ class Cli:
             fh.write(f"$ interviewmaxxing {' '.join(args)}\n[exit {proc.returncode}]\n"
                      f"{proc.stdout}\n{proc.stderr}\n")
         return result
+
+
+# --- reading the CLI's persisted record --------------------------------------------
+
+PREPARED = "Prepared to the final review step."
+"""How every prepare-only run that reaches the final step reports itself."""
+
+
+def events(cli: Cli, app_id: str) -> list[dict[str, Any]]:
+    """``events APP --json``: the application's persisted event log, in order."""
+    result = cli("events", app_id, "--json")
+    assert result.code == 0, result.stderr
+    return result.json()  # type: ignore[no-any-return]
+
+
+def event_names(cli: Cli, app_id: str) -> list[str]:
+    return [e["event"] for e in events(cli, app_id)]
+
+
+def preparation_ready(cli: Cli, app_id: str) -> list[dict[str, Any]]:
+    """The metadata of every ``preparation.ready`` event (one per run that reached
+    the final review step), oldest first. Empty when the application never got there."""
+    return [e["metadata"] for e in events(cli, app_id) if e["event"] == "preparation.ready"]

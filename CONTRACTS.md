@@ -96,7 +96,7 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 
 ### Fields
 
-`ApplicationField(id, label, semantic_type, control_type, selector, required, input_type, options, accept, max_length, placeholder, help_text, validation_error)`
+`ApplicationField(id, label, semantic_type, control_type, selector, required, input_type, options, accept, max_length, placeholder, help_text, validation_error), section_context)`
 `ApplicationForm(url, ats_type, step, fields, is_final_step, submit_selector, next_selector, page_errors, inspected_at)`
 
 - `id` is stable within the form and is the answer key. Packets never address selectors.
@@ -106,7 +106,7 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 **Identity.**
 - `ApplicationForm.scope` → `FormScope(url, step)`, where `url` is normalized with `normalize_application_url` (tracking parameters do not change it) and `.key` is `"<url>|step=<n>"`.
 - `ApplicationField.fingerprint` is the SHA-256 of the complete question the user sees: the normalized label, `help_text` and `placeholder` (`normalize_text`: case-folded, whitespace collapsed), the control type, and sorted `(value, normalized label)` options. Any wording change is a new question. For example, an "I agree" checkbox whose help text changes from certifying accuracy to certifying never having been dismissed gets a new fingerprint, so an earlier answer, missing-input item or packet cannot authorize it. Selector, requiredness, validation messages, input type and inspection time are excluded: re-inspecting the same question (or one whose only change is becoming required or optional) still matches, and requiredness is enforced separately by `answer_problems`/`problems_against`.
-- **Browser inspectors (C4)** must put all instruction or attestation text that belongs to a field (`aria-describedby` text, adjacent description, legend text beyond the label) into `label` or `help_text`. Text that is not captured cannot be part of question identity.
+- **Browser inspectors (C4)** must put all instruction or attestation text that belongs to a field (`aria-describedby` text, adjacent description, legend text beyond the label) into `label` or `help_text`. Text that is not captured cannot be part of question identity. Headings and group labels of enclosing sections go into `section_context` (outermost first): they inform model routing about subject and timeframe but are not part of the question the user answers, so they are excluded from `fingerprint` and `question_text` and never affect saved-answer matching.
 - `ApplicationForm.fingerprint` is the SHA-256 of the scope plus every `(field id, field fingerprint)` pair.
 - A question is therefore identified by **(form scope, field id, field fingerprint)**. The same `question_0` on two steps, or a changed question reusing an id, are different questions.
 - **Question wording (the one renderer).** `render_question(label, help_text=None, placeholder=None) -> str` and `ApplicationField.question_text` (= `render_question(field.label, field.help_text, field.placeholder)`) in `interviewmaxxing_core.forms`, re-exported from `interviewmaxxing_core` with `QUESTION_PART_SEPARATOR`:
@@ -162,7 +162,7 @@ Validation, all returning `list[str]` (empty means valid):
 
 ## 5. Browser results and job identity (browser-ats produces)
 
-- `PageInspection(kind, observed_url, form, job_identity, message, evidence, inspected_at)`; `form` is present **iff** `kind == APPLICATION_FORM`. `PageKind` also covers `JOB_DESCRIPTION`, `SIGN_IN_REQUIRED`, `CAPTCHA` (`USER_ACTION_PAGES`), `CONFIRMATION`, `ALREADY_APPLIED`, `JOB_CLOSED`, `ERROR`, `UNKNOWN`.
+- `PageInspection(kind, observed_url, form, job_identity, message, evidence, inspected_at, captcha_pending)`; `form` is present **iff** `kind == APPLICATION_FORM`. `PageKind` also covers `JOB_DESCRIPTION`, `SIGN_IN_REQUIRED`, `CAPTCHA` (`USER_ACTION_PAGES`), `CONFIRMATION`, `ALREADY_APPLIED`, `JOB_CLOSED`, `ERROR`, `UNKNOWN`. `captcha_pending` (default `False`) marks an `APPLICATION_FORM` whose embedded CAPTCHA widget (badge/checkbox/token, needed only at submit) is not solved yet: the form is still filled and prepared, and the browser refuses to dispatch the submit until the user solves it. A text CAPTCHA challenge or a full-page interstitial is still `CAPTCHA`.
 - `JobIdentityObservation(ats_type, ats_tenant, external_job_id, evidence_kind, evidence, observed_url, company, title, location, observed_at)`; `identity_key = "ats:<type>:<tenant>:<job id>"` (lower-cased). `IdentityEvidenceKind` is `ATS_JOB_ID_ON_PAGE`, `STRUCTURED_DATA` or `USER_CONFIRMED`. **There is no redirect kind**: arriving at a URL via redirect proves nothing about job identity, and `observed_url` is recorded but never bound as an alias.
 - `FillResult(form_step, fields: list[FieldFillResult], page_errors, evidence)`; `.ok`; statuses `FILLED`, `SKIPPED`, `FAILED`, `VERIFICATION_MISMATCH`.
 - `NavigationResult(advanced, inspection, validation_errors)` — non-final steps only.

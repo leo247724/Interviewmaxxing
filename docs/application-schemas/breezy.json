@@ -1,0 +1,537 @@
+{
+ "backend": "breezy",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:59:45Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed",
+ "coverage": {
+  "inventory_density": 12,
+  "observed_examples": 3,
+  "fully_mapped_examples": 3,
+  "employers_distinct": 3,
+  "note": "Two native <sub>.breezy.hr/p/<id>-<slug>/apply pages and one custom-domain variant (careers.kitbash3d.com) with identical Breezy markup. All single-page blank forms; native <select> options read inline; no captcha widget found."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "bz-01",
+   "url": "https://lovevery.breezy.hr/p/c940df90bf06-senior-director-performance-marketing",
+   "resolved_url": "https://lovevery.breezy.hr/p/c940df90bf06-senior-director-performance-marketing/apply",
+   "page_title": "Senior Director, Performance Marketing",
+   "captured_at_utc": "2026-09-23T23:58:20Z",
+   "hosting_mode": "native_breezy_hr",
+   "entry": "job page anchor 'Apply To Position' -> /apply (navigated directly)",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/breezy-01-lovevery.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/breezy-01-lovevery.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/breezy-01.controls.json"
+   ],
+   "option_lists_captured": "all native selects (currency 119, pay period 4) and EEO radios",
+   "steps_visited": [
+    "job page",
+    "blank form"
+   ],
+   "gated_steps_not_visited": [
+    "Work History / Education add-entry sub-forms (headings present, fields not expanded)",
+    "post-submit 'Application Submitted' block (present hidden in DOM, never triggered)"
+   ]
+  },
+  {
+   "sample_id": "bz-02",
+   "url": "https://careers.kitbash3d.com/p/4b0a1dd90fda-growth-marketing-manager",
+   "resolved_url": "https://careers.kitbash3d.com/p/4b0a1dd90fda-growth-marketing-manager/apply",
+   "page_title": "Growth Marketing Manager",
+   "captured_at_utc": "2026-09-23T23:58:26Z",
+   "hosting_mode": "custom_domain_breezy",
+   "entry": "direct /apply",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/breezy-02-kitbash3d.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/breezy-02-kitbash3d.state.txt"
+   ],
+   "option_lists_captured": "all native selects + EEO radios",
+   "steps_visited": [
+    "blank form (all sections rendered in one document; Back/Continue buttons exist)"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "bz-03",
+   "url": "https://linear-agency.breezy.hr/p/0dd62684d868-growth-marketing-manager/apply",
+   "page_title": "Growth Marketing Manager",
+   "captured_at_utc": "2026-09-23T23:58:31Z",
+   "hosting_mode": "native_breezy_hr",
+   "entry": "inventory URL already /apply",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/breezy-03-linear.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/breezy-03-linear.state.txt"
+   ],
+   "option_lists_captured": "pay period select",
+   "steps_visited": [
+    "blank form"
+   ],
+   "gated_steps_not_visited": [
+    "post-submit"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "url_pattern": "https://<sub>.breezy.hr/p/<12hex>-<slug>[/apply]  (custom domains proxy the same path)",
+   "form": "form[name=form] method=get action=<same /apply url> (JS submission); ids mostly absent, names stable (cName, cEmail, cPhoneNumber, cAddress, cSalary, cSummary, cCoverLetter, cResume)",
+   "captcha_widget": false,
+   "honeypot": "input[type=text]#hp_7f2b name=hp_7f2b with empty label — MUST NOT be filled",
+   "auth_required": false,
+   "hidden_blocks_in_dom": [
+    "'Application Submitted' success heading",
+    "\"You're nearly done\" heading (bz-02/03)"
+   ],
+   "section_headings": [
+    "Personal Details",
+    "Experience (Work History, Education, Experience Summary)",
+    "Cover Letter",
+    "<employer custom section e.g. 'About Our Application'>",
+    "We're an equal opportunity employer (Race or Ethnicity, Gender)"
+   ]
+  },
+  "control_families": {
+   "text": "input[type=text|email] name=c<Field> with placeholder equal to label; the visible label is a heading (h-level) preceding the control reading '<Label>*'; native required=true when starred.",
+   "file": "a 'Upload Resume*' + hidden input[type=file]#main-attachment name=cResume accept='.pdf, .doc, .docx, .txt, .rtd, .pages'; extra anchors 'Use My Indeed Resume' / 'Apply Using LinkedIn' (OAuth import, not exercised).",
+   "phone_sms": "input cPhoneNumber followed by checkbox name=smsConsent with paragraph 'By providing your phone number you agree to receive informational text messages from <Employer>...'.",
+   "salary": "select name=salaryCurrency (119 currencies, default 'US Dollar ($)') + input cSalary 'Desired Salary' + select (Hourly|Weekly|Monthly|Yearly). Starred on bz-01/03.",
+   "textarea": "textarea name=cSummary ('Experience Summary'), cCoverLetter ('Cover Letter'), and custom section_<ts>_question_<n> long answers.",
+   "custom_questions": "name=section_<timestamp>_question_<index>; control is text, textarea, or native select with an empty first option; the question text is a preceding heading; required = native required=true (and '*').",
+   "eeo_radios": "input[type=radio] name=race_ethnicity (ids race_white, race_black, race_hispanic(=Asian label!), race_indian, race_hawaiian, race_two, race_latino, race_white_no) and name=gender (gender_male, gender_female, gender_no); native required=true despite intro text 'You are requested (not required) to complete the personal data below'.",
+   "submit": "button[type=submit] 'Submit Application' (bz-01) or button 'Submit Application' after 'Back'/'Continue' buttons (bz-02/03). STOP BOUNDARY."
+  },
+  "field_patterns": [
+   {
+    "key": "honeypot",
+    "label_seen": "(none) name=hp_7f2b",
+    "control": "text hidden",
+    "required": false,
+    "seen_in": [
+     "bz-01",
+     "bz-02",
+     "bz-03"
+    ],
+    "classification": "never_fill"
+   },
+   {
+    "key": "resume",
+    "label_seen": "Upload Resume*",
+    "control": "file",
+    "required": true,
+    "seen_in": [
+     "bz-01",
+     "bz-02",
+     "bz-03"
+    ]
+   },
+   {
+    "key": "full_name",
+    "label_seen": "Full Name*",
+    "control": "text (single field, not split)",
+    "required": true,
+    "seen_in": [
+     "bz-01",
+     "bz-02",
+     "bz-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email Address*",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "bz-01",
+     "bz-02",
+     "bz-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone Number* (bz-03 optional)",
+    "control": "text",
+    "required": "varies",
+    "seen_in": [
+     "bz-01",
+     "bz-02",
+     "bz-03"
+    ]
+   },
+   {
+    "key": "sms_consent",
+    "label_seen": "By providing your phone number you agree to receive informational text messages from <Employer>...",
+    "control": "checkbox smsConsent",
+    "required": false,
+    "seen_in": [
+     "bz-01",
+     "bz-02",
+     "bz-03"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "address",
+    "label_seen": "Address*",
+    "control": "text#fullAddress",
+    "required": true,
+    "seen_in": [
+     "bz-01"
+    ]
+   },
+   {
+    "key": "desired_salary",
+    "label_seen": "Desired Salary*",
+    "control": "currency select + amount + period select",
+    "required": true,
+    "options_period": [
+     "Hourly",
+     "Weekly",
+     "Monthly",
+     "Yearly"
+    ],
+    "seen_in": [
+     "bz-01",
+     "bz-03"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "work_history",
+    "label_seen": "Work History",
+    "control": "section (add-entry UI not expanded)",
+    "required": false,
+    "seen_in": [
+     "bz-01"
+    ]
+   },
+   {
+    "key": "education",
+    "label_seen": "Education",
+    "control": "section (not expanded)",
+    "required": false,
+    "seen_in": [
+     "bz-01"
+    ]
+   },
+   {
+    "key": "experience_summary",
+    "label_seen": "Experience Summary",
+    "control": "textarea cSummary",
+    "required": false,
+    "seen_in": [
+     "bz-01"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter",
+    "control": "textarea cCoverLetter",
+    "required": false,
+    "seen_in": [
+     "bz-01",
+     "bz-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.preferred_name",
+    "label_seen": "What is your preferred name?",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bz-02"
+    ]
+   },
+   {
+    "key": "custom.pronouns",
+    "label_seen": "Which pronouns do you use? (Examples: They/Them, She/Her, He/Him)",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "human"
+   },
+   {
+    "key": "custom.location_state",
+    "label_seen": "Where are you located?* — This position is open to candidates based in CA, FL, IL, IN, NC, MI, OR, SC, TN, TX, and WA.",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "",
+     "California",
+     "Florida",
+     "Illinois",
+     "Indiana",
+     "Michigan",
+     "North Carolina",
+     "Oregon",
+     "Pennsylvania",
+     "South Carolina",
+     "Texas",
+     "Tennessee",
+     "Washington",
+     "Other"
+    ],
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "fact_copy + eligibility"
+   },
+   {
+    "key": "custom.location_other",
+    "label_seen": "If you selected \"Other\" to the previous question, please let us know which state you live in.",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "conditional"
+   },
+   {
+    "key": "custom.work_authorization",
+    "label_seen": "Are you legally authorized for employment in the United States?* — As a condition of joining the KitBash3D team, you will be required to provide proof of your identity and eligibility to work in the United States.",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "",
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.sponsorship",
+    "label_seen": "Do you now, or will you in the future, require sponsorship to continue or extend your current work authorization status?*",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "",
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.expected_compensation",
+    "label_seen": "What is your expected annual compensation?*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "custom.narrative_career_goals",
+    "label_seen": "How does this position at KitBash fit into your career goals?*",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.narrative_sales_collab",
+    "label_seen": "Walk us through how you've collaborated with Business Development or Sales teams to define lead qualification criteria, set up lead capture or scoring, and ensure a smooth handoff.*",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.narrative_ai_search",
+    "label_seen": "How have you used AI tools in your daily marketing workflow, and how do you approach staying visible in AI-powered search as search behavior evolves?*",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.favorite_movie",
+    "label_seen": "What's your favorite movie or game?",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "human (personal)"
+   },
+   {
+    "key": "custom.anything_else",
+    "label_seen": "Anything else you'd like us to know?",
+    "control": "textarea",
+    "required": false,
+    "seen_in": [
+     "bz-02"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.est_hours",
+    "label_seen": "This role is fully remote, but can you work EST hours? (eg 9-6pm EST)*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "bz-03"
+    ],
+    "classification": "option_choice (user preference, free text)"
+   },
+   {
+    "key": "custom.loom_video",
+    "label_seen": "Please record a fresh 60 second loom video of yourself explaining why you are a fit for this specific role with us (make sure your camera is on, leave the link below)*",
+    "control": "text (URL)",
+    "required": true,
+    "seen_in": [
+     "bz-03"
+    ],
+    "classification": "requires_human (video recording)"
+   },
+   {
+    "key": "eeo_race",
+    "label_seen": "Race or Ethnicity",
+    "control": "radio name=race_ethnicity",
+    "required": "native required=true (intro says requested, not required)",
+    "options": [
+     "White (not Hispanic or Latino)",
+     "Black or African-American (not Hispanic or Latino)",
+     "Asian (not Hispanic or Latino)",
+     "American Indian or Alaskan Native (not Hispanic or Latino)",
+     "Native Hawaiian or other Pacific islander (not Hispanic or Latino)",
+     "Two or more races/ethnicities (not Hispanic or Latino)",
+     "Hispanic or Latino (including Black individuals whose origins are Hispanic)",
+     "I don't wish to answer"
+    ],
+    "seen_in": [
+     "bz-01",
+     "bz-02"
+    ],
+    "classification": "demographic"
+   },
+   {
+    "key": "eeo_gender",
+    "label_seen": "Gender",
+    "control": "radio name=gender",
+    "required": "native required=true",
+    "options": [
+     "Male",
+     "Female",
+     "I don't wish to answer"
+    ],
+    "seen_in": [
+     "bz-01",
+     "bz-02"
+    ],
+    "classification": "demographic"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_page",
+    "identity_hint": "anchors 'Apply To Position', 'Use My Indeed Resume', 'Apply Using LinkedIn'",
+    "observed": true
+   },
+   {
+    "step": "blank_form",
+    "identity_hint": "URL ends /apply; heading 'Personal Details'; form[name=form]",
+    "observed": true
+   },
+   {
+    "step": "continue",
+    "control": "buttons 'Back' / 'Continue' present on bz-02/03 (sectioned layout) — all sections were already in the DOM",
+    "observed": true,
+    "never_actuated": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button 'Submit Application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   "'If you selected Other...' text follows the state select (rendered unconditionally).",
+   "Inline validation strings exist in DOM ('A phone number is required', 'Address is required') and surface as preceding_text noise."
+  ],
+  "blockers": [
+   {
+    "type": "honeypot",
+    "detail": "hp_7f2b must stay empty."
+   },
+   {
+    "type": "human_media",
+    "detail": "bz-03 requires a Loom video link."
+   },
+   {
+    "type": "sub_forms_unexpanded",
+    "detail": "Work History / Education add-entry fields not observed."
+   }
+  ],
+  "runtime_observations": [
+   "EEO radio id race_hispanic carries the 'Asian' label (vendor quirk) — bind by label text, never by id.",
+   "Native required=true on EEO radios contradicts the 'requested (not required)' copy; runtime must not auto-select 'I don't wish to answer' without user policy."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "/apply blank form",
+   "Submit Application",
+   "'Application Submitted' block shown in place (present hidden in DOM)"
+  ],
+  "work_history_inference": "Breezy's Work History/Education sections usually expose 'Add' controls that reveal company/title/date fields. UNVERIFIED here.",
+  "oauth_import_inference": "'Use My Indeed Resume' / 'Apply Using LinkedIn' open third-party OAuth; never use in prepare-only mode."
+ },
+ "provider_hint": {
+  "for_jev": "Breezy: single-page /apply form; names c<Field>; custom questions section_<ts>_question_<n> labelled by the preceding heading (full text, may include an explanatory paragraph). Required = native required or trailing '*'. Expect several long narrative textareas per employer plus salary/period/currency. EEO radios are natively required but must stay human-only. Never fill hp_7f2b. Stop at 'Submit Application'.",
+  "exact_copy_facts": [
+   "full_name (single field)",
+   "email",
+   "phone",
+   "address",
+   "preferred_name",
+   "state of residence"
+  ],
+  "option_choice_from_verified_facts": [
+   "work_authorization",
+   "sponsorship_required",
+   "EST-hours availability (user preference)"
+  ],
+  "escalate_to_writer_opus": [
+   "cover letter textarea",
+   "experience summary",
+   "career-goals / collaboration / AI-tools narratives",
+   "'Anything else' textarea"
+  ],
+  "requires_human_input": [
+   "resume file",
+   "desired/expected compensation",
+   "SMS consent",
+   "pronouns, favorite movie (personal)",
+   "Loom video",
+   "EEO race/gender"
+  ]
+ },
+ "edge_cases": [
+  "Custom-domain hosting (careers.kitbash3d.com) is byte-identical markup; detect by form[name=form] + cName/cEmail + hp_ honeypot rather than host.",
+  "Success and 'nearly done' headings are present in the DOM before submission; do not treat their presence as completion."
+ ]
+}

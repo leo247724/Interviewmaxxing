@@ -489,6 +489,8 @@ def _event_text(event: ApplicationEvent) -> tuple[str, EventTone]:
     if name == "application.failed_permanent":
         return f"Stopped: {meta.get('failure_reason') or 'the application cannot continue'}.", "error"
     fixed: dict[str, tuple[str, EventTone]] = {
+        "application.preparation_only": ("Preparation only: submission is disabled.", "info"),
+        "preparation.ready": ("Ready for final review. Nothing was submitted.", "attention"),
         "application.inspecting": ("Reading the application page.", "progress"),
         "application.packet_ready": ("Answers prepared from your saved details.", "progress"),
         "application.filling": ("Filling in the form.", "progress"),

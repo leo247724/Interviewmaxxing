@@ -1,0 +1,471 @@
+{
+ "backend": "bamboohr",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:00:44Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed",
+ "coverage": {
+  "inventory_density": 14,
+  "observed_examples": 4,
+  "fully_mapped_examples": 4,
+  "employers_distinct": 4,
+  "note": "All four are the current BambooHR careers SPA (<sub>.bamboohr.com/careers/<id>). The application is an in-page card: the 'Apply for This Job' button only flips React state (currentCard=application); bridge coordinate clicks and Enter did NOT trigger it, but the element's own .click() did. /careers/<id>/apply is a 404. Select menus (State/Country/Highest Education) never opened under click, keyboard or synthetic mousedown, so those option lists are unobserved."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "bb-01",
+   "url": "https://321theagency.bamboohr.com/careers/168",
+   "page_title": "BambooHR",
+   "captured_at_utc": "2026-09-24T00:00:19Z",
+   "hosting_mode": "native_careers_spa",
+   "entry": "element.click() on button[data-bi-id=careers-site-apply-button]; same URL, form#job-application-form appears",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-01-321agency.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-01-321agency.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-01-321agency.options.jsonl"
+   ],
+   "option_lists_captured": "none (State, Country, Highest Education Obtained menus did not open)",
+   "steps_visited": [
+    "job card",
+    "application card (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "reCAPTCHA",
+    "post-submit"
+   ],
+   "note": "re-observed with extract_form.js v4 (nearest_heading_before + ancestor_context per control)"
+  },
+  {
+   "sample_id": "bb-02",
+   "url": "https://sasso.bamboohr.com/careers/28",
+   "page_title": "BambooHR",
+   "captured_at_utc": "2026-09-23T23:54:34Z",
+   "hosting_mode": "native_careers_spa",
+   "entry": "element.click() on apply button",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-02-sasso.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-02-sasso.state.txt"
+   ],
+   "option_lists_captured": "none",
+   "steps_visited": [
+    "application card (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "reCAPTCHA",
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "bb-03",
+   "url": "https://zdfirm.bamboohr.com/careers/891",
+   "page_title": "BambooHR",
+   "captured_at_utc": "2026-09-23T23:55:14Z",
+   "hosting_mode": "native_careers_spa",
+   "entry": "element.click() on apply button",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-03-zinda.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-03-zinda.state.txt"
+   ],
+   "option_lists_captured": "radio groups captured statically",
+   "steps_visited": [
+    "application card (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "reCAPTCHA",
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "bb-04",
+   "url": "https://billd.bamboohr.com/careers/268?source=LinkedIn",
+   "resolved_url": "https://billd.bamboohr.com/careers/268",
+   "page_title": "BambooHR",
+   "captured_at_utc": "2026-09-23T23:55:22Z",
+   "hosting_mode": "native_careers_spa",
+   "entry": "element.click() on apply button",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-04-billd.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-04-billd.state.txt",
+    ".imx/dynamic-applications/fable_b/evidence/bamboohr-04-billd.options.jsonl"
+   ],
+   "option_lists_captured": "radio groups captured statically; State menu did not open",
+   "steps_visited": [
+    "application card (blank)"
+   ],
+   "gated_steps_not_visited": [
+    "reCAPTCHA",
+    "post-submit"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "url_pattern": "https://<subdomain>.bamboohr.com/careers/<id>[?source=...]",
+   "document_title": "always 'BambooHR' (job title only in h3)",
+   "form": "form#job-application-form method=get action=<same url> (JS submission)",
+   "captcha_widget": "Google reCAPTCHA v2 (sitekey 6LfZ4KEs... identical across employers); hidden textarea#g-recaptcha-response",
+   "honeypot": "input#nickname_hpcsaf name=nickname_hpcsaf labelled 'Please leave this field blank' placeholder 'Enter your text here' — MUST NOT be filled",
+   "auth_required": false,
+   "apply_entry": "button[data-bi-id=careers-site-apply-button] 'Apply for This Job' (React state flip, no navigation)"
+  },
+  "control_families": {
+   "text": "input[type=text] with id=name (firstName,lastName,email,phone,desiredPay,websiteUrl,linkedinUrl,referredBy,educationInstitutionName) or Fabric ids (FabricTextField-<n>) for address/city/zip (name streetAddress.value/city.value/zip.value). Label via <label for>; required shown only as trailing ' *' in label text (no required/aria-required attrs).",
+   "select": "button[aria-haspopup=true][aria-label='<Label> <current value>'] (Fabric/MUI select) with hidden native <select> (1 option) — labels: 'State –Select–', 'Country United States' (default United States, has 'Clear Selection' button), 'Highest Education Obtained –Select–'. Menus not observed.",
+   "file": "button 'Choose File*' + hidden input[type=file][aria-label=file-input] accept=.pdf,.doc,.docx,.xls,.xlsx,.csv,.jpg,.jpeg,.tif,.tiff,.gif,.png,.bmp,.txt,.rtf; Resume required=true (native), Cover Letter optional. DISAMBIGUATION (re-observed 2026-09-24T00:00:19Z with extractor v4): the file input has no label; its ancestor_context chain reads ['Choose File* No file selected','Resume*'] for the resume and ['Choose File No file selected','Cover Letter'] for the cover letter. nearest_heading_before is just '*' (split label span) — use ancestor_context/preceding button text.",
+   "date": "input placeholder mm/dd/yyyy 'Date Available' plus button aria-label 'Pick a date.' (dialog).",
+   "radiogroup": "fieldset[aria-required] > legend '<question> *' > div[role=radiogroup] > input[type=radio] name=customQuestionAnswers.yes_no_<n> value Yes|No.",
+   "textarea": "textarea id/name=customQuestionAnswers.long_<n> labelled by the full question text (label for=id); a second unlabeled textarea sits beside each (Fabric internal). Required shown as ' *' at end of label.",
+   "submit": "button[type=submit] 'Submit Application' (outside the form element in DOM order; form_index null). STOP BOUNDARY."
+  },
+  "field_patterns": [
+   {
+    "key": "honeypot",
+    "label_seen": "Please leave this field blank",
+    "control": "text (hidden trap)",
+    "required": false,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ],
+    "classification": "never_fill"
+   },
+   {
+    "key": "first_name",
+    "label_seen": "First Name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone *",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "address",
+    "label_seen": "Address * / City * / State / ZIP * / Country (default United States)",
+    "control": "text + select",
+    "required": true,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume*",
+    "control": "file",
+    "required": true,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "cover_letter",
+    "label_seen": "Cover Letter",
+    "control": "file",
+    "required": false,
+    "seen_in": [
+     "bb-01",
+     "bb-03"
+    ]
+   },
+   {
+    "key": "date_available",
+    "label_seen": "Date Available (bb-01: 'Date Available *')",
+    "control": "date mm/dd/yyyy",
+    "required": "varies",
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "desired_pay",
+    "label_seen": "Desired Pay (bb-04: 'Desired Pay *')",
+    "control": "text",
+    "required": "varies",
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "website_url",
+    "label_seen": "Website, Blog or Portfolio",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn URL (bb-01: 'LinkedIn URL *')",
+    "control": "text",
+    "required": "varies",
+    "seen_in": [
+     "bb-01",
+     "bb-02",
+     "bb-03",
+     "bb-04"
+    ]
+   },
+   {
+    "key": "highest_education",
+    "label_seen": "Highest Education Obtained",
+    "control": "select",
+    "required": false,
+    "options": "UNOBSERVED",
+    "seen_in": [
+     "bb-01"
+    ]
+   },
+   {
+    "key": "college",
+    "label_seen": "College/University",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bb-03"
+    ]
+   },
+   {
+    "key": "referred_by",
+    "label_seen": "Who referred you for this position?",
+    "control": "text",
+    "required": false,
+    "seen_in": [
+     "bb-03"
+    ]
+   },
+   {
+    "key": "custom.work_authorization",
+    "label_seen": "Are you legally authorized to work in the United States for any employer? *",
+    "control": "radiogroup Yes/No",
+    "required": true,
+    "seen_in": [
+     "bb-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.sponsorship",
+    "label_seen": [
+     "Will you now or will you in the future require employment visa sponsorship? *",
+     "Will you now, or in the future, require sponsorship for employment visa status (e.g. H-1B visa status)? *"
+    ],
+    "control": "radiogroup Yes/No",
+    "required": true,
+    "seen_in": [
+     "bb-03",
+     "bb-04"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.location_austin",
+    "label_seen": [
+     "This position is in Austin, TX. Are you currently located in Austin?",
+     "Do you currently live or plan to relocate to Austin, TX? *"
+    ],
+    "control": "radiogroup Yes/No",
+    "required": "varies",
+    "seen_in": [
+     "bb-03",
+     "bb-04"
+    ],
+    "classification": "option_choice (user preference/fact)"
+   },
+   {
+    "key": "custom.onsite_hybrid",
+    "label_seen": [
+     "Are you able to work onsite in our Austin office?",
+     "We offer a hybrid work model, where employees are able to work from home on Fridays. Does this align to what you are looking for? *"
+    ],
+    "control": "radiogroup Yes/No",
+    "required": "varies",
+    "seen_in": [
+     "bb-03",
+     "bb-04"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "custom.narrative_ai_tools",
+    "label_seen": "Tell us about a time you used AI tools in your digital marketing work. What was the task, which tool(s) did you use, and what was the outcome? Feel free to include a specific example (a prompt, workflow, or piece of output) that shows how you approached it. *",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "bb-04"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.narrative_set_321",
+    "label_seen": [
+     "This role leads both paid media and CRM/marketing automation as a unified department. Walk me through your actual hands-on experience in both disciplines — not just oversight, but where you've been in the platform doing the work. What's your deeper side and what's your developing side?",
+     "Describe a specific client program where you designed the integration between paid media and CRM — how leads flowed from the ad platform into automation, how CRM data fed back into targeting, and how you measured performance end-to-end.",
+     "Walk me through your experience with High Level specifically — what have you built in it, at what complexity, and how does it compare to other platforms you've worked in?",
+     "Tell me about the largest or most complex paid media portfolio you've managed — total monthly spend across clients, how many accounts, what channels, and how you structured your team's workflow to maintain quality across all of them.",
+     "321 works primarily in regulated industries — healthcare, insurance, legal services, and home services. Give me a specific example of how compliance requirements or platform restrictions in one of those verticals changed how you approached a campaign, and how you solved for it without tanking performance."
+    ],
+    "control": "5 textareas (customQuestionAnswers.long_243..247)",
+    "required": false,
+    "seen_in": [
+     "bb-01"
+    ],
+    "classification": "free_text_narrative (hard: specifics on spend, tooling, compliance)"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "job_card",
+    "identity_hint": "h3 job title; button 'Apply for This Job'; 'Link to This Job' text field prefilled with the URL (not user data)",
+    "observed": true
+   },
+   {
+    "step": "application_card",
+    "identity_hint": "form#job-application-form present after apply click; same URL",
+    "observed": true
+   },
+   {
+    "step": "captcha",
+    "control": "reCAPTCHA v2 iframe above submit",
+    "observed": true,
+    "never_actuated": true
+   },
+   {
+    "step": "final_submit",
+    "control": "button[type=submit] 'Submit Application'",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   "None observed; all custom questions render unconditionally."
+  ],
+  "blockers": [
+   {
+    "type": "apply_button_event",
+    "detail": "Bridge click/Enter did not flip the card; only element.click() worked. Runtime must use a DOM-level click or the user must click."
+   },
+   {
+    "type": "select_menus_unobserved",
+    "detail": "Fabric select buttons did not open via click, ArrowDown, or synthetic mousedown within 1.5s."
+   },
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2 required before submit."
+   },
+   {
+    "type": "honeypot",
+    "detail": "Hidden 'Please leave this field blank' input; filling it will likely flag the submission as spam."
+   }
+  ],
+  "runtime_observations": [
+   "Question ids are customQuestionAnswers.<type>_<n> where type is long|yes_no (others likely short|select).",
+   "Required-ness only via trailing ' *' in label/legend text, except native required on the resume file input and aria-required on fieldsets.",
+   "document.title is useless for identity; use h3 + subdomain."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "job card",
+   "application card",
+   "reCAPTCHA",
+   "Submit Application",
+   "confirmation (UNVERIFIED)"
+  ],
+  "select_option_inference": "State is the US state list; Country the ISO country list; Highest Education likely High School/Associate/Bachelor's/Master's/Doctorate. UNVERIFIED.",
+  "eeo_inference": "No EEO/veteran/disability block observed in four samples; BambooHR may add one per employer setting."
+ },
+ "provider_hint": {
+  "for_jev": "BambooHR careers: single in-page form. Required = label ends with ' *'. Never touch the honeypot 'Please leave this field blank'. Custom questions are Yes/No radiogroups (customQuestionAnswers.yes_no_N) or long textareas (customQuestionAnswers.long_N) whose label is the full question; several are hard narratives demanding specifics (spend, tools, compliance). reCAPTCHA is human. Stop at 'Submit Application'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "phone",
+   "address/city/state/zip/country",
+   "linkedin_url",
+   "website_url",
+   "date_available",
+   "college"
+  ],
+  "option_choice_from_verified_facts": [
+   "work_authorization",
+   "sponsorship_required",
+   "located in / willing to relocate to city",
+   "onsite/hybrid acceptance (user preference)"
+  ],
+  "escalate_to_writer_opus": [
+   "all customQuestionAnswers.long_* narratives"
+  ],
+  "requires_human_input": [
+   "resume/cover letter files",
+   "desired pay",
+   "referred by",
+   "highest education (menu unobserved)",
+   "reCAPTCHA"
+  ]
+ },
+ "edge_cases": [
+  "'Link to This Job' text field inside the page has a prefilled value (the job URL) — not candidate data.",
+  "Two textareas per long question: the labelled one carries the id/name; the sibling unlabeled textarea is a Fabric mirror."
+ ]
+}

@@ -1,0 +1,414 @@
+{
+ "backend": "jazzhr",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-23T23:48:41Z",
+ "author": "fable_b (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-b, tab 35B84020F842FCD387AFA3A419ECE53A",
+ "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
+ "status": "observed",
+ "coverage": {
+  "inventory_density": 19,
+  "observed_examples": 3,
+  "fully_mapped_examples": 2,
+  "employers_distinct": 3,
+  "note": "Two samples are the modern applytojob.com/apply/<key>/<slug> single-page form (fully mapped, blank, visible). Third is the legacy /apply/jobs/details/<key> 'Job Listings' variant where the identical form_submit_new_resume form is present in the DOM but hidden; the 'Apply Now' anchor click did not reveal it within 3s, so its controls were read from the hidden DOM (labels/options only)."
+ },
+ "observed_samples": [
+  {
+   "sample_id": "jz-01",
+   "url": "https://smadexslu.applytojob.com/apply/nLmSQMBn5H/Ad-Operations-Specialist",
+   "page_title": "Ad Operations Specialist - Smadex SLU - Career Page",
+   "captured_at_utc": "2026-09-23T23:46:19Z",
+   "hosting_mode": "native_applytojob_modern",
+   "entry": "form is rendered on the job page itself under heading 'Apply for this position'",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/jazzhr-01-smadex.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/jazzhr-01-smadex.state.txt"
+   ],
+   "option_lists_captured": "all native <select> lists inline",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "reCAPTCHA v2 challenge",
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "jz-02",
+   "url": "https://nrtc.applytojob.com/apply/mmEjmeu8pH/Digital-Marketing-Specialist-Remote",
+   "page_title": "Digital Marketing Specialist (Remote) - NRTC - Career Page",
+   "captured_at_utc": "2026-09-23T23:46:58Z",
+   "hosting_mode": "native_applytojob_modern",
+   "entry": "form on job page",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/jazzhr-02-nrtc.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/jazzhr-02-nrtc.state.txt"
+   ],
+   "option_lists_captured": "n/a (no custom selects)",
+   "steps_visited": [
+    "single page blank form"
+   ],
+   "gated_steps_not_visited": [
+    "reCAPTCHA",
+    "post-submit"
+   ]
+  },
+  {
+   "sample_id": "jz-03",
+   "url": "https://removery.applytojob.com/apply/jobs/details/RQRhuaKBeX",
+   "page_title": "JazzHR » Job Listings",
+   "captured_at_utc": "2026-09-23T23:47:20Z",
+   "hosting_mode": "legacy_job_listings_details_page",
+   "entry": "anchor a#resumator_btn_apply_now 'Apply Now' clicked once (read-only, opens form); form stayed display:none in the capture; controls read from hidden DOM",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable_b/evidence/jazzhr-03-removery.controls.json",
+    ".imx/dynamic-applications/fable_b/evidence/jazzhr-03-removery.state.txt"
+   ],
+   "option_lists_captured": "all native <select> lists inline (hidden DOM)",
+   "steps_visited": [
+    "job details page"
+   ],
+   "gated_steps_not_visited": [
+    "visible blank form (not revealed)",
+    "reCAPTCHA",
+    "post-submit"
+   ],
+   "classification_note": "Same backend (JazzHR 'resumator' ids, form id form_submit_new_resume, reCAPTCHA sitekey identical) but different page template; the self-hosted page embeds an iframe of its own URL."
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "url_patterns": [
+    "https://<subdomain>.applytojob.com/apply/<key>/<Slug>",
+    "https://<subdomain>.applytojob.com/apply/jobs/details/<key> (legacy)",
+    "http:// variants exist in inventory"
+   ],
+   "form": "form#form_submit_new_resume method=POST action=<same page url>; hidden inputs form_id=submit_new_resume, resumator-subdomain-value, resumator-tags-value, uploaded-file, resumator-sfdc-id",
+   "captcha_widget": "Google reCAPTCHA v2 checkbox (iframes recaptcha/api2/anchor + bframe; hidden textarea#g-recaptcha-response labelled 'Human Check*')",
+   "auth_required": false,
+   "cookie_banner": "'This website uses cookies...' with Allow control (rp-01/02)",
+   "section_heading": "'Apply for this position'"
+  },
+  "control_families": {
+   "text": "input[type=text|email|tel] id/name resumator-<field>-value; label text ends with '*' when required; required is NOT set as an attribute (required=false, no aria-required) — a sibling help/hint reads 'REQUIRED*'. maxlength seen: phone 50, address 255, city 255, state 50, postal 50.",
+   "address_group": "Four inputs under one 'Address*' label: placeholders 'Address','City','State/Province','Postal' (ids resumator-address/city/state/postal-value). jz-03 labels the group 'Location'.",
+   "file": "input[type=file]#resumator-resume-value (no accept attr); helper text 'Attach resume as .pdf, .doc, .docx, .odt, .txt, or .rtf (limit 5MB) or paste resume'; anchors a#resumator-choose-upload 'Attach resume' / a#resumator-choose-paste 'Paste resume' toggle a textarea#resumator-resumetext-value alternative.",
+   "native_select": "select#resumator-questionnaire-q<digits> name=resumator-questionnaire[<digits>]; first option '-- No answer --' (value present, so has_value=true in a blank form).",
+   "textarea": "textarea#resumator-questionnaire-q<digits> for narrative custom questions.",
+   "checkbox": "input[type=checkbox] id resumator-checkbox-<qid>-<n> (privacy policy acceptance, value = label text) and input#resumator-sms-consent (value 1).",
+   "submit": "a#resumator-submit-resume 'Submit Application' / 'SUBMIT APPLICATION' (anchor, href='/', no role) on modern pages; input[type=button]#resumator-submit-resume plus #resumator-cancel-resume on legacy page. STOP BOUNDARY."
+  },
+  "field_patterns": [
+   {
+    "key": "first_name",
+    "label_seen": "First Name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ]
+   },
+   {
+    "key": "last_name",
+    "label_seen": "Last Name*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ]
+   },
+   {
+    "key": "email",
+    "label_seen": "Email Address*",
+    "control": "email",
+    "required": true,
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ]
+   },
+   {
+    "key": "phone",
+    "label_seen": "Phone*",
+    "control": "tel maxlength=50",
+    "required": true,
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ]
+   },
+   {
+    "key": "address",
+    "label_seen": "Address*  (jz-03: 'Location')",
+    "control": "address_group (Address, City, State/Province, Postal)",
+    "required": "label * on jz-01; unmarked on jz-03",
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ]
+   },
+   {
+    "key": "resume",
+    "label_seen": "Resume*",
+    "control": "file or pasted textarea",
+    "required": true,
+    "accept_text": ".pdf, .doc, .docx, .odt, .txt, .rtf, 5MB",
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ]
+   },
+   {
+    "key": "linkedin_url",
+    "label_seen": "LinkedIn Profile URL:*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "jz-01"
+    ]
+   },
+   {
+    "key": "desired_salary",
+    "label_seen": "Desired salary*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "earliest_start",
+    "label_seen": "Earliest start date?*",
+    "control": "text",
+    "required": true,
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "user fact"
+   },
+   {
+    "key": "custom.work_authorization",
+    "label_seen": "Can you work legally in the United States?*",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "-- No answer --",
+     "Yes, I hold American citizenship",
+     "Yes, I have an OPT visa.",
+     "Yes, I have a valid work permit",
+     "No, I need sponsorship for a visa"
+    ],
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "eligibility (multi-valued, not yes/no)"
+   },
+   {
+    "key": "custom.visa_detail",
+    "label_seen": "Please provide the details and expiration date here if your specific visa or work permit is not covered in the previous options*",
+    "control": "text maxlength=255",
+    "required": true,
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "conditional free_text (required marker even when N/A)"
+   },
+   {
+    "key": "custom.relocate",
+    "label_seen": "If you are not currently based in Austin, would you be willing to relocate?*",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "-- No answer --",
+     "Yes",
+     "No, I'm looking for a remote work",
+     "I'm based in Austin"
+    ],
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "custom.experience_narrative",
+    "label_seen": "Do you have experience in a similar role? If so, could you kindly provide a few details?*",
+    "control": "textarea",
+    "required": true,
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "free_text_narrative"
+   },
+   {
+    "key": "custom.temp_visa",
+    "label_seen": "Are you currently on any type of temporary work visa (e.g., F-1, H-1B, STEM OPT, etc.), or would you require current or future sponsorship...",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "-- No answer --",
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "jz-03"
+    ],
+    "classification": "eligibility"
+   },
+   {
+    "key": "custom.comp_alignment",
+    "label_seen": "This role is expected to pay $95,000-$105,000 per year. Is this aligned with your compensation expectations?*",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "-- No answer --",
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "jz-03"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "custom.onsite_ok",
+    "label_seen": "This role is located at our Corporate Headquarters at 1400 S Congress Ave in Austin TX, with one remote day per week... (full text in evidence)",
+    "control": "native_select",
+    "required": true,
+    "options": [
+     "-- No answer --",
+     "Yes",
+     "No"
+    ],
+    "seen_in": [
+     "jz-03"
+    ],
+    "classification": "option_choice (user preference)"
+   },
+   {
+    "key": "privacy_policy_accept",
+    "label_seen": "I have read and accept the Privacy Policy.",
+    "control": "checkbox",
+    "required": "unmarked",
+    "seen_in": [
+     "jz-01"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "sms_consent",
+    "label_seen": "I consent to receive SMS/text messages regarding my job application with <Employer>. These messages may include updates on my application status, interview invitations... (full text in evidence)",
+    "control": "checkbox value=1",
+    "required": false,
+    "seen_in": [
+     "jz-02",
+     "jz-03"
+    ],
+    "classification": "attestation"
+   },
+   {
+    "key": "human_check",
+    "label_seen": "Human Check*",
+    "control": "reCAPTCHA v2 widget",
+    "required": true,
+    "seen_in": [
+     "jz-01",
+     "jz-02",
+     "jz-03"
+    ],
+    "classification": "blocker_human"
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "blank_form",
+    "identity_hint": "form#form_submit_new_resume on the job page (modern) or hidden until a#resumator_btn_apply_now (legacy)",
+    "observed": true
+   },
+   {
+    "step": "captcha",
+    "control": "reCAPTCHA v2 checkbox above submit",
+    "observed": true,
+    "never_actuated": true
+   },
+   {
+    "step": "final_submit",
+    "control": "a#resumator-submit-resume 'Submit Application' (or input[type=button] on legacy)",
+    "observed": true,
+    "STOP_BOUNDARY": true,
+    "never_actuated": true
+   }
+  ],
+  "conditional_patterns": [
+   "Resume: 'Attach resume' vs 'Paste resume' toggles between file input and textarea#resumator-resumetext-value.",
+   "jz-02 hidden text 'We've received your resume. Click here to update it.' exists near the resume control for the post-upload state (not triggered)."
+  ],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "reCAPTCHA v2 (same sitekey 6LeCbWYs... on all three employers) must be solved by a human before submit."
+   },
+   {
+    "type": "legacy_template_hidden_form",
+    "detail": "jz-03 form not revealed by one Apply Now click; needs human/user check or second attempt with scroll."
+   }
+  ],
+  "runtime_observations": [
+   "Required-ness is conveyed only by the trailing '*' in label text and the 'REQUIRED*' hint; native required/aria-required are absent.",
+   "Custom question ids are numeric per employer (q2670621...); the stable key is the label text.",
+   "No EEO/demographic block was present in any of the three samples."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "single blank form",
+   "reCAPTCHA",
+   "Submit Application",
+   "confirmation (UNVERIFIED)"
+  ],
+  "eeo_inference": "JazzHR can append an EEO/OFCCP section for US employers; not observed here. Treat as possible.",
+  "legacy_reveal_inference": "The legacy 'Apply Now' probably toggles the form container via JS on the same page (form action equals the page URL); may need scroll-into-view."
+ },
+ "provider_hint": {
+  "for_jev": "JazzHR (applytojob.com): single-page form, ids resumator-<field>-value; required = label ends with '*' (no attributes). Custom questions are native <select> with '-- No answer --' first, text (255), or textarea narratives; classify each. Work-authorization selects can be multi-valued (citizenship/OPT/permit/sponsorship), so map from verified visa facts, never default. reCAPTCHA v2 is a human step. Stop at 'Submit Application'.",
+  "exact_copy_facts": [
+   "first_name",
+   "last_name",
+   "email",
+   "phone",
+   "address/city/state/postal",
+   "linkedin_url",
+   "earliest_start_date",
+   "desired_salary (only if user supplied)"
+  ],
+  "option_choice_from_verified_facts": [
+   "work_authorization / temp visa status",
+   "willing to relocate",
+   "compensation alignment yes/no",
+   "onsite schedule acceptance"
+  ],
+  "escalate_to_writer_opus": [
+   "experience narrative textarea ('Do you have experience in a similar role?...')",
+   "visa detail text when applicable"
+  ],
+  "requires_human_input": [
+   "resume attach or paste",
+   "privacy policy / SMS consent checkboxes",
+   "reCAPTCHA",
+   "any salary/comp question the user has not pre-answered"
+  ]
+ },
+ "edge_cases": [
+  "Legacy /apply/jobs/details/<key> pages embed an iframe of their own URL and title 'JazzHR » Job Listings'; the form is hidden until Apply Now.",
+  "Some inventory URLs are http:// and one uses a generated subdomain (20220120194401_...applytojob.com) — same template expected, unverified."
+ ]
+}

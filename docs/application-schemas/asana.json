@@ -1,0 +1,149 @@
+{
+ "backend": "asana",
+ "schema_version": "0.1.0",
+ "generated_at_utc": "2026-09-24T00:01:44Z",
+ "author": "fable_schema (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable, tab 17DE5C072473EA7571880D63E011AC69",
+ "purpose": "Schema PRIOR only. Fresh rendered DOM is authoritative.",
+ "status": "observed_partial",
+ "status_reason": "Asana Form renders all questions on one page; captured fully. The form title is \"Media Buyer\" while the inventory title is \"Paid Acquisition Manager\" (generic intake form). The Submit control was not present in the captured DOM (likely rendered below the fold/virtualised); the stop boundary is inferred from Asana Forms' standard \"Submit\" button.",
+ "coverage": {
+  "inventory_density": 1,
+  "singleton": true,
+  "observed_examples": 1,
+  "fully_mapped_examples": 0
+ },
+ "observed_samples": [
+  {
+   "sample_id": "as-01",
+   "url": "https://form.asana.com/?hash=c0684ceecd1ecce21964968f7d97307e8f3b9cb9f1c6c900de19a2f55f99da07&id=1195165197934723",
+   "page_title": "Media Buyer - Form by Asana",
+   "captured_at_utc": "2026-09-23T23:57:14Z",
+   "evidence_private": [
+    ".imx/dynamic-applications/fable/evidence/asana-01-attnlabs.controls.json",
+    ".imx/dynamic-applications/fable/evidence/asana-01-attnlabs.state.txt"
+   ],
+   "steps_visited": [
+    "form"
+   ],
+   "gated_steps_not_visited": [
+    "submit/confirmation"
+   ]
+  }
+ ],
+ "observed": {
+  "page_shape": {
+   "single_page_form": true,
+   "no_form_element": true,
+   "heading": "Media Buyer"
+  },
+  "control_families": {
+   "text": "inputs with numeric ids and <label for>: 'Name*', 'Email address*' (placeholders 'Enter your name'/'Enter your email address'); required attr set",
+   "textarea": "long-answer questions, placeholder 'Enter your answer'; required marked by '*' in label text only (required attr NOT set)",
+   "file": "'Select a file...' with 'or drag and drop a file here' (WorkRequestsAttachmentInput)",
+   "short_text_for_link": "'Record a video…' question is a text input (expects a URL)"
+  },
+  "field_patterns": [
+   {
+    "key": "full_name",
+    "label_seen": "Name*",
+    "required": true
+   },
+   {
+    "key": "email",
+    "label_seen": "Email address*",
+    "required": true
+   },
+   {
+    "key": "narrative_ad_experience",
+    "label_seen": "Tell us about your advertising experience including what courses you've taken and how you keep up to date with current trends* (Focus on the platform you have the most experience with)",
+    "control": "textarea",
+    "required": true,
+    "benchmark_candidate": true
+   },
+   {
+    "key": "narrative_work_experience",
+    "label_seen": "Tell us more about your relevant work experience including any client facing roles you've had.*",
+    "control": "textarea",
+    "required": true,
+    "benchmark_candidate": true
+   },
+   {
+    "key": "narrative_dynamic_vs_manual",
+    "label_seen": "When would you use an ad platform's dynamic campaigns or testing features vs. using manually managed campaigns and tests? Are there any times you wouldn't use a…(full text in evidence)",
+    "control": "textarea",
+    "required": false,
+    "benchmark_candidate": true
+   },
+   {
+    "key": "video_walkthrough_link",
+    "label_seen": "Record a video showing us around one of your ad accounts. Analyze what the latest results are. What's working? What's not? How might you improve performance next…(full text in evidence)",
+    "control": "text (URL expected)",
+    "required": true,
+    "requires_human_input": true
+   },
+   {
+    "key": "attachment",
+    "label_seen": "Select a file...",
+    "control": "file",
+    "required": false
+   }
+  ],
+  "step_patterns": [
+   {
+    "step": "form",
+    "observed": true
+   },
+   {
+    "step": "final_submit",
+    "observed": false,
+    "STOP_BOUNDARY": true,
+    "expected_control_unverified": "Asana Forms 'Submit' button at the bottom",
+    "confidence": "medium (not in captured DOM)"
+   }
+  ],
+  "conditional_patterns": [],
+  "blockers": [
+   {
+    "type": "captcha",
+    "detail": "none seen",
+    "observed": true
+   },
+   {
+    "type": "auth",
+    "detail": "none",
+    "observed": true
+   }
+  ],
+  "runtime_observations": [
+   "Required marker is '*' inside label text; the required attr is only on Name/Email.",
+   "Form is generic for a different title than the listing; runtime should flag title mismatch to the user."
+  ]
+ },
+ "inferred": {
+  "typical_stages_unverified": [
+   "form",
+   "Submit",
+   "'Thanks' confirmation"
+  ]
+ },
+ "provider_hint": {
+  "for_jev": "Asana Form intake: name, email, three long narrative questions, a video-walkthrough link, optional attachment. Narrative answers are the core; route to the writer with the exact question text and only relevant facts. Stop before Submit.",
+  "exact_copy_facts": [
+   "full_name",
+   "email"
+  ],
+  "option_choice_from_verified_facts": [],
+  "escalate_to_writer_opus": [
+   "advertising experience narrative",
+   "relevant work experience narrative",
+   "dynamic vs manual campaigns essay"
+  ],
+  "requires_human_input": [
+   "video recording link",
+   "attachment"
+  ]
+ },
+ "edge_cases": [
+  "Form title 'Media Buyer' ≠ listing title; generic intake form."
+ ]
+}
