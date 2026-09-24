@@ -51,6 +51,8 @@ These are **Saved research leads**, not 100 salary-confirmed, application-ready 
 
 Implementation evidence: [task importer](../.imx/austin-100/save_verified.py), [canonical JobStore](../packages/jobs/src/interviewmaxxing_jobs/store.py), [tracking route implementation](../apps/service/src/interviewmaxxing_service/jobs_api.py), and [revision-aware pipeline updates](../apps/service/src/interviewmaxxing_service/pipeline_api.py).
 
+Saved cards feed mass preparation through the application URL inventory, whose rows carry each job's `listing_id` and Saved card `pipeline_id`. `interviewmaxxing prepare-batch` links each resulting application to its Saved card; it creates no cards and never moves a card to Applied. When it observes that a job is closed, it moves the job's Saved card to Closed with a dated history note through the revision-aware pipeline move, which quotes the card's fresh revision as in step 7. `interviewmaxxing batch-report` then groups the remaining holds by category. Preparation never submits. See [mass-preparation.md](mass-preparation.md).
+
 ## Browser and source isolation
 
 Use owned sessions named `imx-jobs-<source>`; this run uses LinkedIn, Google, and Built In sessions separately. Never bind, navigate, close, or repurpose an unrelated user tab. One worker owns a source session at a time; parallel work must use separate sessions and staging files. Refresh browser state after navigation or a DOM-changing interaction before reusing element references.

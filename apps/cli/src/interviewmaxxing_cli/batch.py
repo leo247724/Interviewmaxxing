@@ -28,6 +28,15 @@ Guarantees:
 * A hung job is killed (its whole process group) after ``per_job_timeout_s`` and
   recorded as ``error``; the store then holds a lapsing claim the next ``apply`` or
   ``resume`` of that application takes over.
+* Pipeline bookkeeping (``sync_pipeline_card``). Once a job's outcome is known, and
+  before its ledger line is written, a row with a ``pipeline_id`` has its application
+  linked to that Saved card (``PipelineItem.application_id``, the link the service's
+  handoff writes), and a job that no longer accepts applications moves its card from
+  Saved to Closed with a dated history note. Cards are never created, another
+  application's link is never overwritten, and no card is ever moved to Applied.
+
+``build_report`` reads the ledgers back (``interviewmaxxing batch-report``): outcomes,
+holds grouped into categories, per-backend durations and pipeline links.
 """
 
 from __future__ import annotations
@@ -35,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import statistics
 import sys
@@ -42,21 +52,27 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import Field, ValidationError, model_validator
 
 from interviewmaxxing_core import (
+    Application,
     ApplicationState,
     ApplicationStore,
     ApplyOutcome,
     Contract,
     InvalidApplicationUrl,
     LocalPaths,
+    MissingInput,
+    NotFound,
     normalize_application_url,
 )
 
 from .dynamic import DynamicOptions
+
+if TYPE_CHECKING:
+    from interviewmaxxing_pipeline import BoardLanes, PipelineItem, PipelineStore
 
 S = ApplicationState
 
@@ -106,6 +122,14 @@ _LAUNCH_STATES: frozenset[ApplicationState] = frozenset(
     {S.FAILED_RETRYABLE, S.REQUESTED, S.INSPECTING}
 )
 """Stored states that do not count as ``already_recorded``: ``apply`` resumes them."""
+SAVED_LANE = "saved"
+CLOSED_LANE = "closed"
+LINK_ATTEMPTS = 3
+"""Reads and revision-checked writes of one card before a concurrent edit wins."""
+NOTE_REASON_LIMIT = 200
+CLOSED_FALLBACK_REASON = "The job no longer accepts applications."
+REPORT_LABEL_LIMIT = 80
+"""Question wording in ``batch-report`` output; the ledger keeps ``LABEL_LIMIT``."""
 
 
 def _now() -> datetime:
@@ -120,11 +144,15 @@ def default_batch_id(now: datetime | None = None) -> str:
     return (now or _now()).astimezone(UTC).strftime("batch-%Y%m%dT%H%M%SZ")
 
 
-def default_batch_dir(paths: LocalPaths, batch_id: str) -> Path:
-    """``$IMX_HOME/batches/<batch id>``, created owner-only."""
+def _plain_batch_id(batch_id: str) -> str:
     if not batch_id or batch_id in (".", "..") or "/" in batch_id or "\\" in batch_id:
         raise ValueError(f"batch id must be a plain name, got {batch_id!r}")
-    directory = paths.home / "batches" / batch_id
+    return batch_id
+
+
+def default_batch_dir(paths: LocalPaths, batch_id: str) -> Path:
+    """``$IMX_HOME/batches/<batch id>``, created owner-only."""
+    directory = paths.home / "batches" / _plain_batch_id(batch_id)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     return directory
 
@@ -222,9 +250,23 @@ def load_inventory(path: Path, *, backends: set[str] | None = None,
 # --- ledger ---------------------------------------------------------------------------
 
 
+class MissingItem(Contract):
+    """One recorded question or action of a run, with its reason and control paired
+    (``missing_labels``/``missing_reasons`` keep them apart), so holds can be grouped."""
+
+    label: str
+    """The question wording, whitespace collapsed, truncated to ``LABEL_LIMIT``."""
+    reason: str
+    """A ``MissingReason`` value."""
+    control_type: str | None = None
+    """A ``ControlType`` value (``TYPEAHEAD`` for a lookup), when the runner knew it."""
+
+
 class LedgerEntry(Contract):
     """One finished (or skipped) job, as appended to ``ledger.jsonl``. Lives under
-    ``IMX_HOME``: the labels of missing questions are private."""
+    ``IMX_HOME``: the labels of missing questions are private.
+
+    Fields added later have defaults, so earlier ledger lines still read."""
 
     batch_id: str
     listing_id: str
@@ -242,10 +284,25 @@ class LedgerEntry(Contract):
     message: str = ""
     missing_reasons: list[str] = Field(default_factory=list)
     missing_labels: list[str] = Field(default_factory=list)
+    missing_items: list[MissingItem] = Field(default_factory=list)
     exit_code: int | None = None
     started_at: datetime
     finished_at: datetime
     duration_s: float = Field(ge=0.0)
+    linked: bool | None = None
+    """Whether the application is linked to the row's pipeline card; None when the row
+    has no ``pipeline_id`` (or the line predates linking)."""
+    link_reason: str | None = None
+    """Why it is not linked, when ``linked`` is False."""
+    linked_application_id: str | None = None
+    """The application the card links to: this run's application, or the one it was
+    found to duplicate (the application ``record_request`` returns for the URL)."""
+    closed_synced: bool | None = None
+    """For a job that no longer accepts applications, with a card: True when its card
+    was moved from Saved to Closed, False (with ``closed_sync_reason``) when it could not
+    be. None otherwise: no card, not closed, ``--no-sync-closed``, or the card was
+    already in Closed."""
+    closed_sync_reason: str | None = None
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -318,6 +375,9 @@ class BatchOptions(Contract):
     pages): a job is launched only while the prepared count plus the jobs still
     running is below it, and launching stops once the count is reached."""
     include_existing: bool = False
+    sync_closed: bool = True
+    """Move the linked Saved card of a job that no longer accepts applications to
+    Closed (``sync_pipeline_card``)."""
     browser: Literal["playwright", "opencli"] = "playwright"
     opencli_profile: str | None = None
     ai_routing: bool = False
@@ -421,6 +481,14 @@ class BatchSummary(Contract):
     application_ids: dict[str, list[str]] = Field(default_factory=dict)
     ledger_path: str
     stopped_at_max_prepared: bool = False
+    pipeline_linked: int = Field(default=0, ge=0)
+    """Rows whose application is linked to their pipeline card."""
+    pipeline_not_linked: int = Field(default=0, ge=0)
+    pipeline_closed: int = Field(default=0, ge=0)
+    """Rows whose card was moved from Saved to Closed."""
+    pipeline_problems: list[LabelCount] = Field(default_factory=list)
+    """Why cards were not linked or not moved (a move skipped only because the link
+    failed is counted once, under the link reason)."""
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float:
@@ -439,6 +507,19 @@ def latest_entries(entries: Iterable[LedgerEntry]) -> dict[str, LedgerEntry]:
     for entry in entries:
         latest[entry.listing_id] = entry
     return latest
+
+
+def _card_problems(linked: Iterable[LedgerEntry], closed: Iterable[LedgerEntry]) -> list[LabelCount]:
+    """Link reasons of not-linked entries plus reasons of skipped Closed moves; a move
+    skipped only because the link failed is already counted under the link reason."""
+    problems: Counter[str] = Counter()
+    for entry in linked:
+        if entry.linked is False and entry.link_reason:
+            problems[entry.link_reason] += 1
+    for entry in closed:
+        if entry.closed_synced is False and entry.linked is not False and entry.closed_sync_reason:
+            problems[entry.closed_sync_reason] += 1
+    return [LabelCount(label=reason, count=count) for reason, count in problems.most_common()]
 
 
 def summarize(batch_id: str, entries: Sequence[LedgerEntry], *, started_at: datetime,
@@ -478,6 +559,10 @@ def summarize(batch_id: str, entries: Sequence[LedgerEntry], *, started_at: date
         application_ids={k: ids[k] for k in OUTCOMES if ids[k]},
         ledger_path=str(ledger_path),
         stopped_at_max_prepared=stopped_at_max_prepared,
+        pipeline_linked=sum(1 for e in latest.values() if e.linked is True),
+        pipeline_not_linked=sum(1 for e in latest.values() if e.linked is False),
+        pipeline_closed=sum(1 for e in latest.values() if e.closed_synced is True),
+        pipeline_problems=_card_problems(latest.values(), latest.values()),
     )
 
 
@@ -525,6 +610,13 @@ def render_summary_markdown(summary: BatchSummary) -> str:
     if summary.duration_median_s is not None:
         lines += ["", f"- duration per job: median {summary.duration_median_s}s, "
                       f"p95 {summary.duration_p95_s}s"]
+    if summary.pipeline_linked or summary.pipeline_not_linked:
+        lines += ["", f"- pipeline cards: {summary.pipeline_linked} linked, "
+                      f"{summary.pipeline_not_linked} not linked, "
+                      f"{summary.pipeline_closed} moved to Closed"]
+        if summary.pipeline_problems:
+            lines.append("- pipeline problems: " + ", ".join(
+                f"{p.label} ({p.count})" for p in summary.pipeline_problems))
     if summary.top_missing_reasons:
         lines += ["", "## Missing input", "",
                   "reasons: " + ", ".join(f"{r.label} ({r.count})" for r in summary.top_missing_reasons)]
@@ -532,6 +624,177 @@ def render_summary_markdown(summary: BatchSummary) -> str:
         lines += [f"| {_truncate(item.label, 80)} | {item.count} |" for item in summary.top_missing_labels]
     lines += ["", f"ledger: {summary.ledger_path}"]
     return "\n".join(lines) + "\n"
+
+
+# --- pipeline cards -----------------------------------------------------------------------
+
+
+class _Refused(Exception):
+    """A link or move that must not happen; the message is the ledger reason."""
+
+
+def _closes(entry: LedgerEntry) -> bool:
+    """The row observed a job that no longer accepts applications (FAILED_PERMANENT),
+    in this run or, for ``already_recorded``, in an earlier one."""
+    return entry.outcome == "closed" or (
+        entry.outcome == "already_recorded" and entry.state is S.FAILED_PERMANENT)
+
+
+def _pipeline_db(paths: LocalPaths) -> Path:
+    """The existing pipeline database; a batch never creates it. The pipeline package
+    is a workspace member the CLI does not declare, so it is imported on use."""
+    try:
+        from interviewmaxxing_pipeline import default_pipeline_db
+    except ImportError as exc:
+        raise _Refused("pipeline package not installed") from exc
+    db = default_pipeline_db(paths)
+    if not db.is_file():
+        raise _Refused("no pipeline database")
+    return db
+
+
+def _link_target(paths: LocalPaths, candidate_id: str, entry: LedgerEntry) -> Application:
+    """The canonical application for the row's URL: what ``record_request`` (and so the
+    service's handoff) returns for it. It must be the entry's own application, or the
+    application the entry's one was found to duplicate."""
+    assert entry.application_id is not None
+    if not paths.state_db.is_file():
+        raise _Refused("application not found")
+    with ApplicationStore.open(paths.state_db) as store:
+        try:
+            app = store.get_application(entry.application_id)
+        except NotFound:
+            raise _Refused("application not found") from None
+        if app.candidate_id != candidate_id:
+            raise _Refused("application not found")
+        current = store.find_application(candidate_id, entry.application_url)
+    if current is None or (current.id != app.id and app.duplicate_of != current.id):
+        raise _Refused("application does not match the row's URL")
+    return current
+
+
+def _card(store: PipelineStore, candidate_id: str, pipeline_id: str) -> PipelineItem:
+    from interviewmaxxing_pipeline import ItemNotFound
+
+    try:
+        return store.get_item(candidate_id, pipeline_id)
+    except ItemNotFound:
+        raise _Refused("card not found") from None
+
+
+def _link_card(paths: LocalPaths, candidate_id: str, entry: LedgerEntry) -> Application:
+    """Link the row's card to the canonical application for its URL (idempotent) and
+    return that application. The write is the service handoff's own: ``application_id``
+    through the revision-checked ``update_item``; another link is never replaced."""
+    if not entry.application_id:
+        raise _Refused("no application id")
+    assert entry.pipeline_id is not None
+    db = _pipeline_db(paths)
+    target = _link_target(paths, candidate_id, entry)
+    from interviewmaxxing_pipeline import PipelineStore, PipelineUpdate, RevisionConflict
+
+    real_listing = not entry.listing_id.startswith("url:")
+    with PipelineStore.open(db) as store:
+        for _ in range(LINK_ATTEMPTS):
+            card = _card(store, candidate_id, entry.pipeline_id)
+            if card.listing_id and real_listing and card.listing_id != entry.listing_id:
+                raise _Refused("card is for another listing")
+            if card.application_id == target.id:
+                return target
+            if card.application_id is not None:
+                raise _Refused("card links another application")
+            try:
+                store.update_item(candidate_id, card.id, PipelineUpdate(application_id=target.id),
+                                  expected_revision=card.revision)
+            except RevisionConflict:
+                continue
+            return target
+    raise _Refused("card kept changing")
+
+
+def _lane_id(lanes: BoardLanes, wanted: str) -> str | None:
+    """The lane with id ``wanted``, else the one labelled so (case-insensitively)."""
+    if lanes.get(wanted) is not None:
+        return wanted
+    return next((lane.id for lane in lanes.lanes if lane.label.casefold() == wanted), None)
+
+
+def _closed_note(entry: LedgerEntry, target: Application) -> str:
+    """The observed reason and date, for the card's history."""
+    if entry.outcome == "closed":
+        reason, observed = entry.message, entry.finished_at
+    else:  # already_recorded: the stored application observed it earlier
+        reason, observed = target.failure_reason or "", target.updated_at
+    reason = _truncate(reason, NOTE_REASON_LIMIT) or CLOSED_FALLBACK_REASON
+    return (f"Observed closed on {observed.astimezone(UTC):%Y-%m-%d} (UTC) by prepare-batch "
+            f"{entry.batch_id}: {reason} (application {target.id})")
+
+
+def _close_card(paths: LocalPaths, candidate_id: str, entry: LedgerEntry,
+                target: Application) -> bool:
+    """Move the card linked to ``target`` from Saved to Closed with a dated note, through
+    the revision-checked ``move_item``; only the lane changes. False when the card is
+    already in Closed (nothing to do, so a rerun records no problem)."""
+    assert entry.pipeline_id is not None
+    db = _pipeline_db(paths)
+    note = _closed_note(entry, target)
+    from interviewmaxxing_pipeline import PipelineStore, RevisionConflict
+
+    with PipelineStore.open(db) as store:
+        lanes = store.lanes(candidate_id)
+        closed = _lane_id(lanes, CLOSED_LANE)
+        if closed is None:
+            raise _Refused("board has no Closed lane")
+        saved = _lane_id(lanes, SAVED_LANE)
+        for _ in range(LINK_ATTEMPTS):
+            card = _card(store, candidate_id, entry.pipeline_id)
+            if card.application_id != target.id:
+                raise _Refused("card not linked")
+            if card.lane == closed:
+                return False
+            if card.lane != saved:
+                raise _Refused(f"card not in Saved (in {card.lane})")
+            try:
+                store.move_item(candidate_id, card.id, closed, expected_revision=card.revision,
+                                note=note)
+            except RevisionConflict:
+                continue
+            return True
+    raise _Refused("card kept changing")
+
+
+def sync_pipeline_card(paths: LocalPaths, candidate_id: str, entry: LedgerEntry, *,
+                       sync_closed: bool = True) -> LedgerEntry:
+    """Link the entry's application to the row's pipeline card and, when the job no
+    longer accepts applications (and ``sync_closed``), move that card from Saved to
+    Closed. Returns the entry with ``linked``/``link_reason``/``linked_application_id``
+    and ``closed_synced``/``closed_sync_reason`` set; unchanged without ``pipeline_id``.
+
+    Never creates a card or the pipeline database, never replaces another
+    application's link, never changes a card field other than ``application_id`` and
+    the Saved -> Closed lane, and never raises: a failure becomes the recorded reason."""
+    if entry.pipeline_id is None:
+        return entry
+    target: Application | None = None
+    update: dict[str, Any] = {"linked": False, "linked_application_id": None}
+    try:
+        target = _link_card(paths, candidate_id, entry)
+        update.update(linked=True, link_reason=None, linked_application_id=target.id)
+    except _Refused as refused:
+        update["link_reason"] = str(refused)
+    except Exception as exc:  # the ledger line must still be written
+        update["link_reason"] = f"link error: {type(exc).__name__}"
+    if sync_closed and _closes(entry):
+        try:
+            if target is None:
+                raise _Refused("card not linked")
+            if _close_card(paths, candidate_id, entry, target):
+                update.update(closed_synced=True, closed_sync_reason=None)
+        except _Refused as refused:
+            update.update(closed_synced=False, closed_sync_reason=str(refused))
+        except Exception as exc:
+            update.update(closed_synced=False, closed_sync_reason=f"move error: {type(exc).__name__}")
+    return entry.model_copy(update=update)
 
 
 # --- the run ----------------------------------------------------------------------------
@@ -552,6 +815,7 @@ def _entry(options: BatchOptions, row: BatchRow, *, attempt: int, slot: int | No
            outcome: BatchOutcome, started_at: datetime, message: str = "",
            application_id: str | None = None, state: ApplicationState | None = None,
            missing_reasons: Sequence[str] = (), missing_labels: Sequence[str] = (),
+           missing_items: Sequence[MissingItem] = (),
            exit_code: int | None = None) -> LedgerEntry:
     finished_at = _now()
     return LedgerEntry(
@@ -560,6 +824,8 @@ def _entry(options: BatchOptions, row: BatchRow, *, attempt: int, slot: int | No
         message=_truncate(message, MESSAGE_LIMIT),
         missing_reasons=list(missing_reasons),
         missing_labels=[_truncate(label, LABEL_LIMIT) for label in missing_labels],
+        missing_items=[item.model_copy(update={"label": _truncate(item.label, LABEL_LIMIT)})
+                       for item in missing_items],
         exit_code=exit_code, started_at=started_at, finished_at=finished_at,
         duration_s=max((finished_at - started_at).total_seconds(), 0.0),
     )
@@ -621,6 +887,9 @@ async def _run_one(options: BatchOptions, row: BatchRow, *, attempt: int, slot: 
         state=outcome.state, exit_code=code,
         missing_reasons=sorted({m.reason.value for m in outcome.missing_inputs}),
         missing_labels=[m.label for m in outcome.missing_inputs],
+        missing_items=[MissingItem(label=m.label, reason=m.reason.value,
+                                   control_type=m.control_type.value if m.control_type else None)
+                       for m in outcome.missing_inputs],
     )
 
 
@@ -679,6 +948,11 @@ async def run_batch(options: BatchOptions, rows: Sequence[BatchRow], *,
         if on_entry is not None:
             on_entry(entry)
 
+    def bookkeep(entry: LedgerEntry) -> LedgerEntry:
+        """Link the Saved card (and close it) once the outcome is known; in a thread."""
+        return sync_pipeline_card(options.paths, options.candidate_id, entry,
+                                  sync_closed=options.sync_closed)
+
     def bound_reached() -> bool:
         return options.max_prepared is not None and prepared >= options.max_prepared
 
@@ -704,10 +978,11 @@ async def run_batch(options: BatchOptions, rows: Sequence[BatchRow], *,
                                                        row.application_url)
                     if existing is not None:
                         app_id, state = existing
-                        record(_entry(options, row, attempt=attempt, slot=None,
-                                      outcome="already_recorded", started_at=_now(),
-                                      application_id=app_id, state=state,
-                                      message=f"an application already exists ({state.value})"))
+                        skipped = _entry(options, row, attempt=attempt, slot=None,
+                                         outcome="already_recorded", started_at=_now(),
+                                         application_id=app_id, state=state,
+                                         message=f"an application already exists ({state.value})")
+                        record(await asyncio.to_thread(bookkeep, skipped))
                         continue
                 launched += 1
                 running += 1
@@ -716,6 +991,7 @@ async def run_batch(options: BatchOptions, rows: Sequence[BatchRow], *,
                 entry = await _run_one(options, row, attempt=attempt, slot=slot)
             finally:
                 slots.put_nowait(slot)
+            entry = await asyncio.to_thread(bookkeep, entry)
             async with changed:
                 running -= 1
                 record(entry)
@@ -743,29 +1019,357 @@ def format_entry(entry: LedgerEntry) -> str:
     line = f"{entry.outcome:<16} {entry.backend or '-':<12} {job} ({entry.duration_s:.1f}s)"
     if entry.application_id:
         line += f" [{entry.application_id}]"
+    if entry.linked is not None:
+        card = "card linked" if entry.linked else "card not linked"
+        line += f" [{card}, moved to Closed]" if entry.closed_synced else f" [{card}]"
     return line
 
 
+# --- report -------------------------------------------------------------------------------
+
+HOLD_CATEGORIES: tuple[str, ...] = (
+    "custom_control", "explicit_answer", "screener_yes_no", "lookup", "narrative", "other",
+)
+"""What held an application, by simple rules on its reason, control and wording:
+
+``custom_control``   UNSUPPORTED_CONTROL.
+``explicit_answer``  EXPLICIT_ANSWER_REQUIRED or UNCOVERED_ATTESTATION.
+``lookup``           NO_ANSWER on a TYPEAHEAD (a lookup such as a location).
+``screener_yes_no``  NO_ANSWER whose wording starts with "Do you", "Have you" or "Are you".
+``narrative``        NO_ANSWER whose wording asks to describe, tell, explain or why.
+``other``            everything else (AMBIGUOUS, USER_ACTION, an unknown reason, ...).
+"""
+_SCREENER = re.compile(r"(?:do|have|are) you\b")
+_NARRATIVE = re.compile(r"\b(?:describe|tell|why|explain)\b")
+_LEADING = re.compile(r"^[\W_]+")
+
+
+def categorize_hold(label: str, reason: str | None, control_type: str | None = None) -> str:
+    """The ``HOLD_CATEGORIES`` entry for one recorded question or action."""
+    if reason == "UNSUPPORTED_CONTROL":
+        return "custom_control"
+    if reason in ("EXPLICIT_ANSWER_REQUIRED", "UNCOVERED_ATTESTATION"):
+        return "explicit_answer"
+    if reason != "NO_ANSWER":
+        return "other"
+    if (control_type or "").upper() == "TYPEAHEAD":
+        return "lookup"
+    text = _LEADING.sub("", " ".join(label.casefold().split()))
+    if _SCREENER.match(text):
+        return "screener_yes_no"
+    if _NARRATIVE.search(text):
+        return "narrative"
+    return "other"
+
+
+class HoldCategory(Contract):
+    category: str
+    holds: int = Field(ge=0)
+    """Recorded questions or actions in this category."""
+    applications: int = Field(ge=0)
+    """Distinct applications with at least one of them."""
+    top_labels: list[LabelCount] = Field(default_factory=list)
+    """Wording truncated to ``REPORT_LABEL_LIMIT``, most common first."""
+    application_ids: list[str] = Field(default_factory=list)
+
+
+class BackendDurations(Contract):
+    runs: int = Field(ge=0)
+    median_s: float | None = None
+    p95_s: float | None = None
+
+
+class PipelineCounts(Contract):
+    rows_with_card: int = Field(default=0, ge=0)
+    linked: int = Field(default=0, ge=0)
+    not_linked: int = Field(default=0, ge=0)
+    closed_moved: int = Field(default=0, ge=0)
+    closed_skipped: int = Field(default=0, ge=0)
+    problems: list[LabelCount] = Field(default_factory=list)
+
+
+class BatchReport(Contract):
+    """``batch-report``: what one or all batch ledgers say, without CLI messages and
+    with question wording truncated to ``REPORT_LABEL_LIMIT``."""
+
+    batches: list[str]
+    batches_dir: str
+    rows: int = Field(ge=0)
+    """Distinct listings. Each counts once: its latest launched entry across the
+    ledgers read, else its latest ``already_recorded`` entry."""
+    totals: dict[str, int] = Field(default_factory=dict)
+    by_backend: dict[str, dict[str, int]] = Field(default_factory=dict)
+    durations: dict[str, BackendDurations] = Field(default_factory=dict)
+    """Per backend, over every launched attempt."""
+    duration_median_s: float | None = None
+    duration_p95_s: float | None = None
+    holds: list[HoldCategory] = Field(default_factory=list)
+    pipeline: PipelineCounts = Field(default_factory=PipelineCounts)
+
+
+def list_batches(paths: LocalPaths) -> list[str]:
+    """Ids of the batches under ``$IMX_HOME/batches`` that have a ledger. Creates nothing."""
+    root = paths.home / "batches"
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / LEDGER_NAME).is_file())
+
+
+def _durations(values: Sequence[float]) -> BackendDurations:
+    if not values:
+        return BackendDurations(runs=0)
+    return BackendDurations(runs=len(values), median_s=round(statistics.median(values), 2),
+                            p95_s=round(_percentile(values, 0.95), 2))
+
+
+def _recorded_missing(store: ApplicationStore, application_id: str) -> list[MissingInput]:
+    """The questions the application last stopped for: its latest NEEDS_INPUT event's
+    ``missing_inputs``, then its latest packet's."""
+    items: list[MissingInput] = []
+    for event in reversed(store.list_events(application_id)):
+        raw = event.metadata.get("missing_inputs") if event.to_state is S.NEEDS_INPUT else None
+        if isinstance(raw, list) and raw:
+            for value in raw:
+                try:
+                    items.append(MissingInput.model_validate(value))
+                except ValidationError:
+                    continue
+            break
+    packet = store.latest_packet(application_id)
+    if packet is not None:
+        items.extend(packet.missing_inputs)
+    return items
+
+
+class _StoredHolds:
+    """Reasons and controls recorded in the application store, for ledger lines written
+    before ``missing_items`` existed. Opened on first use, only when the store exists."""
+
+    def __init__(self, paths: LocalPaths) -> None:
+        self.paths = paths
+        self.store: ApplicationStore | None = None
+        self.unavailable = False
+
+    def __call__(self, application_id: str | None) -> dict[str, tuple[str, str | None]]:
+        if not application_id or self.unavailable:
+            return {}
+        try:
+            if self.store is None:
+                if not self.paths.state_db.is_file():
+                    self.unavailable = True
+                    return {}
+                self.store = ApplicationStore.open(self.paths.state_db)
+            recorded = _recorded_missing(self.store, application_id)
+        except Exception:  # an unreadable store only loses the refinement
+            self.unavailable = self.store is None
+            return {}
+        known: dict[str, tuple[str, str | None]] = {}
+        for item in recorded:
+            known.setdefault(_truncate(item.label, LABEL_LIMIT), (
+                item.reason.value, item.control_type.value if item.control_type else None))
+        return known
+
+    def close(self) -> None:
+        if self.store is not None:
+            self.store.close()
+
+
+def _hold_items(entry: LedgerEntry, stored: _StoredHolds) -> list[tuple[str, str | None, str | None]]:
+    """``(label, reason, control_type)`` per recorded question of ``entry``."""
+    if entry.missing_items:
+        return [(m.label, m.reason, m.control_type) for m in entry.missing_items]
+    if not entry.missing_labels:
+        return []
+    only = entry.missing_reasons[0] if len(entry.missing_reasons) == 1 else None
+    known = stored(entry.application_id)
+    items: list[tuple[str, str | None, str | None]] = []
+    for label in entry.missing_labels:
+        reason, control = known.get(label, (only, None))
+        items.append((label, reason, control))
+    return items
+
+
+def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
+                 top: int = 10) -> BatchReport:
+    """Read the named batch ledgers (default: every batch) and summarize them. Raises
+    ``ValueError`` for a batch id that is not a plain name and ``FileNotFoundError`` for
+    a named batch without a ledger. Creates nothing and writes no file; only ledger
+    lines older than ``missing_items`` open the existing application store (as
+    ``status`` does)."""
+    root = paths.home / "batches"
+    if batch_ids is None:
+        ids = list_batches(paths)
+    else:
+        ids = sorted({_plain_batch_id(batch_id) for batch_id in batch_ids})
+        for batch_id in ids:
+            if not (root / batch_id / LEDGER_NAME).is_file():
+                raise FileNotFoundError(f"no ledger for batch {batch_id!r} under {root}")
+    timeline = sorted(
+        ((entry.finished_at.timestamp(), b, n, entry) for b, batch_id in enumerate(ids)
+         for n, entry in enumerate(read_ledger(root / batch_id / LEDGER_NAME))),
+        key=lambda item: item[:3])
+    entries = [entry for *_, entry in timeline]
+    newest: dict[str, LedgerEntry] = {}
+    launched: dict[str, LedgerEntry] = {}
+    link_state: dict[str, LedgerEntry] = {}
+    close_state: dict[str, LedgerEntry] = {}
+    with_card: set[str] = set()
+    for entry in entries:
+        newest[entry.listing_id] = entry
+        if entry.outcome != "already_recorded":
+            launched[entry.listing_id] = entry
+        if entry.pipeline_id:
+            with_card.add(entry.listing_id)
+        if entry.linked is not None:
+            link_state[entry.listing_id] = entry
+        if entry.closed_synced is not None:
+            close_state[entry.listing_id] = entry
+    rows = [launched.get(listing_id, entry) for listing_id, entry in newest.items()]
+
+    totals: Counter[str] = Counter(e.outcome for e in rows)
+    by_backend: dict[str, Counter[str]] = defaultdict(Counter)
+    for entry in rows:
+        by_backend[entry.backend or "(none)"][entry.outcome] += 1
+    runs: dict[str, list[float]] = defaultdict(list)
+    for entry in entries:
+        if entry.outcome != "already_recorded":
+            runs[entry.backend or "(none)"].append(entry.duration_s)
+    overall = _durations([d for values in runs.values() for d in values])
+
+    labels: dict[str, Counter[str]] = defaultdict(Counter)
+    app_ids: dict[str, dict[str, None]] = defaultdict(dict)
+    stored = _StoredHolds(paths)
+    try:
+        for entry in rows:
+            for label, reason, control in _hold_items(entry, stored):
+                category = categorize_hold(label, reason, control)
+                labels[category][_truncate(label, REPORT_LABEL_LIMIT)] += 1
+                if entry.application_id:
+                    app_ids[category][entry.application_id] = None
+    finally:
+        stored.close()
+    holds = [
+        HoldCategory(category=category, holds=sum(labels[category].values()),
+                     applications=len(app_ids[category]),
+                     top_labels=[LabelCount(label=label, count=count)
+                                 for label, count in labels[category].most_common(top)],
+                     application_ids=list(app_ids[category]))
+        for category in HOLD_CATEGORIES if labels[category]
+    ]
+    holds.sort(key=lambda h: -h.holds)  # stable: ties keep HOLD_CATEGORIES order
+
+    return BatchReport(
+        batches=ids, batches_dir=str(root), rows=len(rows),
+        totals={k: totals[k] for k in OUTCOMES if totals[k]},
+        by_backend={backend: {k: counts[k] for k in OUTCOMES if counts[k]}
+                    for backend, counts in sorted(by_backend.items())},
+        durations={backend: _durations(values) for backend, values in sorted(runs.items())},
+        duration_median_s=overall.median_s, duration_p95_s=overall.p95_s,
+        holds=holds,
+        pipeline=PipelineCounts(
+            rows_with_card=len(with_card),
+            linked=sum(1 for e in link_state.values() if e.linked),
+            not_linked=sum(1 for e in link_state.values() if e.linked is False),
+            closed_moved=sum(1 for e in close_state.values() if e.closed_synced),
+            closed_skipped=sum(1 for e in close_state.values() if e.closed_synced is False),
+            problems=_card_problems(link_state.values(), close_state.values()),
+        ),
+    )
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _seconds(value: float | None) -> str:
+    return "-" if value is None else f"{value}"
+
+
+def render_report_markdown(report: BatchReport) -> str:
+    """The report as Markdown: no CLI messages, wording truncated to 80 characters."""
+    lines = ["# Batch report", ""]
+    if not report.batches:
+        return "\n".join([*lines, f"No batch ledgers under {report.batches_dir}."]) + "\n"
+    lines += [
+        f"- batches: {', '.join(report.batches)} (in {report.batches_dir})",
+        f"- rows: {report.rows} (each listing once: its latest launched outcome, else "
+        "already_recorded)",
+        "- nothing was submitted (preparation only)",
+        "",
+        "## Totals",
+        "",
+        "| outcome | count |",
+        "| --- | --- |",
+    ]
+    lines += [f"| {k} | {v} |" for k, v in report.totals.items()]
+    lines.append(f"| **all** | {sum(report.totals.values())} |")
+    if report.by_backend:
+        columns = [k for k in OUTCOMES if any(k in c for c in report.by_backend.values())]
+        lines += ["", "## By backend", "", "| backend | " + " | ".join(columns) + " |",
+                  "| --- |" + " --- |" * len(columns)]
+        lines += ["| " + backend + " | " + " | ".join(str(counts.get(k, 0)) for k in columns) + " |"
+                  for backend, counts in report.by_backend.items()]
+    if report.durations:
+        lines += ["", "## Durations", "", "| backend | runs | median s | p95 s |",
+                  "| --- | --- | --- | --- |"]
+        lines += [f"| {backend} | {d.runs} | {_seconds(d.median_s)} | {_seconds(d.p95_s)} |"
+                  for backend, d in report.durations.items()]
+        lines.append(f"| **all** | {sum(d.runs for d in report.durations.values())} | "
+                     f"{_seconds(report.duration_median_s)} | {_seconds(report.duration_p95_s)} |")
+    if report.holds:
+        lines += ["", "## Holds by category"]
+        for category in report.holds:
+            lines += ["", f"### {category.category}: {category.holds} hold(s) in "
+                          f"{category.applications} application(s)",
+                      "", "| question | count |", "| --- | --- |"]
+            lines += [f"| {_cell(item.label)} | {item.count} |" for item in category.top_labels]
+            if category.application_ids:
+                lines += ["", "applications: " + ", ".join(category.application_ids)]
+        lines += ["", "Inspect one with: interviewmaxxing status APP"]
+    pipeline = report.pipeline
+    if pipeline.rows_with_card:
+        lines += ["", "## Pipeline cards", "",
+                  f"- rows with a card: {pipeline.rows_with_card}; linked {pipeline.linked}, "
+                  f"not linked {pipeline.not_linked}; moved to Closed {pipeline.closed_moved}, "
+                  f"not moved {pipeline.closed_skipped}"]
+        if pipeline.problems:
+            lines.append("- problems: " + ", ".join(f"{p.label} ({p.count})"
+                                                    for p in pipeline.problems))
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
+    "HOLD_CATEGORIES",
     "OUTCOMES",
     "PREPARED_PREFIX",
+    "REPORT_LABEL_LIMIT",
+    "BackendDurations",
     "BatchOptions",
     "BatchOutcome",
+    "BatchReport",
     "BatchRow",
     "BatchSummary",
+    "HoldCategory",
     "LedgerEntry",
+    "MissingItem",
+    "PipelineCounts",
     "append_ledger",
+    "build_report",
+    "categorize_hold",
     "classify",
     "default_batch_dir",
     "default_batch_id",
     "default_command",
     "format_entry",
+    "list_batches",
     "load_inventory",
     "plan",
     "read_inventory",
     "read_ledger",
+    "render_report_markdown",
     "render_summary_markdown",
     "run_batch",
     "summarize",
+    "sync_pipeline_card",
     "write_summary",
 ]

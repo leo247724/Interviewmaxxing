@@ -594,6 +594,7 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
             batch_id=args.batch_id or default_batch_id(), workers=args.workers,
             per_job_timeout_s=args.per_job_timeout, retry_retryable=args.retry_retryable,
             max_prepared=args.max_prepared, include_existing=args.include_existing,
+            sync_closed=args.sync_closed,
             browser=args.browser, opencli_profile=args.opencli_profile,
             ai_routing=args.ai_routing, env_file=Path(args.env_file) if args.env_file else None,
             writer_model=args.writer_model,
@@ -641,6 +642,28 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
         print(render_summary_markdown(summary), end="")
         print(f"batch directory: {options.batch_dir}")
     return EXIT_OK if sum(summary.totals.values()) else EXIT_ERROR
+
+
+def cmd_batch_report(args: argparse.Namespace) -> int:
+    """Summarize one or all prepare-batch ledgers; read-only. See
+    ``interviewmaxxing_cli.batch.build_report``."""
+    from .batch import build_report, render_report_markdown
+
+    paths = _paths(args)
+    try:
+        report = build_report(paths, None if args.batch_id is None else [args.batch_id],
+                              top=args.top)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.json:
+        print(_dump(report))
+    else:
+        print(render_report_markdown(report), end="")
+    return EXIT_OK
 
 
 def cmd_paths(args: argparse.Namespace) -> int:
@@ -733,11 +756,14 @@ def build_parser() -> argparse.ArgumentParser:
         "stops at its final review step or earlier (NEEDS_INPUT); nothing is submitted. "
         "Finished jobs are recorded in $IMX_HOME/batches/<batch id>/ledger.jsonl; running "
         "the same --batch-id again skips them and retries failures. Sign-in, CAPTCHA and "
-        "custom controls stop as NEEDS_INPUT; finish them later with `resume APP --act`.",
+        "custom controls stop as NEEDS_INPUT; finish them later with `resume APP --act`. "
+        "A row's application is linked to its Saved pipeline card (pipeline_id); a job that "
+        "no longer accepts applications moves its Saved card to Closed with a dated note. "
+        "No card is created or moved to Applied. Summarize ledgers with `batch-report`.",
     )
     p.add_argument("--inventory", required=True, metavar="FILE",
-                   help="JSON list of Saved jobs (listing_id, source_application_url, "
-                        "backend, status, company, title)")
+                   help="JSON list of Saved jobs (listing_id, pipeline_id, "
+                        "source_application_url, backend, status, company, title)")
     p.add_argument("--backends", metavar="A,B,C", help="only these backends")
     p.add_argument("--statuses", metavar="A,B", default="resolved",
                    help="only these inventory statuses (default: resolved)")
@@ -755,10 +781,30 @@ def build_parser() -> argparse.ArgumentParser:
                                                     "reuse it to resume")
     p.add_argument("--include-existing", action="store_true",
                    help="also run URLs that already have an application in the store")
+    p.add_argument("--sync-closed", action=argparse.BooleanOptionalAction, default=True,
+                   help="move the linked Saved card of a job that no longer accepts "
+                        "applications to Closed, with a dated note (default: on)")
     p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
     _dynamic_flags(p)
     p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_prepare_batch)
+
+    p = sub.add_parser(
+        "batch-report",
+        help="summarize prepare-batch ledgers: outcomes, holds by category, durations",
+        description="Read one batch ledger ($IMX_HOME/batches/<batch id>/ledger.jsonl) or "
+        "all of them and print totals by outcome and backend, the questions that held "
+        "applications grouped into categories (custom_control, explicit_answer, "
+        "screener_yes_no, lookup, narrative, other) with their application ids, "
+        "per-backend median and p95 durations and pipeline card links. Writes no file; "
+        "question wording is truncated to 80 characters and CLI messages are never shown.",
+    )
+    p.add_argument("batch_id", nargs="?", metavar="BATCH_ID",
+                   help="one batch (default: every batch under $IMX_HOME/batches)")
+    p.add_argument("--top", type=_int_range(1, 100), default=10, metavar="N",
+                   help="questions shown per category (1..100, default 10)")
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.set_defaults(func=cmd_batch_report)
 
     p = sub.add_parser("classify", help="observe one URL without filling or advancing forms")
     p.add_argument("url", metavar="APPLICATION_URL")

@@ -6,12 +6,17 @@ already-recorded skip and the summary are exercised without Playwright."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
+import sqlite3
 import stat
 import sys
 import textwrap
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,14 +26,35 @@ from interviewmaxxing_cli.batch import (
     BatchRow,
     LedgerEntry,
     classify,
+    format_entry,
     load_inventory,
     read_inventory,
     read_ledger,
     render_summary_markdown,
     run_batch,
+    summarize,
 )
 from interviewmaxxing_cli.main import EXIT_OK, EXIT_USAGE, build_parser, main
-from interviewmaxxing_core import ApplicationState, ApplicationStore, ApplyOutcome, LocalPaths
+from interviewmaxxing_core import (
+    Application,
+    ApplicationState,
+    ApplicationStore,
+    ApplyOutcome,
+    IdentityEvidenceKind,
+    JobIdentityObservation,
+    LocalPaths,
+)
+from interviewmaxxing_pipeline import (
+    BoardLane,
+    BoardLanes,
+    NewPipelineItem,
+    PipelineItem,
+    PipelineStore,
+    PipelineUpdate,
+    RevisionConflict,
+    TrackingFields,
+    default_pipeline_db,
+)
 
 S = ApplicationState
 ORIGIN = "https://jobs.fictional.example/brambleway"
@@ -524,3 +550,779 @@ def test_prepare_batch_command_runs_the_fake_cli(fake, tmp_path, monkeypatch, ca
     out, err = capsys.readouterr()
     assert code == EXIT_OK and "# Batch cli" in out and "| **all** | 2 |" in out
     assert "already settled: 2" in out and f"batch directory: {home / 'batches' / 'cli'}" in out
+
+
+# --- pipeline cards ---------------------------------------------------------------------------
+# ``sync_pipeline_card`` links a row's application to the row's Saved card and moves the card of
+# a closed job to Closed. It is looked up on the module when called (``synced``).
+
+CARD_URL = f"{ORIGIN}/card"
+CLOSED_REASON = "The job is no longer accepting applications."
+FINISHED = datetime(2026, 9, 23, 21, 15, tzinfo=UTC)
+LINK_FIELDS = ("linked", "link_reason", "linked_application_id", "closed_synced",
+               "closed_sync_reason")
+LONG_QUESTION = "Explain in your own words why this role fits you. " * 4
+UPDATE_ITEM = PipelineStore.update_item  # the real methods, for edits made during a race
+MOVE_ITEM = PipelineStore.move_item
+
+Edit = Callable[[PipelineStore, str, int], PipelineItem]
+
+
+@pytest.fixture
+def pipeline(paths: LocalPaths) -> Iterator[PipelineStore]:
+    with PipelineStore.from_paths(paths) as store:
+        yield store
+
+
+def stored_application(paths: LocalPaths, url: str = CARD_URL,
+                       state: ApplicationState = S.NEEDS_INPUT, *, candidate: str = "default",
+                       failure_reason: str = CLOSED_REASON) -> Application:
+    """An application for ``url`` left NEEDS_INPUT or FAILED_PERMANENT, as a runner leaves it."""
+    assert state in (S.NEEDS_INPUT, S.FAILED_PERMANENT)
+    paths.ensure()
+    with ApplicationStore.open(paths.state_db) as store:
+        app = store.record_request(candidate, url).application
+        claim = store.claim(app.id, "test")
+        store.transition(claim, S.INSPECTING)
+        if state is S.FAILED_PERMANENT:
+            store.transition(claim, state, failure_reason=failure_reason)
+        else:
+            store.transition(claim, state, metadata={"missing_inputs": [], "reason": "fictional"})
+        store.release(claim)
+        return store.get_application(app.id)
+
+
+def saved_card(pipeline: PipelineStore, listing_id: str | None = "lst_card", url: str = CARD_URL,
+               *, candidate: str = "default", lane: str = "saved",
+               tracking: TrackingFields | None = None, **extra: Any) -> PipelineItem:
+    return pipeline.create_item(candidate, NewPipelineItem(
+        tracking=tracking or TrackingFields(company="Brambleway", role="Fictional Analyst"),
+        lane=lane, listing_id=listing_id, application_url=url, **extra))
+
+
+def card_entry(pipeline_id: str | None, application_id: str | None, **fields: Any) -> LedgerEntry:
+    """A finished ledger entry for row ``lst_card`` (``CARD_URL``); ``fields`` override."""
+    finished = fields.pop("finished_at", FINISHED)
+    values: dict[str, Any] = {
+        "batch_id": "b1", "listing_id": "lst_card", "pipeline_id": pipeline_id,
+        "company": "Brambleway", "title": "Fictional Analyst", "application_url": CARD_URL,
+        "backend": "mock", "status": "resolved", "attempt": 1, "worker_slot": 0,
+        "application_id": application_id, "state": S.NEEDS_INPUT, "outcome": "needs_input",
+        "message": "1 required question(s) need your answer.", "exit_code": 3,
+        "started_at": finished - timedelta(seconds=4), "finished_at": finished, "duration_s": 4.0,
+    }
+    return LedgerEntry(**(values | fields))
+
+
+def closed_entry(pipeline_id: str | None, application_id: str | None,
+                 **fields: Any) -> LedgerEntry:
+    closed = {"outcome": "closed", "state": S.FAILED_PERMANENT, "message": CLOSED_REASON}
+    return card_entry(pipeline_id, application_id, **(closed | fields))
+
+
+def link_fields(entry: LedgerEntry) -> tuple[Any, ...]:
+    """(linked, link_reason, linked_application_id, closed_synced, closed_sync_reason)"""
+    return tuple(getattr(entry, name) for name in LINK_FIELDS)
+
+
+def synced(paths: LocalPaths, entry: LedgerEntry, **kwargs: Any) -> LedgerEntry:
+    """``sync_pipeline_card`` for the default candidate; only the link fields may change."""
+    result = batch_module.sync_pipeline_card(paths, "default", entry, **kwargs)
+    assert result.model_dump(exclude=set(LINK_FIELDS)) == \
+        entry.model_dump(exclude=set(LINK_FIELDS))
+    return result
+
+
+def lane_moves(pipeline: PipelineStore, card_id: str) -> list[tuple[str | None, str | None]]:
+    return [(h.from_lane, h.to_lane) for h in pipeline.history("default", card_id)
+            if h.kind == "moved"]
+
+
+def edit_card(**changes: Any) -> Edit:
+    """Someone else's edit of a default-candidate card: ``lane=`` moves it, else an update."""
+    def apply(store: PipelineStore, item_id: str, revision: int) -> PipelineItem:
+        if "lane" in changes:
+            return MOVE_ITEM(store, "default", item_id, changes["lane"],
+                             expected_revision=revision)
+        return UPDATE_ITEM(store, "default", item_id, PipelineUpdate(**changes),
+                           expected_revision=revision)
+    return apply
+
+
+def lose_races(monkeypatch: pytest.MonkeyPatch, method: str, *, edit: Edit | None = None,
+               times: int | None = 1) -> list[dict[str, Any]]:
+    """Patch ``PipelineStore.<method>`` so that its first ``times`` calls (every call when
+    None) lose a race: ``edit`` (when given) changes the card first and the call raises
+    ``RevisionConflict``. Later calls go through. Returns every call's arguments."""
+    original = getattr(PipelineStore, method)
+    signature = inspect.signature(original)
+    calls: list[dict[str, Any]] = []
+
+    def racing(*args: Any, **kwargs: Any) -> PipelineItem:
+        call = signature.bind(*args, **kwargs).arguments
+        calls.append(call)
+        if times is None or len(calls) <= times:
+            store, item_id, revision = call["self"], call["item_id"], call["expected_revision"]
+            current = edit(store, item_id, revision) if edit else \
+                store.get_item(call["candidate_id"], item_id)
+            raise RevisionConflict(current, revision)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(PipelineStore, method, racing)
+    return calls
+
+
+def test_sync_links_the_rows_application_to_its_saved_card(paths, pipeline):
+    app = stored_application(paths)
+    card = saved_card(pipeline)
+    result = synced(paths, card_entry(card.id, app.id))
+    assert link_fields(result) == (True, None, app.id, None, None)
+    linked = pipeline.get_item("default", card.id)
+    assert (linked.lane, linked.application_id, linked.revision) == \
+        ("saved", app.id, card.revision + 1)
+    changed = {"application_id", "revision", "updated_at"}
+    assert linked.model_dump(exclude=changed) == card.model_dump(exclude=changed)
+    assert lane_moves(pipeline, card.id) == []
+
+    # Linking again is idempotent: no write and no revision bump.
+    again = synced(paths, card_entry(card.id, app.id))
+    assert link_fields(again) == (True, None, app.id, None, None)
+    assert pipeline.get_item("default", card.id) == linked
+
+
+def test_sync_never_overwrites_a_link_to_another_application(paths, pipeline):
+    app = stored_application(paths)
+    other = stored_application(paths, f"{ORIGIN}/other")
+    card = saved_card(pipeline, application_id=other.id)
+    result = synced(paths, card_entry(card.id, app.id))
+    assert link_fields(result) == (False, "card links another application", None, None, None)
+    assert pipeline.get_item("default", card.id) == card
+
+
+def test_sync_only_uses_this_candidates_existing_card(paths, pipeline):
+    app = stored_application(paths)
+    theirs = saved_card(pipeline, candidate="other")
+    for card_id in ("pipe_missing", theirs.id):
+        result = synced(paths, card_entry(card_id, app.id))
+        assert link_fields(result) == (False, "card not found", None, None, None)
+    assert pipeline.list_items("default") == []  # never creates a card
+    assert pipeline.list_items("other") == [theirs]
+
+
+def test_sync_checks_the_cards_listing(paths, pipeline):
+    app = stored_application(paths)
+    card = saved_card(pipeline, "lst_elsewhere")
+    result = synced(paths, card_entry(card.id, app.id))
+    assert link_fields(result) == (False, "card is for another listing", None, None, None)
+    assert pipeline.get_item("default", card.id) == card
+
+    # A row keyed by its URL has no listing id to compare; a card without a listing takes
+    # the row that names it.
+    url = f"{ORIGIN}/keyed-by-url"
+    by_url = stored_application(paths, url)
+    keyed = saved_card(pipeline, "lst_elsewhere", url)
+    result = synced(paths, card_entry(keyed.id, by_url.id, application_url=url,
+                                      listing_id=f"url:{url}"))
+    assert link_fields(result) == (True, None, by_url.id, None, None)
+    url = f"{ORIGIN}/no-listing"
+    plain = stored_application(paths, url)
+    unlisted = saved_card(pipeline, None, url)
+    result = synced(paths, card_entry(unlisted.id, plain.id, application_url=url))
+    assert link_fields(result) == (True, None, plain.id, None, None)
+    assert pipeline.get_item("default", unlisted.id).application_id == plain.id
+
+
+def test_sync_needs_the_rows_own_application(paths, pipeline):
+    app = stored_application(paths)
+    theirs = stored_application(paths, f"{ORIGIN}/theirs", candidate="other")
+    stored_application(paths, f"{ORIGIN}/other")
+    card = saved_card(pipeline)
+    for entry, reason in (
+        (card_entry(card.id, None, outcome="error", state=None,
+                    message="the CLI printed nothing (exit 1)"), "no application id"),
+        (card_entry(card.id, "app_missing"), "application not found"),
+        (card_entry(card.id, theirs.id, application_url=f"{ORIGIN}/theirs"),
+         "application not found"),
+        (card_entry(card.id, app.id, application_url=f"{ORIGIN}/unknown"),
+         "application does not match the row's URL"),
+        (card_entry(card.id, app.id, application_url=f"{ORIGIN}/other"),
+         "application does not match the row's URL"),
+    ):
+        assert link_fields(synced(paths, entry)) == (False, reason, None, None, None)
+    assert pipeline.get_item("default", card.id) == card
+
+
+def test_sync_without_a_state_database_finds_no_application(paths, pipeline):
+    card = saved_card(pipeline)
+    assert not paths.state_db.exists()
+    result = synced(paths, card_entry(card.id, "app_fictional"))
+    assert link_fields(result) == (False, "application not found", None, None, None)
+    assert pipeline.get_item("default", card.id) == card
+    assert not paths.state_db.exists()  # looking is read-only: no empty store appears
+
+
+def test_sync_links_the_surviving_application_of_a_duplicate(paths, pipeline):
+    paths.ensure()
+    seen = JobIdentityObservation(
+        ats_type="mock", ats_tenant="brambleway", external_job_id="job-7",
+        evidence_kind=IdentityEvidenceKind.ATS_JOB_ID_ON_PAGE,
+        evidence="Job 7 on the fictional form")
+    with ApplicationStore.open(paths.state_db) as store:
+        survivor = store.record_request("default", f"{ORIGIN}/first").application
+        claim = store.claim(survivor.id, "test")
+        store.transition(claim, S.INSPECTING)
+        store.bind_job_identity(claim, seen)
+        store.release(claim)
+        duplicate = store.record_request("default", f"{ORIGIN}/alias").application
+        claim = store.claim(duplicate.id, "test")
+        store.transition(claim, S.INSPECTING)
+        assert store.bind_job_identity(claim, seen).duplicate_of == survivor.id
+        store.release(claim)
+        assert store.get_application(duplicate.id).state is S.DUPLICATE
+        assert store.find_application("default", f"{ORIGIN}/alias").id == survivor.id
+    stored_application(paths, f"{ORIGIN}/unrelated")
+    card = saved_card(pipeline, url=f"{ORIGIN}/alias")
+    entry = card_entry(card.id, duplicate.id, application_url=f"{ORIGIN}/alias",
+                       outcome="duplicate", state=S.DUPLICATE,
+                       message="This job duplicates an application that already exists.")
+    assert link_fields(synced(paths, entry)) == (True, None, survivor.id, None, None)
+    assert pipeline.get_item("default", card.id).application_id == survivor.id
+
+    # A duplicate stands in only for the application it duplicates.
+    other = saved_card(pipeline, url=f"{ORIGIN}/unrelated")
+    elsewhere = entry.model_copy(update={"pipeline_id": other.id,
+                                         "application_url": f"{ORIGIN}/unrelated"})
+    assert link_fields(synced(paths, elsewhere)) == \
+        (False, "application does not match the row's URL", None, None, None)
+    assert pipeline.get_item("default", other.id) == other
+
+
+def test_sync_without_a_pipeline_database_creates_none(paths):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    database = default_pipeline_db(paths)
+    result = synced(paths, closed_entry("pipe_fictional", app.id))
+    assert link_fields(result) == (False, "no pipeline database", None, False, "card not linked")
+    assert not list(database.parent.glob(database.name + "*"))
+
+
+def test_sync_without_the_pipeline_package(paths, pipeline, monkeypatch):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    monkeypatch.setitem(sys.modules, "interviewmaxxing_pipeline", None)  # imports now fail
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == \
+        (False, "pipeline package not installed", None, False, "card not linked")
+    assert pipeline.get_item("default", card.id) == card
+
+
+def test_sync_leaves_a_row_without_a_card_alone(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)  # the same job, but the row does not name the card
+    entry = closed_entry(None, app.id)
+    assert synced(paths, entry) == entry
+    assert link_fields(entry) == (None, None, None, None, None)
+    assert pipeline.list_items("default") == [card]
+
+
+def test_closed_job_moves_its_saved_card_to_closed_with_a_dated_note(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline, tracking=TrackingFields(
+        company="Brambleway", role="Fictional Analyst", stage="Saved", status="Interested",
+        priority="High"), notes="Referred by a fictional friend", selection_id="sel_fictional",
+        next_action_due=date(2026, 10, 1))
+    # 02:15 on the 24th at UTC+5 is still the 23rd in UTC.
+    finished = datetime(2026, 9, 24, 2, 15, tzinfo=timezone(timedelta(hours=5)))
+    entry = closed_entry(card.id, app.id, finished_at=finished)
+    result = synced(paths, entry)
+    assert link_fields(result) == (True, None, app.id, True, None)
+    closed = pipeline.get_item("default", card.id)
+    assert (closed.lane, closed.application_id) == ("closed", app.id)
+    assert closed.revision == card.revision + 2  # the link, then the move
+    changed = {"lane", "application_id", "revision", "updated_at"}
+    assert closed.model_dump(exclude=changed) == card.model_dump(exclude=changed)
+    history = pipeline.history("default", card.id)
+    assert [(h.kind, h.from_lane, h.to_lane) for h in history] == [
+        ("created", None, "saved"), ("moved", "saved", "closed")]
+    assert history[-1].note == (f"Observed closed on 2026-09-23 (UTC) by prepare-batch b1: "
+                                f"{CLOSED_REASON} (application {app.id})")
+
+    # Syncing again finds the card already in Closed: nothing happens and nothing is wrong.
+    assert link_fields(synced(paths, entry)) == (True, None, app.id, None, None)
+    assert pipeline.get_item("default", card.id) == closed
+    assert len(pipeline.history("default", card.id)) == 2
+
+
+def test_closed_note_falls_back_and_truncates_the_reason(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    assert synced(paths, closed_entry(card.id, app.id, message="")).closed_synced is True
+    assert pipeline.history("default", card.id)[-1].note == (
+        "Observed closed on 2026-09-23 (UTC) by prepare-batch b1: The job no longer accepts "
+        f"applications. (application {app.id})")
+
+    url = f"{ORIGIN}/long"
+    app = stored_application(paths, url, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline, url=url)
+    message = "Brambleway closed this fictional posting after a hiring freeze. " * 5
+    entry = closed_entry(card.id, app.id, application_url=url, message=message)
+    assert synced(paths, entry).closed_synced is True
+    note = pipeline.history("default", card.id)[-1].note
+    prefix = "Observed closed on 2026-09-23 (UTC) by prepare-batch b1: "
+    suffix = f" (application {app.id})"
+    assert note.startswith(prefix) and note.endswith(suffix)
+    reason = note[len(prefix):-len(suffix)]
+    assert len(reason) <= 200 and reason[:150] == message[:150]
+
+
+def test_closed_sync_leaves_a_card_the_user_moved_on(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    pipeline.move_item("default", card.id, "applied", expected_revision=card.revision)
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == (True, None, app.id, False, "card not in Saved (in applied)")
+    after = pipeline.get_item("default", card.id)
+    assert (after.lane, after.application_id) == ("applied", app.id)
+    assert lane_moves(pipeline, card.id) == [("saved", "applied")]  # only the user's own move
+
+
+def test_closed_sync_can_be_turned_off(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    result = synced(paths, closed_entry(card.id, app.id), sync_closed=False)
+    assert link_fields(result) == (True, None, app.id, None, None)
+    after = pipeline.get_item("default", card.id)
+    assert (after.lane, after.application_id) == ("saved", app.id)
+    assert lane_moves(pipeline, card.id) == []
+
+
+def test_closed_sync_needs_the_link(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline, application_id="app_fictional_other")
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == \
+        (False, "card links another application", None, False, "card not linked")
+    result = synced(paths, closed_entry("pipe_missing", app.id))
+    assert link_fields(result) == (False, "card not found", None, False, "card not linked")
+    assert pipeline.list_items("default") == [card]
+
+
+def test_closed_sync_needs_a_closed_lane(paths, pipeline):
+    pipeline.set_lanes("default", BoardLanes(lanes=[BoardLane(id="saved", label="Saved"),
+                                                    BoardLane(id="applied", label="Applied")]))
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == (True, None, app.id, False, "board has no Closed lane")
+    assert pipeline.get_item("default", card.id).lane == "saved"
+
+
+def test_closed_sync_finds_the_saved_and_closed_lanes_by_label(paths, pipeline):
+    pipeline.set_lanes("default", BoardLanes(lanes=[
+        BoardLane(id="inbox", label="SAVED"), BoardLane(id="applied", label="Applied"),
+        BoardLane(id="ended", label="closed")]))
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline, lane="inbox")
+    entry = closed_entry(card.id, app.id)
+    assert link_fields(synced(paths, entry)) == (True, None, app.id, True, None)
+    assert pipeline.get_item("default", card.id).lane == "ended"
+    assert lane_moves(pipeline, card.id) == [("inbox", "ended")]
+    assert link_fields(synced(paths, entry)) == (True, None, app.id, None, None)  # already closed
+    assert lane_moves(pipeline, card.id) == [("inbox", "ended")]
+
+
+def test_already_recorded_closed_application_moves_its_card(paths, pipeline):
+    app = stored_application(paths, state=S.FAILED_PERMANENT,
+                             failure_reason="Brambleway took the fictional posting down.")
+    card = saved_card(pipeline)
+    entry = card_entry(card.id, app.id, outcome="already_recorded", state=S.FAILED_PERMANENT,
+                       message="an application already exists (FAILED_PERMANENT)",
+                       batch_id="b2", worker_slot=None, exit_code=None,
+                       finished_at=datetime(2030, 1, 2, 3, 4, tzinfo=UTC))
+    assert link_fields(synced(paths, entry)) == (True, None, app.id, True, None)
+    assert pipeline.get_item("default", card.id).lane == "closed"
+    assert pipeline.history("default", card.id)[-1].note == (
+        f"Observed closed on {app.updated_at.astimezone(UTC):%Y-%m-%d} (UTC) by prepare-batch "
+        f"b2: Brambleway took the fictional posting down. (application {app.id})")
+
+
+@pytest.mark.parametrize("outcome, state", [
+    ("prepared", S.NEEDS_INPUT),
+    ("needs_input", S.NEEDS_INPUT),
+    ("failed_retryable", S.FAILED_RETRYABLE),
+    ("already_recorded", S.NEEDS_INPUT),
+])
+def test_only_closed_jobs_move_cards(paths, pipeline, outcome, state):
+    app = stored_application(paths)
+    card = saved_card(pipeline)
+    result = synced(paths, card_entry(card.id, app.id, outcome=outcome, state=state))
+    assert link_fields(result) == (True, None, app.id, None, None)
+    after = pipeline.get_item("default", card.id)
+    assert (after.lane, after.application_id) == ("saved", app.id)
+    assert lane_moves(pipeline, card.id) == []  # never Applied, never anywhere
+
+
+def test_link_retries_after_losing_a_race(paths, pipeline, monkeypatch):
+    app = stored_application(paths)
+    card = saved_card(pipeline)
+    calls = lose_races(monkeypatch, "update_item", edit=edit_card(notes="Edited meanwhile"))
+    assert link_fields(synced(paths, card_entry(card.id, app.id))) == \
+        (True, None, app.id, None, None)
+    after = pipeline.get_item("default", card.id)
+    assert (after.application_id, after.notes) == (app.id, "Edited meanwhile")
+    assert [call["expected_revision"] for call in calls] == [card.revision, card.revision + 1]
+
+
+def test_link_never_overwrites_a_link_made_during_the_race(paths, pipeline, monkeypatch):
+    app = stored_application(paths)
+    card = saved_card(pipeline)
+    lose_races(monkeypatch, "update_item", edit=edit_card(application_id="app_fictional_other"))
+    result = synced(paths, card_entry(card.id, app.id))
+    assert link_fields(result) == (False, "card links another application", None, None, None)
+    assert pipeline.get_item("default", card.id).application_id == "app_fictional_other"
+
+
+def test_link_gives_up_when_the_card_keeps_changing(paths, pipeline, monkeypatch):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    calls = lose_races(monkeypatch, "update_item", times=None)
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == (False, "card kept changing", None, False, "card not linked")
+    assert len(calls) == batch_module.LINK_ATTEMPTS == 3
+    assert pipeline.list_items("default") == [card]
+
+
+@pytest.mark.parametrize("changes, moved, reason, lane", [
+    ({"notes": "Edited meanwhile"}, True, None, "closed"),
+    ({"lane": "applied"}, False, "card not in Saved (in applied)", "applied"),
+    ({"lane": "closed"}, None, None, "closed"),  # the user closed it first
+    ({"application_id": None}, False, "card not linked", "saved"),
+    ({"application_id": "app_fictional_other"}, False, "card not linked", "saved"),
+])
+def test_closed_move_rechecks_the_card_after_losing_a_race(paths, pipeline, monkeypatch,
+                                                           changes, moved, reason, lane):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    calls = lose_races(monkeypatch, "move_item", edit=edit_card(**changes))
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == (True, None, app.id, moved, reason)
+    after = pipeline.get_item("default", card.id)
+    assert (after.lane, after.notes) == (lane, changes.get("notes"))
+    assert after.application_id == changes.get("application_id", app.id)
+    assert {call["lane"] for call in calls} == {"closed"}  # the only move it ever asks for
+    assert lane_moves(pipeline, card.id) == ([] if lane == "saved" else [("saved", lane)])
+    # Only the sync's own move carries a note (the concurrent edits have none).
+    assert len([h for h in pipeline.history("default", card.id) if h.note]) == int(moved is True)
+
+
+def test_closed_move_gives_up_when_the_card_keeps_changing(paths, pipeline, monkeypatch):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+    calls = lose_races(monkeypatch, "move_item", times=None)
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == (True, None, app.id, False, "card kept changing")
+    assert len(calls) == batch_module.LINK_ATTEMPTS
+    after = pipeline.get_item("default", card.id)
+    assert (after.lane, after.application_id) == ("saved", app.id)
+
+
+def test_sync_reports_unexpected_errors_instead_of_raising(paths, pipeline, monkeypatch):
+    app = stored_application(paths, state=S.FAILED_PERMANENT)
+    card = saved_card(pipeline)
+
+    def locked(*args: Any, **kwargs: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(PipelineStore, "move_item", locked)
+    result = synced(paths, closed_entry(card.id, app.id))
+    assert link_fields(result) == (True, None, app.id, False, "move error: OperationalError")
+    monkeypatch.setattr(PipelineStore, "get_item", locked)
+    result = synced(paths, card_entry(card.id, app.id))
+    assert link_fields(result) == (False, "link error: OperationalError", None, None, None)
+    [after] = pipeline.list_items("default")  # never creates a card
+    assert (after.id, after.lane, after.application_id) == (card.id, "saved", app.id)
+
+
+def test_summary_and_progress_lines_count_pipeline_cards(tmp_path):
+    entries = [
+        card_entry("pipe_1", "app_1", listing_id="l1", outcome="prepared", linked=True,
+                   linked_application_id="app_1"),
+        card_entry("pipe_2", "app_2", listing_id="l2", linked=False,
+                   link_reason="card kept changing"),
+        card_entry("pipe_2", "app_2", listing_id="l2", linked=False,
+                   link_reason="card not found"),  # the row's latest entry wins
+        card_entry("pipe_3", "app_3", listing_id="l3", outcome="closed",
+                   state=S.FAILED_PERMANENT, linked=True, linked_application_id="app_3",
+                   closed_synced=True),
+        card_entry("pipe_4", "app_4", listing_id="l4", outcome="already_recorded",
+                   state=S.FAILED_PERMANENT, linked=True, linked_application_id="app_4",
+                   closed_synced=False, closed_sync_reason="card not in Saved (in applied)"),
+        card_entry("pipe_5", "app_5", listing_id="l5", outcome="closed",
+                   state=S.FAILED_PERMANENT, linked=False, link_reason="card not found",
+                   closed_synced=False, closed_sync_reason="card not linked"),
+        card_entry(None, "app_6", listing_id="l6", outcome="prepared"),
+    ]
+
+    def summary_of(selected: list[LedgerEntry]) -> Any:
+        return summarize("b1", selected, started_at=FINISHED, finished_at=FINISHED,
+                         rows=len(selected), launched=len(selected), skipped_settled=0,
+                         skipped_invalid_url=0, ledger_path=tmp_path / "ledger.jsonl")
+
+    summary = summary_of(entries)
+    assert (summary.pipeline_linked, summary.pipeline_not_linked, summary.pipeline_closed) == \
+        (3, 2, 1)
+    # A closed row whose link failed counts once, under the link reason.
+    assert {p.label: p.count for p in summary.pipeline_problems} == \
+        {"card not found": 2, "card not in Saved (in applied)": 1}
+    text = render_summary_markdown(summary)
+    assert "- pipeline cards: 3 linked, 2 not linked, 1 moved to Closed" in text
+    [problems] = [line for line in text.splitlines() if line.startswith("- pipeline problems: ")]
+    assert "card not found (2)" in problems and "card not in Saved (in applied) (1)" in problems
+    assert "card kept changing" not in text and "card not linked" not in text
+
+    lines = [format_entry(e) for e in entries]
+    assert lines[0].endswith(" [card linked]") and lines[2].endswith(" [card not linked]")
+    assert lines[3].endswith(" [card linked, moved to Closed]")
+    assert lines[4].endswith(" [card linked]") and lines[5].endswith(" [card not linked]")
+    assert "[card" not in lines[6]
+
+    plain = summary_of(entries[-1:])  # no row names a card
+    assert (plain.pipeline_linked, plain.pipeline_not_linked, plain.pipeline_closed) == (0, 0, 0)
+    assert plain.pipeline_problems == []
+    assert "pipeline cards" not in render_summary_markdown(plain)
+
+
+def test_old_ledger_lines_still_read(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({
+        "batch_id": "b0", "listing_id": "l1", "pipeline_id": "pipe_1",
+        "application_url": f"{ORIGIN}/old", "attempt": 1, "application_id": "app_1",
+        "state": "NEEDS_INPUT", "outcome": "needs_input", "missing_reasons": ["NO_ANSWER"],
+        "missing_labels": ["What is your notice period?"],
+        "started_at": "2026-09-01T10:00:00.000000Z", "finished_at": "2026-09-01T10:01:00.000000Z",
+        "duration_s": 60.0}) + "\n")
+    [entry] = read_ledger(ledger)
+    assert entry.missing_items == [] and entry.missing_labels == ["What is your notice period?"]
+    assert link_fields(entry) == (None, None, None, None, None)
+    assert format_entry(entry).endswith("[app_1]")
+
+
+STORE_FAKE_CLI = textwrap.dedent('''\
+    """Fake ``interviewmaxxing apply`` backed by the real store: records the request, claims
+    the application and leaves it the way the runner would for the URL's last path segment
+    (prepared / needs / closed), then prints the outcome with the real application id."""
+    import json, os, sys, time
+
+    from interviewmaxxing_core import ApplicationState as S, ApplicationStore, LocalPaths
+
+    assert sys.argv[1] == "apply" and "--json" in sys.argv and "--headless" in sys.argv
+    url = sys.argv[2]
+    candidate = sys.argv[sys.argv.index("--candidate") + 1]
+    kind = url.rsplit("/", 1)[-1].split("?")[0]
+    paths = LocalPaths.from_env()
+    assert paths.candidate_id == candidate
+    time.sleep(float(os.environ.get("FAKE_SLEEP", "0.05")))
+
+    LOOKUP = {"field_id": "city", "form_url": url, "form_step": 0, "field_fingerprint": "ab" * 32,
+              "label": "Current location\\nStart typing your city", "reason": "NO_ANSWER",
+              "prompt": "Please answer.", "required": True, "control_type": "TYPEAHEAD"}
+    LONG = {"field_id": "why", "form_url": url, "form_step": 0, "field_fingerprint": "cd" * 32,
+            "label": @LONG_QUESTION@, "reason": "EXPLICIT_ANSWER_REQUIRED",
+            "prompt": "Please answer.", "required": True}
+
+    with ApplicationStore.open(paths.state_db) as store:
+        app = store.record_request(candidate, url).application
+        claim = store.claim(app.id, "store-fake-cli")
+        store.transition(claim, S.INSPECTING)
+        missing = []
+        if kind == "prepared":
+            state = S.NEEDS_INPUT
+            message = ("Prepared to the final review step. Nothing was submitted. Submission "
+                       "remains disabled when this application is resumed.")
+            store.transition(claim, state, metadata={"missing_inputs": [], "reason": message})
+            store.append_event(claim, "preparation.ready", {"submitted": False})
+        elif kind == "needs":
+            state, missing = S.NEEDS_INPUT, [LOOKUP, LONG]
+            message = "2 required question(s) need your answer."
+            store.transition(claim, state, metadata={"missing_inputs": missing, "reason": message})
+        elif kind == "closed":
+            state, message = S.FAILED_PERMANENT, @CLOSED_REASON@
+            store.transition(claim, state, failure_reason=message)
+        else:
+            raise SystemExit("unknown kind " + kind)
+        store.release(claim)
+    print(json.dumps({"application_id": app.id, "state": state.value, "receipt": None,
+                      "missing_inputs": missing, "message": message}))
+    sys.exit(3)
+''').replace("@LONG_QUESTION@", repr(LONG_QUESTION)).replace("@CLOSED_REASON@",
+                                                              repr(CLOSED_REASON))
+
+
+@pytest.fixture
+def store_fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    script = tmp_path / "store_fake_cli.py"
+    script.write_text(STORE_FAKE_CLI)
+    monkeypatch.setenv("FAKE_SLEEP", "0.05")
+    return script
+
+
+def store_row(listing_id: str, path: str, pipeline_id: str | None) -> BatchRow:
+    return BatchRow(listing_id=listing_id, pipeline_id=pipeline_id, company="Brambleway",
+                    title=listing_id, application_url=f"{ORIGIN}/{path}", backend="mock",
+                    status="resolved")
+
+
+@pytest.mark.slow
+def test_batch_links_cards_moves_closed_ones_and_backfills_later_batches(store_fake, paths):
+    carded = {"lst_prepared": "one/prepared", "lst_needs": "two/needs",
+              "lst_closed": "three/closed"}
+    with PipelineStore.from_paths(paths) as pipeline:
+        cards = {listing: saved_card(pipeline, listing, f"{ORIGIN}/{path}")
+                 for listing, path in carded.items()}
+    rows = [*(store_row(listing, path, cards[listing].id) for listing, path in carded.items()),
+            store_row("lst_ghost", "four/prepared", "pipe_missing"),
+            store_row("lst_nocard", "five/needs", None)]
+    opts = options(store_fake, paths, workers=2)
+    summary, entries = run(opts, rows)
+
+    ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
+    recorded = read_ledger(ledger)
+    # Every ledger line carries its link fields, as reported to on_entry.
+    assert [(e.listing_id, link_fields(e)) for e in recorded] == \
+        [(e.listing_id, link_fields(e)) for e in entries]
+    by_id = {e.listing_id: e for e in recorded}
+    assert {k: e.outcome for k, e in by_id.items()} == {
+        "lst_prepared": "prepared", "lst_needs": "needs_input", "lst_closed": "closed",
+        "lst_ghost": "prepared", "lst_nocard": "needs_input"}
+    app = {k: e.application_id for k, e in by_id.items()}
+    assert len(set(app.values())) == 5 and all(str(a).startswith("app_") for a in app.values())
+    assert {k: link_fields(e) for k, e in by_id.items()} == {
+        "lst_prepared": (True, None, app["lst_prepared"], None, None),
+        "lst_needs": (True, None, app["lst_needs"], None, None),
+        "lst_closed": (True, None, app["lst_closed"], True, None),
+        "lst_ghost": (False, "card not found", None, None, None),
+        "lst_nocard": (None, None, None, None, None)}
+    collapsed = " ".join(LONG_QUESTION.split())
+    needs = by_id["lst_needs"]
+    assert [item.model_dump() for item in needs.missing_items] == [
+        {"label": "Current location Start typing your city", "reason": "NO_ANSWER",
+         "control_type": "TYPEAHEAD"},
+        {"label": collapsed[:119] + "…", "reason": "EXPLICIT_ANSWER_REQUIRED",
+         "control_type": None}]
+    assert needs.missing_labels == [item.label for item in needs.missing_items]
+    assert needs.missing_reasons == ["EXPLICIT_ANSWER_REQUIRED", "NO_ANSWER"]
+    assert by_id["lst_prepared"].missing_items == by_id["lst_closed"].missing_items == []
+
+    with PipelineStore.from_paths(paths) as pipeline:
+        items = pipeline.list_items("default")
+        assert {i.listing_id: (i.lane, i.application_id) for i in items} == {
+            "lst_prepared": ("saved", app["lst_prepared"]),
+            "lst_needs": ("saved", app["lst_needs"]),
+            "lst_closed": ("closed", app["lst_closed"])}  # and no card was created
+        [move] = [h for h in pipeline.history("default", cards["lst_closed"].id)
+                  if h.kind == "moved"]
+        assert not any(h.to_lane == "applied" for card in cards.values()
+                       for h in pipeline.history("default", card.id))
+    closed_on = by_id["lst_closed"].finished_at.astimezone(UTC).strftime("%Y-%m-%d")
+    assert (move.from_lane, move.to_lane) == ("saved", "closed")
+    assert move.note == (f"Observed closed on {closed_on} (UTC) by prepare-batch b1: "
+                         f"{CLOSED_REASON} (application {app['lst_closed']})")
+
+    assert summary.totals == {"prepared": 2, "needs_input": 2, "closed": 1}
+    assert (summary.pipeline_linked, summary.pipeline_not_linked, summary.pipeline_closed) == \
+        (3, 1, 1)
+    assert [(p.label, p.count) for p in summary.pipeline_problems] == [("card not found", 1)]
+    text = render_summary_markdown(summary)
+    assert "- pipeline cards: 3 linked, 1 not linked, 1 moved to Closed" in text
+    assert "- pipeline problems: card not found (1)" in text
+    assert format_entry(by_id["lst_prepared"]).endswith(" [card linked]")
+    assert format_entry(by_id["lst_closed"]).endswith(" [card linked, moved to Closed]")
+    assert format_entry(by_id["lst_ghost"]).endswith(" [card not linked]")
+    assert "[card" not in format_entry(by_id["lst_nocard"])
+    written = json.loads((paths.home / "batches" / "b1" / "summary.json").read_text())
+    assert (written["pipeline_linked"], written["pipeline_closed"]) == (3, 1)
+
+    # Rerunning the batch launches nothing and touches no card.
+    again, entries = run(opts, rows)
+    assert entries == [] and again.launched == 0 and again.skipped_settled == 5
+    assert (again.pipeline_linked, again.pipeline_not_linked, again.pipeline_closed) == (3, 1, 1)
+    assert len(read_ledger(ledger)) == 5
+    with PipelineStore.from_paths(paths) as pipeline:
+        assert pipeline.list_items("default") == items
+        late = saved_card(pipeline, "lst_nocard", f"{ORIGIN}/five/needs")  # saved afterwards
+
+    # A new batch over the same rows records them as already recorded and links them
+    # (idempotently): only the card saved since then is written.
+    rows = [*rows[:4], store_row("lst_nocard", "five/needs", late.id)]
+    backfill, entries = run(options(store_fake, paths, batch_id="b2", workers=2), rows)
+    assert backfill.launched == 0 and backfill.totals == {"already_recorded": 5}
+    by_id = {e.listing_id: e for e in read_ledger(paths.home / "batches" / "b2" / "ledger.jsonl")}
+    assert {k: e.application_id for k, e in by_id.items()} == app
+    assert by_id["lst_closed"].state is S.FAILED_PERMANENT
+    assert {k: link_fields(e) for k, e in by_id.items()} == {
+        "lst_prepared": (True, None, app["lst_prepared"], None, None),
+        "lst_needs": (True, None, app["lst_needs"], None, None),
+        "lst_closed": (True, None, app["lst_closed"], None, None),  # already in Closed
+        "lst_ghost": (False, "card not found", None, None, None),
+        "lst_nocard": (True, None, app["lst_nocard"], None, None)}
+    assert (backfill.pipeline_linked, backfill.pipeline_not_linked,
+            backfill.pipeline_closed) == (4, 1, 0)
+    assert [(p.label, p.count) for p in backfill.pipeline_problems] == [("card not found", 1)]
+    with PipelineStore.from_paths(paths) as pipeline:
+        after = {i.id: i for i in pipeline.list_items("default")}
+    assert [after[i.id] for i in items] == items
+    assert (after[late.id].application_id, after[late.id].revision) == \
+        (app["lst_nocard"], late.revision + 1)
+    assert len(after) == 4
+
+
+def test_prepare_batch_parser_sync_closed_flag(capsys):
+    parser = build_parser()
+    base = ["prepare-batch", "--inventory", "inv.json"]
+    assert parser.parse_args(base).sync_closed is True
+    assert parser.parse_args([*base, "--sync-closed"]).sync_closed is True
+    assert parser.parse_args([*base, "--no-sync-closed"]).sync_closed is False
+    with pytest.raises(SystemExit) as exc:
+        main(["prepare-batch", "--help"])
+    assert exc.value.code == 0 and "--no-sync-closed" in capsys.readouterr().out
+
+
+@pytest.mark.slow
+def test_prepare_batch_no_sync_closed_links_but_keeps_the_card_in_saved(store_fake, tmp_path,
+                                                                       monkeypatch, capsys):
+    monkeypatch.setattr(batch_module, "default_command", lambda: [sys.executable, str(store_fake)])
+    home = tmp_path / "home"
+    local = LocalPaths.from_env({}, home=home)
+    url = f"{ORIGIN}/cli/closed"
+    with PipelineStore.from_paths(local) as pipeline:
+        card = saved_card(pipeline, "l-closed", url)
+    inventory = tmp_path / "inv.json"
+    inventory.write_text(json.dumps([
+        {"listing_id": "l-closed", "pipeline_id": card.id, "company": "Brambleway",
+         "title": "Closed", "source_application_url": url, "backend": "mock",
+         "status": "resolved"}]))
+    argv = ["--home", str(home), "prepare-batch", "--inventory", str(inventory), "--json"]
+    code = main([*argv, "--batch-id", "cli", "--no-sync-closed"])
+    out, err = capsys.readouterr()
+    assert code == EXIT_OK, err
+    summary = json.loads(out)
+    assert summary["totals"] == {"closed": 1}
+    assert (summary["pipeline_linked"], summary["pipeline_closed"]) == (1, 0)
+    [entry] = read_ledger(home / "batches" / "cli" / "ledger.jsonl")
+    assert entry.outcome == "closed" and entry.application_id
+    assert link_fields(entry) == (True, None, entry.application_id, None, None)
+    assert "[card linked]" in err
+    with PipelineStore.from_paths(local) as pipeline:
+        kept = pipeline.get_item("default", card.id)
+    assert (kept.lane, kept.application_id) == ("saved", entry.application_id)
+
+    # By default a later batch moves it: the application is recorded as closed.
+    code = main([*argv, "--batch-id", "cli-2"])
+    out, err = capsys.readouterr()
+    assert code == EXIT_OK, err
+    assert json.loads(out)["pipeline_closed"] == 1
+    [later] = read_ledger(home / "batches" / "cli-2" / "ledger.jsonl")
+    assert (later.outcome, later.state) == ("already_recorded", S.FAILED_PERMANENT)
+    assert link_fields(later) == (True, None, entry.application_id, True, None)
+    assert "[card linked, moved to Closed]" in err
+    with PipelineStore.from_paths(local) as pipeline:
+        assert pipeline.get_item("default", card.id).lane == "closed"
