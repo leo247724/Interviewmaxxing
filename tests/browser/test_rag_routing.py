@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
@@ -27,9 +28,11 @@ from interviewmaxxing_core import (
     CandidateFact,
     CandidateProfile,
     ControlType,
+    FieldOption,
     JobRecord,
     PacketContext,
     SemanticType,
+    TextValue,
 )
 from interviewmaxxing_selection.credentials import ApiKey
 from interviewmaxxing_selection.jev import HttpResponse, JevClient
@@ -924,3 +927,335 @@ def test_non_url_identity_field_keeps_strict_clarification(
     assert not packet.is_complete
     assert len(provider.requests) == 2
     assert resolver.narrative_traces[0]["status"] == "HELD"
+
+
+# --- round 2 (WP2-B): fact-grounded yes/no experience screeners ---------------------------------
+
+AGENCY_QUESTION = "Do you have experience working at a digital marketing agency?"
+AGENCY_WORK = "SEO specialist at Fictional Search Agency, a digital marketing agency (2018-2020)"
+AGENCY_NEVER = "I have never worked at a digital marketing agency"
+PAID_MEDIA = "I managed paid media budgets for a fictional retail brand."
+PAID_SEARCH = "I ran paid search campaigns on Google Ads for a fictional retail brand."
+
+
+def _never_matches(text: str) -> float:
+    return 0.0
+
+
+class ScreenerProvider:
+    """Classifies every field as a literal, historical COPY_KNOWN datum and answers the
+    screener's questions from a script: ``experience`` from (choice, probability,
+    confidence); ``has_f<i>``/``lacks_f<i>`` from callables over the fact's value text,
+    so no test depends on fact order. Consistency nouls answer ``consistency``; the
+    fact route holds; any other choice (wording, option mapping) answers NONE."""
+
+    def __init__(self, experience: tuple[str, float, float] = ("YES", 0.99, 0.98), *,
+                 has: Callable[[str], float] = _never_matches,
+                 lacks: Callable[[str], float] = _never_matches,
+                 scope: str = "HISTORICAL_OR_CONTEXTUAL", semantic: str = "CUSTOM_BOOLEAN",
+                 consistency: float = 1.0) -> None:
+        self.experience, self.has, self.lacks = experience, has, lacks
+        self.scope, self.semantic, self.consistency = scope, semantic, consistency
+        self.requests: list[dict[str, Any]] = []
+
+    def asked(self, name: str) -> list[dict[str, Any]]:
+        return [r for r in self.requests if name in r["questions"]]
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        self.requests.append(request)
+        state = request["state"]
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            if question["type"] == "noul":
+                if "canonical_alternatives" in state:
+                    score = self.consistency
+                elif name.startswith(("has_", "lacks_")):
+                    kind, key = name.split("_", 1)
+                    text = str(state["facts"][key]["value"])
+                    score = (self.has if kind == "has" else self.lacks)(text)
+                else:
+                    score = 1.0
+                answers[name] = {"type": "noul", "noul": score}
+                continue
+            criteria = list(question["criteria"])
+            confidence = 1.0
+            if name[0] in "rnusd" and name[1:].isdigit():
+                choice = {"r": "COPY_KNOWN", "n": "literal", "u": self.scope, "s": self.semantic,
+                          "d": "APPLICATION_ATTACHMENT"}[name[0]]
+                probabilities = {key: float(key == choice) for key in criteria}
+            elif name == "experience":
+                choice, probability, confidence = self.experience
+                rest = (1 - probability) / (len(criteria) - 1)
+                probabilities = {key: probability if key == choice else rest for key in criteria}
+            else:
+                held = next((k for k in ("NONE", "hold") if k in criteria), criteria[0])
+                probabilities = {key: float(key == held) for key in criteria}
+            choice = max(probabilities, key=lambda key: probabilities[key])
+            answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                             "probabilities": probabilities}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def mentions(*needles: str) -> Callable[[str], float]:
+    """A noul script: 1.0 when the fact text contains any of ``needles`` (case-insensitive)."""
+    return lambda text: 1.0 if any(n.lower() in text.lower() for n in needles) else 0.0
+
+
+def screener_form(label: str = AGENCY_QUESTION, *, options: list[str] | None = None,
+                  control: ControlType = ControlType.RADIO, required: bool = True,
+                  semantic: SemanticType = SemanticType.CUSTOM_BOOLEAN) -> ApplicationForm:
+    if control in (ControlType.RADIO, ControlType.SELECT) and options is None:
+        options = ["Yes", "No"]
+    return ApplicationForm(url="https://synthetic.test/apply", fields=[ApplicationField(
+        id="screener", label=label, selector="#screener", semantic_type=semantic,
+        control_type=control, required=required,
+        options=[FieldOption(value=f"v{i}", label=o) for i, o in enumerate(options)]
+        if options is not None else None)])
+
+
+def screen(candidate: CandidateProfile, job: JobRecord, form: ApplicationForm,
+           provider: ScreenerProvider, *, retriever: Retriever | None = None,
+           ) -> tuple[Any, PacketContext, DynamicPacketResolver]:
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"),
+                                          transport=provider, max_attempts=1))
+    router = AIFormRouter(decisions)
+    annotated = router.annotate(form, document_id="synthetic-screener")
+    ctx = replace(context(candidate, job), form=annotated)
+    resolver = DynamicPacketResolver(decisions, None, router=router, retriever=retriever)
+    return asyncio.run(resolver.resolve(ctx)), ctx, resolver
+
+
+def screener_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
+    return [t for t in resolver.narrative_traces if t.get("stage") == "experience_screener"]
+
+
+def test_screener_answers_yes_from_a_fact_that_names_agency_work(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    other = fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Fictional Search Agency"))
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [agency, other]), mock_job,
+                            screener_form(), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.agency"]
+    assert "from verified facts" in (answer.provenance.note or "")
+    [request] = provider.asked("experience")
+    assert set(request["questions"]["experience"]["criteria"]) == {"YES", "NO", "UNKNOWN",
+                                                                  "NOT_EXPERIENCE"}
+    fact_keys = set(request["state"]["facts"])
+    assert {f"has_{k}" for k in fact_keys} | {f"lacks_{k}" for k in fact_keys} | {"experience"} == set(
+        request["questions"])
+    assert request["state"]["screener_version"] == "experience-screener-v1"
+    assert {f["id"] for f in request["state"]["facts"].values()} == {"fact.agency", "fact.paid_media"}
+    assert not provider.asked("route")
+
+
+def test_screener_about_an_unmentioned_tool_is_unknown_and_held_with_a_specific_prompt(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    label = "Do you have hands-on experience with Fictional CRM Pro?"
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [
+        fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")]), mock_job,
+        screener_form(label), provider)
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert missing.field_id == "screener"
+    assert label in missing.prompt and "absent evidence is not No" in missing.prompt
+    [trace] = screener_traces(resolver)
+    assert trace["status"] == "UNKNOWN" and trace["decision"] is None
+
+
+@pytest.mark.parametrize("negative", [False, AGENCY_NEVER])
+def test_screener_answers_no_only_from_a_fact_stating_the_negative(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, negative: Any,
+) -> None:
+    denial = fact(fictional_candidate, "digital_marketing_agency_experience", negative,
+                  fid="fact.no_agency")
+    provider = ScreenerProvider(("NO", 0.99, 0.98), lacks=mentions("never worked", "false"))
+    packet, ctx, resolver = screen(candidate_with(fictional_candidate, [denial]), mock_job,
+                                   screener_form(), provider)
+    assert ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v1", "No")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.no_agency"]
+    [trace] = screener_traces(resolver)
+    assert (trace["status"], trace["decision"]) == ("ANSWERED", "NO")
+    assert trace["negating_ids"] == ["fact.no_agency"] and trace["supporting_ids"] == []
+
+
+@pytest.mark.parametrize("choice", ["NO", "YES"])
+def test_a_decision_without_a_fact_stating_it_is_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, choice: str,
+) -> None:
+    # Jev leans NO (or YES) confidently, but no fact states the absence (or the experience).
+    provider = ScreenerProvider((choice, 0.99, 0.98))
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [
+        fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")]), mock_job,
+        screener_form(), provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "absent evidence is not No" in packet.missing_inputs[0].prompt
+    [trace] = screener_traces(resolver)
+    assert trace["decision"] is None and trace["status"] != "ANSWERED"
+
+
+def test_supporting_and_negating_facts_together_hold_as_a_conflict(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    denial = fact(fictional_candidate, "experience", AGENCY_NEVER, fid="fact.no_agency")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Fictional Search Agency"),
+                                lacks=mentions("never worked"))
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [agency, denial]), mock_job,
+                                 screener_form(), provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "conflict" in packet.missing_inputs[0].prompt.lower()
+    [trace] = screener_traces(resolver)
+    assert trace["status"] == "CONFLICT" and trace["decision"] is None
+    assert trace["supporting_ids"] == ["fact.agency"] and trace["negating_ids"] == ["fact.no_agency"]
+
+
+def test_not_an_experience_question_falls_back_to_the_fact_route(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ScreenerProvider(("NOT_EXPERIENCE", 0.99, 0.98))
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [
+        fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")]), mock_job,
+        screener_form("Are you comfortable working from a fictional office?"), provider)
+    assert provider.asked("experience") and provider.asked("route")
+    assert packet.answers == [] and not packet.is_complete
+    [trace] = screener_traces(resolver)
+    assert trace["status"] == "NOT_SCREENER"
+
+
+def test_a_text_yes_no_screener_is_answered_with_the_word(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    search = fact(fictional_candidate, "experience", PAID_SEARCH, fid="fact.paid_search")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("paid search"))
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [search]), mock_job,
+                            screener_form("Do you have experience with paid search?",
+                                          control=ControlType.TEXT), provider)
+    assert ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.paid_search"]
+
+
+def test_with_retrieval_only_retrieved_facts_reach_the_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    others = [fact(fictional_candidate, "skills", f"Fictional skill {i}", fid=f"fact.skill{i}")
+              for i in range(5)]
+    retriever = Retriever([agency])
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Fictional Search Agency"))
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [agency, *others]), mock_job,
+                            screener_form(), provider, retriever=retriever)
+    assert ctx.problems(packet) == []
+    assert retriever.calls and retriever.calls[0]["query"] == ctx.form.fields[0].question_text
+    [request] = provider.asked("experience")
+    assert [f["id"] for f in request["state"]["facts"].values()] == ["fact.agency"]
+    [answer] = packet.answers
+    assert answer.provenance.reference_ids == ["fact.agency"]
+
+
+@pytest.mark.parametrize("pick", [("YES", 0.90, 0.98), ("YES", 0.99, 0.80)])
+def test_a_screener_decision_below_the_gates_is_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, pick: tuple[str, float, float],
+) -> None:
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    provider = ScreenerProvider(pick, has=mentions("Fictional Search Agency"))
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [agency]), mock_job,
+                                 screener_form(), provider)
+    assert packet.answers == [] and not packet.is_complete
+    [trace] = screener_traces(resolver)
+    assert trace["decision"] is None
+
+
+def test_an_abm_platform_screener_needs_a_named_platform_in_the_evidence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    label = "Do you have hands-on experience with ABM platforms?"
+    campaigns = fact(fictional_candidate, "experience",
+                     "I ran account-based marketing campaigns for B2B clients.", fid="fact.abm")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("account-based"))
+    packet, _, _ = screen(candidate_with(fictional_candidate, [campaigns]), mock_job,
+                          screener_form(label), provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "name the platform(s) you personally used" in packet.missing_inputs[0].prompt
+
+    platform = fact(fictional_candidate, "experience",
+                    "I used Demandbase hands-on for ABM campaigns.", fid="fact.demandbase")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Demandbase"))
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [platform]), mock_job,
+                            screener_form(label), provider)
+    assert ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value.label == "Yes" and answer.provenance.reference_ids == ["fact.demandbase"]
+
+
+@pytest.mark.parametrize("case", ["optional", "applicant_current", "not_a_question",
+                                  "not_yes_no_options"])
+def test_non_screener_fields_never_ask_the_experience_question(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, case: str,
+) -> None:
+    form = {
+        "optional": screener_form(required=False),
+        "applicant_current": screener_form(),
+        "not_a_question": screener_form("Agency experience", control=ControlType.TEXT),
+        "not_yes_no_options": screener_form(options=["Agency", "In-house", "Both"]),
+    }[case]
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Fictional Search Agency"),
+                                scope="APPLICANT_CURRENT" if case == "applicant_current"
+                                else "HISTORICAL_OR_CONTEXTUAL")
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [agency]), mock_job, form,
+                                 provider)
+    assert not provider.asked("experience")
+    assert not screener_traces(resolver)
+    assert all(a.provenance.source is not AnswerSource.GENERATED_FROM_FACTS for a in packet.answers)
+
+
+def test_the_screener_trace_records_the_decision_without_fact_values(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    other = fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Fictional Search Agency"))
+    _, _, resolver = screen(candidate_with(fictional_candidate, [agency, other]), mock_job,
+                            screener_form(), provider)
+    [trace] = screener_traces(resolver)
+    assert (trace["status"], trace["decision"]) == ("ANSWERED", "YES")
+    assert trace["supporting_ids"] == ["fact.agency"] and trace["negating_ids"] == []
+    assert set(trace["fact_ids"]) == {"fact.agency", "fact.paid_media"}
+    dumped = json.dumps(trace)
+    assert AGENCY_WORK not in dumped and PAID_MEDIA not in dumped
+    assert "Fictional Search Agency" not in dumped
+
+
+def test_screener_without_retrieval_holds_beyond_the_fact_bound_and_without_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    many = [fact(fictional_candidate, "skills", f"Fictional skill {i}", fid=f"fact.skill{i}")
+            for i in range(41)]
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("Fictional skill 3"))
+    packet, _, _ = screen(candidate_with(fictional_candidate, many), mock_job, screener_form(),
+                          provider)
+    assert packet.answers == [] and not provider.asked("experience")
+    assert "configure knowledge retrieval" in packet.missing_inputs[0].prompt
+
+    provider = ScreenerProvider(("YES", 0.99, 0.98))
+    packet, _, _ = screen(candidate_with(fictional_candidate, []), mock_job, screener_form(),
+                          provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "absent evidence is not No" in packet.missing_inputs[0].prompt
+

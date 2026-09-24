@@ -9,15 +9,18 @@ threads. Real-Chromium coverage of the same runner is in ``e2e/``.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
 from interviewmaxxing_browser import AmbiguousAction
+from interviewmaxxing_browser.ai import AIFormRouter, BoundedDecisions, DynamicPacketResolver
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_cli.runner import (
     REJECTION_EVENT,
@@ -42,6 +45,7 @@ from interviewmaxxing_core import (
     ControlType,
     FieldFillResult,
     FieldFillStatus,
+    FieldOption,
     FillResult,
     IdentityEvidenceKind,
     JobIdentityObservation,
@@ -49,6 +53,7 @@ from interviewmaxxing_core import (
     MissingReason,
     NavigationResult,
     NotSubmittedNext,
+    PacketContext,
     PageInspection,
     PageKind,
     SavedAnswer,
@@ -60,6 +65,8 @@ from interviewmaxxing_core import (
     UserInput,
 )
 from interviewmaxxing_generation import FactualPacketResolver
+from interviewmaxxing_selection.credentials import ApiKey
+from interviewmaxxing_selection.jev import HttpResponse, JevClient
 
 S = ApplicationState
 URL = "http://127.0.0.1:9/jobs/fictional/apply"
@@ -1503,3 +1510,146 @@ def test_a_choice_is_reapplied_after_the_user_answers_another_lookup(
         packet = store.latest_packet(result.application_id)
         assert packet.answer_for("location").value == TextValue(text=TEXAS)
         assert packet.answer_for("school").provenance.source is AnswerSource.USER_INPUT
+
+
+# --- round 2: reworded saved answers and fact-grounded screeners through the runner (WP2) ----
+
+class ScriptedJev:
+    """Jev for runner tests: every field is a literal COPY_KNOWN question with the scope
+    given per field index; named questions answer from ``choices`` and nouls from ``noul``.
+    Anything unscripted holds."""
+
+    def __init__(self, scopes: dict[int, str], choices: dict[str, dict[str, float]],
+                 noul: Callable[[str, dict[str, Any]], float] | None = None) -> None:
+        self.scopes, self.choices = scopes, choices
+        self.noul = noul or (lambda name, state: 1.0)
+        self.requests: list[dict[str, Any]] = []
+
+    def asked(self, name: str) -> list[dict[str, Any]]:
+        return [r for r in self.requests if name in r["questions"]]
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        self.requests.append(request)
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            if question["type"] == "noul":
+                answers[name] = {"type": "noul", "noul": self.noul(name, request["state"])}
+                continue
+            criteria = list(question["criteria"])
+            confidence = 0.99
+            if name[0] in "rnusd" and name[1:].isdigit():
+                choice = {"r": "COPY_KNOWN", "n": "literal",
+                          "u": self.scopes.get(int(name[1:]), "APPLICANT_CURRENT"),
+                          "s": "CUSTOM_BOOLEAN", "d": "APPLICATION_ATTACHMENT"}[name[0]]
+                probabilities = {key: float(key == choice) for key in criteria}
+                confidence = 1.0
+            elif name in self.choices:
+                probabilities = {key: self.choices[name].get(key, 0.0) for key in criteria}
+            else:
+                held = "hold" if "hold" in criteria else "NONE" if "NONE" in criteria else criteria[0]
+                probabilities = {key: float(key == held) for key in criteria}
+            choice = max(probabilities, key=probabilities.__getitem__)
+            answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                             "probabilities": probabilities}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def _dynamic_runner(paths, candidate: CandidateProfile, script: Script,
+                    jev: ScriptedJev) -> LocalApplicationRunner:
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-runner-key", source="test"),
+                                           transport=jev, max_attempts=1))
+    return LocalApplicationRunner(
+        paths=paths, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptedFactory(script), candidates=Candidates(candidate),
+        resolver=DynamicPacketResolver(decisions, router=AIFormRouter(decisions)),
+        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=True)
+
+
+def _stored_packet(paths, app_id: str, form: ApplicationForm,
+                   candidate: CandidateProfile) -> tuple[ApplicationPacket, list[str]]:
+    """The latest saved packet and everything its canonical context finds wrong with it."""
+    with _store(paths) as store:
+        app = store.get_application(app_id)
+        packet = store.latest_packet(app_id)
+        assert packet is not None
+        ctx = PacketContext(application=app, job=store.get_job(app.job_id), form=form,
+                            candidate=candidate.model_copy(update={"id": app.candidate_id}),
+                            user_inputs=store.get_user_inputs(app_id, form))
+        return packet, ctx.problems(packet)
+
+
+def test_runner_fills_a_reworded_sponsorship_question_from_the_global_saved_answer(
+    isolated_imx_home, fictional_candidate
+):
+    sponsorship = ApplicationField(
+        id="sponsorship", label="Will you require sponsorship in the future?",
+        selector="#sponsorship", semantic_type=SemanticType.SPONSORSHIP,
+        control_type=ControlType.RADIO, required=True,
+        options=[FieldOption(value="yes", label="Yes, I will require sponsorship"),
+                 FieldOption(value="no", label="No, I will not require sponsorship")])
+    form = _form().model_copy(update={"fields": [*_form().fields, sponsorship]})
+    jev = ScriptedJev({0: "APPLICANT_CURRENT", 1: "EXPLICIT_ANSWER"}, {
+        "wording": {"q0": 0.98, "NONE": 0.02},
+        "equivalent_0": {"o0": 0.005, "o1": 0.99, "NONE": 0.005}})
+    script = Script(pages=[_page(form)])
+    result = asyncio.run(_dynamic_runner(isolated_imx_home, fictional_candidate, script, jev)
+                         .apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert result.missing_inputs == [] and "submit" not in script.calls
+    assert jev.asked("wording") and jev.asked("equivalent_0")
+    packet, problems = _stored_packet(isolated_imx_home, result.application_id, form,
+                                      fictional_candidate)
+    assert problems == [] and packet.is_complete
+    answer = packet.answer_for("sponsorship")
+    assert answer is not None
+    assert (answer.value.value, answer.value.label) == ("no", "No, I will not require sponsorship")
+    assert answer.provenance.source is AnswerSource.SAVED_ANSWER
+    assert answer.provenance.reference_ids == ["sa.sponsorship"]
+    assert "question wording mapped by Jev" in (answer.provenance.note or "")
+    first_name = packet.answer_for("first_name")
+    assert first_name is not None and first_name.provenance.source is AnswerSource.PROFILE_IDENTITY
+
+
+def test_runner_answers_a_yes_no_experience_screener_from_verified_facts(
+    isolated_imx_home, fictional_candidate
+):
+    agency = fictional_candidate.verified_facts()[0].model_copy(update={
+        "id": "fact.agency", "key": "employment",
+        "value": "SEO specialist at Fictional Search Agency, a digital marketing agency",
+        "evidence": ["SEO specialist at Fictional Search Agency, a digital marketing agency"]})
+    candidate = fictional_candidate.model_copy(update={"facts": [*fictional_candidate.facts, agency]})
+    screener = ApplicationField(
+        id="agency", label="Do you have experience working at a digital marketing agency?",
+        selector="#agency", semantic_type=SemanticType.CUSTOM_BOOLEAN,
+        control_type=ControlType.RADIO, required=True,
+        options=[FieldOption(value="1", label="Yes"), FieldOption(value="0", label="No")])
+    form = _form().model_copy(update={"fields": [*_form().fields, screener]})
+
+    def noul(name: str, state: dict[str, Any]) -> float:
+        if "canonical_alternatives" in state:  # consistency with the other verified facts
+            return 1.0
+        if name.startswith("has_"):
+            return 1.0 if state["facts"][name.removeprefix("has_")]["id"] == "fact.agency" else 0.0
+        if name.startswith("lacks_"):
+            return 0.0
+        return 1.0
+
+    jev = ScriptedJev({0: "APPLICANT_CURRENT", 1: "HISTORICAL_OR_CONTEXTUAL"},
+                      {"experience": {"YES": 0.99, "UNKNOWN": 0.01}}, noul)
+    script = Script(pages=[_page(form)])
+    result = asyncio.run(_dynamic_runner(isolated_imx_home, candidate, script, jev)
+                         .apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert result.missing_inputs == [] and "submit" not in script.calls
+    [request] = jev.asked("experience")
+    assert set(request["questions"]["experience"]["criteria"]) == {
+        "YES", "NO", "UNKNOWN", "NOT_EXPERIENCE"}
+    packet, problems = _stored_packet(isolated_imx_home, result.application_id, form, candidate)
+    assert problems == [] and packet.is_complete
+    answer = packet.answer_for("agency")
+    assert answer is not None
+    assert (answer.value.value, answer.value.label) == ("1", "Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.agency"]
