@@ -167,6 +167,10 @@ NEEDS_INPUT before any submit and the approval is invalidated."""
 NOT_AUTHORIZED_MESSAGE = "Not authorized for submission"
 """How ``submit`` reports an application without a current authorization; nothing is
 opened."""
+BUSY_MESSAGE = "another run is using the browser profile"
+"""The outcome message when another run holds the browser profile; nothing was run."""
+CLAIMED_MESSAGE = "Another run is working on this application."
+"""The outcome message when another run holds the application's claim; nothing was run."""
 ROUTING_EVENT = "routing.trace"
 """Emitted by the runner once per resolved step when its resolver routes through AI:
 the full-form route decisions for every field (route, source scope, semantic type and
@@ -284,7 +288,7 @@ def browser_profile_lock(browser_dir: Path) -> Iterator[None]:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RunnerBusy("another run is using the browser profile") from exc
+            raise RunnerBusy(BUSY_MESSAGE) from exc
         try:
             yield
         finally:
@@ -693,7 +697,7 @@ class LocalApplicationRunner:
             except RunnerBusy as exc:
                 return _outcome(store, application_id, str(exc))
             except ClaimUnavailable:
-                return _outcome(store, application_id, "Another run is working on this application.")
+                return _outcome(store, application_id, CLAIMED_MESSAGE)
 
     # --- plumbing -------------------------------------------------------------------------
 
@@ -774,7 +778,7 @@ class LocalApplicationRunner:
                 try:
                     claim = store.claim(app_id, self.owner, ttl=self._ttl)
                 except ClaimUnavailable:
-                    return _outcome(store, app_id, "Another run is working on this application.")
+                    return _outcome(store, app_id, CLAIMED_MESSAGE)
                 try:
                     app = store.get_application(app_id)
                     if app.state in SUBMISSION_BLOCKING_STATES or app.state in TERMINAL_STATES:
@@ -1722,6 +1726,8 @@ class NoninteractiveInteraction:
 
 __all__ = [
     "ALLOW_SUBMISSION_ENV",
+    "BUSY_MESSAGE",
+    "CLAIMED_MESSAGE",
     "MISMATCH_MESSAGE",
     "NEEDS_INPUT_EVENT",
     "NOT_AUTHORIZED_MESSAGE",

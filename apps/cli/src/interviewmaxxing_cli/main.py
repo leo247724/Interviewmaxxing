@@ -60,6 +60,8 @@ from .answers import AnswerError, describe, user_input_for
 from .interaction import TerminalInteraction
 from .runner import (
     ALLOW_SUBMISSION_ENV,
+    BUSY_MESSAGE,
+    CLAIMED_MESSAGE,
     NOT_AUTHORIZED_MESSAGE,
     LocalApplicationRunner,
     NoninteractiveInteraction,
@@ -558,8 +560,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
     except (KeyboardInterrupt, asyncio.CancelledError):
         return _interrupted(paths, app.id)
     _print_outcome(outcome, as_json=args.json)
-    if outcome.message.startswith(NOT_AUTHORIZED_MESSAGE):
-        return EXIT_BLOCKED
+    if outcome.message.startswith((NOT_AUTHORIZED_MESSAGE, BUSY_MESSAGE, CLAIMED_MESSAGE)):
+        return EXIT_BLOCKED  # nothing was run
     return _exit_code(outcome)
 
 

@@ -251,6 +251,8 @@ def test_the_submission_environment_is_explicit_and_prepare_batch_never_gets_it(
     prepare = BatchOptions(paths=paths, candidate_id="default", batch_id="p1", workers=2)
     assert "IMX_ALLOW_SUBMISSION" not in prepare.environment(0)
     assert prepare.argv("https://x.example/apply")[1:3] == ["apply", "https://x.example/apply"]
+    with pytest.raises(ValueError, match="use --slots 1"):
+        _options(paths, fake, workers=2, browser="opencli")
     submit = _options(paths, fake, workers=2)
     env = submit.submit_environment(1)
     assert env["IMX_ALLOW_SUBMISSION"] == "1"

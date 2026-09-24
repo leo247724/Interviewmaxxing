@@ -14,7 +14,7 @@ import pytest
 
 from interviewmaxxing_cli import main as cli_main
 from interviewmaxxing_cli.main import EXIT_BLOCKED, EXIT_INCOMPLETE, EXIT_OK, EXIT_UNCERTAIN, main
-from interviewmaxxing_cli.runner import NOT_AUTHORIZED_MESSAGE
+from interviewmaxxing_cli.runner import BUSY_MESSAGE, CLAIMED_MESSAGE, NOT_AUTHORIZED_MESSAGE
 from interviewmaxxing_core import (
     AnswerSource,
     ApplicationField,
@@ -238,6 +238,8 @@ def test_approve_refuses_what_is_not_the_prepared_packet(capsys, isolated_imx_ho
     (S.NEEDS_INPUT, "The form no longer matches the approved application: x.", EXIT_INCOMPLETE),
     (S.SUBMISSION_UNKNOWN, "The submit may have reached the employer.", EXIT_UNCERTAIN),
     (S.NEEDS_INPUT, f"{NOT_AUTHORIZED_MESSAGE}: approve it. Nothing was opened.", EXIT_BLOCKED),
+    (S.NEEDS_INPUT, BUSY_MESSAGE, EXIT_BLOCKED),
+    (S.NEEDS_INPUT, CLAIMED_MESSAGE, EXIT_BLOCKED),
 ])
 def test_submit_authorizes_the_approval_then_runs_the_submission(
     capsys, isolated_imx_home, allowed, monkeypatch, state, message, code

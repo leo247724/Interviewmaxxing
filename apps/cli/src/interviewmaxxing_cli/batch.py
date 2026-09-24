@@ -1562,6 +1562,11 @@ class SubmitBatchOptions(BatchOptions):
     browser directories, timeouts and runtime flags. Each job runs ``submit APP --yes
     --json`` with ``IMX_ALLOW_SUBMISSION=1``; the prepare-only fields are not used."""
 
+    def check(self) -> None:
+        if self.browser == "opencli" and self.workers != 1:
+            raise ValueError("--browser opencli drives one owned Chrome session; use --slots 1")
+        super().check()
+
     def submit_argv(self, application_id: str) -> list[str]:
         return [*(self.command or default_command()), "submit", application_id, "--yes",
                 "--json", *self.dynamic_argv()]
