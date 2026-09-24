@@ -151,7 +151,13 @@ from .packets import (
     answer_problems,
     provenance_problems,
 )
-from .store import ApplicationStore, BindResult, RequestResult
+from .store import (
+    ApplicationStore,
+    ApprovedStep,
+    BindResult,
+    RequestResult,
+    SubmissionApproval,
+)
 from .urls import InvalidApplicationUrl, normalize_application_url
 
 __all__ = [
@@ -189,6 +195,7 @@ __all__ = [
     "ApplicationState",
     "ApplicationStore",
     "ApplyOutcome",
+    "ApprovedStep",
     "ArtifactRef",
     "BindResult",
     "BooleanValue",
@@ -272,6 +279,7 @@ __all__ = [
     "SourceSearchResult",
     "SourceSearchState",
     "StoreError",
+    "SubmissionApproval",
     "SubmissionAttempt",
     "SubmissionBlocked",
     "SubmissionObservation",

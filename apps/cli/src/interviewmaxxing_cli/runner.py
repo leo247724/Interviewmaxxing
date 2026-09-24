@@ -49,6 +49,18 @@ Guarantees:
   the observed suggestions, which is then typed verbatim (a ``field.suggestion_chosen``
   event records it); otherwise the user is asked to pick one. It is never reported as
   a failed fill.
+* A prepare-only run records, with ``preparation.ready``, every step it filled: the
+  step's packet and the questions it answered (``steps``: id, fingerprint, required
+  flag, semantic type, control, options digest, short label per field).
+* A submission run (``prepare_only=False``) of an application the user approved and
+  authorized (``ApplicationStore.authorize_submission``) submits exactly the approved
+  packets: after opening and inspecting the site again, each step is filled from its
+  approved packet and nothing is resolved or generated again. Before filling, every
+  question must match the approved one (fingerprint, required flag, options, semantic
+  type) and the final step must still be the approved one. A new, missing or changed
+  question, a ``VERIFICATION_MISMATCH``, a lookup that no longer commits or answers the
+  site rejects stop the run as NEEDS_INPUT ("The form no longer matches the approved
+  application") before any submit, and the approval is invalidated.
 """
 
 from __future__ import annotations
@@ -56,6 +68,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import hashlib
+import json
 import os
 import re
 import socket
@@ -98,12 +112,14 @@ from interviewmaxxing_core import (
     ClaimLost,
     ClaimUnavailable,
     ControlType,
+    FieldFillStatus,
     FieldOption,
     FillResult,
     IdentityConflict,
     LocalPaths,
     MissingInput,
     MissingReason,
+    NotFound,
     PacketAnswer,
     PacketContext,
     PacketResolver,
@@ -112,6 +128,7 @@ from interviewmaxxing_core import (
     ReconciliationMethod,
     ResumeArtifact,
     SavedAnswer,
+    SubmissionApproval,
     SubmissionObservation,
     SubmissionOutcome,
     TextValue,
@@ -119,6 +136,7 @@ from interviewmaxxing_core import (
     UserInteraction,
     answer_problems,
     new_id,
+    normalize_text,
     utc_now,
 )
 from interviewmaxxing_core.interfaces import SelectiveFill, SuggestionChooser
@@ -139,6 +157,16 @@ SUGGESTION_EVENT = "field.suggestion_chosen"
 """Emitted by the runner when the resolver chose one of a lookup's site suggestions:
 the question, the chosen label and the chooser's decision metadata. (The store
 reserves the ``application.`` prefix for its own events.)"""
+PREPARED_EVENT = "preparation.ready"
+"""Emitted by a prepare-only run at the final review step: the form step and URL, the
+prepared packet, ``submitted: False`` and every filled step with its questions
+(``steps``), which an approval pins."""
+MISMATCH_MESSAGE = "The form no longer matches the approved application"
+"""How a submission run reports a form that differs from the approved one: it stops as
+NEEDS_INPUT before any submit and the approval is invalidated."""
+NOT_AUTHORIZED_MESSAGE = "Not authorized for submission"
+"""How ``submit`` reports an application without a current authorization; nothing is
+opened."""
 ROUTING_EVENT = "routing.trace"
 """Emitted by the runner once per resolved step when its resolver routes through AI:
 the full-form route decisions for every field (route, source scope, semantic type and
@@ -203,6 +231,7 @@ def _traces_since(traces: list[dict[str, Any]], last_id: int | None) -> list[dic
             return traces[index + 1:]
     return traces
 RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
+LABEL_LIMIT = 80
 
 
 class SavedAnswerStore(CandidateLoader, Protocol):
@@ -377,6 +406,152 @@ def _fail_retryable(store: ApplicationStore, claim: Claim, app: Application, mes
         store.transition(claim, S.FAILED_RETRYABLE, failure_reason=message)
 
 
+# --- approved submission ----------------------------------------------------------------
+
+
+def _short(text: str, limit: int = LABEL_LIMIT) -> str:
+    line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+    return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
+def options_digest(field: ApplicationField) -> str | None:
+    """The field's options alone (value and visible label, order-free), so a changed
+    option set can be told apart from changed wording. None without options."""
+    if not field.options:
+        return None
+    items = sorted([o.value, normalize_text(o.label)] for o in field.options)
+    raw = json.dumps(items, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def field_record(field: ApplicationField) -> dict[str, Any]:
+    """What ``preparation.ready`` pins about one question for a later approval: its
+    fingerprint (wording, control and options), required flag, semantic type, control,
+    options digest and a short label for messages."""
+    return {"id": field.id, "fingerprint": field.fingerprint, "required": field.required,
+            "semantic_type": field.semantic_type.value, "control_type": field.control_type.value,
+            "options": options_digest(field), "label": _short(field.question_text) or field.id}
+
+
+@dataclass(frozen=True)
+class _ApprovedStep:
+    packet: ApplicationPacket
+    fields: dict[str, dict[str, Any]] | None
+    """The approved questions by field id, or None for a preparation recorded before
+    questions were pinned (the packet's own form fingerprint is compared instead)."""
+
+
+@dataclass(frozen=True)
+class _Approved:
+    approval: SubmissionApproval
+    steps: dict[int, _ApprovedStep]
+    final_step: int
+
+
+def _approved_application(store: ApplicationStore, approval: SubmissionApproval) -> _Approved:
+    """The approved packets and the questions pinned for each step (NotFound when a
+    packet is gone)."""
+    prepared = next((e for e in store.list_events(approval.application_id)
+                     if e.id == approval.preparation_event_id), None)
+    recorded: dict[tuple[int, str], dict[str, dict[str, Any]]] = {}
+    for item in (prepared.metadata.get("steps") if prepared is not None else None) or []:
+        if (isinstance(item, dict) and isinstance(item.get("form_step"), int)
+                and isinstance(item.get("packet_id"), str) and isinstance(item.get("fields"), list)):
+            recorded[(item["form_step"], item["packet_id"])] = {
+                f["id"]: f for f in item["fields"] if isinstance(f, dict) and isinstance(f.get("id"), str)}
+    steps = {s.form_step: _ApprovedStep(packet=store.get_packet(s.packet_id),
+                                        fields=recorded.get((s.form_step, s.packet_id)))
+             for s in approval.steps}
+    if not steps:
+        steps = {approval.form_step or 0: _ApprovedStep(packet=store.get_packet(approval.packet_id),
+                                                        fields=None)}
+    final = approval.form_step if approval.form_step is not None else max(steps)
+    return _Approved(approval=approval, steps=steps, final_step=final)
+
+
+def _awaiting_user(step: _ApprovedStep, form: ApplicationForm) -> list[ApplicationField]:
+    """Required custom controls the approved answers do not fill because the user operated
+    them in the browser while preparing (an operated control reads as not required)."""
+    pending = []
+    for field in form.fields:
+        if (field.control_type is not ControlType.UNSUPPORTED or not field.required
+                or step.packet.answer_for(field.id) is not None):
+            continue
+        record = step.fields.get(field.id) if step.fields is not None else None
+        if step.fields is None or (record is not None and record.get("fingerprint") == field.fingerprint
+                                   and record.get("required") is False):
+            pending.append(field)
+    return pending
+
+
+def approval_mismatches(step: _ApprovedStep | None, form: ApplicationForm, *, final_step: int,
+                        awaiting: Sequence[ApplicationField] = ()) -> list[str]:
+    """Why ``form`` (inspected, not yet filled) is not the approved step: a step that was
+    not approved, a moved final step, a new, missing or changed question (wording,
+    control, options, required flag), or a required question the approved answers do
+    not fill. Empty when the approved packet may be filled into it as it is. The
+    semantic type is the runtime's reading, not the site's question, so it is not
+    compared (``bound_packet`` follows the current reading). ``awaiting``: custom
+    controls left to the user, not counted as changed."""
+    if step is None:
+        return [f"step {form.step + 1} was not part of the approved application"]
+    problems: list[str] = []
+    if (form.is_final_step is True) != (form.step == final_step):
+        problems.append(f"step {form.step + 1} now submits the application" if form.is_final_step
+                        else f"step {form.step + 1} no longer submits the application")
+    skip = {f.id for f in awaiting}
+    if step.fields is not None:
+        current = {f.id: f for f in form.fields}
+        for field_id, record in step.fields.items():
+            label = str(record.get("label") or field_id)
+            field = current.get(field_id)
+            if field is None:
+                problems.append(f"the question {label!r} is no longer on the form")
+            elif field.fingerprint != record.get("fingerprint"):
+                problems.append(f"the options of {label!r} changed"
+                                if options_digest(field) != record.get("options")
+                                else f"the question {label!r} changed")
+            elif field.required != record.get("required") and field_id not in skip:
+                problems.append(f"{label!r} is {'now' if field.required else 'no longer'} required")
+        for field in form.fields:
+            if field.id not in step.fields:
+                kind = "required question" if field.required else "question"
+                problems.append(f"a new {kind} {_short(field.question_text) or field.id!r} appeared")
+    elif (step.packet.form_step != form.step or form.model_copy(
+            update={"url": step.packet.form_url}).fingerprint != step.packet.form_fingerprint):
+        # Pinned before questions were recorded: the form must ask exactly the questions
+        # the approved packet answered (ids, wording, options), whatever its URL.
+        problems.append("the questions differ from the ones the approved answers were prepared for")
+    if not problems:
+        unanswered = [f for f in form.required_fields()
+                      if step.packet.answer_for(f.id) is None and f.id not in skip]
+        problems += [f"the required question {_short(f.question_text) or f.id!r} has no approved answer"
+                     for f in unanswered]
+    return problems
+
+
+def bound_packet(packet: ApplicationPacket, form: ApplicationForm) -> ApplicationPacket:
+    """The approved packet bound to this inspection of its step, with the same id,
+    values and provenance: a step URL may carry a new draft or session id, and each
+    answer takes the semantic type the runtime reads for its (unchanged) question now."""
+    answers = []
+    for answer in packet.answers:
+        field = form.find(answer.field_id)
+        if field is not None and field.semantic_type is not answer.semantic_type:
+            answer = answer.model_copy(update={"semantic_type": field.semantic_type})
+        answers.append(answer)
+    if (packet.form_url == form.url and packet.form_fingerprint == form.fingerprint
+            and answers == packet.answers):
+        return packet
+    return packet.model_copy(update={
+        "form_url": form.url,
+        "form_fingerprint": form.fingerprint,
+        "answers": answers,
+        "missing_inputs": [m.model_copy(update={"form_url": form.url}) if m.field_id is not None else m
+                           for m in packet.missing_inputs],
+    })
+
+
 _STATE_MESSAGES: dict[ApplicationState, str] = {
     S.SUBMITTED: "Already submitted; the site confirmed it. See the receipt.",
     S.SUBMITTING: "A submission is in progress or was interrupted; it will not be repeated.",
@@ -393,7 +568,10 @@ class LocalApplicationRunner:
 
     Preparation is the default: complete known fields and stop before final submit.
     ``prepare_only=False`` is reserved for explicitly authorized submission callers
-    and synthetic tests; it never overrides a stored preparation-only restriction.
+    (``submit``, via ``create_submission_runner``) and synthetic tests; it never
+    overrides a stored preparation-only restriction. Once the user approved a prepared
+    application and its submission was authorized, a ``prepare_only=False`` run fills
+    exactly the approved packets and submits them (see ``submit``).
     """
 
     def __init__(
@@ -444,6 +622,28 @@ class LocalApplicationRunner:
                 return self._blocked(store, application_id)
             url = store.list_requests(application_id)[0].application_url
             return await self._run(store, application_id, url)
+
+    async def submit(self, application_id: str) -> ApplyOutcome:
+        """Submit exactly what the user approved. The application must be authorized
+        (``ApplicationStore.authorize_submission`` after ``approve_submission``) and the
+        runner built with ``prepare_only=False``; otherwise nothing is opened and the
+        outcome says so. The site is opened and inspected again and each step is filled
+        from its approved packet; a form that no longer matches the approval stops as
+        NEEDS_INPUT before any submit, with the approval withdrawn."""
+        with self._store() as store:
+            app = store.get_application(application_id)
+            if app.state in SUBMISSION_BLOCKING_STATES or app.state in TERMINAL_STATES:
+                return self._blocked(store, application_id)
+            if self.prepare_only or store.submission_authorization(application_id) is None:
+                return self._not_authorized(store, application_id)
+            url = store.list_requests(application_id)[0].application_url
+            return await self._run(store, application_id, url, submission=True)
+
+    def _not_authorized(self, store: ApplicationStore, application_id: str) -> ApplyOutcome:
+        reason = ("this runner is preparation-only" if self.prepare_only else
+                  "approve the prepared application, then authorize its submission")
+        return _outcome(store, application_id,
+                        f"{NOT_AUTHORIZED_MESSAGE}: {reason}. Nothing was opened or submitted.")
 
     async def reconcile(self, application_id: str) -> ApplyOutcome:
         """Re-read the site for a SUBMISSION_UNKNOWN application, never resubmitting.
@@ -567,7 +767,8 @@ class LocalApplicationRunner:
 
     # --- the run --------------------------------------------------------------------------
 
-    async def _run(self, store: ApplicationStore, app_id: str, url: str) -> ApplyOutcome:
+    async def _run(self, store: ApplicationStore, app_id: str, url: str, *,
+                   submission: bool = False) -> ApplyOutcome:
         try:
             with browser_profile_lock(self.paths.browser_dir):
                 try:
@@ -580,6 +781,18 @@ class LocalApplicationRunner:
                         return _outcome(store, app_id, _STATE_MESSAGES.get(app.state, ""))
                     if self.prepare_only:
                         store.require_preparation_only(claim)
+                    approved: _Approved | None = None
+                    authorization = (None if self.prepare_only
+                                     else store.submission_authorization(app_id))
+                    if authorization is not None:
+                        try:
+                            approved = _approved_application(store, authorization)
+                        except NotFound:
+                            return _outcome(store, app_id, "The approved packet could not be "
+                                            "read; nothing was opened or submitted. Prepare and "
+                                            "approve the application again.")
+                    if submission and approved is None:
+                        return self._not_authorized(store, app_id)
                     try:
                         candidate = self.candidates.load(app.candidate_id)
                     except (CandidateNotFound, CandidateProfileInvalid) as exc:
@@ -604,7 +817,8 @@ class LocalApplicationRunner:
                         _fail_retryable(store, claim, app, message)
                         return _outcome(store, app_id, message)
                     try:
-                        return await _Run(self, store, claim, candidate, browser, url).execute()
+                        return await _Run(self, store, claim, candidate, browser, url,
+                                          approved=approved).execute()
                     finally:
                         await browser.close()
                 finally:
@@ -629,13 +843,22 @@ class _Run:
     """One pass through the site for one claimed application."""
 
     def __init__(self, runner: LocalApplicationRunner, store: ApplicationStore, claim: Claim,
-                 candidate: CandidateProfile, browser: ApplicationBrowser, url: str) -> None:
+                 candidate: CandidateProfile, browser: ApplicationBrowser, url: str,
+                 approved: _Approved | None = None) -> None:
         self.runner = runner
         self.store = store
         self.claim = claim
         self.candidate = candidate
         self.browser = browser
         self.url = url
+        self.approved = approved
+        """Set for a submission run of an authorized approval: every step is filled from
+        its approved packet and nothing is resolved."""
+        self.step_packets: dict[int, tuple[ApplicationForm, ApplicationPacket]] = {}
+        """The latest packet saved for each step in this run and the inspection it
+        answers; ``preparation.ready`` records them."""
+        self.awaited: set[tuple[int, str]] = set()
+        """Custom controls ``(step, field id)`` this submission run already waited for."""
         self.limits = runner.limits
         self.interaction = runner.interaction
         self.forms_seen: Counter[str] = Counter()
@@ -707,6 +930,10 @@ class _Run:
     def _to(self, state: ApplicationState, **kwargs: Any) -> None:
         if self.app().state is not state:
             self.store.transition(self.claim, state, **kwargs)
+
+    def _save_packet(self, form: ApplicationForm, packet: ApplicationPacket) -> None:
+        self.store.save_packet(self.claim, packet)
+        self.step_packets[form.step] = (form, packet)
 
     def _provider_cost(self) -> str:
         """Record this run's provider usage not recorded yet (``provider.budget``) while the
@@ -974,9 +1201,12 @@ class _Run:
             raise self._stop(S.FAILED_RETRYABLE, "The same form step kept coming back; stopped to "
                              "avoid a loop. Nothing was submitted.")
         self._to(S.INSPECTING)
+        acted = form.step in self.acted_steps
         self._note_rejections(form)
+        if self.approved is not None:
+            return await self._approved_step(page, form, acted=acted)
         packet = await self._resolve(form)
-        self.store.save_packet(self.claim, packet)
+        self._save_packet(form, packet)
         rounds = 0
         while True:
             while not packet.is_complete:
@@ -1001,7 +1231,7 @@ class _Run:
                         return page
                     form = page.form
                 packet = await self._resolve(form)
-                self.store.save_packet(self.claim, packet)
+                self._save_packet(form, packet)
                 if not questions and self._still_unoperated(unsupported, packet):
                     raise self._stop(S.NEEDS_INPUT, "Still waiting for you in the browser: "
                                      + "; ".join(m.prompt for m in unsupported),
@@ -1135,7 +1365,7 @@ class _Run:
             })
         self._renew()
         packet = self._with_lookups(form, packet, chosen, open_)
-        self.store.save_packet(self.claim, packet)
+        self._save_packet(form, packet)
         for metadata in events:
             self.store.append_event(self.claim, SUGGESTION_EVENT, metadata)
         if not chosen or not packet.is_complete:
@@ -1155,7 +1385,7 @@ class _Run:
                 self.chosen.pop((form.step, field.id, field.fingerprint), None)
             retry = {fid: (picked[fid], list(r.suggestions)) for fid, r in again.items()}
             packet = self._with_lookups(form, packet, {}, retry)
-            self.store.save_packet(self.claim, packet)
+            self._save_packet(form, packet)
         return fill, packet
 
     async def _choose(self, chooser: SuggestionChooser, form: ApplicationForm,
@@ -1210,6 +1440,129 @@ class _Run:
             return await self.browser.fill_fields(form, packet, field_ids)
         return await self.browser.fill(form, packet)
 
+    # approved submission -------------------------------------------------------------------
+
+    async def _approved_step(self, page: PageInspection, form: ApplicationForm, *,
+                             acted: bool) -> PageInspection:
+        """Fill this step from its approved packet once the form is checked to ask
+        exactly the approved questions. Nothing is resolved or generated."""
+        approved = self.approved
+        assert approved is not None
+        if acted and (form.page_errors or any(f.validation_error for f in form.fields)):
+            shown = [*form.page_errors, *(f"{_short(f.question_text) or f.id}: {f.validation_error}"
+                                          for f in form.fields if f.validation_error)]
+            raise self._not_approved(["the site did not accept the approved answers ("
+                                      + "; ".join(_short(m, 160) for m in shown[:3]) + ")"])
+        step = approved.steps.get(form.step)
+        awaiting = _awaiting_user(step, form) if step is not None else []
+        problems = approval_mismatches(step, form, final_step=approved.final_step,
+                                       awaiting=awaiting)
+        if problems:
+            raise self._not_approved(problems)
+        assert step is not None
+        if awaiting:
+            return await self._approved_user_action(page, form, awaiting)
+        packet = bound_packet(step.packet, form)
+        rejected = [p for answer in packet.answers if (field := form.find(answer.field_id))
+                    for p in answer_problems(field, answer.value)]
+        if rejected:  # e.g. the approved option is now disabled
+            raise self._not_approved(rejected)
+        problems = packet.problems_against(form)
+        if problems:
+            # Same questions, read differently this time (a semantic type whose answer
+            # must come from a saved answer or the user): not a change of the form.
+            raise self._stop(S.FAILED_RETRYABLE, "The approved answers cannot be filled as the "
+                             "page is read this time (" + "; ".join(problems[:3]) + "). Nothing "
+                             "was submitted and the approval stands; submit again with the "
+                             "runtime options the application was prepared with.")
+        return await self._act_approved(form, packet)
+
+    async def _approved_user_action(self, page: PageInspection, form: ApplicationForm,
+                                    controls: list[ApplicationField]) -> PageInspection:
+        """Custom controls the user set in the browser while preparing are not in the
+        approved packet: the user sets them again in the visible window, otherwise the
+        run stops as NEEDS_INPUT and the approval stands."""
+        needs = [MissingInput.for_field(
+            form, f, reason=MissingReason.UNSUPPORTED_CONTROL,
+            prompt=f"Set {_short(f.question_text) or f.id!r} in the browser window as you did "
+                   "when the application was prepared; it is not filled automatically.")
+            for f in controls]
+        keys = {(form.step, f.id) for f in controls}
+        if keys <= self.awaited:
+            raise self._stop(S.NEEDS_INPUT, "Still waiting for you in the browser: "
+                             + "; ".join(n.prompt for n in needs),
+                             reason="user action not completed", missing=needs)
+        self.awaited |= keys
+        return await self._user_action(page, needs)
+
+    async def _act_approved(self, form: ApplicationForm,
+                            packet: ApplicationPacket) -> PageInspection:
+        """``_act`` for an approved packet: fill it, then advance or submit it. A value
+        that does not read back or a lookup that no longer commits stops the run before
+        any submit; a step that changed while filling is inspected and compared again."""
+        await self._verify_expected_page()
+        self._to(S.PACKET_READY)
+        self._to(S.FILLING)
+        self.acted_steps.add(form.step)
+        try:
+            fill = await self.browser.fill(form, packet)
+        except ValueError:
+            # The page changed under us: inspect it again and compare it once more.
+            self._to(S.INSPECTING)
+            return await self.browser.inspect()
+        unmatched = [r for r in fill.fields if r.status in (FieldFillStatus.VERIFICATION_MISMATCH,
+                                                            FieldFillStatus.NEEDS_CHOICE)]
+        if unmatched:
+            labels = {f.id: _short(f.question_text) or f.id for f in form.fields}
+            raise self._not_approved([
+                (f"the approved answer to {labels.get(r.field_id, r.field_id)!r} does not read back"
+                 if r.status is FieldFillStatus.VERIFICATION_MISMATCH else
+                 f"the site no longer accepts the approved answer to "
+                 f"{labels.get(r.field_id, r.field_id)!r}")
+                + (f" ({_short(r.detail, 120)})" if r.detail else "")
+                for r in unmatched])
+        if fill.page_errors:
+            self._to(S.INSPECTING)
+            return await self.browser.inspect()
+        failed = fill.failed_field_ids()
+        if failed:
+            raise self._stop(S.FAILED_RETRYABLE, "Could not fill " + ", ".join(failed)
+                             + " reliably; nothing was submitted. The approval stands; submit "
+                               "again to retry.")
+        if form.is_final_step is True:
+            return await self._submit(packet)
+        await self._verify_expected_page()
+        try:
+            nav = await self.browser.advance()
+        except (SubmissionRefused, AmbiguousAction) as exc:
+            raise self._stop(S.FAILED_RETRYABLE, f"Cannot tell how to continue safely: {exc}. "
+                             "Nothing was submitted.") from exc
+        self._to(S.INSPECTING)
+        return nav.inspection
+
+    def _not_approved(self, problems: Sequence[str]) -> _Stop:
+        """Stop before any submit: withdraw the approval (the no-submit restriction is
+        back) and record NEEDS_INPUT naming what differs."""
+        details = list(dict.fromkeys(p for p in problems if p))
+        self.store.invalidate_approval(self.claim, reason=MISMATCH_MESSAGE, details=details)
+        shown = "; ".join(details[:3]) + (f"; and {len(details) - 3} more" if len(details) > 3 else "")
+        return self._stop(S.NEEDS_INPUT, f"{MISMATCH_MESSAGE}: {shown}. Nothing was submitted and "
+                          "the approval was withdrawn; prepare it again, review it and approve it "
+                          "before submitting.", reason="form no longer matches the approved application")
+
+    def _prepared_steps(self, packet: ApplicationPacket,
+                        final: ApplicationForm) -> list[dict[str, Any]]:
+        """Every step this run filled, up to the final one, with its packet and the
+        questions that packet answered: what an approval of this preparation pins."""
+        steps = {step: pair for step, pair in self.step_packets.items() if step < packet.form_step}
+        answered = self.step_packets.get(packet.form_step)
+        steps[packet.form_step] = (answered if answered is not None and answered[1].id == packet.id
+                                   else (final, packet))
+        return [{"form_step": step, "packet_id": pkt.id, "form_url": form.url,
+                 "form_fingerprint": form.fingerprint, "final": step == packet.form_step,
+                 "fields": [field_record(f) for f in form.fields]}
+                for step, (form, pkt) in sorted(steps.items())]
+
     async def _submit(self, packet: ApplicationPacket) -> PageInspection:
         if self.store.is_preparation_only(self.app_id):
             # Re-read after filling. A changed final step must be resolved again;
@@ -1229,7 +1582,7 @@ class _Run:
                 self.store.add_evidence(self.claim, page.evidence)
             keep_for_review = getattr(self.browser, "keep_for_review", None)
             location = keep_for_review() if callable(keep_for_review) else None
-            self.store.append_event(self.claim, "preparation.ready", {
+            self.store.append_event(self.claim, PREPARED_EVENT, {
                 "form_url": page.form.url,
                 "form_step": page.form.step,
                 "form_fingerprint": page.form.fingerprint,
@@ -1237,6 +1590,7 @@ class _Run:
                 "submitted": False,
                 "browser_location": location,
                 "captcha_pending": page.captcha_pending,
+                "steps": self._prepared_steps(packet, page.form),
             })
             captcha_note = (" A CAPTCHA on this form must be solved in the browser before it can "
                             "be submitted." if page.captcha_pending else "")
@@ -1321,6 +1675,27 @@ def create_runner(
                                   prepare_only=True)
 
 
+def create_submission_runner(
+    paths: LocalPaths,
+    *,
+    headless: bool,
+    interaction: UserInteraction,
+    limits: RunLimits | None = None,
+    dynamic_options: Any = None,
+) -> LocalApplicationRunner:
+    """The runner behind ``interviewmaxxing submit``: ``prepare_only=False``, so an
+    application whose approval was authorized is submitted with exactly its approved
+    packets (``LocalApplicationRunner.submit``). Every other application keeps its
+    stored no-submit restriction. Only an explicit, gated caller may build it."""
+    factory = None
+    if dynamic_options is not None:
+        from .dynamic import runtime_components
+
+        factory, _ = runtime_components(dynamic_options)
+    return LocalApplicationRunner(paths=paths, interaction=interaction, headless=headless,
+                                  limits=limits, browser_factory=factory, prepare_only=False)
+
+
 class NoninteractiveInteraction:
     """Asks nothing: missing questions are recorded as NEEDS_INPUT and browser actions
     are declined unless ``allow_browser_action`` is set (the user said they will act
@@ -1341,7 +1716,10 @@ class NoninteractiveInteraction:
 
 
 __all__ = [
+    "MISMATCH_MESSAGE",
     "NEEDS_INPUT_EVENT",
+    "NOT_AUTHORIZED_MESSAGE",
+    "PREPARED_EVENT",
     "PROVIDER_EVENT",
     "REJECTION_EVENT",
     "ROUTING_EVENT",
@@ -1350,8 +1728,13 @@ __all__ = [
     "NoninteractiveInteraction",
     "RunLimits",
     "RunnerBusy",
+    "approval_mismatches",
+    "bound_packet",
     "browser_profile_lock",
     "create_runner",
+    "create_submission_runner",
+    "field_record",
+    "options_digest",
     "pending_inputs",
     "project_trace",
     "redact_detail",
