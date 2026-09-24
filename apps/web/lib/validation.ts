@@ -78,10 +78,23 @@ export function isEmptyAnswer(value: AnswerValue | undefined): boolean {
   return false;
 }
 
+/** Required-answer message for a site lookup (location, school or company search box). */
+function missingLookupMessage(question: RequiredQuestionView, enteringOther: boolean): string {
+  if (enteringOther) {
+    return "Type the value to enter in the site's search box, or choose one of the site's suggestions.";
+  }
+  return question.options && question.options.length > 0
+    ? "Choose one of the site's suggestions, or enter a different value."
+    : "Type what the site should look up to continue.";
+}
+
 /**
  * Validate answers to the questions the service asked.
  * `requireComplete` is true when continuing the application and false when
  * only saving a draft, which may leave required questions blank.
+ * `lookupOther` marks lookup questions whose "Enter a different value…" text
+ * box is in use. Any non-blank text answers a lookup: it is typed into the
+ * site's search box, so it never has to be one of the suggestions.
  */
 export function validateAnswers(
   questions: RequiredQuestionView[],
@@ -89,14 +102,16 @@ export function validateAnswers(
   answers: Record<string, AnswerValue>,
   accepted: Record<string, boolean>,
   requireComplete: boolean,
+  lookupOther: Readonly<Record<string, boolean>> = {},
 ): FieldErrors {
   const errors: FieldErrors = {};
   for (const question of questions) {
     const value = answers[question.id];
     if (isEmptyAnswer(value)) {
       if (requireComplete && question.required) {
-        errors[question.id] =
-          question.control === "single_select" || question.control === "boolean"
+        errors[question.id] = question.lookup
+          ? missingLookupMessage(question, lookupOther[question.id] === true)
+          : question.control === "single_select" || question.control === "boolean"
             ? "Choose an answer to continue."
             : question.control === "multi_select"
               ? "Choose at least one option to continue."

@@ -74,9 +74,11 @@ On start the service marks submissions interrupted by an earlier process as `SUB
 
   ```json
   {"status":"ok","service":"interviewmaxxing-service","contractVersion":"2","executor":"idle"|"busy",
-   "runner":"available"|"unavailable","applicationMode":"TEST_ONLY"|"LIVE",
+   "runner":"available"|"unavailable","applicationMode":"TEST_ONLY"|"LIVE","presentationVersion":"2",
    "pipeline":"available"|"unavailable","jobs":"available"|"unavailable","selection":"available"|"unavailable"}
   ```
+
+  `contractVersion` is core's `CONTRACT_VERSION`. `presentationVersion` is this service's view contract (`models.PRESENTATION_VERSION`); a response without it is version 1, before [prepared reviews](#prepared-applications-and-the-review-list-wp3).
 
 - **Limit.** The check is on the URL the service is given. Redirects the site itself performs happen inside the I1 browser.
 
@@ -86,9 +88,10 @@ The Next gateway forwards `/api/imx/<path>` to `http://127.0.0.1:<port>/<path>`.
 
 | Method and path | Request | Success |
 | --- | --- | --- |
-| `GET /healthz` | — | `{"status":"ok","service":"interviewmaxxing-service","contractVersion":"2","executor":"idle"\|"busy"}` (no private data) |
+| `GET /healthz` | — | `{"status":"ok","service":"interviewmaxxing-service","contractVersion":"2","presentationVersion":"2","executor":"idle"\|"busy",...}` (no private data) |
 | `GET /candidate` | — | `CandidateView` |
 | `POST /resumes` | raw bytes, see below | `201 ResumeDocumentView` |
+| `GET /applications` | — | `ApplicationListView`: every application of the configured candidate, most recently updated first ([prepared reviews](#prepared-applications-and-the-review-list-wp3)) |
 | `POST /applications` | `StartApplicationInput` | `201` (new) or `200` (existing) `ApplicationView` |
 | `GET /applications/{id}` | — | `ApplicationView` |
 | `POST /applications/{id}/answers` | `AnswerInput` (+ optional `reuse`) | `ApplicationView`; invalid values in `needs.errors`, nothing saved |
@@ -127,7 +130,7 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
 
 - **Candidate.** `GET /candidate` shows the canonical profile (or empty strings before setup), the supplied resumes and `defaultResumeId` (the profile's resume). The configured `IMX_CANDIDATE_ID` is the identity; nothing is keyed by content.
 - **Start.** Validates the URL, the chosen resume and the confirmed profile. `location` is the frontend's "City and region" field: `"Austin, TX"` is city `Austin`, region `TX`. Only an explicit third part is a country (`"Austin, TX, USA"`); no country is inferred from a region. More than three parts is a field error, never a guess. An unchanged location keeps the stored `PostalAddress` and an unchanged profile keeps its `verified_at`. The profile is saved through C2P only when it changed. The service then records the request through `store.record_request` **synchronously**, before any run, and returns the id (`201`) while the run continues on the executor thread. A repeat returns the same application (`200`), and nothing is sent again when it was submitted, is submitting or is unknown. Only one run uses the browser at a time. A request for another application while one is running gets `409` and is **not** recorded.
-- **Questions.** `needs.questions`/`attestations` come from the latest packet's missing inputs. Labels, help text and options are the site's own, verbatim; placeholder and disabled options are never offered. Question ids are `q_` + a hash of (form scope, field id, field fingerprint), stable across reloads and new if the site changes the wording. Single checkboxes for consent/attestation are `attestations`; they show `accepted: true` only when the user accepted them.
+- **Questions.** `needs.questions`/`attestations` come from the latest packet's missing inputs. Labels, help text and options are the site's own, verbatim; placeholder and disabled options are never offered. Question ids are `q_` + a hash of (form scope, field id, field fingerprint), stable across reloads and new if the site changes the wording. Single checkboxes for consent/attestation are `attestations`; they show `accepted: true` only when the user accepted them. A lookup (`TYPEAHEAD`) question has `lookup: true`: with the site's suggestions it is `single_select` with those suggestions as `options` (value equals label), otherwise `text`; the answer may be a suggestion or any other non-blank text, which the browser types into the site's search box verbatim.
 - **Answers.** Every value is translated against the question's own options (machine `value` + visible `label`) and built with `UserInput.answering`, which keeps the exact wording, scope and fingerprint. All-or-nothing: any invalid value → `needs.errors`, nothing saved. An unknown/stale id → `409`. Blank values are skipped (draft save). Reuse defaults to **this application**. The optional request field `reuse: {questionId: "application"|"job"|"global"}` saves the answer through the candidate package's `save_answer` with that scope. Declining a required statement is refused.
 - **Resume.** Allowed from `NEEDS_INPUT` (all required questions answered, else `422` keyed by id), `FAILED_RETRYABLE` and an interrupted pre-submission state. The run is started with browser actions allowed, so the user can sign in or solve a CAPTCHA in the visible window. Refused (`409`) for `SUBMITTING`, `SUBMISSION_UNKNOWN`, `SUBMITTED` and closed states.
 - **Reconcile** (`SUBMISSION_UNKNOWN` only):
@@ -136,6 +139,36 @@ Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's 
   - `user_confirmed_not_received` is recorded as user evidence and an event. The state **stays `SUBMISSION_UNKNOWN`**: a user's report is not proof of non-submission, so it does not unlock a second submission (this intentionally differs from the F1 preview). Only a site recheck can establish `NOT_SUBMITTED`.
 - **Failures.** If a run raises before submitting, the service moves the application to `FAILED_RETRYABLE` ("nothing was sent"), so the user can try again. A run that dies during submit is left to the store: it becomes `SUBMISSION_UNKNOWN` when the lease lapses, and status reads trigger that recovery.
 - **Logs** contain method, route template and status only. Runner errors are logged by exception type.
+
+### Prepared applications and the review list (WP3)
+
+Preparation is the default mode (`docs/application-preparation.md`): a complete form stops at its final review step as `NEEDS_INPUT` with a `preparation.ready` event and nothing is submitted. Presentation version 2 shows such a stop as a review, not as a request for input. All fields below are additive to `ApplicationView`:
+
+```ts
+preparation: {                 // null unless the latest stop is a prepared final review
+  ready: true;
+  formStep: number | null;     // 0-based final step as recorded (page formStep + 1)
+  formUrl: string | null;      // the final review page
+  captchaPending: boolean;     // an embedded CAPTCHA must be solved before submitting
+  preparedAt: string;          // the preparation.ready event
+  submitted: false;
+  evidence: EvidenceView[];    // recorded by the preparing run; hrefs use the evidence route
+} | null;
+review: {                      // filled answers in form order; [] before any packet
+  question: string; wordingRecorded: boolean; page: number;
+  control: "text" | "long_text" | "single_select" | "multi_select" | "boolean" | "file";
+  value: string | string[];    // text, option label, labels, "Yes"/"No", or file name
+  source: "identity" | "saved_answer" | "fact" | "user" | "generated" | "resume";
+  confidence: number;          // 0..1, the packet answer's confidence
+}[];
+```
+
+- **Prepared.** The state is `NEEDS_INPUT` and, walking back from the latest transition, a `preparation.ready` event comes before any transition other than the runner's own re-inspection (INSPECTING -> NEEDS_INPUT). A later stop for questions, sign-in or a failure is never shown as prepared. `captchaPending`, `formStep` and `formUrl` come from the event's metadata.
+- **`needs` of a prepared application** is `null`, or a `questions` need when the stop still records answerable questions. The earlier fallback (an `interaction` "VERIFICATION" need from the stop's reason) no longer applies to prepared stops. `resume` works as before: it re-prepares from the site, and submission stays disabled.
+- **Evidence.** Only evidence recorded by the preparing run (from the previous stop to `preparation.ready`) is listed, so screenshots of an earlier failed run are not shown as the prepared form.
+- **Review list.** For a prepared application it covers every step of the preparing run (the latest packet per form step, from its `packet.saved` events); otherwise the latest packet. `question` is the first line of recorded wording when there is one (`wordingRecorded: true`): the user's own answer's question, a question recorded for that step and field in any NEEDS_INPUT stop, or the question a used saved answer was saved for (read through the profile loader, not while the application is running). Otherwise it is a plain name for the question's semantic type ("Email", "Resume", "Work authorization", "Question on the form"), because packets keep field ids, not wording. Provenance ids, notes, field ids and artifact paths are never included.
+- **Docket.** The stop after `preparation.ready` reads "Paused at the final review step for you to check." (`info`) instead of "Waiting for you."
+- **`GET /applications`** returns `{"applications": ApplicationSummaryView[]}` with `{id, state, applicationUrl, job, requestedAt, updatedAt, preparation, pipelineEntryIds}`. `pipelineEntryIds` are the candidate's pipeline cards linked to the application plus unlinked cards whose `applicationUrl` the store resolves to it (`find_application`: its own URL normalization and aliases). It only helps find prepared cards; it links nothing and never implies a receipt.
 
 ### Application handoff links
 
@@ -430,6 +463,12 @@ uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/ser
 - `test_expected_identity`: real-runner handoff expectation before dispatch, missing/wrong initial observations, restart persistence, immutable expectations, matching identity and pre-submit identity changes.
 - `test_application_links`: owned ID and URL validation, link-before-dispatch, listing-only tracking, refusal to overwrite a different application, and retry after failed link persistence.
 - `test_listing_aliases`: real J1 canonical merges preserve cards, decisions and pollable queued tasks, including handoff to the original card.
+- WP3 prepared reviews, over runs that record exactly what the I1 runner records (`preparation_support.py`):
+  - `test_preparation_view`: the `preparation` object, `needs: null`, run-scoped evidence, the docket wording, and every stop that is not a preparation.
+  - `test_review_answers`: the review list across the pages of the preparing run, values, controls, sources, the wording rules, and no ids.
+  - `test_lookup_questions`: suggestions offered as a select, free text accepted, blanks kept as drafts.
+  - `test_application_list`: `GET /applications` order, candidate scope and `pipelineEntryIds`.
+- `test_prepared_acceptance` (marked `slow`): the real runner prepares the mock's standard job through HTTP; the view is a review with a served screenshot and the saved answers' wording, and nothing is submitted.
 - `test_acceptance` (marked `slow`): HTTP → real I1 runner → headless Chromium → `scripts/mock_ats.py` in its own process, with a fictional profile in a temporary `IMX_HOME`. It covers:
   - receipt, server-side acceptance count, uploaded file digest and a repeat request;
   - A/B resume pins across a profile change and a restart, with missing answers answered after the restart;

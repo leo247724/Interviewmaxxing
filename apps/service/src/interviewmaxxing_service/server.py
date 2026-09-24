@@ -67,6 +67,7 @@ ROUTES: list[Route] = [
     ("GET", re.compile(r"^/healthz$"), "health"),
     ("GET", re.compile(r"^/candidate$"), "candidate"),
     ("POST", re.compile(r"^/resumes$"), "upload"),
+    ("GET", re.compile(r"^/applications$"), "list"),
     ("POST", re.compile(r"^/applications$"), "start"),
     ("GET", re.compile(rf"^/applications/{_APP}$"), "status"),
     ("POST", re.compile(rf"^/applications/{_APP}/answers$"), "answers"),
@@ -92,6 +93,7 @@ _TEMPLATES = {
     "health": "/healthz",
     "candidate": "/candidate",
     "upload": "/resumes",
+    "list": "/applications",
     "start": "/applications",
     "status": "/applications/{id}",
     "answers": "/applications/{id}/answers",
@@ -341,6 +343,9 @@ class ServiceHandler(BaseHTTPRequestHandler):
             ) from exc
         content = self._read_body(self.config.max_upload_bytes)
         self._send_json(201, self.service.upload_resume(filename, content).dump())
+
+    def _r_list(self) -> None:
+        self._send_json(200, self.service.list_applications().dump())
 
     def _r_start(self) -> None:
         body = self._json(StartApplicationInput)

@@ -1,5 +1,6 @@
 import type { ApplicationState, ApplicationView } from "./service/types";
 import { receiptAuthority } from "./receipt";
+import { isPrepared } from "./preparation";
 
 /** States in which the service is working and the desk should keep polling. */
 export const ACTIVE_STATES: ReadonlySet<ApplicationState> = new Set([
@@ -33,6 +34,8 @@ export function railIndex(view: ApplicationView): number {
     case "FILLING":
       return 2;
     case "NEEDS_INPUT":
+      // A prepared application filled every page and stopped before Submitting.
+      if (isPrepared(view)) return 2;
       return view.needs?.kind === "interaction" && !view.progress ? 1 : 2;
     case "SUBMITTING":
     case "SUBMISSION_UNKNOWN":
@@ -48,6 +51,29 @@ export function railIndex(view: ApplicationView): number {
       return -1;
   }
 }
+
+export type RailStatus = "done" | "current" | "held" | "todo";
+
+/**
+ * Status of every rail step. A prepared application completed Filling and never
+ * reached Submitting; every other state keeps its reached step current or held.
+ */
+export function railStatuses(view: ApplicationView): RailStatus[] {
+  const reached = railIndex(view);
+  const stopped = !isActive(view.state) && view.state !== "SUBMITTED";
+  const complete = view.state === "SUBMITTED" || isPrepared(view);
+  return RAIL_STEPS.map((_, index) =>
+    index < reached || (index === reached && complete)
+      ? "done"
+      : index === reached
+        ? stopped
+          ? "held"
+          : "current"
+        : "todo",
+  );
+}
+
+export const PREPARED_HEADLINE = "Prepared for your review — nothing submitted";
 
 export type Mood = "working" | "attention" | "success" | "caution" | "failure" | "neutral";
 
@@ -73,6 +99,8 @@ export function describe(view: ApplicationView): { headline: string; mood: Mood 
     case "SUBMITTING":
       return { headline: "Submitting", mood: "working" };
     case "NEEDS_INPUT":
+      // Nothing is wrong and nothing was sent: a calm state, never an error or a success.
+      if (isPrepared(view)) return { headline: PREPARED_HEADLINE, mood: "neutral" };
       if (view.needs?.kind === "interaction") {
         return {
           headline:

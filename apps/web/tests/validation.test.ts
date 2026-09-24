@@ -79,3 +79,52 @@ describe("validateAnswers", () => {
     expect(errors).toEqual({});
   });
 });
+
+describe("validateAnswers for site lookups", () => {
+  const places = ["Portland, OR, USA", "Portland, ME, USA", "Portland, TX, USA"];
+  const lookup = (overrides: Partial<RequiredQuestionView> = {}): RequiredQuestionView => ({
+    id: "where",
+    label: "Location (city)",
+    help: null,
+    control: "single_select",
+    required: true,
+    lookup: true,
+    options: places.map((place) => ({ value: place, label: place })),
+    value: null,
+    maxLength: null,
+    reason: null,
+    ...overrides,
+  });
+
+  it("gives a clear error for a blank different value", () => {
+    const errors = validateAnswers([lookup()], [], { where: "" }, {}, true, { where: true });
+    expect(errors.where).toMatch(/Type the value to enter in the site's search box/);
+    const spaces = validateAnswers([lookup()], [], { where: "   " }, {}, true, { where: true });
+    expect(spaces.where).toBe(errors.where);
+  });
+
+  it("asks for a suggestion or a different value when nothing is chosen", () => {
+    expect(validateAnswers([lookup()], [], {}, {}, true).where).toBe(
+      "Choose one of the site's suggestions, or enter a different value.",
+    );
+    expect(validateAnswers([lookup({ control: "text", options: null })], [], {}, {}, true).where).toMatch(
+      /site should look up/,
+    );
+  });
+
+  it("accepts any non-blank text, not only the suggestions", () => {
+    expect(validateAnswers([lookup()], [], { where: "Beaverton, OR, USA" }, {}, true, { where: true })).toEqual({});
+    expect(validateAnswers([lookup()], [], { where: "Portland, ME, USA" }, {}, true)).toEqual({});
+    expect(validateAnswers([lookup({ control: "text", options: null })], [], { where: "Salem" }, {}, true)).toEqual({});
+  });
+
+  it("lets a draft leave a lookup blank, and optional lookups stay optional", () => {
+    expect(validateAnswers([lookup()], [], { where: "" }, {}, false, { where: true })).toEqual({});
+    expect(validateAnswers([lookup({ required: false })], [], { where: "" }, {}, true, { where: true })).toEqual({});
+  });
+
+  it("keeps the usual message for ordinary choice questions", () => {
+    const plain = lookup({ lookup: undefined });
+    expect(validateAnswers([plain], [], {}, {}, true).where).toBe("Choose an answer to continue.");
+  });
+});

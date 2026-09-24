@@ -95,6 +95,13 @@ export interface RequiredQuestionView {
   maxLength: number | null;
   /** Why the system could not answer this itself. */
   reason: string | null;
+  /**
+   * A site lookup (a location, school or company search box). With `options`, they
+   * are the suggestions the site offered for the typed value (value equals label);
+   * any other text is accepted too and typed into the site's search box. Absent on
+   * services before presentation version 2: treat as false.
+   */
+  lookup?: boolean;
 }
 
 export interface AttestationView {
@@ -179,6 +186,54 @@ export interface UncertainSubmissionView {
   lastCheckResult: string | null;
 }
 
+/** Where a filled answer came from. */
+export type ReviewSource =
+  | "identity" // your verified contact details
+  | "saved_answer" // an answer you saved for reuse
+  | "fact" // a verified fact from your profile
+  | "user" // your own answer for this application
+  | "generated" // text drafted from your verified facts
+  | "resume"; // the resume file itself
+
+export type ReviewControl = "text" | "long_text" | "single_select" | "multi_select" | "boolean" | "file";
+
+/** One answer the service filled into the form, for review. Carries no internal ids. */
+export interface ReviewAnswerView {
+  /**
+   * The question. With `wordingRecorded`, recorded wording for it (the site's own, or
+   * the question your saved answer was saved for); otherwise a plain name for the kind
+   * of question, because the form's wording was not recorded (the screenshot shows it).
+   */
+  question: string;
+  wordingRecorded: boolean;
+  /** Form page, 1-based. */
+  page: number;
+  control: ReviewControl;
+  /** What was entered: the text, the chosen option's label, labels (multi-choice), "Yes"/"No", or the file name. */
+  value: string | string[];
+  source: ReviewSource;
+  /** 0–1: how sure the resolver was. 1 for your own details and answers. */
+  confidence: number;
+}
+
+/**
+ * A prepared application: the form was filled and the run stopped at the final
+ * review step without submitting (a `preparation.ready` stop). Only for NEEDS_INPUT.
+ */
+export interface PreparationView {
+  ready: true;
+  /** 0-based index of the final form step as recorded (page `formStep + 1`). */
+  formStep: number | null;
+  /** Address of the final review page. */
+  formUrl: string | null;
+  /** An embedded CAPTCHA must be solved in the browser before the form can be submitted. */
+  captchaPending: boolean;
+  preparedAt: string;
+  submitted: false;
+  /** Evidence saved by the preparing run (screenshots of the filled review page). */
+  evidence: EvidenceView[];
+}
+
 export interface ApplicationView {
   id: string;
   state: ApplicationState;
@@ -189,12 +244,50 @@ export interface ApplicationView {
   /** Which page of a multi-step form is being worked on, when known. */
   progress: { page: number; pageCount: number | null } | null;
   resumeFileName: string | null;
+  /**
+   * What the application waits for. For a prepared application (`preparation` set)
+   * this is null unless questions remain; a prepared review is not a request for input.
+   */
   needs: InputRequestView | null;
   receipt: SubmissionReceiptView | null;
   prior: PriorSubmissionView | null;
   failure: FailureView | null;
   uncertain: UncertainSubmissionView | null;
   events: ApplicationEventView[];
+  /**
+   * Set when the latest stop is a prepared final review (NEEDS_INPUT with nothing
+   * submitted); null otherwise. Absent on services before presentation version 2.
+   */
+  preparation?: PreparationView | null;
+  /**
+   * Answers the service filled in, form order: every page of the preparing run for a
+   * prepared application, otherwise the latest page's answers. Empty before any
+   * answers exist. Absent on services before presentation version 2.
+   */
+  review?: ReviewAnswerView[];
+}
+
+/** One application in `GET /applications`. */
+export interface ApplicationSummaryView {
+  id: string;
+  state: ApplicationState;
+  applicationUrl: string;
+  job: JobIdentityView;
+  requestedAt: string;
+  updatedAt: string;
+  /** Same as `ApplicationView.preparation`. */
+  preparation: PreparationView | null;
+  /**
+   * Pipeline cards that point at this application: cards linked to it, and unlinked
+   * cards whose application URL the store resolves to it. Drives the Prepared
+   * badge and filter only, never a receipt or a link.
+   */
+  pipelineEntryIds: string[];
+}
+
+export interface ApplicationListView {
+  /** Most recently updated first. */
+  applications: ApplicationSummaryView[];
 }
 
 export interface AnswerInput {
@@ -228,4 +321,6 @@ export interface ApplicationService {
   resume(applicationId: string): Promise<ApplicationView>;
   /** Settle an uncertain submission. Never a blind retry. */
   reconcile(applicationId: string, input: ReconcileInput): Promise<ApplicationView>;
+  /** Every application of this candidate with its preparation status, most recently updated first. */
+  list(): Promise<ApplicationListView>;
 }

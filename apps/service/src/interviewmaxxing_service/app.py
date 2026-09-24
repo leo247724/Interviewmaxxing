@@ -61,7 +61,8 @@ def build_app(
         state = ServiceState(config.paths.state_db.parent / "service.sqlite3")
         state.interrupt_active()
         service = PresentationService(
-            config, candidates=candidates, dispatcher=dispatcher, runner_problem=runner_problem
+            config, candidates=candidates, dispatcher=dispatcher, runner_problem=runner_problem,
+            profile_loader=profile_loader,
         )
         service.recover()
         jobs_ref: dict[str, Any] = {}

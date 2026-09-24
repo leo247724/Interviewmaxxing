@@ -1,12 +1,23 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HttpPipelineService } from "@/lib/pipeline/http";
 import { previewPipeline } from "@/lib/pipeline/previewStore";
 import type { PipelineBoardView, PipelineEntryView, PipelineService } from "@/lib/pipeline/types";
 import { compensationSummary } from "@/lib/pipeline/fields";
+import {
+  focusCounts,
+  loadApplicationSummaries,
+  preparedByEntry,
+  preparedListNote,
+  visibleEntries,
+  type PipelineFocus,
+} from "@/lib/pipeline/prepared";
 import { asServiceError, type ServiceError } from "@/lib/service/errors";
+import { HttpApplicationService } from "@/lib/service/http";
+import { PreviewApplicationService } from "@/lib/service/preview";
+import type { ApplicationService, ApplicationSummaryView } from "@/lib/service/types";
 import { writeHandoff } from "@/lib/handoff";
 import { AppShell, PreviewStrip, type Connection } from "../shell/AppShell";
 import { Modal } from "../Modal";
@@ -31,13 +42,21 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
     () => (mode === "preview" ? previewPipeline() : new HttpPipelineService()),
     [mode],
   );
+  // Only read here: the application list marks prepared cards (filled, stopped before submitting).
+  const applications = useMemo<ApplicationService>(
+    () => (mode === "preview" ? new PreviewApplicationService() : new HttpApplicationService()),
+    [mode],
+  );
   const router = useRouter();
   const [board, setBoard] = useState<PipelineBoardView | null>(null);
+  const [summaries, setSummaries] = useState<ApplicationSummaryView[]>([]);
+  const [listError, setListError] = useState<ServiceError | null>(null);
+  const listRequest = useRef(0);
   const [loadError, setLoadError] = useState<ServiceError | null>(null);
   const [connection, setConnection] = useState<Connection>("checking");
   const [layout, setLayout] = useState<"board" | "list">("board");
   const [filter, setFilter] = useState("");
-  const [focus, setFocus] = useState<"all" | "actions" | "interviews">("all");
+  const [focus, setFocus] = useState<PipelineFocus>("all");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [editorKey, setEditorKey] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -45,7 +64,17 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
   const [moveError, setMoveError] = useState<string | null>(null);
   const [dropLane, setDropLane] = useState<string | null>(null);
 
+  // A failed list (older service, 404/405, unavailable) leaves the board as it is, with no Prepared marks.
+  const loadPrepared = useCallback(async () => {
+    const request = ++listRequest.current;
+    const { applications: listed, error } = await loadApplicationSummaries(applications);
+    if (request !== listRequest.current) return;
+    setSummaries(listed);
+    setListError(error);
+  }, [applications]);
+
   const load = useCallback(async () => {
+    void loadPrepared();
     try {
       const next = await service.board();
       setBoard(next);
@@ -58,7 +87,7 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
       setConnection(serviceError.code === "unavailable" ? "unavailable" : "connected");
       return null;
     }
-  }, [service]);
+  }, [service, loadPrepared]);
 
   useEffect(() => {
     void load();
@@ -150,18 +179,29 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
     router.push(mode === "preview" ? "/preview" : "/");
   }
 
-  const entries = board?.entries ?? [];
+  /** Opens the prepared application in the desk to review it. Nothing is started or submitted. */
+  function goReview(entry: PipelineEntryView, application: ApplicationSummaryView) {
+    writeHandoff({
+      applicationUrl: application.applicationUrl || entry.applicationUrl,
+      company: entry.fields.company ?? application.job.company,
+      role: entry.fields.role ?? application.job.title,
+      from: "pipeline",
+      pipelineEntryId: entry.id,
+      listingId: entry.listingId,
+      applicationId: application.id,
+    });
+    router.push(mode === "preview" ? "/preview" : "/");
+  }
+
+  const entries = useMemo(() => board?.entries ?? [], [board]);
+  const prepared = useMemo(() => preparedByEntry(entries, summaries), [entries, summaries]);
   const todayCT = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const upcoming = (entry: PipelineEntryView) => Boolean(entry.fields.nextInterviewDate && entry.fields.nextInterviewDate >= todayCT);
+  const focusContext = { prepared, upcoming };
+  const counts = focusCounts(entries, focusContext);
   const query = filter.trim().toLowerCase();
-  const searched = query
-    ? entries.filter((entry) =>
-        [entry.fields.company, entry.fields.role, entry.fields.stage, entry.fields.status]
-          .filter(Boolean)
-          .some((value) => value!.toLowerCase().includes(query)),
-      )
-    : entries;
-  const visible = searched.filter((entry) => focus === "all" || (focus === "actions" ? Boolean(entry.fields.nextAction) : upcoming(entry)));
+  const visible = visibleEntries(entries, query, focus, focusContext);
+  const listNote = preparedListNote(listError);
   const editing =
     dialog?.kind === "edit" || dialog?.kind === "apply" ? entries.find((item) => item.id === dialog.entryId) : null;
 
@@ -225,14 +265,16 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
           </section>}
           <div className="pipeline-focus" aria-label="Focus the pipeline">
             {([
-              ["all", "All tracked", entries.length],
-              ["actions", "With next actions", entries.filter((entry) => entry.fields.nextAction).length],
-              ["interviews", "Upcoming interviews", entries.filter(upcoming).length],
-            ] as const).map(([id, label, count]) => <button key={id} type="button" aria-pressed={focus === id} onClick={() => setFocus(id)}>
-              <span className="pipeline-focus__count">{count}</span><span>{label}</span><span className="pipeline-focus__arrow" aria-hidden="true">↗</span>
+              ["all", "All tracked"],
+              ["actions", "With next actions"],
+              ["interviews", "Upcoming interviews"],
+              ["prepared", "Prepared for review"],
+            ] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={focus === id} onClick={() => setFocus(id)}>
+              <span className="pipeline-focus__count">{counts[id]}</span><span>{label}</span><span className="pipeline-focus__arrow" aria-hidden="true">↗</span>
             </button>)}
             <p>Your tracking stages. Confirmed applications keep a separate receipt.</p>
           </div>
+          {listNote && <p className="pipeline-prepared-note">{listNote}</p>}
           <div className="toolbar">
             <fieldset className="segmented">
               <legend className="visually-hidden">Layout</legend>
@@ -290,7 +332,11 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
             </p>
           )}
 
-          {visible.length === 0 && (query || focus !== "all") && <p className="empty-note">No roles match this view. Choose All tracked or clear the search to see the rest.</p>}
+          {visible.length === 0 && (query || focus !== "all") && <p className="empty-note">
+            {focus === "prepared" && !query
+              ? "Nothing is prepared for review yet. A prepared application stops at the final review step without submitting, then shows up here."
+              : "No roles match this view. Choose All tracked or clear the search to see the rest."}
+          </p>}
           {layout === "board" ? (
             <div className="board">
               {board.lanes.map((lane) => {
@@ -321,20 +367,25 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
                       {cards.length === 0 ? (
                         <p className="lane__empty">Nothing here.</p>
                       ) : (
-                        cards.map((entry) => (
-                          <EntryCard
-                            key={`${entry.id}-${entry.revision}`}
-                            entry={entry}
-                            lanes={board.lanes}
-                            busy={busyId === entry.id}
-                            onOpen={() => {
-                              setEditorKey((key) => key + 1);
-                              setDialog({ kind: "edit", entryId: entry.id });
-                            }}
-                            onMove={(target) => void move(entry, target)}
-                            onApply={() => setDialog({ kind: "apply", entryId: entry.id })}
-                          />
-                        ))
+                        cards.map((entry) => {
+                          const preparedApplication = prepared.get(entry.id) ?? null;
+                          return (
+                            <EntryCard
+                              key={`${entry.id}-${entry.revision}`}
+                              entry={entry}
+                              lanes={board.lanes}
+                              busy={busyId === entry.id}
+                              prepared={preparedApplication}
+                              onOpen={() => {
+                                setEditorKey((key) => key + 1);
+                                setDialog({ kind: "edit", entryId: entry.id });
+                              }}
+                              onMove={(target) => void move(entry, target)}
+                              onApply={() => setDialog({ kind: "apply", entryId: entry.id })}
+                              onReview={preparedApplication ? () => goReview(entry, preparedApplication) : undefined}
+                            />
+                          );
+                        })
                       )}
                     </div>
                   </section>
@@ -360,12 +411,14 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map((entry) => (
+                  {visible.map((entry) => {
+                    const preparedApplication = prepared.get(entry.id) ?? null;
+                    return (
                     <tr key={entry.id}>
                       <th scope="row" data-label="Company and role">
                         <span className="card__company">{entry.fields.company ?? "—"}</span>
                         <span className="card__role">{entry.fields.role ?? ""}</span>
-                        <EntryBadges entry={entry} />
+                        <EntryBadges entry={entry} prepared={preparedApplication} />
                       </th>
                       <td data-label="Lane">{laneLabel(entry.lane)}</td>
                       <td data-label="Stage and status">
@@ -394,9 +447,19 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
                         >
                           Open<span className="visually-hidden"> {entry.fields.company ?? entry.fields.role}</span>
                         </button>
+                        {preparedApplication && (
+                          <button
+                            type="button"
+                            className="chip-button chip-button--review"
+                            onClick={() => goReview(entry, preparedApplication)}
+                          >
+                            Review<span className="visually-hidden"> the prepared application for {entry.fields.company ?? entry.fields.role}</span>
+                          </button>
+                        )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

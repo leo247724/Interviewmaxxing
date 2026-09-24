@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,9 +22,13 @@ from urllib.parse import urlsplit
 
 from interviewmaxxing_core import (
     CONTRACT_VERSION,
+    AnswerSource,
     Application,
+    ApplicationEvent,
+    ApplicationPacket,
     ApplicationState,
     ApplicationStore,
+    CandidateProfile,
     Claim,
     ClaimUnavailable,
     EvidenceKind,
@@ -53,7 +57,9 @@ from .candidate import (
 from .config import ServiceConfig, is_loopback_host
 from .executor import Dispatcher, Run
 from .models import (
+    PRESENTATION_VERSION,
     AnswerInput,
+    ApplicationListView,
     ApplicationView,
     CandidateView,
     RecheckInput,
@@ -63,7 +69,17 @@ from .models import (
     UserConfirmedNotReceivedInput,
     UserFoundConfirmationInput,
 )
-from .views import SAFE_ID, PriorRecord, Snapshot, application_view, awaited_inputs
+from .views import (
+    SAFE_ID,
+    PriorRecord,
+    Snapshot,
+    application_view,
+    awaited_inputs,
+    prepared_event,
+    preparing_run,
+    run_packet_ids,
+    summary_view,
+)
 
 log = logging.getLogger("interviewmaxxing.service")
 S = ApplicationState
@@ -73,6 +89,8 @@ RUNNABLE_STATES = frozenset(
 )
 """States in which a new run may start (nothing was dispatched to the site)."""
 _INTERRUPTIBLE = frozenset({S.REQUESTED, S.INSPECTING, S.PACKET_READY, S.FILLING})
+_WORKING = frozenset({S.REQUESTED, S.INSPECTING, S.PACKET_READY, S.FILLING, S.SUBMITTING})
+"""States the dashboard polls; the view skips optional lookups for them."""
 MAX_URL_LENGTH = 2048
 MAX_NOTE_LENGTH = 2000
 _FILENAME_FORBIDDEN = re.compile(r"[\x00-\x1f\x7f/\\]")
@@ -117,11 +135,15 @@ class PresentationService:
         candidates: CandidateGateway,
         dispatcher: Dispatcher,
         runner_problem: Callable[[], str | None] | None = None,
+        profile_loader: Callable[[], CandidateProfile | None] | None = None,
     ) -> None:
         self.config = config
         self.runner_problem = runner_problem
         self.candidates = candidates
         self.dispatcher = dispatcher
+        self.profile_loader = profile_loader
+        """The configured candidate's profile, read only for saved-answer wording in
+        ``review``; optional."""
         self.owner = f"service:{os.getpid()}"
         self.application_links: ApplicationLinks | None = None
 
@@ -170,6 +192,8 @@ class PresentationService:
         requests = store.list_requests(app.id)
         request = next((r for r in requests if r.id == app.request_id), requests[0])
         packet = store.latest_packet(app.id)
+        events = store.list_events(app.id)
+        review_packets = self._review_packets(store, app, events)
         pinned = store.pinned_resume(app.id)
         prior = None
         if app.state is S.DUPLICATE and app.duplicate_of:
@@ -186,7 +210,7 @@ class PresentationService:
             application=app,
             job=store.get_job(app.job_id),
             request=request,
-            events=store.list_events(app.id),
+            events=events,
             attempts=store.list_attempts(app.id),
             evidence=store.list_evidence(app.id),
             receipt=store.get_receipt(app.id),
@@ -199,8 +223,51 @@ class PresentationService:
             ),
             running=self.dispatcher.status(app.id),
             answer_errors=answer_errors or {},
+            review_packets=review_packets,
+            saved_questions=(
+                {} if app.state in _WORKING
+                else self._saved_questions([*review_packets, *([packet] if packet else [])])
+            ),
         )
         return application_view(snap, public_base=self.config.public_base)
+
+    @staticmethod
+    def _review_packets(
+        store: ApplicationStore, app: Application, events: Sequence[ApplicationEvent]
+    ) -> list[ApplicationPacket]:
+        """For a prepared application, the latest packet of each step of the preparing
+        run, so the review covers every page and not only the final one."""
+        prepared = prepared_event(events) if app.state is S.NEEDS_INPUT else None
+        if prepared is None:
+            return []
+        packets = []
+        for packet_id in run_packet_ids(preparing_run(events, prepared)):
+            try:
+                packets.append(store.get_packet(packet_id))
+            except NotFound:
+                continue
+        return packets
+
+    def _saved_questions(self, packets: list[ApplicationPacket]) -> dict[str, str]:
+        """Saved-answer id -> the question it was saved for, for the saved answers these
+        packets used. Empty when none were used or the profile can't be read."""
+        wanted = {
+            ref
+            for packet in packets
+            for answer in packet.answers
+            if answer.provenance.source is AnswerSource.SAVED_ANSWER
+            for ref in answer.provenance.reference_ids
+        }
+        if not wanted or self.profile_loader is None:
+            return {}
+        try:
+            profile = self.profile_loader()
+        except Exception as exc:
+            log.warning("reading saved answers for a review failed: %s", type(exc).__name__)
+            return {}
+        if profile is None:
+            return {}
+        return {saved.id: saved.question for saved in profile.saved_answers if saved.id in wanted}
 
     @staticmethod
     def _awaited(store: ApplicationStore, app: Application) -> list[MissingInput]:
@@ -243,6 +310,7 @@ class PresentationService:
             "executor": "busy" if self.dispatcher.busy else "idle",
             "runner": "unavailable" if self._runner_unavailable() else "available",
             "applicationMode": self.config.application_mode,
+            "presentationVersion": PRESENTATION_VERSION,
         }
 
     def _runner_unavailable(self) -> str | None:
@@ -384,6 +452,57 @@ class PresentationService:
                     after=self._after_run,
                 )
             return self._view(store, store.get_application(app.id)), created
+
+    def list_applications(self) -> ApplicationListView:
+        """Every application of the configured candidate, most recently updated first,
+        with its preparation state and the pipeline cards that point at it."""
+        cid = self.config.candidate_id
+        with self._store() as store:
+            cards = self._cards_by_application(store)
+            rows = []
+            for app in store.list_applications(candidate_id=cid):
+                requests = store.list_requests(app.id)
+                if not requests:
+                    continue
+                events = store.list_events(app.id)
+                prepared = app.state is S.NEEDS_INPUT and prepared_event(events) is not None
+                snap = Snapshot(
+                    application=app,
+                    job=store.get_job(app.job_id),
+                    request=next((r for r in requests if r.id == app.request_id), requests[0]),
+                    events=events,
+                    evidence=store.list_evidence(app.id) if prepared else (),
+                )
+                rows.append(summary_view(snap, public_base=self.config.public_base,
+                                         pipeline_entry_ids=cards.get(app.id, [])))
+        rows.sort(key=lambda row: row.updated_at, reverse=True)
+        return ApplicationListView(applications=rows)
+
+    def _cards_by_application(self, store: ApplicationStore) -> dict[str, list[str]]:
+        """Pipeline card ids per application: cards linked to it, and unlinked cards whose
+        application URL the store resolves to it (its own normalization and aliases)."""
+        links = self.application_links
+        if links is None:
+            return {}
+        try:
+            with links.pipeline.store() as pipeline:
+                items = pipeline.list_items(links.pipeline.candidate_id)
+        except Exception as exc:
+            log.warning("reading pipeline cards for the application list failed: %s",
+                        type(exc).__name__)
+            return {}
+        out: dict[str, list[str]] = {}
+        for item in items:
+            app_id = item.application_id
+            if app_id is None and item.application_url:
+                try:
+                    found = store.find_application(self.config.candidate_id, item.application_url)
+                except (InvalidApplicationUrl, ValueError):
+                    found = None
+                app_id = found.id if found is not None else None
+            if app_id is not None:
+                out.setdefault(app_id, []).append(item.id)
+        return out
 
     def status(self, application_id: str) -> ApplicationView:
         with self._store() as store:

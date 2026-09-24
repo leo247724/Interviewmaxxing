@@ -34,6 +34,13 @@ QuestionControl = Literal[
 InteractionKind = Literal["SIGN_IN", "CAPTCHA", "VERIFICATION"]
 EvidenceKindName = Literal["screenshot", "page_text", "page_url", "email", "portal", "user_report"]
 ViewAnswerValue = StrictStr | list[StrictStr] | StrictBool | None
+ReviewControl = Literal["text", "long_text", "single_select", "multi_select", "boolean", "file"]
+ReviewSource = Literal["identity", "saved_answer", "fact", "user", "generated", "resume"]
+
+PRESENTATION_VERSION = "2"
+"""Version of this presentation contract, reported by ``/healthz`` as
+``presentationVersion``. An absent value is version 1 (before prepared reviews: no
+``preparation``/``review``, no ``lookup`` flag, no ``GET /applications``)."""
 
 
 class View(BaseModel):
@@ -125,6 +132,10 @@ class RequiredQuestionView(View):
     value: str | list[str] | bool | None
     max_length: int | None
     reason: str | None
+    lookup: bool = False
+    """A site lookup (``TYPEAHEAD``): ``options`` are the site's suggestions for what was
+    typed (value equals label), and any other text is accepted too and typed into the
+    site's search box verbatim."""
 
 
 class AttestationView(View):
@@ -208,6 +219,36 @@ class ProgressView(View):
     page_count: int | None
 
 
+class PreparationView(View):
+    """A prepared application: the form was filled and the run stopped at the final
+    review step without submitting (a ``preparation.ready`` stop)."""
+
+    ready: Literal[True] = True
+    form_step: int | None
+    """0-based index of the final form step, as recorded (page ``form_step + 1``)."""
+    form_url: str | None
+    captcha_pending: bool
+    prepared_at: str
+    submitted: Literal[False] = False
+    evidence: list[EvidenceView]
+    """Evidence recorded by the preparing run (the filled review page)."""
+
+
+class ReviewAnswerView(View):
+    """One answer the service filled in, for review. Never carries internal ids."""
+
+    question: str
+    wording_recorded: bool
+    """``question`` is recorded wording for this question (the site's own, or the
+    question the saved answer was saved for); otherwise it is a plain name for the kind
+    of question, because the form's wording was not recorded."""
+    page: int
+    control: ReviewControl
+    value: str | list[str]
+    source: ReviewSource
+    confidence: float
+
+
 class ApplicationView(View):
     id: str
     state: ApplicationStateName
@@ -223,6 +264,27 @@ class ApplicationView(View):
     failure: FailureView | None
     uncertain: UncertainSubmissionView | None
     events: list[ApplicationEventView]
+    preparation: PreparationView | None
+    review: list[ReviewAnswerView]
+
+
+class ApplicationSummaryView(View):
+    """One application in ``GET /applications``."""
+
+    id: str
+    state: ApplicationStateName
+    application_url: str
+    job: JobIdentityView
+    requested_at: str
+    updated_at: str
+    preparation: PreparationView | None
+    pipeline_entry_ids: list[str]
+    """Pipeline cards linked to this application, plus unlinked cards whose application
+    URL the store resolves to it. For finding prepared cards only; never a link."""
+
+
+class ApplicationListView(View):
+    applications: list[ApplicationSummaryView]
 
 
 # --- request bodies for application actions --------------------------------------------

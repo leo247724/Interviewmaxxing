@@ -71,6 +71,26 @@ no confirmed submission exists (exit 4) and `reconcile APP` refuses because the
 application was never submitted (exit 4). The end-to-end suite in `e2e/test_cli_e2e.py`
 asserts these boundaries against the localhost mock ATS.
 
+## Reviewing prepared applications in the dashboard
+
+The dashboard presents a prepared application as a review, not as a request for
+input. The application desk headlines it "Prepared for your review — nothing
+submitted" and shows the screenshot the preparing run saved of the filled review
+page, the answers that were filled in (question, value, where each came from and how
+confident the resolver was), and a CAPTCHA note when one must be solved in the browser
+before the form can be submitted. The questions form appears only when questions
+remain. Packets keep field ids rather than wording, so a question without recorded
+wording is named by its kind ("Email", "Work authorization"); the screenshot shows the
+site's own wording. "Prepare again" re-reads the site and stops at the review step
+again; the dashboard has no way to submit a prepared application. The pipeline's
+"Prepared for review" filter finds cards whose application is prepared: cards linked
+to it, and cards saved with the same application URL, as the store normalizes it, so
+applications prepared by `prepare-batch` are found too. **Review** opens the
+application on the desk. A lookup question lists the site's suggestions in a menu,
+with "Enter a different value…" for anything else; the chosen text is typed into the
+site's search box exactly. The service side is `ApplicationView.preparation`, `review`
+and `GET /applications` (presentation version 2, `apps/service/README.md`).
+
 The runner can explicitly enable Jev routing and the grounded Opus writer through
 the CLI or service settings in [dynamic-runtime.md](dynamic-runtime.md). Backend
 maps supply versioned context from a local cache of the Supabase registry. Unknown

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import type { ApplicationView, CandidateProfileInput } from "@/lib/service/types";
 import { describe, isActive, type Mood } from "@/lib/state";
+import { isPrepared, preparationOf } from "@/lib/preparation";
 import { receiptAuthority } from "@/lib/receipt";
 import { formatDateTime } from "@/lib/format";
 import type { DeskActions } from "./ApplicationDesk";
@@ -14,6 +15,7 @@ import { InteractionPanel } from "./InteractionPanel";
 import { UncertainPanel } from "./UncertainPanel";
 import { Receipt } from "./Receipt";
 import { FailurePanel, DuplicatePanel } from "./OutcomePanels";
+import { PreparedPanel } from "./PreparedPanel";
 
 const WORKING_COPY: Partial<Record<ApplicationView["state"], string>> = {
   REQUESTED: "Opening the page, identifying the job and checking for an earlier application.",
@@ -41,7 +43,7 @@ export function ApplicationWorkspace({
 }) {
   const { headline, mood } = describe(view);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const phase = `${view.state}:${view.needs?.kind ?? ""}`;
+  const phase = `${view.state}:${view.needs?.kind ?? ""}:${isPrepared(view) ? "prepared" : ""}`;
   const firstPhase = useRef(true);
 
   // Move focus to the headline when the application needs the user or finishes.
@@ -152,6 +154,10 @@ function StateStamp({ view, mood }: { view: ApplicationView; mood: Mood }) {
     case "FAILED_PERMANENT":
     case "FAILED_RETRYABLE":
       return <Stamp tone="failure" word="Not sent" date={view.updatedAt} />;
+    case "NEEDS_INPUT": {
+      const preparation = preparationOf(view);
+      return preparation ? <Stamp tone="neutral" word="Prepared" date={preparation.preparedAt} /> : null;
+    }
     default:
       return mood === "working" ? <span className="working-line" aria-hidden="true" /> : null;
   }
@@ -163,6 +169,10 @@ function StateBody({ view, mode, actions }: { view: ApplicationView; mode: "live
   }
   switch (view.state) {
     case "NEEDS_INPUT":
+      // A prepared review is not a request for input: only remaining questions are asked, inside it.
+      if (isPrepared(view)) {
+        return <PreparedPanel view={view} actions={actions} />;
+      }
       if (view.needs?.kind === "questions") {
         return <QuestionsForm key={view.id} needs={view.needs} actions={actions} />;
       }

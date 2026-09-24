@@ -1,6 +1,7 @@
 import { requestJson } from "./request";
 import type {
   AnswerInput,
+  ApplicationListView,
   ApplicationService,
   ApplicationView,
   CandidateView,
@@ -47,6 +48,10 @@ export class HttpApplicationService implements ApplicationService {
 
   reconcile(applicationId: string, input: ReconcileInput): Promise<ApplicationView> {
     return this.request("POST", `/applications/${encodeURIComponent(applicationId)}/reconcile`, input);
+  }
+
+  list(): Promise<ApplicationListView> {
+    return this.request("GET", "/applications");
   }
 
   private request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {

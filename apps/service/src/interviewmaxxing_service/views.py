@@ -10,6 +10,11 @@ Nothing is inferred beyond what the store recorded:
   DUPLICATE whose surviving application was confirmed.
 * ``needs`` for NEEDS_INPUT: the latest packet's missing inputs, with the site's own
   wording and options, or a browser interaction (sign-in, CAPTCHA).
+* ``preparation`` for a NEEDS_INPUT stop recorded right after ``preparation.ready``: the
+  form was filled to its final review step and nothing was submitted. Such a stop is
+  not a request for input, so ``needs`` then lists only questions that remain.
+* ``review``: the filled answers, with the recorded wording where there is one and no
+  internal ids.
 
 Question ids are derived from the question's identity (form scope, field id and
 fingerprint), so they are stable across re-resolution of the same question and change
@@ -26,7 +31,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+
 from interviewmaxxing_core import (
+    AnswerSource,
     Application,
     ApplicationEvent,
     ApplicationPacket,
@@ -39,6 +47,7 @@ from interviewmaxxing_core import (
     JobRecord,
     MissingInput,
     MissingReason,
+    PacketAnswer,
     Receipt,
     ReconciliationMethod,
     SemanticType,
@@ -49,6 +58,7 @@ from interviewmaxxing_core.packets import BooleanValue, ChoiceValue, MultiChoice
 
 from .models import (
     ApplicationEventView,
+    ApplicationSummaryView,
     ApplicationView,
     AttestationView,
     ConfirmationAuthority,
@@ -58,12 +68,16 @@ from .models import (
     FailureView,
     InteractionNeed,
     JobIdentityView,
+    PreparationView,
     PriorSubmissionView,
     ProgressView,
     QuestionControl,
     QuestionOption,
     QuestionsNeed,
     RequiredQuestionView,
+    ReviewAnswerView,
+    ReviewControl,
+    ReviewSource,
     SubmissionReceiptView,
     UncertainSubmissionView,
 )
@@ -113,6 +127,11 @@ class Snapshot:
     """File name of the resume pinned to this application (``pin_resume``)."""
     running: RunStatus | None = None
     answer_errors: Mapping[str, str] = field(default_factory=dict)
+    review_packets: Sequence[ApplicationPacket] = ()
+    """For a prepared application, the latest packet of each form step saved by the
+    preparing run (``run_packet_ids``); the review list falls back to ``packet``."""
+    saved_questions: Mapping[str, str] = field(default_factory=dict)
+    """Saved-answer id -> the question it was saved for, from the candidate profile."""
 
 
 # --- questions --------------------------------------------------------------------------
@@ -266,10 +285,12 @@ def questions_need(
                 )
             )
             continue
+        lookup = missing.control_type is ControlType.TYPEAHEAD
+        # A lookup's options are the site's suggestions, offered like a select.
         choice = missing.control_type in (
             ControlType.SELECT, ControlType.RADIO, ControlType.MULTISELECT,
             ControlType.CHECKBOX_GROUP,
-        )
+        ) or (lookup and bool(missing.options))
         questions.append(
             RequiredQuestionView(
                 id=qid,
@@ -281,6 +302,7 @@ def questions_need(
                 value=view_value(saved.value) if saved else None,
                 max_length=None,
                 reason=_REASONS.get(missing.reason),
+                lookup=lookup,
             )
         )
     return QuestionsNeed(
@@ -326,6 +348,11 @@ def _last_event(events: Sequence[ApplicationEvent], to_state: ApplicationState) 
 def needs_view(snap: Snapshot) -> QuestionsNeed | InteractionNeed | None:
     if snap.application.state is not S.NEEDS_INPUT:
         return None
+    if prepared_event(snap.events) is not None:
+        # A prepared review asks nothing of the user; only questions that remain count.
+        awaited = awaited_inputs(snap.events, snap.packet, snap.application.state)
+        prepared_need = questions_need(awaited, snap.user_inputs, snap.answer_errors)
+        return prepared_need if prepared_need.questions or prepared_need.attestations else None
     entered = _last_event(snap.events, S.NEEDS_INPUT)
     meta = entered.metadata if entered else {}
     page_kind = str(meta.get("page_kind") or "")
@@ -409,6 +436,249 @@ def evidence_view(public_base: str, application_id: str, evidence: EvidenceRef) 
         observed_at=iso(evidence.captured_at),
         source="user" if user else "site",
     )
+
+
+# --- preparation and review ---------------------------------------------------------------
+
+PREPARED_EVENT = "preparation.ready"
+_RUN_STATES = frozenset({S.INSPECTING, S.PACKET_READY, S.FILLING})
+"""States a run passes through between two stops."""
+
+
+def prepared_event(events: Sequence[ApplicationEvent]) -> ApplicationEvent | None:
+    """The ``preparation.ready`` event behind the application's current stop, or None.
+
+    The runner records ``preparation.ready`` and then stops (INSPECTING -> NEEDS_INPUT).
+    Walking back from the latest transition: it must enter NEEDS_INPUT, and a
+    ``preparation.ready`` must come before any other transition than that INSPECTING,
+    so a later stop (questions, sign-in, a failure) is never taken for a preparation."""
+    stop: ApplicationEvent | None = None
+    for event in reversed(events):
+        if stop is None:
+            if event.to_state is None:
+                continue
+            if event.to_state is not S.NEEDS_INPUT:
+                return None
+            stop = event
+            continue
+        if event.event == PREPARED_EVENT:
+            return event
+        if event.to_state is not None and event.to_state is not S.INSPECTING:
+            return None
+    return None
+
+
+def preparing_run(
+    events: Sequence[ApplicationEvent], prepared: ApplicationEvent
+) -> list[ApplicationEvent]:
+    """The events of the run that recorded ``prepared``: after the previous stop (the
+    last transition into a state a run does not pass through) up to ``prepared``."""
+    end = next((i for i, e in enumerate(events) if e.id == prepared.id), None)
+    if end is None:
+        return []
+    start = 0
+    for i in range(end - 1, -1, -1):
+        to_state = events[i].to_state
+        if to_state is not None and to_state not in _RUN_STATES:
+            start = i + 1
+            break
+    return list(events[start : end + 1])
+
+
+def run_packet_ids(run: Sequence[ApplicationEvent]) -> list[str]:
+    """The latest packet saved for each form step in ``run``, in step order."""
+    latest: dict[int, str] = {}
+    for event in run:
+        if event.event != "packet.saved":
+            continue
+        step, packet_id = event.metadata.get("form_step"), event.metadata.get("packet_id")
+        if isinstance(step, int) and isinstance(packet_id, str):
+            latest[step] = packet_id
+    return [latest[step] for step in sorted(latest)]
+
+
+def _run_evidence_ids(run: Sequence[ApplicationEvent]) -> set[str]:
+    ids: set[str] = set()
+    for event in run:
+        if event.event == "evidence.recorded":
+            recorded = event.metadata.get("evidence_ids")
+            if isinstance(recorded, list):
+                ids.update(i for i in recorded if isinstance(i, str))
+    return ids
+
+
+def preparation_view(snap: Snapshot, public_base: str) -> PreparationView | None:
+    app = snap.application
+    if app.state is not S.NEEDS_INPUT:
+        return None
+    event = prepared_event(snap.events)
+    if event is None:
+        return None
+    meta = event.metadata
+    step, url = meta.get("form_step"), meta.get("form_url")
+    recorded = _run_evidence_ids(preparing_run(snap.events, event))
+    return PreparationView(
+        form_step=step if isinstance(step, int) and not isinstance(step, bool) else None,
+        form_url=url if isinstance(url, str) and url.strip() else None,
+        captcha_pending=meta.get("captcha_pending") is True,
+        prepared_at=iso(event.timestamp),
+        evidence=[evidence_view(public_base, app.id, e) for e in snap.evidence if e.id in recorded],
+    )
+
+
+_SOURCES: dict[AnswerSource, ReviewSource] = {
+    AnswerSource.PROFILE_IDENTITY: "identity",
+    AnswerSource.SAVED_ANSWER: "saved_answer",
+    AnswerSource.CANDIDATE_FACT: "fact",
+    AnswerSource.USER_INPUT: "user",
+    AnswerSource.GENERATED_FROM_FACTS: "generated",
+    AnswerSource.RESUME: "resume",
+}
+
+_TYPE_NAMES: dict[SemanticType, str] = {
+    SemanticType.FIRST_NAME: "First name",
+    SemanticType.LAST_NAME: "Last name",
+    SemanticType.FULL_NAME: "Full name",
+    SemanticType.PREFERRED_NAME: "Preferred name",
+    SemanticType.EMAIL: "Email",
+    SemanticType.PHONE: "Phone",
+    SemanticType.ADDRESS: "Address",
+    SemanticType.CITY: "City",
+    SemanticType.STATE: "State or region",
+    SemanticType.ZIP: "Postal code",
+    SemanticType.COUNTRY: "Country",
+    SemanticType.LOCATION: "Location",
+    SemanticType.RESUME: "Resume",
+    SemanticType.COVER_LETTER: "Cover letter",
+    SemanticType.LINKEDIN: "LinkedIn profile",
+    SemanticType.WEBSITE: "Website",
+    SemanticType.GITHUB: "GitHub profile",
+    SemanticType.CURRENT_COMPANY: "Current company",
+    SemanticType.CURRENT_TITLE: "Current title",
+    SemanticType.WORK_AUTHORIZATION: "Work authorization",
+    SemanticType.SPONSORSHIP: "Visa sponsorship",
+    SemanticType.SALARY_EXPECTATION: "Salary expectation",
+    SemanticType.START_DATE: "Start date",
+    SemanticType.RELOCATION: "Relocation",
+    SemanticType.EDUCATION_LEVEL: "Education level",
+    SemanticType.UNIVERSITY: "School",
+    SemanticType.DEGREE: "Degree",
+    SemanticType.YEARS_EXPERIENCE: "Years of experience",
+    SemanticType.REFERRAL_SOURCE: "How you heard about the job",
+    SemanticType.EEO_GENDER: "Gender (voluntary self-identification)",
+    SemanticType.EEO_RACE_ETHNICITY: "Race or ethnicity (voluntary self-identification)",
+    SemanticType.EEO_VETERAN_STATUS: "Veteran status (voluntary self-identification)",
+    SemanticType.EEO_DISABILITY_STATUS: "Disability status (voluntary self-identification)",
+    SemanticType.PRONOUNS: "Pronouns",
+    SemanticType.CONSENT: "Consent statement",
+    SemanticType.ATTESTATION: "Statement on the form",
+    SemanticType.CUSTOM_LONG_TEXT: "Written question on the form",
+    SemanticType.CUSTOM_BOOLEAN: "Yes/no question on the form",
+    SemanticType.CUSTOM_SELECT: "Choice question on the form",
+    SemanticType.CUSTOM_MULTISELECT: "Multiple-choice question on the form",
+}
+"""Plain names for a question whose wording was not recorded (the packet keeps only
+field ids); anything else is "Question on the form"."""
+_LONG_TEXT_TYPES = frozenset({SemanticType.COVER_LETTER, SemanticType.CUSTOM_LONG_TEXT})
+
+
+def _first_line(text: str) -> str:
+    lines = [line.strip() for line in text.strip().splitlines()]
+    return lines[0] if lines else ""
+
+
+def recorded_questions(events: Sequence[ApplicationEvent]) -> dict[tuple[int, str], MissingInput]:
+    """Every field question recorded in a NEEDS_INPUT stop, by (form step, field id);
+    the latest recording wins."""
+    out: dict[tuple[int, str], MissingInput] = {}
+    for event in events:
+        items = event.metadata.get("missing_inputs") if event.to_state is S.NEEDS_INPUT else None
+        if not isinstance(items, list):
+            continue
+        for raw in items:
+            try:
+                item = MissingInput.model_validate(raw)
+            except ValidationError:
+                continue
+            if item.field_id is not None and item.form_step is not None:
+                out[(item.form_step, item.field_id)] = item
+    return out
+
+
+def _review_question(
+    answer: PacketAnswer,
+    step: int,
+    recorded: Mapping[tuple[int, str], MissingInput],
+    inputs: Sequence[UserInput],
+    saved_questions: Mapping[str, str],
+) -> tuple[str, bool]:
+    """The question's recorded wording (first line) and True, else a plain name and False."""
+    source = answer.provenance.source
+    if source is AnswerSource.USER_INPUT:
+        refs = set(answer.provenance.reference_ids)
+        given = next((i for i in inputs if i.id in refs), None) or next(
+            (i for i in inputs if i.form_step == step and i.field_id == answer.field_id), None
+        )
+        if given is not None and given.question.strip():
+            return _first_line(given.question), True
+    missing = recorded.get((step, answer.field_id))
+    if missing is not None and missing.label.strip():
+        return _first_line(missing.label), True
+    if source is AnswerSource.SAVED_ANSWER:
+        for ref in answer.provenance.reference_ids:
+            question = saved_questions.get(ref, "")
+            if question.strip():
+                return _first_line(question), True
+    return _TYPE_NAMES.get(answer.semantic_type, "Question on the form"), False
+
+
+def _review_value(
+    answer: PacketAnswer, missing: MissingInput | None
+) -> tuple[ReviewControl, str | list[str]] | None:
+    value = answer.value
+    if isinstance(value, TextValue):
+        long = (
+            (missing is not None and missing.control_type is ControlType.TEXTAREA)
+            or answer.semantic_type in _LONG_TEXT_TYPES
+            or "\n" in value.text
+        )
+        return ("long_text" if long else "text"), value.text
+    if isinstance(value, ChoiceValue):
+        return "single_select", value.label
+    if isinstance(value, MultiChoiceValue):
+        return "multi_select", [choice.label for choice in value.choices]
+    if isinstance(value, BooleanValue):
+        return "boolean", "Yes" if value.checked else "No"
+    if isinstance(value, FileValue):
+        return "file", value.artifact.filename
+    return None
+
+
+def review_view(snap: Snapshot) -> list[ReviewAnswerView]:
+    """The filled answers in form order: every page of the preparing run for a prepared
+    application, otherwise the latest packet. No provenance ids, notes or paths."""
+    packets = list(snap.review_packets) or ([snap.packet] if snap.packet is not None else [])
+    recorded = recorded_questions(snap.events)
+    out: list[ReviewAnswerView] = []
+    for packet in sorted(packets, key=lambda p: p.form_step):
+        for answer in packet.answers:
+            missing = recorded.get((packet.form_step, answer.field_id))
+            rendered = _review_value(answer, missing)
+            if rendered is None:
+                continue
+            question, wording_recorded = _review_question(
+                answer, packet.form_step, recorded, snap.user_inputs, snap.saved_questions
+            )
+            out.append(ReviewAnswerView(
+                question=question,
+                wording_recorded=wording_recorded,
+                page=packet.form_step + 1,
+                control=rendered[0],
+                value=rendered[1],
+                source=_SOURCES[answer.provenance.source],
+                confidence=float(answer.confidence),
+            ))
+    return out
 
 
 def confirmation_of(receipt: Receipt) -> tuple[ConfirmationMethod, ConfirmationAuthority]:
@@ -553,12 +823,19 @@ def _is_request(event: ApplicationEvent) -> bool:
     return event.event in ("application.requested", "application.request_repeated")
 
 
+_PREPARED_STOP: tuple[str, EventTone] = (
+    "Paused at the final review step for you to check.", "info"
+)
+
+
 def events_view(events: Sequence[ApplicationEvent]) -> list[ApplicationEventView]:
     """Events oldest first. A repeated request directly after another request for the
     same URL (the runner re-recording the request the service just recorded) is
-    folded into it."""
+    folded into it. The stop right after ``preparation.ready`` says it waits for a
+    review, not for input."""
     out: list[ApplicationEventView] = []
     previous: ApplicationEvent | None = None
+    prepared = False
     for event in events:
         if (
             event.event == "application.request_repeated"
@@ -569,6 +846,13 @@ def events_view(events: Sequence[ApplicationEvent]) -> list[ApplicationEventView
             previous = event
             continue
         message, tone = _event_text(event)
+        if event.event == PREPARED_EVENT:
+            prepared = True
+        elif event.to_state is S.NEEDS_INPUT and prepared:
+            message, tone = _PREPARED_STOP
+            prepared = False
+        elif event.to_state is not None and event.to_state is not S.INSPECTING:
+            prepared = False
         if event.event.startswith("document."):
             # A pin recorded between the service's request and the runner's own
             # re-record does not break the fold.
@@ -694,4 +978,26 @@ def application_view(snap: Snapshot, *, public_base: str) -> ApplicationView:
         failure=_failure_view(snap, public_base),
         uncertain=_uncertain_view(snap, public_base),
         events=events_view(snap.events),
+        preparation=preparation_view(snap, public_base),
+        review=review_view(snap),
+    )
+
+
+def summary_view(
+    snap: Snapshot, *, public_base: str, pipeline_entry_ids: Sequence[str] = ()
+) -> ApplicationSummaryView:
+    """One row of ``GET /applications``. Needs only the application, job, request,
+    events and (for a prepared application) evidence of ``snap``."""
+    app = snap.application
+    return ApplicationSummaryView(
+        id=app.id,
+        state=app.state.value,
+        application_url=snap.request.application_url,
+        job=JobIdentityView(
+            title=snap.job.title, company=snap.job.company, ats=_ats_name(snap.job.ats_type)
+        ),
+        requested_at=iso(snap.request.requested_at),
+        updated_at=iso(app.updated_at),
+        preparation=preparation_view(snap, public_base),
+        pipeline_entry_ids=list(pipeline_entry_ids),
     )

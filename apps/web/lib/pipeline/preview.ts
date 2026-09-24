@@ -230,23 +230,23 @@ const SEEDS: Seed[] = [
     }),
   },
   {
+    // Saved and unlinked, with the same link as the preview desk's seeded prepared
+    // application, so `list()` marks it Prepared for review (as the service's URL match would).
     id: "pipe_pv_northwind",
-    lane: "closed",
+    lane: "saved",
     origin: "import",
     imported: true,
-    applicationUrl: null,
+    applicationUrl: "https://jobs.example.test/northwind/senior-lifecycle-marketer",
     listingId: null,
     application: null,
     selection: null,
     fields: fields({
       company: "Northwind Cartography",
       role: "Senior Lifecycle Marketer",
-      stage: "Final round",
-      status: "Declined by employer after final round",
+      stage: "Saved",
       priority: "Medium",
       fitScore: 7,
       workArrangement: "Hybrid",
-      lastInterviewDate: "2026-08-28",
       fitRationale: "Strong lifecycle overlap",
     }),
   },

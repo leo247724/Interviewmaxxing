@@ -156,6 +156,11 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 **Reworded questions and yes/no screeners (WP2 round 2).**
 - **Reworded questions.** When a required short-answer field of a reusable type (work authorization, sponsorship, referral source, EEO, location, school, degree; custom types for untyped answers such as age 18) has no exact-wording saved answer and no user input, the dynamic resolver may use one of the user's **GLOBAL** saved answers to a differently worded question. That takes a single Jev Choice over the saved questions' wordings (never their values) that finds one asking exactly the same thing: the same person, timeframe, yes/no polarity and answer type. The gates are confidence ≥ 0.90 and probability ≥ 0.95, with mass summed over saved questions that share the same answer. The value then maps like an exact-wording answer. Provenance is `SAVED_ANSWER` with its ids ("question wording mapped by Jev"). Job-scoped answers and user inputs are never mapped this way, and exact wording remains the first path.
 - **Yes/no screeners.** A required yes/no question about the applicant's own experience (gate: literal `COPY_KNOWN`, `HISTORICAL_OR_CONTEXTUAL`) is answered YES only from a verified fact that states the named experience, and NO only from one that states its absence. Otherwise it is held, since absence is never No. The answer is `GENERATED_FROM_FACTS` citing those facts and passes `PacketContext.problems` like any answer.
+- **Round 3.**
+  - A required single-choice residence question typed location/country/state/city is answered `PROFILE_IDENTITY` from the verified address, by one Jev Choice over the options (a state list is also checked in code).
+  - A near-threshold current-address clarification accepts 0.90 when the wording states the present and nothing suggests a previous residence.
+  - A required choice or numeric screener about the applicant's own experience takes only the option or exact number a verified fact states (`GENERATED_FROM_FACTS`/`CANDIDATE_FACT`); a range must contain the stated value.
+  - A required resume upload that also autofills is `APPROVED_DOCUMENT`, with `FieldRouteDecision.autofill = True`.
 
 See `docs/dynamic-application-routing.md`.
 
@@ -421,6 +426,8 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
 - `JobListing` is an observed posting and is **not** a `JobRecord`. Selecting a listing does not create an application: the runner calls `record_request(candidate_id, listing.application_url or listing.source_url)` and the existing identity binding, duplicate protection, states and receipts apply unchanged.
 - `JobSelection` is an auditable decision. It is not a submission, not a receipt, and not an interview probability (there is no such field).
 - `PipelineEntry.stage` is the user's own wording (for example imported workbook status text), kept verbatim. It is not an `ApplicationState`: moving a card never submits, and a submission never rewrites the stage. `application_id` optionally links the canonical application. `PipelineStages` (default `DEFAULT_PIPELINE_STAGES`: Interested, Applied, Screening, Interviewing, Offer, Closed) is the user-configurable column list; entries may carry stages outside it.
+
+**Batch links (prepare-batch).** A batch links an existing canonical application to an existing card only through `PipelineItem.application_id`, written with the revision-aware `PipelineStore.update_item`. It never overwrites a link to another application and never creates cards. Its only lane change is Saved → Closed for a job it observed closed, through `move_item` with a note in the card's history. The ledger records `linked`, `link_reason` and `closed_synced` for each row. A link never submits and never changes the application.
 
 **Search (`JobSearchQuery`)**
 - Fields: `id`, `title_phrases`, `keywords`, `excluded_keywords`, `onsite: list[OnsiteTarget(location, arrangements⊆{ONSITE,HYBRID}, radius_miles)]`, `remote: RemoteTarget(eligible_region) | None`, `minimum_compensation: CompensationFloor(amount, currency, period) | None`, `sources`, `max_results_per_source` (1–500, default 50), `posted_within_days` and `created_at`.
@@ -706,6 +713,17 @@ Module `interviewmaxxing_core.discovery`, re-exported from `interviewmaxxing_cor
   "updated_at": "2026-09-22T21:00:00Z"
 }
 ```
+
+## 12. Service presentation contract (apps/service ↔ apps/web)
+
+The local service (`interviewmaxxing_service`) maps canonical store state to the dashboard's view models: `interviewmaxxing_service.models` mirrors `apps/web/lib/service/types.ts` field for field (camelCase JSON), and `apps/service/README.md` is the HTTP contract. These are presentation views, not core contracts, so they carry their own version: `GET /healthz` reports `presentationVersion` (`models.PRESENTATION_VERSION`) next to core's `contractVersion`. A response without it is presentation version 1. New view fields are additive and optional on the web side (older services omit them); a changed meaning of an existing field bumps `presentationVersion`. Core `CONTRACT_VERSION` stays `2`, because no core contract, store schema or state changed.
+
+**Presentation version 2 (2026-09-24, WP3: prepared-application review).**
+- `ApplicationView.preparation` is set when the application is `NEEDS_INPUT` and its latest state-bearing events are a `preparation.ready` stop (the runner's `preparation.ready`, then INSPECTING -> NEEDS_INPUT): `{ready: true, formStep, formUrl, captchaPending, preparedAt, submitted: false, evidence}`, where `evidence` is what the preparing run recorded. It is `null` for every other stop.
+- Changed meaning: for a prepared stop `needs` is `null` (or a `questions` need when answerable questions remain), no longer an `interaction` "VERIFICATION" need derived from the stop's reason. The docket reads that stop as "Paused at the final review step for you to check."
+- `ApplicationView.review` lists the filled answers (`question`, `wordingRecorded`, `page`, `control`, `value`, `source` ∈ identity | saved_answer | fact | user | generated | resume, `confidence`) for every step of the preparing run, else the latest packet. Packets store field ids, not wording, so `question` is recorded wording when the store or the user's saved answer has it, and otherwise a plain name for the semantic type (`wordingRecorded: false`). No provenance ids, notes or paths.
+- `RequiredQuestionView.lookup` marks a `TYPEAHEAD` question; its `options` are the site's suggestions (value equals label), and any other non-blank text is also a valid answer (`answers.py` turns both into a `TextValue`).
+- `GET /applications` → `ApplicationListView` of `ApplicationSummaryView {id, state, applicationUrl, job, requestedAt, updatedAt, preparation, pipelineEntryIds}`, most recently updated first. `pipelineEntryIds` are cards linked to the application plus unlinked cards whose URL `ApplicationStore.find_application` resolves to it; they drive the dashboard's Prepared badge and filter only.
 
 ## Change requests
 

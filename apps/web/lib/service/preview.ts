@@ -1,7 +1,10 @@
-import { validateAnswers, validateApplyForm } from "../validation";
+import { isEmptyAnswer, validateAnswers, validateApplyForm } from "../validation";
 import { ServiceError } from "./errors";
 import type {
   AnswerInput,
+  ApplicationListView,
+  ApplicationSummaryView,
+  CandidateProfileInput,
   ConfirmationMethod,
   ApplicationService,
   ApplicationState,
@@ -11,7 +14,10 @@ import type {
   EvidenceView,
   JobIdentityView,
   ReconcileInput,
+  RequiredQuestionView,
   ResumeDocumentView,
+  ReviewAnswerView,
+  ReviewControl,
   StartApplicationInput,
 } from "./types";
 
@@ -26,6 +32,17 @@ export const PREVIEW_SCENARIOS = [
     id: "straight",
     label: "Confirmed submission",
     summary: "Fills two pages, submits and observes the site's confirmation.",
+  },
+  {
+    id: "prepared",
+    label: "Prepared for review",
+    summary: "Fills both pages and stops at the final review step. Nothing is submitted.",
+  },
+  {
+    id: "lookup",
+    label: "Location lookup",
+    summary:
+      "The site offers several matching places for the location question. Pick one or enter a different value; the form is then prepared for review.",
   },
   {
     id: "questions",
@@ -56,6 +73,19 @@ export function isPreviewScenario(value: unknown): value is PreviewScenarioId {
   return PREVIEW_SCENARIOS.some((scenario) => scenario.id === value);
 }
 
+/** The seeded, already-prepared application every preview session starts with. */
+export const PREPARED_PREVIEW_ID = "pv_prepared_northwind";
+/** The preview pipeline card that points at it (unlinked; matched through `list()`). */
+export const PREPARED_PREVIEW_PIPELINE_ENTRY_ID = "pipe_pv_northwind";
+
+const PREPARED_PREVIEW_URL = "https://jobs.example.test/northwind/senior-lifecycle-marketer";
+const PREPARED_REVIEW_PAGE = "https://jobs.example.test/northwind/senior-lifecycle-marketer/apply/review";
+
+/** Scenarios that prepare the form and stop at the final review step. They never submit. */
+function preparesOnly(scenario: PreviewScenarioId) {
+  return scenario === "prepared" || scenario === "lookup";
+}
+
 const JOBS: Record<"northwind" | "halcyon" | "juniper", JobIdentityView> = {
   northwind: { title: "Senior Lifecycle Marketer", company: "Northwind Cartography", ats: "Greenhouse" },
   halcyon: { title: "Growth Operations Lead", company: "Halcyon Freight", ats: "Workday" },
@@ -77,6 +107,14 @@ interface PreviewRecord {
   lastAdvance: number;
   rechecks: number;
   statusFailuresLeft: number;
+  /** The profile confirmed for this application. */
+  profile: CandidateProfileInput;
+  /** Stop at the final review step instead of submitting. */
+  prepareOnly: boolean;
+  /** The prepared form still shows a CAPTCHA to solve in the browser. */
+  captchaPending: boolean;
+  /** Answers the person gave for this application, shown in the review list. */
+  ownAnswers: ReviewAnswerView[];
 }
 
 export interface PreviewServiceOptions {
@@ -90,7 +128,7 @@ export class PreviewApplicationService implements ApplicationService {
   readonly mode = "preview" as const;
   scenario: PreviewScenarioId;
   private readonly stepDelayMs: number;
-  private readonly now: () => Date;
+  private now: () => Date;
   private readonly records = new Map<string, PreviewRecord>();
   private counter = 0;
   private candidate: CandidateView;
@@ -125,6 +163,66 @@ export class PreviewApplicationService implements ApplicationService {
       ],
       defaultResumeId: "res_pv_lifecycle",
     };
+    this.records.set(PREPARED_PREVIEW_ID, this.seedPrepared());
+  }
+
+  /**
+   * The seeded application: run the prepared script once on a fixed clock so it
+   * matches what the `prepared` scenario produces, with a CAPTCHA still pending.
+   */
+  private seedPrepared(): PreviewRecord {
+    const realNow = this.now;
+    let at = Date.parse("2026-09-23T15:02:04Z");
+    this.now = () => new Date(at);
+    try {
+      const requestedAt = this.iso();
+      const record: PreviewRecord = {
+        view: {
+          id: PREPARED_PREVIEW_ID,
+          state: "REQUESTED",
+          applicationUrl: PREPARED_PREVIEW_URL,
+          job: { title: null, company: null, ats: null },
+          requestedAt,
+          updatedAt: requestedAt,
+          progress: null,
+          resumeFileName: "Robin_Vale_Resume_Lifecycle.pdf",
+          needs: null,
+          receipt: null,
+          prior: null,
+          failure: null,
+          uncertain: null,
+          events: [],
+          preparation: null,
+          review: [],
+        },
+        scenario: "prepared",
+        queue: [],
+        lastAdvance: 0,
+        rechecks: 0,
+        statusFailuresLeft: 0,
+        profile: { ...this.candidate.profile },
+        prepareOnly: true,
+        captchaPending: true,
+        ownAnswers: [],
+      };
+      this.event(record, "application.requested", REQUESTED_TO_PREPARE, "info");
+      // Seconds each scripted step took on the fictional run.
+      const steps: [number, Step][] = [
+        [5, opened],
+        [2, identified],
+        [4, packetReady],
+        [2, fillPage(1, 2)],
+        [82, fillPage(2, 2)],
+        [180, prepareForReview],
+      ];
+      for (const [seconds, step] of steps) {
+        at += seconds * 1000;
+        step.call(this, record);
+      }
+      return record;
+    } finally {
+      this.now = realNow;
+    }
   }
 
   async getCandidate(): Promise<CandidateView> {
@@ -185,6 +283,8 @@ export class PreviewApplicationService implements ApplicationService {
       failure: null,
       uncertain: null,
       events: [],
+      preparation: null,
+      review: [],
     };
     const record: PreviewRecord = {
       view,
@@ -193,8 +293,17 @@ export class PreviewApplicationService implements ApplicationService {
       lastAdvance: this.now().getTime(),
       rechecks: 0,
       statusFailuresLeft: scenario === "connection_drop" ? 2 : 0,
+      profile: { ...input.profile },
+      prepareOnly: preparesOnly(scenario),
+      captchaPending: scenario === "lookup",
+      ownAnswers: [],
     };
-    this.event(record, "application.requested", "Application requested. Your request authorizes submission.", "info");
+    this.event(
+      record,
+      "application.requested",
+      record.prepareOnly ? REQUESTED_TO_PREPARE : "Application requested. Your request authorizes submission.",
+      "info",
+    );
     this.records.set(id, record);
     return this.snapshot(record);
   }
@@ -267,9 +376,15 @@ export class PreviewApplicationService implements ApplicationService {
         "Answers accepted. Re-reading the current page before continuing.",
         "progress",
       );
+      const page = view.progress?.page ?? 1;
+      const own = needs.questions
+        .map((question) => ownReview(question, page))
+        .filter((item): item is ReviewAnswerView => item !== null);
+      const kept = record.ownAnswers.filter((item) => !own.some((next) => next.question === item.question));
+      record.ownAnswers = [...kept, ...own];
       view.needs = null;
       this.transition(record, "FILLING");
-      record.queue = [fillPage(2, 2), submitting, submitted];
+      record.queue = [fillPage(2, 2), ...finish(record)];
     } else if (view.state === "NEEDS_INPUT" && view.needs?.kind === "interaction") {
       const kind = view.needs.interaction;
       view.needs = null;
@@ -281,19 +396,31 @@ export class PreviewApplicationService implements ApplicationService {
       );
       if (kind === "SIGN_IN") {
         this.transition(record, "INSPECTING");
-        record.queue = [packetReady, fillPage(1, 2), fillPage(2, 2), submitting, submitted];
+        record.queue = [packetReady, fillPage(1, 2), fillPage(2, 2), ...finish(record)];
       } else {
         this.transition(record, "FILLING");
-        record.queue = [submitting, submitted];
+        record.queue = finish(record);
       }
+    } else if (view.state === "NEEDS_INPUT" && view.preparation) {
+      // Prepare again: read the site and fill every page again, then stop at the review step.
+      this.event(
+        record,
+        "preparation.restarted",
+        "Preparing again: re-reading the site and filling the form. Nothing will be submitted.",
+        "progress",
+      );
+      this.transition(record, "INSPECTING");
+      record.queue = [packetReady, fillPage(1, 2), fillPage(2, 2), prepareForReview];
     } else if (view.state === "FAILED_RETRYABLE") {
       view.failure = null;
       this.event(record, "application.retry", "Trying again from the start of the form.", "progress");
       this.transition(record, "INSPECTING");
-      record.queue = [packetReady, fillPage(1, 2), fillPage(2, 2), submitting, submitted];
+      record.queue = [packetReady, fillPage(1, 2), fillPage(2, 2), ...finish(record)];
     } else {
       throw new ServiceError("conflict", "This application can't be continued from its current state.");
     }
+    // Every continuation leaves the prepared stop behind.
+    view.preparation = null;
     record.lastAdvance = this.now().getTime();
     return this.snapshot(record);
   }
@@ -378,6 +505,23 @@ export class PreviewApplicationService implements ApplicationService {
     return this.snapshot(record);
   }
 
+  async list(): Promise<ApplicationListView> {
+    this.guardAvailable();
+    const applications: ApplicationSummaryView[] = [...this.records.values()]
+      .map(({ view }) => ({
+        id: view.id,
+        state: view.state,
+        applicationUrl: view.applicationUrl,
+        job: view.job,
+        requestedAt: view.requestedAt,
+        updatedAt: view.updatedAt,
+        preparation: view.preparation ?? null,
+        pipelineEntryIds: view.id === PREPARED_PREVIEW_ID ? [PREPARED_PREVIEW_PIPELINE_ENTRY_ID] : [],
+      }))
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    return structuredClone({ applications });
+  }
+
   // ---- script helpers (called with `this` bound to the service) ----
 
   transition(record: PreviewRecord, state: ApplicationState) {
@@ -444,6 +588,126 @@ export class PreviewApplicationService implements ApplicationService {
       );
     }
   }
+}
+
+const REQUESTED_TO_PREPARE =
+  "Application requested. The desk prepares it for your review and doesn't submit it.";
+
+/** What follows the last page: submitting, or stopping at the final review step. */
+function finish(record: PreviewRecord): Step[] {
+  return record.prepareOnly ? [prepareForReview] : [submitting, submitted];
+}
+
+function reviewControl(question: RequiredQuestionView): ReviewControl {
+  switch (question.control) {
+    case "long_text":
+    case "single_select":
+    case "multi_select":
+    case "boolean":
+      return question.control;
+    default:
+      return "text";
+  }
+}
+
+/** A person's own answer as a review row: labels, never option ids. */
+function ownReview(question: RequiredQuestionView, page: number): ReviewAnswerView | null {
+  const value = question.value;
+  if (isEmptyAnswer(value) || value === null) return null;
+  const label = (answer: string) => question.options?.find((option) => option.value === answer)?.label ?? answer;
+  return {
+    question: question.label,
+    wordingRecorded: true,
+    page,
+    control: reviewControl(question),
+    value: typeof value === "boolean" ? (value ? "Yes" : "No") : Array.isArray(value) ? value.map(label) : label(value),
+    source: "user",
+    confidence: 1,
+  };
+}
+
+/** Fictional answers the desk entered on the two pages, with the person's own answers in place. */
+function previewReview(record: PreviewRecord): ReviewAnswerView[] {
+  const entered: ReviewAnswerView[] = [
+    {
+      question: "First name",
+      wordingRecorded: true,
+      page: 1,
+      control: "text",
+      value: record.profile.firstName,
+      source: "identity",
+      confidence: 1,
+    },
+    {
+      question: "Email",
+      wordingRecorded: false,
+      page: 1,
+      control: "text",
+      value: record.profile.email,
+      source: "identity",
+      confidence: 1,
+    },
+    {
+      question: "Resume/CV",
+      wordingRecorded: true,
+      page: 1,
+      control: "file",
+      value: record.view.resumeFileName ?? "Robin_Vale_Resume_Lifecycle.pdf",
+      source: "resume",
+      confidence: 1,
+    },
+    {
+      question: "Location (city)",
+      wordingRecorded: true,
+      page: 1,
+      control: "single_select",
+      value: "Portland, OR, USA",
+      source: "fact",
+      confidence: 0.96,
+    },
+    {
+      question: "Are you legally authorized to work in the United States?",
+      wordingRecorded: true,
+      page: 2,
+      control: "boolean",
+      value: "Yes",
+      source: "saved_answer",
+      confidence: 1,
+    },
+    {
+      question: "What are your base salary expectations (USD)?",
+      wordingRecorded: true,
+      page: 2,
+      control: "text",
+      value: "145000",
+      source: "user",
+      confidence: 1,
+    },
+    {
+      question: "Which lifecycle platforms have you used in production?",
+      wordingRecorded: true,
+      page: 2,
+      control: "multi_select",
+      value: ["Braze", "Customer.io"],
+      source: "fact",
+      confidence: 0.93,
+    },
+    {
+      question: "Why are you interested in Northwind Cartography?",
+      wordingRecorded: true,
+      page: 2,
+      control: "long_text",
+      value:
+        "I've spent six years building lifecycle programs for subscription products, most recently onboarding and win-back journeys in Braze and Customer.io.\n\nNorthwind's maps are used every day by field teams, and I'd like to help more of them find the features that save them time.",
+      source: "generated",
+      confidence: 0.86,
+    },
+  ];
+  const own = record.ownAnswers;
+  const merged = entered.map((item) => own.find((answer) => answer.question === item.question) ?? item);
+  const extra = own.filter((answer) => !entered.some((item) => item.question === answer.question));
+  // Form order: page by page, the person's extra answers after the desk's on their page.
+  return [...merged, ...extra].sort((a, b) => a.page - b.page).map((item) => structuredClone(item));
 }
 
 function isWaiting(state: ApplicationState) {
@@ -524,6 +788,71 @@ const submitted: Step = function (this: PreviewApplicationService, record) {
       source: "site",
     },
   ]);
+};
+
+/** Stop at the site's final review step with every page filled. Nothing is submitted. */
+const prepareForReview: Step = function (this: PreviewApplicationService, record) {
+  const now = this.iso();
+  const { view } = record;
+  view.progress = { page: 2, pageCount: 2 };
+  view.needs = null;
+  view.review = previewReview(record);
+  view.preparation = {
+    ready: true,
+    formStep: 1,
+    formUrl: PREPARED_REVIEW_PAGE,
+    captchaPending: record.captchaPending,
+    preparedAt: now,
+    submitted: false,
+    evidence: [
+      {
+        kind: "screenshot",
+        label: "Final review page screenshot",
+        value: null,
+        href: "/preview-fixtures/prepared-review.svg",
+        observedAt: now,
+        source: "site",
+      },
+    ],
+  };
+  this.event(record, "preparation.ready", "Ready for final review. Nothing was submitted.", "attention");
+  this.transition(record, "NEEDS_INPUT");
+  this.event(record, "application.needs_input", "Paused at the final review step for you to check.", "info");
+};
+
+/** The site's location search offered several places; the person picks one or types another. */
+const needsLookup: Step = function (this: PreviewApplicationService, record) {
+  this.transition(record, "NEEDS_INPUT");
+  record.view.needs = {
+    kind: "questions",
+    savedAt: null,
+    errors: {},
+    questions: [
+      {
+        id: "q_location",
+        label: "Location (city)",
+        help: null,
+        control: "single_select",
+        required: true,
+        lookup: true,
+        options: [
+          { value: "Portland, OR, USA", label: "Portland, OR, USA" },
+          { value: "Portland, ME, USA", label: "Portland, ME, USA" },
+          { value: "Portland, TX, USA", label: "Portland, TX, USA" },
+        ],
+        value: null,
+        maxLength: null,
+        reason: "The site suggested several places for “Portland”, and the desk doesn't choose between them for you.",
+      },
+    ],
+    attestations: [],
+  };
+  this.event(
+    record,
+    "field.unresolved",
+    "The site's location search offered 3 places. Paused on page 1 for your choice.",
+    "attention",
+  );
 };
 
 const needsQuestions: Step = function (this: PreviewApplicationService, record) {
@@ -774,6 +1103,10 @@ const permanentFailure: Step = function (this: PreviewApplicationService, record
 
 function scriptFor(scenario: PreviewScenarioId): Step[] {
   switch (scenario) {
+    case "prepared":
+      return [opened, identified, packetReady, fillPage(1, 2), fillPage(2, 2), prepareForReview];
+    case "lookup":
+      return [opened, identified, packetReady, fillPage(1, 2), needsLookup];
     case "questions":
       return [opened, identified, packetReady, fillPage(1, 2), needsQuestions];
     case "sign_in":

@@ -2,6 +2,7 @@
 
 import { useId, useState } from "react";
 import type { PipelineEntryView, PipelineLaneView } from "@/lib/pipeline/types";
+import type { ApplicationSummaryView } from "@/lib/service/types";
 import { compensationSummary } from "@/lib/pipeline/fields";
 import { formatShortDate } from "./dates";
 import { EntryBadges } from "./Badges";
@@ -12,6 +13,8 @@ export function EntryCard({
   onOpen,
   onMove,
   onApply,
+  onReview,
+  prepared = null,
   busy,
 }: {
   entry: PipelineEntryView;
@@ -19,6 +22,10 @@ export function EntryCard({
   onOpen: () => void;
   onMove: (lane: string) => void;
   onApply: () => void;
+  /** Opens the prepared application in the desk; never starts or submits anything. */
+  onReview?: () => void;
+  /** The prepared application this card points at, if any. */
+  prepared?: ApplicationSummaryView | null;
   busy: boolean;
 }) {
   const { fields } = entry;
@@ -85,15 +92,21 @@ export function EntryCard({
           {due && <span className="card__due">{due}</span>}
         </p>
       )}
-      <EntryBadges entry={entry} />
+      <EntryBadges entry={entry} prepared={prepared} />
       <div className="card__controls">
         <button type="button" className="chip-button" onClick={onOpen}>
           Open<span className="visually-hidden"> {fields.company ?? fields.role}</span>
         </button>
-        {!submitted && (
-          <button type="button" className="chip-button" onClick={onApply}>
-            Apply…<span className="visually-hidden"> to {fields.company ?? fields.role}</span>
+        {prepared && onReview ? (
+          <button type="button" className="chip-button chip-button--review" onClick={onReview}>
+            Review<span className="visually-hidden"> the prepared application for {fields.company ?? fields.role}</span>
           </button>
+        ) : (
+          !submitted && (
+            <button type="button" className="chip-button" onClick={onApply}>
+              Apply…<span className="visually-hidden"> to {fields.company ?? fields.role}</span>
+            </button>
+          )
         )}
         <form
           className="card__move"

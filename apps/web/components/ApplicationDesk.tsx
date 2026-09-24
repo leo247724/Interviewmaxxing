@@ -75,6 +75,9 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
 
   const [view, setView] = useState<ApplicationView | null>(null);
   const [handoff, setHandoff] = useState<DeskHandoff | null>(null);
+  // A review handoff opens an existing application (e.g. one prepared for final review).
+  const [reviewOpening, setReviewOpening] = useState<DeskHandoff | null>(null);
+  const [reviewProblem, setReviewProblem] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lostContact, setLostContact] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
@@ -160,15 +163,6 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     void loadCandidate();
   }, [loadCandidate]);
 
-  // A job chosen in the Pipeline or Jobs view only prefills the link.
-  useEffect(() => {
-    const incoming = takeHandoff();
-    if (incoming) {
-      setHandoff(incoming);
-      setApplicationUrl(incoming.applicationUrl);
-    }
-  }, []);
-
   // Poll while the service is working on the application.
   useEffect(() => {
     if (!view || !isActive(view.state)) return;
@@ -201,10 +195,52 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
       setView(next);
       setActionError(null);
       setRestoreProblem(null);
+      setReviewProblem(null);
       if (service.mode === "live") window.sessionStorage.setItem(ACTIVE_ID_KEY, next.id);
     },
     [service],
   );
+
+  /**
+   * Open an existing application to review it (a review handoff). Only reads its
+   * status: nothing is started, resumed or submitted, and no new application is
+   * prefilled. On failure the normal, empty compose form stays available.
+   */
+  const openForReview = useCallback(
+    async (incoming: DeskHandoff, applicationId: string) => {
+      // The page now follows this application: a restore still in flight must not revive another.
+      restoreGeneration.current += 1;
+      setReviewProblem(null);
+      setReviewOpening(incoming);
+      try {
+        const next = await service.status(applicationId);
+        setConnection("connected");
+        failuresRef.current = 0;
+        setLostContact(null);
+        adopt(next);
+      } catch (error) {
+        const serviceError = asServiceError(error);
+        noteUnavailable(serviceError);
+        setReviewProblem(serviceError.message);
+      } finally {
+        setReviewOpening(null);
+      }
+    },
+    [service, adopt, noteUnavailable],
+  );
+
+  // A job chosen in the Pipeline or Jobs view only prefills the link; a review
+  // handoff opens its application instead.
+  useEffect(() => {
+    const incoming = takeHandoff();
+    if (!incoming) return;
+    if (incoming.applicationId) {
+      void openForReview(incoming, incoming.applicationId);
+    } else if (incoming.applicationUrl) {
+      setHandoff(incoming);
+      setApplicationUrl(incoming.applicationUrl);
+    }
+  }, [openForReview]);
 
   function clearErrors(keys: string[]) {
     if (!keys.some((key) => key in formErrors)) return;
@@ -395,6 +431,36 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
           {connection === "unavailable" && (
             <ServiceNotice mode={mode} message={serviceMessage} onRetry={async () => { await Promise.all([loadCandidate(), refreshReadiness()]); }} />
           )}
+          {reviewProblem && (
+            <section className="notice" role="alert" aria-labelledby="review-problem-title">
+              <h2 id="review-problem-title" className="notice__title">
+                Couldn&rsquo;t open the prepared application: {reviewProblem}
+              </h2>
+              <p>
+                Nothing was started or submitted. Try Review again from your pipeline, or use the form below to apply
+                to a job.
+              </p>
+              <div className="notice__actions">
+                <a className="text-link" href={mode === "preview" ? "/preview/pipeline" : "/pipeline"}>
+                  Back to your pipeline
+                </a>
+                <button type="button" className="button button--secondary" onClick={() => setReviewProblem(null)}>
+                  Dismiss
+                </button>
+              </div>
+            </section>
+          )}
+          {reviewOpening && (
+            <section className="notice notice--handoff" role="status" aria-labelledby="review-opening-title">
+              <h2 id="review-opening-title" className="notice__title">
+                Opening the prepared application
+                {reviewOpening.company || reviewOpening.role
+                  ? `: ${[reviewOpening.company, reviewOpening.role].filter(Boolean).join(" — ")}`
+                  : ""}
+              </h2>
+              <p>Loading it for your review. Nothing is started or submitted.</p>
+            </section>
+          )}
           {handoff && (
             <section className="notice notice--handoff" aria-labelledby="handoff-title">
               <h2 id="handoff-title" className="notice__title">
@@ -409,7 +475,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
               </p>
             </section>
           )}
-          <ComposeForm
+          {!reviewOpening && <ComposeForm
             applicationUrl={applicationUrl}
             onApplicationUrl={(value) => {
               clearErrors(["applicationUrl"]);
@@ -437,7 +503,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
             candidateLoaded={candidateLoaded || connection !== "checking"}
             testMode={mode === "live"}
             onSubmit={handleApply}
-          />
+          />}
         </>
       )}
     </AppShell>

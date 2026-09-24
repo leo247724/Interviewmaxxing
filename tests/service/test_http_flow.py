@@ -15,6 +15,7 @@ S = ApplicationState
 VIEW_KEYS = {
     "id", "state", "applicationUrl", "job", "requestedAt", "updatedAt", "progress",
     "resumeFileName", "needs", "receipt", "prior", "failure", "uncertain", "events",
+    "preparation", "review",
 }
 
 
@@ -51,6 +52,7 @@ def test_health_has_no_private_data(harness: Harness) -> None:
         "status": "ok", "service": "interviewmaxxing-service", "contractVersion": "2",
         "executor": "idle", "runner": "available", "pipeline": "available",
         "jobs": "unavailable", "selection": "unavailable", "applicationMode": "TEST_ONLY",
+        "presentationVersion": "2",
     }
     assert "access-control-allow-origin" not in r.headers
     assert r.headers["cache-control"] == "no-store"
