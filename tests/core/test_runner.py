@@ -1653,3 +1653,33 @@ def test_runner_answers_a_yes_no_experience_screener_from_verified_facts(
     assert (answer.value.value, answer.value.label) == ("1", "Yes")
     assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
     assert answer.provenance.reference_ids == ["fact.agency"]
+
+
+def test_runner_answers_a_residence_question_from_the_verified_address(
+    isolated_imx_home, fictional_candidate
+):
+    residence = ApplicationField(
+        id="residence", label="Do you currently live in the United States?",
+        selector="#residence", semantic_type=SemanticType.COUNTRY,
+        control_type=ControlType.RADIO, required=True,
+        options=[FieldOption(value="yes", label="Yes"), FieldOption(value="no", label="No")])
+    form = _form().model_copy(update={"fields": [*_form().fields, residence]})
+    jev = ScriptedJev({0: "APPLICANT_CURRENT", 1: "APPLICANT_CURRENT"},
+                      {"residence": {"o0": 0.99, "o1": 0.0, "UNKNOWN": 0.01}})
+    script = Script(pages=[_page(form)])
+    result = asyncio.run(_dynamic_runner(isolated_imx_home, fictional_candidate, script, jev)
+                         .apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert result.missing_inputs == [] and "submit" not in script.calls
+    [request] = jev.asked("residence")
+    assert request["state"]["applicant_address"] == {
+        "city": "Springfield", "region": "OR", "country": "United States"}
+    assert not jev.asked("equivalent_0")
+    packet, problems = _stored_packet(isolated_imx_home, result.application_id, form,
+                                      fictional_candidate)
+    assert problems == [] and packet.is_complete
+    answer = packet.answer_for("residence")
+    assert answer is not None
+    assert (answer.value.value, answer.value.label) == ("yes", "Yes")
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert answer.provenance.note == "verified identity address; residence question answered by Jev"

@@ -6,7 +6,8 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-fourteen explicit reusable answers, stored through the existing saved-answer system.
+twenty-five explicit reusable answers, stored through the existing saved-answer system.
+Each starts as `null`; nothing is filled in for you.
 
 | Map key | Example wording on a form |
 | --- | --- |
@@ -37,6 +38,17 @@ fourteen explicit reusable answers, stored through the existing saved-answer sys
 | `education_discipline` | Education Discipline, field of study |
 | `education_start_date` | Education start date |
 | `education_end_date` | Education end date |
+| `previously_employed_here` | Have you previously been employed by this company? |
+| `previously_interviewed_here` | Have you previously interviewed with this company? |
+| `related_to_employee` | Are you related to any current employee of this company? |
+| `willing_to_relocate` | Are you willing to relocate? / Are you open to relocation? |
+| `open_to_other_positions` | Would you like to be considered for other open positions? |
+| `willing_to_provide_references` | Are you willing to provide references? |
+| `desired_salary` | What is your desired salary? / What are your salary expectations? |
+| `english_proficiency` | What is your level of proficiency in English? |
+| `available_time_zones` | Which time zones are you available to work in? |
+| `travel_willingness` | How much are you willing to travel for work? |
+| `earliest_start_date` | What is your earliest start date? / When can you start? |
 
 Full name is derived from first and last name. Location is derived from city,
 state and country, omitting unanswered components. The selected resume already
@@ -79,7 +91,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The fourteen additional reusable-answer keys may be omitted or `null`;
+contact value. The twenty-five additional reusable-answer keys may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
 strings become `null`; phone and postal codes remain strings to preserve formatting
@@ -90,12 +102,18 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the fourteen additional keys become explicitly
+Nonblank values for the twenty-five additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
 referral, age, work-authorization and Hispanic/Latino answers also accept `"Yes"`,
-`"No"`, or `null`. Referral
+`"No"`, or `null`. So do previous employment, previous interviews, being related to an
+employee, relocation, other positions and references. Desired salary, English
+proficiency, time zones, travel and earliest start date are free text in your words.
+Each key lists a few observed wordings. With AI routing, a differently worded
+question can reuse the answer when Jev finds it asks exactly the same thing
+([dynamic-application-routing.md](dynamic-application-routing.md), "Reworded
+questions"). Referral
 wording also accepts “How did you hear about us?” and “Where did you first hear about
 the company?”. A referrer's name is a different question. Per Leo's instruction,
 `"Company career page"` is the referral default for all applications. With AI routing,

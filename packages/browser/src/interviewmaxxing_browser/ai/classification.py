@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -20,7 +21,7 @@ from interviewmaxxing_selection.jev import ChoiceAnswer, ChoiceQuestion, Decisio
 
 from .providers import AIHold, BoundedDecisions
 
-PROMPT_VERSION = "full-form-routing-v10"
+PROMPT_VERSION = "full-form-routing-v11"
 CUSTOM_TYPES = frozenset({SemanticType.UNKNOWN, SemanticType.CUSTOM_TEXT,
     SemanticType.CUSTOM_LONG_TEXT, SemanticType.CUSTOM_BOOLEAN, SemanticType.CUSTOM_SELECT,
     SemanticType.CUSTOM_MULTISELECT})
@@ -81,6 +82,9 @@ class FieldRouteDecision(BaseModel):
     source_scope_confidence: float | None = Field(default=None, ge=0, le=1)
     source_scope_probabilities: dict[str, float] = Field(default_factory=dict)
     profile_copy_allowed: bool = False
+    autofill: bool = False
+    """A required resume upload the page also parses to autofill other fields. It is
+    still the approved attachment: the browser uploads it first and re-inspects."""
     source_requirement: str = "explicit matching user answer or verified applicable source"
     reason: str = ""
 
@@ -132,6 +136,8 @@ _ROUTE_CRITERIA = {
     "UNSUPPORTED": "A non-answerable control or action such as unsupported widget, navigation, submit, payment, or interactive challenge.",
     "AMBIGUOUS": "The field lacks enough wording or combines incompatible requests; no single route is clear.",
 }
+_RESUME_LABEL = re.compile(r"\bresume\b|résumé|\bcv\b|curriculum vitae", re.IGNORECASE)
+_COVER_LETTER_LABEL = re.compile(r"cover letter", re.IGNORECASE)
 _SEMANTICS = {s.value: s.value.replace("_", " ").lower() for s in SemanticType}
 _SEMANTICS.update({
     "CUSTOM_LONG_TEXT": "A personal narrative: explain, describe, summarize, motivation, example, fit, background, or achievement prose, even when the answer should be short",
@@ -140,6 +146,10 @@ _SEMANTICS.update({
     "RESUME": "A dedicated resume or CV upload",
     "CONSENT": "Personal permission or agreement, including privacy terms",
     "REFERRAL_SOURCE": "How or where the applicant heard about or found the job or company (careers site, job board, LinkedIn, referral, event or other channel); not a referrer's name or contact, and not whether an employee referred them",
+    "LOCATION": "The applicant's own current location or residence (city, region, country), including yes/no or choice questions about where they currently live or are located",
+    "COUNTRY": "The applicant's own current country of residence, including whether they currently live in a named country; not citizenship or work authorization",
+    "STATE": "The applicant's own current state, province or region of residence, including which state they live in and whether they live in one of listed states",
+    "CITY": "The applicant's own current city of residence",
     "ATTESTATION": "Certification, acknowledgement, declaration or signature",
     "UNKNOWN": "Unclear, missing wording, conflicting context or not covered",
 })
@@ -328,12 +338,26 @@ class AIFormRouter:
             meaning = SemanticType.CUSTOM_LONG_TEXT
         if route is FieldRoute.APPROVED_DOCUMENT and fld.control_type is not ControlType.FILE:
             route, reason = FieldRoute.AMBIGUOUS, "Document route requires a live file control"
-        requirement = ("approved document with canonical content/hash verification" if route is FieldRoute.APPROVED_DOCUMENT
-                       else "only explicit scoped user/saved answer; never inferred" if meaning in EXPLICIT_ANSWER_REQUIRED
-                       else "relevant verified facts and cited writer output" if route is FieldRoute.WRITER
-                       else "exact verified identity/fact or explicit scoped answer")
         purpose = DocumentPurpose(document.choice) if document else None
-        if purpose is DocumentPurpose.AUTOFILL_PARSER:
+        autofill = False
+        resume_label = (_RESUME_LABEL.search(fld.label or "") is not None
+                        and _COVER_LETTER_LABEL.search(fld.label or "") is None)
+        if (fld.control_type is ControlType.FILE and fld.required and document is not None
+                and (SemanticType.RESUME in (fld.semantic_type, meaning) or resume_label)
+                and purpose in (DocumentPurpose.APPLICATION_ATTACHMENT, DocumentPurpose.AUTOFILL_PARSER)
+                and document.confidence >= self.thresholds.confidence
+                and (document.probabilities.get(DocumentPurpose.APPLICATION_ATTACHMENT.value, 0.0)
+                     + document.probabilities.get(DocumentPurpose.AUTOFILL_PARSER.value, 0.0))
+                    >= self.thresholds.probability):
+            # The required resume is the approved attachment even when the page also
+            # parses it; the browser uploads it first and re-inspects the fields after.
+            autofill = purpose is DocumentPurpose.AUTOFILL_PARSER
+            route = FieldRoute.APPROVED_DOCUMENT
+            reason = ("Required resume upload that also autofills other fields; uploaded first, then "
+                      "the form is re-inspected" if autofill else reason)
+            if fld.semantic_type in CUSTOM_TYPES:
+                meaning = SemanticType.RESUME
+        elif purpose is DocumentPurpose.AUTOFILL_PARSER:
             route, reason = FieldRoute.UNSUPPORTED, "Autofill/parser uploads can overwrite other answers and are not approved attachments"
         elif route is FieldRoute.APPROVED_DOCUMENT and (
                 document is None or purpose is not DocumentPurpose.APPLICATION_ATTACHMENT
@@ -343,6 +367,10 @@ class AIFormRouter:
         semantic_route = route
         if fld.control_type is ControlType.UNSUPPORTED:
             route, reason = FieldRoute.UNSUPPORTED, "Live control is unsupported or options were not observed"
+        requirement = ("approved document with canonical content/hash verification" if route is FieldRoute.APPROVED_DOCUMENT
+                       else "only explicit scoped user/saved answer; never inferred" if meaning in EXPLICIT_ANSWER_REQUIRED
+                       else "relevant verified facts and cited writer output" if route is FieldRoute.WRITER
+                       else "exact verified identity/fact or explicit scoped answer")
         scope = SourceScope(applicability.choice)
         profile_allowed = (scope is SourceScope.APPLICANT_CURRENT
             and applicability.confidence >= self.thresholds.confidence
@@ -353,7 +381,7 @@ class AIFormRouter:
             document_purpose_probabilities=dict(document.probabilities) if document else {},
             source_scope=scope, source_scope_confidence=applicability.confidence,
             source_scope_probabilities=dict(applicability.probabilities),
-            profile_copy_allowed=profile_allowed,
+            profile_copy_allowed=profile_allowed, autofill=autofill,
             proposed_route=FieldRoute(answer.choice),
             confidence=answer.confidence, probabilities=dict(answer.probabilities),
             semantic_confidence=semantic.confidence if semantic else None,

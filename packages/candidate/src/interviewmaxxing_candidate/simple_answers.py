@@ -53,6 +53,17 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "education_discipline": (None, "Education Discipline"),
     "education_start_date": (None, "Education start date"),
     "education_end_date": (None, "Education end date"),
+    "previously_employed_here": (None, "Have you previously been employed by this company?"),
+    "previously_interviewed_here": (None, "Have you previously interviewed with this company?"),
+    "related_to_employee": (None, "Are you related to any current employee of this company?"),
+    "willing_to_relocate": (SemanticType.RELOCATION, "Are you willing to relocate?"),
+    "open_to_other_positions": (None, "Would you like to be considered for other open positions?"),
+    "willing_to_provide_references": (None, "Are you willing to provide references?"),
+    "desired_salary": (SemanticType.SALARY_EXPECTATION, "What is your desired salary?"),
+    "english_proficiency": (None, "What is your level of proficiency in English?"),
+    "available_time_zones": (None, "Which time zones are you available to work in?"),
+    "travel_willingness": (None, "How much are you willing to travel for work?"),
+    "earliest_start_date": (SemanticType.START_DATE, "What is your earliest start date?"),
 }
 _REUSABLE_PHRASES = {
     "referral_source": [
@@ -91,6 +102,65 @@ _REUSABLE_PHRASES = {
     "education_discipline": ["Field of study", "Major\nEducation", "Discipline\nEducation"],
     "education_start_date": ["Start date\nEducation"],
     "education_end_date": ["End date\nEducation"],
+    "previously_employed_here": [
+        "Have you ever been employed by this company?",
+        "Have you worked for this company before?",
+        "Have you previously worked for us?",
+        "Are you a former employee of this company?",
+    ],
+    "previously_interviewed_here": [
+        "Have you interviewed with us before?",
+        "Have you ever interviewed with this company?",
+        "Have you interviewed here in the past?",
+    ],
+    "related_to_employee": [
+        "Are you related to anyone who currently works here?",
+        "Do you have any relatives currently employed by this company?",
+    ],
+    "willing_to_relocate": [
+        "Are you open to relocation?",
+        "Would you be willing to relocate for this role?",
+        "Are you willing to relocate for this position?",
+    ],
+    "open_to_other_positions": [
+        "Are you open to being considered for other roles?",
+        "May we consider you for other open positions?",
+        "Would you like to be considered for other roles at this company?",
+    ],
+    "willing_to_provide_references": [
+        "Can you provide professional references upon request?",
+        "Are you able to provide references?",
+        "Will you provide references if requested?",
+    ],
+    "desired_salary": [
+        "What are your salary expectations?",
+        "Desired salary",
+        "Expected salary",
+        "What is your expected salary?",
+        "What are your compensation expectations?",
+    ],
+    "english_proficiency": [
+        "English proficiency",
+        "What is your English proficiency level?",
+        "How would you rate your English proficiency?",
+        "Level of English",
+    ],
+    "available_time_zones": [
+        "What time zones can you work in?",
+        "Time zone availability",
+        "Which time zones can you work?",
+    ],
+    "travel_willingness": [
+        "What percentage of travel are you willing to do?",
+        "Willingness to travel",
+        "How much travel are you willing to do?",
+    ],
+    "earliest_start_date": [
+        "When can you start?",
+        "When are you available to start?",
+        "Earliest available start date",
+        "What is your earliest available start date?",
+    ],
 }
 _MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",
@@ -164,6 +234,17 @@ class SimpleAnswers(BaseModel):
     education_discipline: str | None = None
     education_start_date: str | None = None
     education_end_date: str | None = None
+    previously_employed_here: str | None = None
+    previously_interviewed_here: str | None = None
+    related_to_employee: str | None = None
+    willing_to_relocate: str | None = None
+    open_to_other_positions: str | None = None
+    willing_to_provide_references: str | None = None
+    desired_salary: str | None = None
+    english_proficiency: str | None = None
+    available_time_zones: str | None = None
+    travel_willingness: str | None = None
+    earliest_start_date: str | None = None
 
     @field_validator("*", mode="after")
     @classmethod
@@ -172,7 +253,9 @@ class SimpleAnswers(BaseModel):
 
     @field_validator(
         "requires_visa_sponsorship", "referred_by_current_employee", "above_age_18",
-        "authorized_to_work_us", "hispanic_latino", mode="after",
+        "authorized_to_work_us", "hispanic_latino", "previously_employed_here",
+        "previously_interviewed_here", "related_to_employee", "willing_to_relocate",
+        "open_to_other_positions", "willing_to_provide_references", mode="after",
     )
     @classmethod
     def _yes_or_no(cls, value: str | None) -> str | None:

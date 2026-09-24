@@ -1022,7 +1022,181 @@ def test_every_typed_simple_answer_is_reusable_by_meaning() -> None:
     assert typed <= REUSABLE_TYPES
     assert {SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP,
             SemanticType.REFERRAL_SOURCE} <= REUSABLE_TYPES
-    assert not REUSABLE_TYPES & {SemanticType.CONSENT, SemanticType.ATTESTATION,
-                                 SemanticType.SALARY_EXPECTATION}
+    # Consent and attestations are never answered from a differently worded question. The
+    # desired-salary default (round 3) is reusable by meaning like the other defaults.
+    assert not REUSABLE_TYPES & {SemanticType.CONSENT, SemanticType.ATTESTATION}
+    assert {SemanticType.SALARY_EXPECTATION, SemanticType.RELOCATION,
+            SemanticType.START_DATE} <= REUSABLE_TYPES
     assert SemanticType.CUSTOM_BOOLEAN in UNTYPED_REUSE_TYPES
     assert SemanticType.CUSTOM_LONG_TEXT not in UNTYPED_REUSE_TYPES
+
+
+# --- round 3: residence screeners from the verified address (item 1) ---------------------
+
+YES_NO = ("Yes", "No")
+FIXTURE_ADDRESS = {"city": "Springfield", "region": "OR", "country": "United States"}
+REGIONS = ("US - West", "US - East", "Remote / Outside the US")
+
+
+def residence_field(label: str, semantic: SemanticType, *options: str,
+                    control: ControlType = ControlType.RADIO,
+                    required: bool = True) -> ApplicationField:
+    return choice_field(label, semantic, *(options or YES_NO), control=control,
+                        required=required, field_id="residence")
+
+
+def with_address(candidate: CandidateProfile, **address: str | None) -> CandidateProfile:
+    identity = candidate.identity
+    return candidate.model_copy(update={"identity": identity.model_copy(update={
+        "address": identity.address.model_copy(update=address)})})
+
+
+@pytest.mark.parametrize("question", ["Do you currently live in the United States?",
+                                      "Are you located in the US?"])
+def test_a_country_residence_question_is_answered_from_the_verified_address(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, question: str,
+) -> None:
+    provider = ChoiceProvider({"residence": ("o0", 0.99)})
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job,
+                                         residence_field(question, SemanticType.COUNTRY))
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert answer.provenance.note == "verified identity address; residence question answered by Jev"
+    assert answer.confidence == pytest.approx(0.97)  # min(confidence 0.97, probability 0.99)
+    assert not provider.asked("equivalent_0")  # an address never means "Yes"
+    [request] = provider.asked("residence")
+    assert request["state"]["applicant_address"] == FIXTURE_ADDRESS
+    assert request["state"]["options"] == {"o0": "Yes", "o1": "No"}
+    assert set(request["questions"]["residence"]["criteria"]) == {
+        "o0", "o1", "UNKNOWN", "NOT_RESIDENCE"}
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert (trace["status"], trace["choice"]) == ("ANSWERED", "o0")
+    shown = json.dumps(trace)
+    assert "Springfield" not in shown and "United States" not in shown and '"OR"' not in shown
+
+
+@pytest.mark.parametrize("states,pick,expected", [
+    ("AL, AZ, CA, OR", "o0", "Yes"),
+    ("AL, AZ, CA, TX", "o1", "No"),
+])
+def test_a_state_list_question_is_answered_and_checked_against_the_address(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    states: str, pick: str, expected: str,
+) -> None:
+    provider = ChoiceProvider({"residence": (pick, 0.99)})
+    field = residence_field(f"Do you reside in any of the following states: {states}?",
+                            SemanticType.STATE)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert answer.value.label == expected
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert trace["status"] == "ANSWERED"
+    assert trace["state_list_member"] is (expected == "Yes")
+
+
+def test_a_state_list_answer_that_contradicts_the_address_is_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"residence": ("o0", 0.99)})  # "Yes", but OR is not listed
+    field = residence_field("Do you reside in any of the following states: AL, AZ, CA, TX?",
+                            SemanticType.STATE)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert (missing.field_id, missing.reason) == ("residence", MissingReason.NO_ANSWER)
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert trace["status"] == "STATE_LIST_MISMATCH" and trace["state_list_member"] is False
+
+
+def test_a_negated_state_list_is_left_to_jev_without_the_membership_check(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"residence": ("o0", 0.99)})
+    field = residence_field("Do you live outside the following states: AL, AZ, CA, TX?",
+                            SemanticType.STATE)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers[0].value.label == "Yes"
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert trace["status"] == "ANSWERED" and "state_list_member" not in trace
+
+
+def test_a_state_select_tries_identity_equivalence_before_the_residence_decision(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("NONE", 0.99), "residence": ("o0", 0.99)})
+    field = residence_field("Which state do you reside in?", SemanticType.STATE,
+                            "OR - Oregon", "TX - Texas", "WA - Washington",
+                            control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "OR - Oregon")
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    order = [name for request in provider.requests for name in request["questions"]
+             if name in ("equivalent_0", "residence")]
+    assert order == ["equivalent_0", "residence"]
+    assert [t["status"] for t in stage_traces(resolver, "option_equivalence")] == ["NONE"]
+    assert [t["status"] for t in stage_traces(resolver, "residence_screener")] == ["ANSWERED"]
+
+
+def test_a_region_select_takes_the_region_that_contains_the_address(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"residence": ("o0", 0.99)})
+    field = residence_field("What is your current location?", SemanticType.LOCATION, *REGIONS,
+                            control=ControlType.SELECT)
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "US - West")
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    [request] = provider.asked("residence")
+    assert request["state"]["options"] == {"o0": "US - West", "o1": "US - East",
+                                           "o2": "Remote / Outside the US"}
+
+
+@pytest.mark.parametrize("pick,status", [
+    (("UNKNOWN", 0.99), "UNKNOWN"),
+    (("NOT_RESIDENCE", 0.99), "NOT_RESIDENCE"),
+    (("o0", 0.90), "BELOW_GATE"),
+])
+def test_an_unsettled_or_weak_residence_decision_holds(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    pick: tuple[str, float], status: str,
+) -> None:
+    provider = ChoiceProvider({"residence": pick})
+    field = residence_field("What is your current location?", SemanticType.LOCATION, *REGIONS,
+                            control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers == [] and not packet.is_complete
+    assert [m.field_id for m in packet.missing_inputs] == ["residence"]
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert trace["status"] == status
+
+
+RESIDENCE_QUESTION = "Do you currently live in the United States?"
+
+
+@pytest.mark.parametrize("case", ["optional", "other_person", "custom_type", "no_address"])
+def test_residence_is_not_asked_outside_its_scope(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, case: str,
+) -> None:
+    candidate = fictional_candidate
+    provider = ChoiceProvider({"residence": ("o0", 0.99)})
+    field = residence_field(RESIDENCE_QUESTION, SemanticType.COUNTRY)
+    if case == "optional":
+        field = residence_field(RESIDENCE_QUESTION, SemanticType.COUNTRY, required=False)
+    elif case == "other_person":
+        provider = ChoiceProvider({"residence": ("o0", 0.99)}, scope="OTHER_PERSON_OR_ENTITY")
+    elif case == "custom_type":  # PROFILE_IDENTITY can never fill a custom-typed field
+        provider = ChoiceProvider({"residence": ("o0", 0.99)}, semantic="CUSTOM_BOOLEAN")
+        field = residence_field(RESIDENCE_QUESTION, SemanticType.CUSTOM_BOOLEAN)
+    else:
+        candidate = with_address(fictional_candidate, city=None, region=None, country=None)
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, field)
+    assert not provider.asked("residence")
+    assert packet.answers == []
+    assert not stage_traces(resolver, "residence_screener")

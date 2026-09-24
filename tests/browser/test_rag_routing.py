@@ -1259,3 +1259,517 @@ def test_screener_without_retrieval_holds_beyond_the_fact_bound_and_without_fact
     assert packet.answers == [] and not packet.is_complete
     assert "absent evidence is not No" in packet.missing_inputs[0].prompt
 
+
+
+# --- round 3: near-threshold current-address identity fields (item 2) -----------------------
+
+FICTIONAL_STREET = "100 Fictional Way"
+
+
+def with_street(candidate: CandidateProfile) -> CandidateProfile:
+    identity = candidate.identity
+    return candidate.model_copy(update={"identity": identity.model_copy(update={
+        "address": identity.address.model_copy(update={"street": FICTIONAL_STREET}),
+        "preferred_name": "Avery"})})
+
+
+def address_context(candidate: CandidateProfile, job: JobRecord, question: str,
+                    semantic: SemanticType, *, section: list[str] | None = None) -> PacketContext:
+    ctx = context(with_street(candidate), job, question=question, semantic=semantic)
+    if section is None:
+        return ctx
+    return replace(ctx, form=ctx.form.model_copy(update={"fields": [
+        ctx.form.fields[0].model_copy(update={"section_context": section})]}))
+
+
+def clarify(ctx: PacketContext, semantic: SemanticType, approval: float, *,
+            remainder: str = "HISTORICAL_OR_CONTEXTUAL",
+            scope_probability: float = 0.94) -> tuple[Any, DynamicPacketResolver, DecisionsProvider]:
+    return resolve(ctx, Retriever([], fail=True), Writer([]),
+        _ScopeRemainder(remainder, route="COPY_KNOWN", semantic=semantic.value,
+                        scope_probability=scope_probability, identity_approval=approval))
+
+
+def clarification_trace(resolver: DynamicPacketResolver) -> dict[str, Any]:
+    [trace] = [t for t in resolver.narrative_traces if t["stage"] == "identity_source_clarification"]
+    return trace
+
+
+CURRENT_ADDRESS_CASES = [
+    (SemanticType.CITY, "What city do you currently live in?", "Springfield"),
+    (SemanticType.STATE, "What state do you currently reside in?", "OR"),
+    (SemanticType.COUNTRY, "Which country do you currently live in?", "United States"),
+    (SemanticType.LOCATION, "Where do you currently live?", "Springfield, OR, United States"),
+    (SemanticType.ZIP, "Current ZIP code", "97477"),
+    (SemanticType.ADDRESS, "What is your current address?", FICTIONAL_STREET),
+]
+
+
+@pytest.mark.parametrize("semantic,question,value", CURRENT_ADDRESS_CASES)
+def test_current_address_near_threshold_is_copied_at_a_090_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    semantic: SemanticType, question: str, value: str,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, question, semantic)
+    packet, resolver, provider = clarify(ctx, semantic, 0.92)
+    assert packet.is_complete and ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value == TextValue(text=value)
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert answer.confidence == pytest.approx(0.92)
+    assert len(provider.requests) == 2  # the full-form routing and one clarification
+    assert "applicant_current_identity" in provider.requests[-1]["questions"]
+    trace = clarification_trace(resolver)
+    assert trace["status"] == "APPROVED_CURRENT_ADDRESS"
+    assert trace["clarification_threshold"] == pytest.approx(0.90)
+    assert trace["clarification_probability"] == pytest.approx(0.92)
+
+
+def test_a_confident_clarification_is_approved_under_the_relaxed_threshold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, "What state do you currently reside in?",
+                          SemanticType.STATE)
+    packet, resolver, _ = clarify(ctx, SemanticType.STATE, 0.97)
+    assert packet.is_complete and packet.answers[0].value == TextValue(text="OR")
+    trace = clarification_trace(resolver)
+    assert (trace["status"], trace["clarification_threshold"]) == ("APPROVED", pytest.approx(0.90))
+
+
+@pytest.mark.parametrize("semantic,question,value", CURRENT_ADDRESS_CASES)
+def test_current_address_clarification_below_090_is_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    semantic: SemanticType, question: str, value: str,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, question, semantic)
+    packet, resolver, provider = clarify(ctx, semantic, 0.89)
+    assert packet.answers == [] and not packet.is_complete
+    assert "identity source could not be confirmed" in packet.missing_inputs[0].prompt
+    assert len(provider.requests) == 2
+    trace = clarification_trace(resolver)
+    assert trace["status"] == "HELD"
+    assert trace["clarification_threshold"] == pytest.approx(0.90)
+
+
+@pytest.mark.parametrize("question,section", [
+    ("What state did you previously reside in?", None),
+    ("Which state did you live in prior to your current address?", None),
+    ("What state do you currently reside in?", ["Previous address"]),
+    ("What state do you currently reside in?", ["Former residence history"]),
+])
+def test_previous_residence_wording_keeps_the_strict_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, question: str, section: list[str] | None,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, question, SemanticType.STATE, section=section)
+    packet, resolver, provider = clarify(ctx, SemanticType.STATE, 0.92)
+    assert packet.answers == [] and not packet.is_complete
+    trace = clarification_trace(resolver)
+    assert (trace["status"], trace["clarification_threshold"]) == ("HELD", pytest.approx(0.95))
+    # Jev still judged the question: the clarification request carried its full wording.
+    observed = provider.requests[-1]["state"]["fields"]["f0"]
+    assert observed["question"] == ctx.form.fields[0].question_text
+    assert observed["section_context"] == (section or [])
+
+
+def test_address_wording_without_a_current_marker_keeps_the_strict_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, "State of residence", SemanticType.STATE)
+    packet, resolver, provider = clarify(ctx, SemanticType.STATE, 0.92)
+    assert packet.answers == [] and len(provider.requests) == 2
+    trace = clarification_trace(resolver)
+    assert (trace["status"], trace["clarification_threshold"]) == ("HELD", pytest.approx(0.95))
+
+
+@pytest.mark.parametrize("remainder", ["OTHER_PERSON_OR_ENTITY", "UNCLEAR", "EXPLICIT_ANSWER"])
+def test_current_address_with_foreign_scope_mass_keeps_the_strict_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, remainder: str,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, "What state do you currently reside in?",
+                          SemanticType.STATE)
+    packet, resolver, provider = clarify(ctx, SemanticType.STATE, 0.92, remainder=remainder)
+    assert packet.answers == [] and len(provider.requests) == 2
+    trace = clarification_trace(resolver)
+    assert (trace["status"], trace["clarification_threshold"]) == ("HELD", pytest.approx(0.95))
+
+
+@pytest.mark.parametrize("semantic,question", [
+    (SemanticType.EMAIL, "What is your current email address?"),
+    (SemanticType.PREFERRED_NAME, "What name do you currently go by?"),
+])
+def test_non_address_identity_with_current_wording_keeps_the_strict_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType, question: str,
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, question, semantic)
+    packet, resolver, provider = clarify(ctx, semantic, 0.92)
+    assert packet.answers == [] and not packet.is_complete
+    assert len(provider.requests) == 2  # a strict clarification ran and held
+    trace = clarification_trace(resolver)
+    assert (trace["status"], trace["clarification_threshold"]) == ("HELD", pytest.approx(0.95))
+
+
+# --- round 3: fact-grounded choice and numeric screeners (item 3) --------------------------
+
+BUDGET_QUESTION = "What range of monthly budgets are you used to working with?"
+BUDGET_OPTIONS = ["Under $50K", "$50K - $250K", "$250K - $500K", "$500K+"]
+CAMPAIGN_QUESTION = "How many Paid Search Campaigns have you managed at once?"
+ENGLISH_QUESTION = "What is your level of proficiency in English?"
+ENGLISH_OPTIONS = ["Basic", "Conversational", "Fluent", "Native"]
+
+
+class FactScreenerProvider:
+    """Classifies every field as a literal COPY_KNOWN datum with source scope ``scope`` and
+    answers the fact screener from a script: ``pick`` names the option label
+    (``fact_choice``), the fact id (``fact_value``), or UNKNOWN/NOT_EXPERIENCE, at
+    ``probability``/``confidence``. ``states_f<i>`` nouls come from a callable over the
+    fact's value text, so no test depends on fact order. Consistency nouls answer
+    ``consistency``; the fact route and every other choice (experience, residence, option
+    mapping) hold."""
+
+    def __init__(self, pick: str = "UNKNOWN", *, probability: float = 0.99,
+                 confidence: float = 0.98, states: Callable[[str], float] = _never_matches,
+                 scope: str = "HISTORICAL_OR_CONTEXTUAL", semantic: str = "CUSTOM_SELECT",
+                 consistency: float = 1.0) -> None:
+        self.pick, self.probability, self.confidence = pick, probability, confidence
+        self.states, self.scope, self.semantic = states, scope, semantic
+        self.consistency = consistency
+        self.requests: list[dict[str, Any]] = []
+
+    def asked(self, name: str) -> list[dict[str, Any]]:
+        return [r for r in self.requests if name in r["questions"]]
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        self.requests.append(request)
+        state = request["state"]
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            if question["type"] == "noul":
+                if "canonical_alternatives" in state:
+                    score = self.consistency
+                elif name.startswith("states_"):
+                    score = self.states(str(state["facts"][name.removeprefix("states_")]["value"]))
+                else:
+                    score = 1.0
+                answers[name] = {"type": "noul", "noul": score}
+                continue
+            criteria = list(question["criteria"])
+            confidence = 1.0
+            if name[0] in "rnusd" and name[1:].isdigit():
+                choice = {"r": "COPY_KNOWN", "n": "literal", "u": self.scope, "s": self.semantic,
+                          "d": "APPLICATION_ATTACHMENT"}[name[0]]
+                probabilities = {key: float(key == choice) for key in criteria}
+            elif name in ("fact_choice", "fact_value"):
+                targets = (dict(state["options"]) if name == "fact_choice"
+                           else {key: item["id"] for key, item in state["facts"].items()})
+                choice = next((key for key, target in targets.items() if target == self.pick), self.pick)
+                assert choice in criteria, (choice, criteria)
+                rest = (1 - self.probability) / (len(criteria) - 1)
+                probabilities = {key: self.probability if key == choice else rest for key in criteria}
+                confidence = self.confidence
+            else:
+                held = next((k for k in ("NONE", "hold", "UNKNOWN") if k in criteria), criteria[0])
+                probabilities = {key: float(key == held) for key in criteria}
+            choice = max(probabilities, key=lambda key: probabilities[key])
+            answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                             "probabilities": probabilities}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def fact_form(label: str, options: list[str] | None = None, *,
+              control: ControlType = ControlType.SELECT, input_type: str | None = None,
+              required: bool = True, semantic: SemanticType = SemanticType.CUSTOM_SELECT,
+              ) -> ApplicationForm:
+    return ApplicationForm(url="https://synthetic.test/apply", fields=[ApplicationField(
+        id="fact_screener", label=label, selector="#fact_screener", semantic_type=semantic,
+        control_type=control, required=required, input_type=input_type,
+        options=[FieldOption(value=f"v{i}", label=o) for i, o in enumerate(options)]
+        if options is not None else None)])
+
+
+def screen_facts(candidate: CandidateProfile, job: JobRecord, form: ApplicationForm,
+                 provider: FactScreenerProvider, *, retriever: Retriever | None = None,
+                 ) -> tuple[Any, PacketContext, DynamicPacketResolver]:
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"),
+                                          transport=provider, max_attempts=1))
+    router = AIFormRouter(decisions)
+    annotated = router.annotate(form, document_id="synthetic-fact-screener")
+    ctx = replace(context(candidate, job), form=annotated)
+    resolver = DynamicPacketResolver(decisions, None, router=router, retriever=retriever)
+    return asyncio.run(resolver.resolve(ctx)), ctx, resolver
+
+
+def fact_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
+    return [t for t in resolver.narrative_traces if t.get("stage") == "fact_screener"]
+
+
+def budget_fact(candidate: CandidateProfile) -> CandidateFact:
+    return fact(candidate, "monthly_paid_media_spend", 400000, fid="fact.budget")
+
+
+def test_a_budget_range_is_the_option_containing_the_stated_monthly_budget(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    other = fact(fictional_candidate, "skills", PAID_SEARCH, fid="fact.paid_search")
+    provider = FactScreenerProvider("$250K - $500K", states=mentions("400000"))
+    packet, ctx, resolver = screen_facts(
+        candidate_with(fictional_candidate, [budget_fact(fictional_candidate), other]), mock_job,
+        fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v2", "$250K - $500K")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.budget"]
+    assert "from verified facts" in (answer.provenance.note or "")
+    [request] = provider.asked("fact_choice")
+    assert set(request["questions"]["fact_choice"]["criteria"]) == {
+        "o0", "o1", "o2", "o3", "UNKNOWN", "NOT_EXPERIENCE"}
+    assert request["state"]["options"] == {f"o{i}": label for i, label in enumerate(BUDGET_OPTIONS)}
+    assert {f"states_{key}" for key in request["state"]["facts"]} | {"fact_choice"} == set(
+        request["questions"])
+    assert request["state"]["screener_version"] == "experience-screener-v1"
+    [trace] = fact_traces(resolver)
+    assert (trace["kind"], trace["status"], trace["evidence_ids"]) == ("choice", "ANSWERED", ["fact.budget"])
+    assert not provider.asked("route") and not provider.asked("experience")
+
+
+def test_a_range_that_does_not_contain_the_stated_value_is_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = FactScreenerProvider("$500K+", states=mentions("400000"))
+    packet, _, resolver = screen_facts(
+        candidate_with(fictional_candidate, [budget_fact(fictional_candidate)]), mock_job,
+        fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert "Add a verified fact that states the answer to" in missing.prompt
+    assert BUDGET_QUESTION in missing.prompt and "nothing is estimated" in missing.prompt
+    [trace] = fact_traces(resolver)
+    assert (trace["status"], trace["evidence_ids"]) == ("RANGE_MISMATCH", ["fact.budget"])
+
+
+def test_a_count_range_is_answered_from_a_stated_count_under_a_current_source_scope(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    clients = fact(fictional_candidate, "clients", "Supports 8 B2B clients", fid="fact.clients")
+    provider = FactScreenerProvider("6-10", states=mentions("8 B2B"), scope="APPLICANT_CURRENT")
+    packet, ctx, resolver = screen_facts(
+        candidate_with(fictional_candidate, [clients]), mock_job,
+        fact_form("How many clients do you currently support?", ["1-5", "6-10", "11+"]), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert answer.value.label == "6-10"
+    assert answer.provenance.reference_ids == ["fact.clients"]
+    assert not provider.asked("experience")
+    [trace] = fact_traces(resolver)
+    assert trace["status"] == "ANSWERED"
+    assert "B2B" not in json.dumps(fact_traces(resolver))  # ids and scores, never fact values
+
+
+@pytest.mark.parametrize("value,source", [
+    (25, AnswerSource.CANDIDATE_FACT),
+    ("Managed 25 paid search campaigns at once", AnswerSource.GENERATED_FROM_FACTS),
+])
+def test_a_number_question_copies_the_exact_stated_number(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: Any, source: AnswerSource,
+) -> None:
+    campaigns = fact(fictional_candidate, "paid_search_campaigns", value, fid="fact.campaigns")
+    other = fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")
+    provider = FactScreenerProvider("fact.campaigns", semantic="CUSTOM_TEXT")
+    form = fact_form(CAMPAIGN_QUESTION, control=ControlType.TEXT, input_type="number",
+                     semantic=SemanticType.CUSTOM_TEXT)
+    packet, ctx, resolver = screen_facts(candidate_with(fictional_candidate, [campaigns, other]),
+                                         mock_job, form, provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="25")
+    assert answer.provenance.source is source
+    assert answer.provenance.reference_ids == ["fact.campaigns"]
+    [request] = provider.asked("fact_value")
+    assert set(request["questions"]["fact_value"]["criteria"]) == {
+        *request["state"]["facts"], "UNKNOWN", "NOT_EXPERIENCE"}
+    assert not any(name.startswith("states_") for name in request["questions"])
+    [trace] = fact_traces(resolver)
+    assert (trace["kind"], trace["status"], trace["evidence_ids"]) == ("number", "ANSWERED", ["fact.campaigns"])
+
+
+@pytest.mark.parametrize("value", [
+    "Managed 25+ campaigns", "Managed about 25 campaigns", "Managed over 25 campaigns",
+    "Managed 20-30 campaigns", "Managed 25 campaigns across 3 accounts",
+])
+def test_an_approximate_range_or_several_numbers_are_never_typed(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
+) -> None:
+    campaigns = fact(fictional_candidate, "paid_search_campaigns", value, fid="fact.campaigns")
+    provider = FactScreenerProvider("fact.campaigns", semantic="CUSTOM_TEXT")
+    form = fact_form(CAMPAIGN_QUESTION, control=ControlType.TEXT, input_type="number",
+                     semantic=SemanticType.CUSTOM_TEXT)
+    packet, _, resolver = screen_facts(candidate_with(fictional_candidate, [campaigns]),
+                                       mock_job, form, provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "nothing is estimated" in packet.missing_inputs[0].prompt
+    [trace] = fact_traces(resolver)
+    assert (trace["status"], trace["evidence_ids"]) == ("NOT_EXACT", ["fact.campaigns"])
+
+
+def test_a_how_many_text_question_is_a_number_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    team = fact(fictional_candidate, "team_size", 6, fid="fact.team")
+    provider = FactScreenerProvider("fact.team", semantic="CUSTOM_TEXT")
+    form = fact_form("How many people have you managed directly?", control=ControlType.TEXT,
+                     semantic=SemanticType.CUSTOM_TEXT)
+    packet, ctx, _ = screen_facts(candidate_with(fictional_candidate, [team]), mock_job, form, provider)
+    assert ctx.problems(packet) == [] and packet.answers[0].value == TextValue(text="6")
+    assert provider.asked("fact_value")
+
+
+def test_a_certification_option_named_in_a_fact_is_chosen(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    cert = fact(fictional_candidate, "certifications", "Google Analytics 4 certified (2024)", fid="fact.ga4")
+    other = fact(fictional_candidate, "skills", PAID_SEARCH, fid="fact.paid_search")
+    provider = FactScreenerProvider("Google Analytics 4", states=mentions("Google Analytics 4"))
+    form = fact_form("Which Google certifications do you hold?",
+                     ["Google Ads Search", "Google Analytics 4", "None of these"], control=ControlType.RADIO)
+    packet, ctx, _ = screen_facts(candidate_with(fictional_candidate, [cert, other]), mock_job, form, provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert answer.value.label == "Google Analytics 4"
+    assert answer.provenance.reference_ids == ["fact.ga4"]
+
+
+def test_a_named_option_containing_a_number_is_not_a_range(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # "Google Analytics 4" names a certification, not the number 4: a fact stating another
+    # number (a year) must not trip the range check.
+    cert = fact(fictional_candidate, "certifications", "Google Analytics certified since 2021",
+                fid="fact.ga4_since")
+    provider = FactScreenerProvider("Google Analytics 4", states=mentions("Google Analytics"))
+    form = fact_form("Which Google certifications do you hold?",
+                     ["Google Ads Search", "Google Analytics 4", "None of these"], control=ControlType.RADIO)
+    packet, ctx, resolver = screen_facts(candidate_with(fictional_candidate, [cert]), mock_job, form, provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    assert packet.answers[0].value.label == "Google Analytics 4"
+    assert fact_traces(resolver)[-1]["status"] == "ANSWERED"
+
+
+def test_a_self_rating_scale_without_a_stated_rating_is_unknown_and_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    label = "On a scale of 1-10, what is your comfortability with Google Ads?"
+    provider = FactScreenerProvider("UNKNOWN")
+    packet, _, resolver = screen_facts(
+        candidate_with(fictional_candidate, [fact(fictional_candidate, "skills", PAID_SEARCH,
+                                                   fid="fact.paid_search")]),
+        mock_job, fact_form(label, [str(i) for i in range(1, 11)]), provider)
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert label in missing.prompt and "nothing is estimated" in missing.prompt
+    [trace] = fact_traces(resolver)
+    assert (trace["status"], trace["choice"]) == ("UNKNOWN", "UNKNOWN")
+
+
+def test_a_stated_english_proficiency_answers_and_its_absence_holds(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    english = fact(fictional_candidate, "languages", "Native English speaker", fid="fact.english")
+    provider = FactScreenerProvider("Native", states=mentions("English"))
+    packet, ctx, _ = screen_facts(candidate_with(fictional_candidate, [english]), mock_job,
+                                  fact_form(ENGLISH_QUESTION, ENGLISH_OPTIONS), provider)
+    assert ctx.problems(packet) == [] and packet.answers[0].value.label == "Native"
+    assert packet.answers[0].provenance.reference_ids == ["fact.english"]
+    unrelated = fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")
+    held, _, _ = screen_facts(candidate_with(fictional_candidate, [unrelated]), mock_job,
+                              fact_form(ENGLISH_QUESTION, ENGLISH_OPTIONS), FactScreenerProvider("UNKNOWN"))
+    assert held.answers == [] and ENGLISH_QUESTION in held.missing_inputs[0].prompt
+
+
+@pytest.mark.parametrize("probability,confidence,states", [
+    (0.99, 0.98, lambda text: 0.9),  # the pick passes the gates, but no fact states the value
+    (0.90, 0.98, lambda text: 1.0),
+    (0.99, 0.80, lambda text: 1.0),
+])
+def test_a_pick_without_evidence_or_below_the_gates_is_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    probability: float, confidence: float, states: Callable[[str], float],
+) -> None:
+    provider = FactScreenerProvider("$250K - $500K", probability=probability, confidence=confidence,
+                                    states=states)
+    packet, _, resolver = screen_facts(
+        candidate_with(fictional_candidate, [budget_fact(fictional_candidate)]), mock_job,
+        fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "Add a verified fact that states the answer to" in packet.missing_inputs[0].prompt
+    [trace] = fact_traces(resolver)
+    assert trace["status"] == "UNKNOWN"
+
+
+def test_not_an_experience_question_falls_back_to_the_fact_route_from_the_choice_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = FactScreenerProvider("NOT_EXPERIENCE", states=mentions("400000"))
+    packet, _, resolver = screen_facts(
+        candidate_with(fictional_candidate, [budget_fact(fictional_candidate)]), mock_job,
+        fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    assert packet.answers == [] and provider.asked("fact_choice") and provider.asked("route")
+    assert "explicit or unambiguous verified answer" in packet.missing_inputs[0].prompt
+    [trace] = fact_traces(resolver)
+    assert trace["status"] == "NOT_SCREENER"
+
+
+def test_with_retrieval_only_retrieved_facts_reach_the_fact_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    budget = budget_fact(fictional_candidate)
+    other = fact(fictional_candidate, "skills", PAID_SEARCH, fid="fact.paid_search")
+    provider = FactScreenerProvider("$250K - $500K", states=mentions("400000"))
+    packet, ctx, _ = screen_facts(candidate_with(fictional_candidate, [budget, other]), mock_job,
+                                  fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider,
+                                  retriever=Retriever([budget]))
+    assert ctx.problems(packet) == [] and packet.answers[0].value.label == "$250K - $500K"
+    [request] = provider.asked("fact_choice")
+    assert [f["id"] for f in request["state"]["facts"].values()] == ["fact.budget"]
+
+
+@pytest.mark.parametrize("form", [
+    fact_form(BUDGET_QUESTION, BUDGET_OPTIONS, required=False),
+    fact_form("Do you manage monthly budgets over $250K?", ["Yes", "No"], control=ControlType.RADIO),
+    fact_form("Tell us about your budgets", control=ControlType.TEXT),
+    fact_form("Desired salary range", ["$100K - $150K", "$150K - $200K"],
+              semantic=SemanticType.SALARY_EXPECTATION),
+    fact_form("Country", ["United States", "Canada"], semantic=SemanticType.COUNTRY),
+], ids=["optional", "yes-no-options", "descriptive-text", "explicit-salary", "identity-country"])
+def test_non_fact_screener_fields_never_ask_for_a_fact_choice_or_number(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, form: ApplicationForm,
+) -> None:
+    provider = FactScreenerProvider("$250K - $500K", states=mentions("400000"))
+    _, _, resolver = screen_facts(candidate_with(fictional_candidate, [budget_fact(fictional_candidate)]),
+                                  mock_job, form, provider)
+    assert not provider.asked("fact_choice") and not provider.asked("fact_value")
+    assert not fact_traces(resolver)
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("$400,000", 400000.0), ("$400k", 400000.0), ("2.5M", 2500000.0), (7, 7.0), (7.5, 7.5),
+    ("Managed 25 campaigns", 25.0), ("about 25", None), ("10-20", None), ("25+", None),
+    ("Managed 25 campaigns across 3 accounts", None), (True, None), (["25"], None),
+])
+def test_stated_number_reads_only_one_exact_number(value: Any, expected: float | None) -> None:
+    from interviewmaxxing_browser.ai.routing import _stated_number
+
+    assert _stated_number(value) == expected
+
+
+@pytest.mark.parametrize("label,bounds", [
+    ("Under 5", (float("-inf"), 5.0)), ("10+", (10.0, float("inf"))),
+    ("$250K - $500K", (250000.0, 500000.0)), ("11-25", (11.0, 25.0)),
+    ("Less than $50K", (float("-inf"), 50000.0)), ("More than 10 years", (10.0, float("inf"))),
+    ("5", (5.0, 5.0)), ("Native", None), ("Google Ads and Analytics", None),
+])
+def test_option_bounds_reads_numeric_range_labels(label: str, bounds: tuple[float, float] | None) -> None:
+    from interviewmaxxing_browser.ai.routing import _option_bounds
+
+    assert _option_bounds(label) == bounds

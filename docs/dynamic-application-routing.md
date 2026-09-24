@@ -52,6 +52,21 @@ These three decisions map the user's own stored answer onto what a site offers. 
   - A named tool or platform must be named in a fact, and the ABM-platform rule still requires platform names.
   - The evidence facts pass the same-key and canonical consistency checks. The answer maps to the site's yes/no option (exactly, else by option equivalence) or to the text "Yes"/"No". Provenance is `GENERATED_FROM_FACTS` citing the evidence facts.
   - `NOT_EXPERIENCE` falls back to the ordinary fact route.
+- **Residence questions (round 3).** A required single-choice question about where the applicant lives is answered from the verified address. It must be typed location, country, state or city, and routed `COPY_KNOWN` with an applicant-current source. Examples: "Do you currently live in the United States?", "Do you reside in any of the following states: AL, AZ, CA, …?", "Which state do you reside in?", or a region select for "What is your current location?".
+  - One Jev Choice (`residence`, purpose `residence_screener`) sees the question, the options and the applicant's city, region and country. It picks the option that is true for that address, including a region that contains it; a "Remote/Other" option only when it clearly applies. Otherwise it answers `UNKNOWN` or `NOT_RESIDENCE` (relocation, a previous residence, the job's location, citizenship), and the field is held.
+  - When a yes/no question lists at least two US states and is not negated, code also checks the region's membership in that list; a disagreement holds.
+  - The answer is `PROFILE_IDENTITY`, so it still passes the applicant-current route gate. A yes/no residence question skips the identity option-equivalence call, since an address never means "Yes"; other identity selects try it first.
+  - The classifier (`full-form-routing-v11`) describes location, country, state and city as the applicant's current residence, including yes/no and state-list questions.
+- **Current-address clarification (round 3).** A near-threshold applicant-current source score (0.90–0.95) on a city, state, country, location, ZIP or street field still gets the one full-form clarification call. Its accepted score is 0.90 instead of 0.95 when three things hold:
+  - the classifier's remaining mass is only current-versus-historical (at most 0.01 elsewhere);
+  - the question's own wording states the present ("currently", "now", "do you live/reside", "where are you located/based");
+  - no previous, prior, former or past wording appears in the question or its section.
+  A second identical call would come from the decision cache and would add no independent evidence, so one relaxed threshold is used instead. Previous-residence wording keeps the strict 0.95 path, and Jev still sees and rejects it.
+- **Choice and numeric screeners (round 3).** A required single-choice question (not yes/no), or a numeric text question ("How many…", `type=number`), about the applicant's own experience is answered from verified facts. It must be routed as a literal `COPY_KNOWN` answer from the applicant's background or current work.
+  - A choice (`fact_choice`) needs a fact that states the value, with a `states_fN` noul of at least 0.95. A range option must contain every exact amount the evidence states ("$400,000" falls in "$250K - $500K"); otherwise the field is held.
+  - A number (`fact_value`) is copied only when the chosen fact states exactly one plain number. "About 25", "25+" and ranges are held.
+  - Nothing is estimated, rounded or converted. `UNKNOWN` holds with a prompt naming the fact that would settle it, and `NOT_EXPERIENCE` falls back to the ordinary fact route. Provenance is `GENERATED_FROM_FACTS`, or `CANDIDATE_FACT` for a numeric fact copied as is.
+- **Resume with autofill (round 3).** A required file control that is the resume (by type or by a resume/CV label) is the approved attachment even when Jev also marks it as an autofill/parser upload. The purpose must be attachment or autofill with a combined probability of at least 0.95. The report field carries `autofill: true`, and `narrative_traces` gets a `resume_upload` entry. The browser uploads it first and re-inspects, so later fields are filled from verified values. Optional or non-resume parser controls stay unsupported, and a missing resume file is never invented.
 
 ## Narrative escalation
 

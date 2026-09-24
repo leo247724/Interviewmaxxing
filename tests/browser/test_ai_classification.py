@@ -12,6 +12,7 @@ from interviewmaxxing_browser.ai import (
     FieldRoute,
 )
 from interviewmaxxing_core import (
+    AnswerSource,
     Application,
     ApplicationField,
     ApplicationForm,
@@ -224,21 +225,67 @@ def test_other_subject_cannot_copy_applicant_identity_or_current_employer(
         assert not packet.is_complete
 
 
-def test_autofill_resume_parser_is_not_an_application_attachment(
+def file_form(label: str, semantic: SemanticType, *, required: bool = True) -> ApplicationForm:
+    f = make_form(semantic)
+    return f.model_copy(update={"fields": [f.fields[0].model_copy(update={
+        "label": label, "control_type": ControlType.FILE, "required": required})]})
+
+
+def resolve_upload(provider: BatchProvider, f: ApplicationForm, candidate: CandidateProfile,
+                   job: JobRecord, document_id: str) -> tuple[Any, Any, AIFormRouter, DynamicPacketResolver]:
+    r = router(provider)
+    annotated = r.annotate(f, document_id=document_id)
+    resolver = DynamicPacketResolver(r.decisions, router=r)
+    packet = asyncio.run(resolver.resolve(make_context(annotated, candidate, job)))
+    return packet, annotated, r, resolver
+
+
+def resume_upload_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
+    return [t for t in resolver.narrative_traces if t["stage"] == "resume_upload"]
+
+
+def test_required_resume_with_autofill_is_uploaded_and_optional_parsers_stay_held(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
-    for label, purpose, should_answer in [("Autofill from resume", "AUTOFILL_PARSER", False),
-                                         ("Attach Resume/CV", "APPLICATION_ATTACHMENT", True)]:
-        r = router(BatchProvider(route="APPROVED_DOCUMENT", purpose=purpose))
-        f = make_form(SemanticType.RESUME)
-        f = f.model_copy(update={"fields": [f.fields[0].model_copy(update={
-            "label": label, "control_type": ControlType.FILE})]})
-        annotated = r.annotate(f, document_id=purpose)
-        packet = asyncio.run(DynamicPacketResolver(r.decisions, router=r).resolve(
-            make_context(annotated, fictional_candidate, mock_job)))
-        assert bool(packet.answers) is should_answer
-        if not should_answer:
-            assert r.report_for(annotated).fields[0].route is FieldRoute.UNSUPPORTED
+    # A required resume upload that also autofills is the approved attachment now: the
+    # browser uploads it first and re-inspects. The trace and the report record it.
+    f = file_form("Autofill from resume", SemanticType.RESUME)
+    packet, annotated, r, resolver = resolve_upload(
+        BatchProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER"),
+        f, fictional_candidate, mock_job, "required-autofill")
+    [answer] = packet.answers
+    assert answer.provenance.source is AnswerSource.RESUME
+    assert answer.provenance.reference_ids == [fictional_candidate.resume.id]
+    decision = r.report_for(annotated).fields[0]
+    assert decision.route is FieldRoute.APPROVED_DOCUMENT and decision.autofill is True
+    assert "uploaded first" in decision.reason and "re-inspected" in decision.reason
+    [trace] = resume_upload_traces(resolver)
+    assert trace == {"stage": "resume_upload", "field_id": answer.field_id,
+                     "field_fingerprint": annotated.fields[0].fingerprint,
+                     "autofill": True, "status": "APPROVED"}
+
+    # Held as before: an optional parser control, and a parser that is not the resume.
+    for label, semantic, required in [("Autofill from resume", SemanticType.RESUME, False),
+                                      ("Autofill your profile from another site",
+                                       SemanticType.UNKNOWN, True)]:
+        packet, annotated, r, resolver = resolve_upload(
+            BatchProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER"),
+            file_form(label, semantic, required=required), fictional_candidate, mock_job,
+            f"held-{label}-{required}")
+        assert not packet.answers
+        decision = r.report_for(annotated).fields[0]
+        assert decision.route is FieldRoute.UNSUPPORTED and decision.autofill is False
+        assert not resume_upload_traces(resolver)
+
+    # An ordinary resume attachment is unchanged: approved, no autofill flag or trace.
+    packet, annotated, r, resolver = resolve_upload(
+        BatchProvider(route="APPROVED_DOCUMENT", purpose="APPLICATION_ATTACHMENT"),
+        file_form("Attach Resume/CV", SemanticType.RESUME), fictional_candidate, mock_job,
+        "attachment")
+    assert [a.provenance.source for a in packet.answers] == [AnswerSource.RESUME]
+    decision = r.report_for(annotated).fields[0]
+    assert decision.route is FieldRoute.APPROVED_DOCUMENT and decision.autofill is False
+    assert not resume_upload_traces(resolver)
 
 
 def test_approved_attachment_gate_does_not_invent_missing_file(
@@ -253,6 +300,112 @@ def test_approved_attachment_gate_does_not_invent_missing_file(
     annotated = r.annotate(f, document_id="file")
     packet = asyncio.run(DynamicPacketResolver(r.decisions, router=r).resolve(make_context(annotated, candidate, mock_job)))
     assert not packet.answers and not packet.is_complete
+
+
+class PurposeProvider(BatchProvider):
+    """BatchProvider whose document-purpose answers use a set confidence and an explicit
+    probability map (the choice is the most probable purpose)."""
+
+    def __init__(self, *, confidence: float = 1.0, probabilities: dict[str, float] | None = None,
+                 **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.purpose_confidence, self.purpose_probabilities = confidence, probabilities
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        payload = json.loads(super().__call__(url, headers, body, timeout).body)
+        for key, answer in payload["answers"].items():
+            if not key.startswith("d"):
+                continue
+            answer["confidence"] = self.purpose_confidence
+            if self.purpose_probabilities is not None:
+                probabilities = {option: self.purpose_probabilities.get(option, 0.0)
+                                 for option in answer["probabilities"]}
+                answer["probabilities"] = probabilities
+                answer["choice"] = max(probabilities, key=lambda option: probabilities[option])
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+def test_a_custom_cv_upload_that_autofills_is_typed_resume_and_attached(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    f = file_form("Upload your CV", SemanticType.UNKNOWN)
+    packet, annotated, r, resolver = resolve_upload(
+        BatchProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER"),
+        f, fictional_candidate, mock_job, "custom-cv")
+    assert annotated.fields[0].semantic_type is SemanticType.RESUME
+    [answer] = packet.answers
+    assert answer.semantic_type is SemanticType.RESUME
+    assert answer.provenance.source is AnswerSource.RESUME
+    report = r.report_for(annotated)
+    assert report.fields[0].route is FieldRoute.APPROVED_DOCUMENT
+    assert report.model_dump(mode="json")["fields"][0]["autofill"] is True
+    assert len(resume_upload_traces(resolver)) == 1
+
+
+def test_uncertain_or_other_upload_purpose_is_not_approved(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    f = file_form("Autofill from resume", SemanticType.RESUME)
+    cases = [
+        # Autofill purpose below the 0.90 confidence gate: held as a parser, never uploaded.
+        (PurposeProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER", confidence=0.80),
+         FieldRoute.UNSUPPORTED),
+        # Attachment plus autofill mass below 0.95: still held as a parser.
+        (PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
+            "APPLICATION_ATTACHMENT": 0.30, "AUTOFILL_PARSER": 0.60, "OTHER_OR_UNCLEAR": 0.10}),
+         FieldRoute.UNSUPPORTED),
+        # Another or unclear purpose: never a verified attachment.
+        (BatchProvider(route="APPROVED_DOCUMENT", purpose="OTHER_OR_UNCLEAR"), FieldRoute.AMBIGUOUS),
+    ]
+    for index, (provider, route) in enumerate(cases):
+        packet, annotated, r, resolver = resolve_upload(provider, f, fictional_candidate, mock_job,
+                                                        f"uncertain-{index}")
+        assert not packet.answers and not packet.is_complete
+        decision = r.report_for(annotated).fields[0]
+        assert decision.route is route and decision.autofill is False
+        assert not resume_upload_traces(resolver)
+
+
+def test_attachment_and_autofill_mass_together_approve_the_resume(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Neither purpose alone reaches 0.95, but the page certainly takes the resume.
+    provider = PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
+        "APPLICATION_ATTACHMENT": 0.40, "AUTOFILL_PARSER": 0.58, "OTHER_OR_UNCLEAR": 0.02})
+    packet, annotated, r, resolver = resolve_upload(
+        provider, file_form("Resume/CV", SemanticType.RESUME), fictional_candidate, mock_job, "split")
+    assert [a.provenance.source for a in packet.answers] == [AnswerSource.RESUME]
+    decision = r.report_for(annotated).fields[0]
+    assert decision.route is FieldRoute.APPROVED_DOCUMENT and decision.autofill is True
+    assert len(resume_upload_traces(resolver)) == 1
+
+
+def test_a_cover_letter_autofill_control_is_not_treated_as_a_resume(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    packet, annotated, r, resolver = resolve_upload(
+        BatchProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER"),
+        file_form("Cover letter (autofill)", SemanticType.COVER_LETTER), fictional_candidate,
+        mock_job, "cover-letter")
+    assert not packet.answers and not packet.is_complete
+    decision = r.report_for(annotated).fields[0]
+    assert decision.route is FieldRoute.UNSUPPORTED and decision.autofill is False
+    assert decision.semantic_type is SemanticType.COVER_LETTER
+    assert not resume_upload_traces(resolver)
+
+
+def test_an_autofill_resume_upload_never_invents_a_missing_file(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    candidate = fictional_candidate.model_copy(update={"resume": fictional_candidate.resume.model_copy(
+        update={"path": "/nonexistent/synthetic-resume.pdf"})})
+    packet, annotated, r, resolver = resolve_upload(
+        BatchProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER"),
+        file_form("Autofill from resume", SemanticType.RESUME), candidate, mock_job, "missing-file")
+    decision = r.report_for(annotated).fields[0]
+    assert decision.route is FieldRoute.APPROVED_DOCUMENT and decision.autofill is True
+    assert not packet.answers and not packet.is_complete
+    assert not resume_upload_traces(resolver)
 
 
 def test_explicit_or_unclear_source_gate_blocks_writer_even_with_verified_fact(

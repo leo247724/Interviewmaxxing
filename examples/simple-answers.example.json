@@ -25,5 +25,16 @@
   "veteran_status": null,
   "education_discipline": null,
   "education_start_date": null,
-  "education_end_date": null
+  "education_end_date": null,
+  "previously_employed_here": null,
+  "previously_interviewed_here": null,
+  "related_to_employee": null,
+  "willing_to_relocate": null,
+  "open_to_other_positions": null,
+  "willing_to_provide_references": null,
+  "desired_salary": null,
+  "english_proficiency": null,
+  "available_time_zones": null,
+  "travel_willingness": null,
+  "earliest_start_date": null
 }

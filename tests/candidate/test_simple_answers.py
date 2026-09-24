@@ -196,3 +196,145 @@ def test_invalid_sponsorship_prevents_contact_or_answer_writes(write_candidate, 
     assert result.returncode == 1 and '"Yes", "No", or null' in result.stderr
     assert (directory / "profile.json").read_bytes() == original
     assert not (directory / "answers.json").exists()
+
+
+# --- round 3: more reusable defaults, null until the person fills them ----------------------
+
+NEW_YES_NO_KEYS = (
+    "previously_employed_here", "previously_interviewed_here", "related_to_employee",
+    "willing_to_relocate", "open_to_other_positions", "willing_to_provide_references",
+)
+NEW_TEXT_VALUES = {
+    "desired_salary": "$150,000",
+    "english_proficiency": "Native",
+    "available_time_zones": "US Central, US Eastern",
+    "travel_willingness": "Up to 25%",
+    "earliest_start_date": "Two weeks after an offer",
+}
+NEW_KEYS = (*NEW_YES_NO_KEYS, *NEW_TEXT_VALUES)
+NEW_SEMANTICS = {"willing_to_relocate": "RELOCATION", "desired_salary": "SALARY_EXPECTATION",
+                 "earliest_start_date": "START_DATE"}
+
+
+def _canonical_question(key):
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS
+
+    return _REUSABLE_QUESTIONS[key][1]
+
+
+def test_new_defaults_round_trip_through_import_and_export(write_candidate, candidate_store, tmp_path):
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    assert all(data[key] is None for key in NEW_KEYS)  # nothing is invented on export
+    # Mixed case on purpose: yes/no answers are normalized to "Yes"/"No".
+    data.update({key: ("Yes" if i % 2 == 0 else "no") for i, key in enumerate(NEW_YES_NO_KEYS)})
+    data.update(NEW_TEXT_VALUES)
+    target.write_text(json.dumps(data))
+    profile_before = (directory / "profile.json").read_bytes()
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["saved_answers_updated"] == len(NEW_KEYS)
+    assert json.loads(result.stdout)["profile_updated"] is False
+    assert (directory / "profile.json").read_bytes() == profile_before
+    for value in NEW_TEXT_VALUES.values():
+        assert value not in result.stdout  # the import report lists keys, never values
+    profile = candidate_store.load("default")
+    added = {a.question: a for a in profile.saved_answers if a.id.startswith("simple_answer_")}
+    assert len(added) == len(NEW_KEYS)
+    for key in NEW_KEYS:
+        answer = added[_canonical_question(key)]
+        assert answer.scope.value == "GLOBAL"
+        assert answer.job_identity_key is None and answer.job_url is None and answer.employer is None
+        expected_semantic = NEW_SEMANTICS.get(key)
+        assert (answer.semantic_type.value if answer.semantic_type else None) == expected_semantic
+        assert answer.match_phrases  # every new default carries its observed variants
+    assert added[_canonical_question("willing_to_relocate")].value == "No"
+    assert added[_canonical_question("previously_employed_here")].value == "Yes"
+    assert added[_canonical_question("desired_salary")].value == "$150,000"
+    # A repeated import of the same map writes nothing.
+    answers_before = (directory / "answers.json").read_bytes()
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["saved_answers_updated"] == 0
+    assert (directory / "answers.json").read_bytes() == answers_before
+    exported = tmp_path / "exported.json"
+    assert run("export", exported).returncode == 0
+    values = json.loads(exported.read_text())
+    for i, key in enumerate(NEW_YES_NO_KEYS):
+        assert values[key] == ("Yes" if i % 2 == 0 else "No")
+    for key, value in NEW_TEXT_VALUES.items():
+        assert values[key] == value
+
+
+@pytest.mark.parametrize("key", NEW_YES_NO_KEYS)
+def test_new_yes_no_defaults_reject_other_values_and_write_nothing(write_candidate, tmp_path, key):
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    data.update({key: "maybe", "email": "changed@example.test", "desired_salary": "$150,000"})
+    target.write_text(json.dumps(data))
+    before = (directory / "profile.json").read_bytes()
+    result = run("import", target)
+    assert result.returncode == 1
+    assert '"Yes", "No", or null' in result.stderr and key in result.stderr
+    assert "$150,000" not in result.stderr and "changed@example.test" not in result.stderr
+    assert (directory / "profile.json").read_bytes() == before
+    assert not (directory / "answers.json").exists()
+
+
+def test_the_blank_example_lists_every_key_including_the_new_defaults():
+    from interviewmaxxing_candidate.simple_answers import SimpleAnswers
+
+    example = json.loads((REPO / "examples/simple-answers.example.json").read_text())
+    assert set(example) == set(SimpleAnswers.model_fields)
+    assert set(NEW_KEYS) <= set(example)
+    assert all(example[key] is None for key in NEW_KEYS)
+
+
+def test_a_null_new_default_adds_nothing_and_never_erases_a_confirmed_one(
+    write_candidate, candidate_store, tmp_path
+):
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    data["willing_to_relocate"] = "Yes"
+    target.write_text(json.dumps(data))
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["saved_answers_updated"] == 1
+    answers_before = (directory / "answers.json").read_bytes()
+    data["willing_to_relocate"] = None  # clearing the map entry is not an answer
+    target.write_text(json.dumps(data))
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["saved_answers_updated"] == 0
+    assert (directory / "answers.json").read_bytes() == answers_before
+    profile = candidate_store.load("default")
+    [kept] = [a for a in profile.saved_answers if a.question == _canonical_question("willing_to_relocate")]
+    assert kept.value == "Yes" and kept.scope.value == "GLOBAL"
+    assert not [a for a in profile.saved_answers
+                if a.id.startswith("simple_answer_") and a.question != kept.question]
+    exported = tmp_path / "exported.json"
+    assert run("export", exported).returncode == 0
+    assert json.loads(exported.read_text())["willing_to_relocate"] == "Yes"
+
+
+def test_new_defaults_carry_distinct_wordings_and_phrases():
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_PHRASES, _REUSABLE_QUESTIONS
+    from interviewmaxxing_generation import wording_key
+
+    for key in NEW_KEYS:
+        assert _REUSABLE_PHRASES.get(key), f"{key} has no observed variants"
+    canonical = [wording_key(question) for _, question in _REUSABLE_QUESTIONS.values()]
+    assert len(set(canonical)) == len(canonical)
+    owners: dict[str, set[str]] = {}
+    for key, (_, question) in _REUSABLE_QUESTIONS.items():
+        for wording in (question, *_REUSABLE_PHRASES.get(key, [])):
+            owners.setdefault(wording_key(wording), set()).add(key)
+    for key in NEW_KEYS:
+        for wording in (_canonical_question(key), *_REUSABLE_PHRASES[key]):
+            assert owners[wording_key(wording)] == {key}, wording

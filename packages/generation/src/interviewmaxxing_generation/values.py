@@ -120,6 +120,27 @@ def is_united_states(country: str | None) -> bool:
     return bool(country) and question_key(country) in _EQUIVALENTS[SemanticType.COUNTRY][0]
 
 
+def us_state_code(region: str | None) -> str | None:
+    """The two-letter code of a US state given by code or by name ("Oregon" -> "OR")."""
+    key = question_key(region)
+    if key in _US_STATES:
+        return key.upper()
+    return next((code.upper() for code, name in _US_STATES.items() if name == key), None)
+
+
+def us_states_named(text: str) -> set[str]:
+    """Codes of the US states a text names, by uppercase code ("AL, AZ, CA") or by full
+    name ("New York"); longer names win ("West Virginia" is not also Virginia)."""
+    codes = {token.lower() for token in re.findall(r"\b[A-Z]{2}\b", text) if token.lower() in _US_STATES}
+    remaining = " ".join(text.casefold().split())
+    for code, name in sorted(_US_STATES.items(), key=lambda item: -len(item[1])):
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        if pattern.search(remaining):
+            codes.add(code)
+            remaining = pattern.sub(" ", remaining)
+    return {code.upper() for code in codes}
+
+
 def us_state_name(region: str) -> str | None:
     """The state name for a two-letter US state abbreviation ("TX" -> "Texas",
     "DC" -> "District of Columbia"); None for anything else."""
