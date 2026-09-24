@@ -311,8 +311,10 @@ The 149 holds by cause and owner:
 | Narratives without grounding facts (2), CAPTCHA (1), RELOCATION questions naming a place (2) | 5 | correct holds; bottleneck 6; residence-first rule | WP2 round 6 for RELOCATION |
 
 Pilot 6's six held applications, rerun after ce7c0ce: Workable and Rippling (GoFish) reach the
-final review; the two Greenhouse forms fail only on the Country react-select, which reads back
-the phone widget's "+ 1" dial code (WP1 round 6); the Rippling state-list question is typed STATE
+final review; the two Greenhouse forms failed only on the Country react-select, whose committed value
+Greenhouse renders as two text nodes ("+" and "1") that the display reader joined with a space;
+after WP1 round 6 (54a28a6) FirmPilot reaches the final review step and Reunion holds only on
+First Name (Jev's source-scope hedge, WP2 round 6); the Rippling state-list question is typed STATE
 but routed AMBIGUOUS (WP2 round 6); the other Rippling form needs the person's answers (work
 authorization "Permanent / Temporary", desired salary, travel level).
 
