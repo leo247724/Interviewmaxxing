@@ -56,8 +56,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
-import json
 import os
+import re
 import socket
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -142,8 +142,66 @@ reserves the ``application.`` prefix for its own events.)"""
 ROUTING_EVENT = "routing.trace"
 """Emitted by the runner once per resolved step when its resolver routes through AI:
 the full-form route decisions for every field (route, source scope, semantic type and
-their probabilities) and the resolver's recent decision traces, so a held or failed
-field can be diagnosed from the store without running the site again."""
+their probabilities) and a projection of the decision traces added since the previous
+step, so a held or failed field can be diagnosed from the store without running the
+site again. Values never enter it: see ``project_trace``."""
+
+_TRACE_VALUE_KEYS = frozenset({
+    "answer", "content", "draft", "evidence", "facts", "missing_information", "prompt",
+    "rendered", "response", "review_feedback", "review_issues", "sentences", "text", "typed",
+    "typed_value", "value", "values",
+})
+"""Trace keys that carry fact values, generated prose, review text or typed text."""
+_TRACE_TEXT_LIMIT = 300
+_QUOTED = re.compile(r"""(['"]).*?\1""")
+
+
+def project_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    """The diagnostic part of a resolver trace: stage, field ids, statuses, scores,
+    choices, rule names and page wording. Keys that carry the candidate's values,
+    drafted prose or review text are dropped at every depth, and remaining strings are
+    cut to ``_TRACE_TEXT_LIMIT`` characters. Non-JSON values become their string form."""
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): clean(v) for k, v in value.items() if str(k) not in _TRACE_VALUE_KEYS}
+        if isinstance(value, list | tuple):
+            return [clean(v) for v in value]
+        if isinstance(value, bool | int | float) or value is None:
+            return value
+        text = value if isinstance(value, str) else str(value)
+        return text if len(text) <= _TRACE_TEXT_LIMIT else text[:_TRACE_TEXT_LIMIT] + "…"
+    cleaned = clean(trace)
+    return cleaned if isinstance(cleaned, dict) else {}
+
+
+def redact_detail(detail: str | None) -> str | None:
+    """A fill result's detail with every quoted value replaced by an ellipsis, so the
+    shape ("reads back ['…']") is kept and the value read from the page is not."""
+    if not detail:
+        return None
+    redacted = _QUOTED.sub("'…'", detail)
+    return redacted if len(redacted) <= _TRACE_TEXT_LIMIT else redacted[:_TRACE_TEXT_LIMIT] + "…"
+
+
+def _decision_projection(decision: Any) -> dict[str, Any]:
+    """A route decision without its boilerplate requirement text; the reason is cut."""
+    data: dict[str, Any] = decision.model_dump(mode="json")
+    data.pop("source_requirement", None)
+    reason = data.get("reason")
+    if isinstance(reason, str) and len(reason) > 200:
+        data["reason"] = reason[:200] + "…"
+    return data
+
+
+def _traces_since(traces: list[dict[str, Any]], last_id: int | None) -> list[dict[str, Any]]:
+    """The traces appended after the one recorded last (matched by identity); all of them
+    when that trace is gone or nothing was recorded yet."""
+    if last_id is None:
+        return traces
+    for index in range(len(traces) - 1, -1, -1):
+        if id(traces[index]) == last_id:
+            return traces[index + 1:]
+    return traces
 RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
 
 
@@ -814,22 +872,27 @@ class _Run:
         return self._with_choices(form, self._with_rejections(form, packet))
 
     def _record_routing(self, form: ApplicationForm) -> None:
-        """Persist the AI resolver's route decisions and recent traces for this step
-        (``ROUTING_EVENT``). A resolver without a router or traces records nothing."""
+        """Persist a diagnostic projection of the AI resolver's route decisions and of the
+        traces added since the previous step (``ROUTING_EVENT``). The event log is
+        append-only, so only ids, stages, statuses, scores and page wording go in: never
+        fact values, generated prose, review text or anything read from the candidate
+        (``project_trace``). A resolver without a router or traces records nothing."""
         resolver = self.runner.resolver
         router = getattr(resolver, "router", None)
         report_for = getattr(router, "report_for", None)
         report = report_for(form) if callable(report_for) else None
         traces = list(getattr(resolver, "narrative_traces", None) or ())
-        if report is None and not traces:
+        new_traces = _traces_since(traces, getattr(self, "_last_trace_id", None))
+        if traces:
+            self._last_trace_id = id(traces[-1])
+        if report is None and not new_traces:
             return
         metadata: dict[str, Any] = {"form_step": form.step}
         if report is not None:
             metadata["prompt_version"] = report.prompt_version
-            metadata["fields"] = [decision.model_dump(mode="json") for decision in report.fields]
-        if traces:
-            # Traces hold provider objects and enums; keep what JSON can carry.
-            metadata["traces"] = json.loads(json.dumps(traces[-32:], default=str))
+            metadata["fields"] = [_decision_projection(decision) for decision in report.fields]
+        if new_traces:
+            metadata["traces"] = [project_trace(trace) for trace in new_traces]
         self.store.append_event(self.claim, ROUTING_EVENT, metadata)
 
     def _with_choices(self, form: ApplicationForm, packet: ApplicationPacket) -> ApplicationPacket:
@@ -1002,7 +1065,7 @@ class _Run:
                              metadata={"failed_fields": [
                                  {"field_id": result.field_id, "label": labels.get(result.field_id),
                                   "status": result.status.value,
-                                  "detail": (result.detail or "")[:500] or None}
+                                  "detail": redact_detail(result.detail)}
                                  for result in fill.fields if result.field_id in failed]})
         if fill.page_errors:
             self._to(S.INSPECTING)
@@ -1290,5 +1353,7 @@ __all__ = [
     "browser_profile_lock",
     "create_runner",
     "pending_inputs",
+    "project_trace",
+    "redact_detail",
     "rejection_epochs",
 ]
