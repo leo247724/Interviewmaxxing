@@ -181,9 +181,26 @@ _OTHER = _rx(
 )
 
 
+THIRD_PARTY_ASSIST = _rx(
+    r"auto-?fill|\bapply (?:with|using|via)\b|\bimport (?:from|my|your)\b|"
+    r"\buse my (?:linkedin|indeed|resume|r\u00e9sum\u00e9|cv|profile)\b|"
+    r"\b(?:connect|continue|sign in|log ?in) with (?:linkedin|indeed|seek|xing)\b|"
+    r"\blinked ?in\b|\bindeed\b|\bmygreenhouse\b|\bparse (?:my |your )?(?:resume|cv)\b"
+)
+"""A helper that fills the application from somewhere else ("Apply with LinkedIn",
+"Autofill my application", "Import from Indeed"). Such controls are never clicked,
+are never a step's submit or next action, and are not part of a form's structure."""
+LOADING_STATE = _rx(r"^\W*(?:loading|please wait|one moment)\b")
+"""A control that shows only that it is still loading ("Loading..."); what it will
+become is not known yet (Lever's "Apply with LinkedIn" reads "Loading..." first)."""
+
+
 def button_intent(text: str, *, submits_form: bool) -> ButtonIntent:
     """Intent of one visible button from its own text. An unlabelled or unfamiliar
-    button that would submit the form is AMBIGUOUS, never assumed to be "next"."""
+    button that would submit the form is AMBIGUOUS, never assumed to be "next".
+    Third-party autofill and "Apply with ..." helpers are OTHER."""
+    if THIRD_PARTY_ASSIST.search(text):
+        return ButtonIntent.OTHER
     submit = bool(_SUBMIT.search(text))
     forward = bool(_NEXT.search(text))
     if submit and forward:
@@ -195,6 +212,36 @@ def button_intent(text: str, *, submits_form: bool) -> ButtonIntent:
     if _OTHER.search(text):
         return ButtonIntent.OTHER
     return ButtonIntent.AMBIGUOUS if submits_form else ButtonIntent.OTHER
+
+
+# --- autofill prompts ---------------------------------------------------------------------
+
+AUTOFILL_OFFER = _rx(
+    r"auto-?fill|pre-?fill|\bimport (?:your |my )?(?:details|profile|information|resume|cv|data)\b|"
+    r"\b(?:from|with) (?:your )?(?:linkedin|indeed|resume|r\u00e9sum\u00e9|cv)\b|"
+    r"\bparse (?:your |my )?(?:resume|cv)\b|\bfill (?:in|out) (?:this|the|your) (?:form|application)\b"
+)
+"""A dialog offering to fill the application from a profile or a parsed resume."""
+DECLINE_OFFER = _rx(
+    r"^(?:no|no,? thanks?|no,? thank you|not now|not yet|maybe later|later|skip(?: for now)?|"
+    r"dismiss|close(?: dialog| this dialog)?|cancel|x|\u00d7|\u2715|\u2716|"
+    r"continue without(?: autofill(?:ing)?| importing)?|"
+    r"(?:fill|enter|complete)(?: it| in| out| the form| my application)* manually|apply manually|"
+    r"i'?ll fill (?:it )?(?:in|out) myself)[.!]?$"
+)
+"""The control that declines such an offer ("No thanks", "Not now", "Close", "\u00d7")."""
+
+
+def autofill_decline(text: str, buttons: Sequence[tuple[str, str]]) -> str | None:
+    """The selector of the control that declines an offer to autofill the application,
+    or None. ``buttons`` are the dialog's (text, selector) pairs in document order. The
+    dialog must offer autofill; the first decline control is chosen, and a control that
+    names the offer itself ("Autofill", "Import from LinkedIn") never is."""
+    if not AUTOFILL_OFFER.search(text):
+        return None
+    return next((selector for label, selector in buttons
+                 if DECLINE_OFFER.match(label.strip()) and not THIRD_PARTY_ASSIST.search(label)),
+                None)
 
 
 # --- lookup suggestions ------------------------------------------------------------------

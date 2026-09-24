@@ -199,3 +199,62 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
 Mock scenarios `react-select`, `div-combobox`, `typeahead`, `phone-widget` and
 `multiselect-react` (`tests/browser/MOCK_ATS.md`) reproduce these widgets; the tests are
 `tests/browser/test_custom_widgets*.py`.
+
+## Uploads, autofill overlays and readback
+
+Hosted forms upload through styled controls and react to the upload: Ashby and Lever parse
+the resume and autofill name, email, phone, location and LinkedIn; Greenhouse, Rippling,
+Workable, Teamtailor and BambooHR put "Attach"/"Upload" buttons or drop zones over a hidden
+`input[type=file]`; Lever shows an "Apply with LinkedIn" helper that reads "Loading..."
+first; React forms re-render after the first input. The generic runtime handles these
+without site adapters:
+
+- **Uploads first.** `fill` attaches every answered file before anything else, directly
+  to the file input (hidden or not; a hidden input counts as an upload field when a
+  visible label, "Attach"/"Upload" button, link or focusable drop zone in its own box is
+  there). The driver verifies the bytes against the pinned resume: those the input holds,
+  or, when the page moved the file into its own state and emptied the input, those it
+  delivered with its input/change event. A file is never attached twice: not when the
+  input already holds the pinned file (name, size and SHA-256), and not when this session
+  attached it in the same document and the page shows it. After attaching, a spinner or
+  "Uploading..."/"Analyzing resume..." text is waited out (at most 20 s) and the upload is
+  read back from `input.files` (name and size), a visible chip naming the file, or an
+  `aria-live`/status notice; a visible upload error is a mismatch.
+- **Then settle and re-read.** The page is read until nothing is busy and two reads 0.3 s
+  apart agree, values included (an autofill the upload triggered has landed; at most 20 s).
+  Only values, validation messages, the attached control's own description (its chip or
+  status line), regenerated selectors and upload buttons may have changed. Then every other
+  answered field is filled and read back, so our verified values overwrite the site's
+  autofill. If other questions, constraints, actions or employer context changed, the fill
+  stops with a page error (the attached file stays; the runner re-inspects and resolves the
+  step again, and the next fill does not attach again). Pre-checked consent boxes the packet
+  does not answer are cleared as before.
+- **Question text of upload controls** leaves out the trigger ("ATTACH RESUME/CV"), file
+  chips, sizes and upload/parse status, and a label that only says "Attach" yields to the
+  group's question ("Resume/CV"), so an upload does not change the field's fingerprint and a
+  "✱" after the question still marks it required.
+- **Overlays and autofill offers.** `open`, `inspect` and `fill` wait (at most 8 s) while
+  loading overlays are shown: `aria-busy` regions, progress bars and short status texts
+  ("Loading...", "Parsing your resume…", a button reading "Loading..."). Third-party
+  helpers ("Apply with LinkedIn", "Autofill my application", "Import from Indeed") are
+  never clicked, never a submit or next action, and not part of the observed structure, so
+  a helper that finishes loading mid-fill no longer aborts the fill. A dialog offering to
+  autofill the application is declined once per document with its own decline control ("No
+  thanks", "Not now", "Close"), never its accept control, and the page is read again.
+  `observe`/`classify` does neither.
+- **Readback robustness.** Text is typed with real input events (Playwright's trusted
+  insertText), never by assigning the value, so React-controlled inputs update their
+  state. A mismatching readback is read once more after a settle, with the control
+  re-resolved by its field id (same question fingerprint); if the re-rendered control lost
+  the value it is typed once more key by key (text over 200 characters as one input event)
+  and read back; only then is it `VERIFICATION_MISMATCH`. Before each write, a transient
+  re-render (the form's controls briefly missing, a busy marker) is waited out (at most
+  3 s) instead of aborting; a re-render that regenerated only selectors re-reads the form
+  and the field is operated through its re-resolved control, never a stale selector. At the
+  end of the fill, text that the page changed after its readback (a late autofill, a
+  reverting controlled input) is written once more and verified.
+
+Mock scenarios `autofill-upload`, `custom-uploader`, `linkedin-autofill` and
+`react-controlled` (`tests/browser/MOCK_ATS.md`) reproduce these pages; the tests are
+`tests/browser/test_uploads*.py`, including a preparation-only run of the real runner on
+`autofill-upload` that ends at `preparation.ready` with our values and the resume attached.

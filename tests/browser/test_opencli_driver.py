@@ -542,7 +542,10 @@ def test_runtime_aborts_remaining_fields_and_submit_after_document_loss(
             assert not filled.ok
             assert "page changed" in " ".join(filled.page_errors) or "navigated" in " ".join(filled.page_errors)
             assert commands(fake).count("fill") == 1
-            assert not {"upload", "select", "check", "uncheck"} & set(commands(fake))
+            # Uploads come first (an upload may make the site autofill other fields);
+            # after the document was lost nothing else is operated.
+            after_loss = commands(fake)[commands(fake).index("fill"):]
+            assert not {"upload", "select", "check", "uncheck"} & set(after_loss)
             assert not (await browser.submit()).dispatched
             with pytest.raises(ValueError, match="inspect"):
                 await browser.fill(form, packet)

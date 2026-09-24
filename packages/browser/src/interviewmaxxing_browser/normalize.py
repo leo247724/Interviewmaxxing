@@ -223,6 +223,36 @@ def _fallback_label(control: DomControl) -> tuple[str, list[str], str | None]:
     return identifier, adjacent, None
 
 
+_UPLOAD_TRIGGER_WORDING = re.compile(
+    r"^(?:(?:attach|upload|browse|choose|select|add)(?: (?:a|your|my))?"
+    r"(?: (?:files?|resume|r\u00e9sum\u00e9|cv|resume/cv|cover letter|documents?))?"
+    r"|(?:drag (?:and|&) )?drop(?: (?:a |your )?files?)?(?: here)?(?: or (?:browse|select|choose)(?: (?:a )?files?)?)?)$",
+    re.IGNORECASE,
+)
+"""The text of an upload trigger ("Attach", "Upload file", "Drop or select a file"): a
+label saying only this names the action, not the question."""
+
+
+def _upload_question(control: DomControl) -> str | None:
+    """For a file input whose own label is empty or only its trigger's wording (a
+    visually hidden "Attach" label), the question its group names ("Resume/CV")."""
+    if control.type != "file" or not control.group_label:
+        return None
+    own = clean_label(control.label)
+    if own and not _UPLOAD_TRIGGER_WORDING.match(own):
+        return None
+    return control.group_label
+
+
+def _without_question(text: str, question: str) -> str:
+    """``text`` without a leading copy of ``question`` (a group label that is also the
+    first text of the control's box) and the required marker after it."""
+    squashed, label = _squash(text), clean_label(question)
+    if label and squashed.lower().startswith(label.lower()):
+        return _LEADING_MARKERS.sub("", squashed[len(label):].lstrip(" :")).strip()
+    return squashed
+
+
 def _member_values(members: list[DomControl]) -> list[str]:
     """Option values of a radio/checkbox group. Missing or duplicate ``value``
     attributes (some ATSs post the choice separately) get a stable synthetic value,
@@ -289,9 +319,11 @@ def _operable(control: DomControl) -> bool:
     if control.disabled:
         return False
     if control.kind == "native" and control.type == "file":
-        # Styled uploads often hide the input behind a button; it stays operable
-        # unless its label is hidden too and it is not visible itself.
-        return control.visible or control.label_visible or bool(control.label)
+        # Styled uploads often hide the input behind a button or a drop zone; it stays
+        # operable (and is attached directly) while its label or such a visible
+        # trigger is there, unless it has neither and is not visible itself.
+        return (control.visible or control.label_visible or bool(control.label)
+                or bool(control.upload_trigger))
     return control.visible or control.label_visible
 
 
@@ -438,14 +470,19 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         ]
         required = any(m.required for m in group.members) or _has_required_marker(question)
     else:
-        if first.label or first.placeholder:
+        upload_question = _upload_question(first) if control_type is ControlType.FILE else None
+        if upload_question:
+            label_text, consumed = upload_question, None
+            adjacent = [_without_question(t, upload_question) for t in first.adjacent]
+        elif first.label or first.placeholder:
             label_text, adjacent, consumed = first.label or first.placeholder, list(first.adjacent), None
         else:
             label_text, adjacent, consumed = _fallback_label(first)
         label = clean_label(label_text)
         legend = first.legend if first.legend and clean_label(first.legend) != label else None
         help_text = _join_unique(
-            [legend, first.group_label, *_non_errors(first.group_described),
+            [legend, None if upload_question else first.group_label,
+             *_non_errors(first.group_described),
              *_non_errors(first.legend_described),
              *(t for t in _non_errors(first.described) if _squash(t) != consumed),
              *(clean_label(t) for t in adjacent)]

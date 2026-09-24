@@ -141,6 +141,86 @@
   };
   const labelVisible = (el) => !!(el.labels && Array.from(el.labels).some(visible));
 
+  // ---- file uploads -------------------------------------------------------------
+  // An upload control's question is what surrounds it before anything is attached. The
+  // attached file's name (a chip), upload/parse progress ("Analyzing resume...",
+  // "Success!") and the trigger (an "Attach" link or button wrapped by the label) are
+  // state or actions, not question wording, so they are left out of its label and
+  // description; its fingerprint then stays the same after an upload.
+  const FILE_NAMES = /[\w\-()[\]]+\.(?:pdf|docx?|txt|rtf|odt|pages|png|jpe?g|gif|heic|html?)\b/gi;
+  const UPLOAD_STATE = /^(?:uploading|uploaded|upload (?:complete|successful|failed)|analy[sz]ing|parsing|processing|scanning|success|done|failed|couldn'?t|could not|remove|replace|change|delete|retry)\b/i;
+  const FILE_SIZE = /^\(?\d+(?:[.,]\d+)?\s*(?:bytes?|[kmg]i?b)\)?$/i;
+  const squashText = (t) => String(t || "").replace(/\s+/g, " ").trim();
+  // A text node that is upload state: a status word, a file size, or a file chip (a
+  // file name with at most a few words around it: "cv.pdf uploaded", "Selected: cv.pdf").
+  const uploadState = (text) => {
+    const t = squashText(text);
+    if (!t || t.length > 160) return false;
+    if (UPLOAD_STATE.test(t) || FILE_SIZE.test(t)) return true;
+    const rest = t.replace(FILE_NAMES, "");
+    return rest !== t && squashText(rest).length <= 12;
+  };
+  const fileText = (root) => {
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (!uploadState(node.nodeValue)) parts.push(node.nodeValue);
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const el = node;
+      const tag = el.tagName;
+      if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "SELECT", "TEXTAREA", "INPUT", "OPTION", "A", "BUTTON"].includes(tag)) return;
+      if (el.matches('[role="button"],[role="progressbar"],[role="status"],[role="alert"],[aria-live]')) return;
+      if (el.getAttribute("aria-hidden") === "true" || el.hidden) return;
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return;
+      for (const c of el.childNodes) walk(c);
+      parts.push(" ");
+    };
+    walk(root);
+    return squashText(parts.join(" "));
+  };
+  const fileLabelOf = (el) => {
+    const byLabelledby = byIds(el.getAttribute("aria-labelledby")).map((n) => fileText(n)).join(" ").trim();
+    if (byLabelledby) return [byLabelledby, "aria-labelledby"];
+    if (el.labels && el.labels.length) {
+      const t = Array.from(el.labels).map((l) => fileText(l)).join(" ").trim();
+      if (t) return [t, "label"];
+    }
+    const aria = (el.getAttribute("aria-label") || "").trim();
+    if (aria) return [aria, "aria-label"];
+    const title = (el.getAttribute("title") || "").trim();
+    if (title) return [title, "title"];
+    return ["", "none"];
+  };
+  const UPLOAD_TRIGGER = /\b(?:attach|upload|browse|choose|select|drop|drag|add)\b/i;
+  // The visible element a person uses to attach a file to a hidden input: its label,
+  // an upload button or link in the input's own box, or a control naming it in
+  // aria-controls. Only the text is reported; nothing is clicked.
+  const uploadTriggerOf = (el, container) => {
+    const nameOf = (n) => squashText((n.tagName === "INPUT" ? n.value : textOf(n)) ||
+      n.getAttribute("aria-label") || n.getAttribute("title") || "");
+    for (const l of el.labels || []) if (visible(l) && nameOf(l)) return nameOf(l).slice(0, 120);
+    const scope = container || el.parentElement;
+    if (scope) {
+      // Buttons, links, labels, and focusable drop zones ("Drag 'n' drop, or click to select").
+      const TRIGGERS = 'button, [role="button"], a[href], label, input[type="button"], [tabindex]:not([tabindex="-1"])';
+      for (const n of [scope, ...scope.querySelectorAll(TRIGGERS)]) {
+        if (n === scope && !n.matches(TRIGGERS)) continue;
+        if (!visible(n)) continue;
+        const t = nameOf(n);
+        if (t && UPLOAD_TRIGGER.test(t)) return t.slice(0, 120);
+      }
+    }
+    if (el.id) {
+      for (const n of document.querySelectorAll("[aria-controls]")) {
+        if (n.getAttribute("aria-controls").split(/\s+/).includes(el.id) && visible(n)) return (nameOf(n) || "upload").slice(0, 120);
+      }
+    }
+    return "";
+  };
+
   // ---- forms and their controls --------------------------------------------------
   const forms = Array.from(document.forms);
   const formIndex = (el) => (el.form ? forms.indexOf(el.form) : -1);
@@ -200,14 +280,14 @@
     containerCache.set(key, c);
     return c;
   };
-  const adjacentText = (container, exclude) => {
+  const adjacentText = (container, exclude, upload) => {
     const texts = [];
     const errors = [];
     if (!container) return [texts, errors];
     const walk = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const t = node.nodeValue.replace(/\s+/g, " ").trim();
-        if (t) texts.push(t);
+        if (t && !(upload && uploadState(t))) texts.push(t);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -224,6 +304,8 @@
       // Live regions (character counters, upload progress) change while the user
       // types; they are not part of the question.
       if (el.getAttribute("aria-live") || el.getAttribute("role") === "status") return;
+      // Around an upload control: file chips, progress and upload buttons are state.
+      if (upload && el.matches('a,[role="button"],[role="progressbar"]')) return;
       for (const c of el.childNodes) walk(c);
     };
     for (const c of container.childNodes) walk(c);
@@ -319,12 +401,18 @@
     const displayNodes = combo ? comboDisplayNodes(el) : [];
     for (const n of displayNodes) exclude.add(n);
     const picker = phonePicker(el);
-    const [adjacent, adjacentErrors] = adjacentText(container, exclude);
-    const [label, labelSource] = labelOf(el);
-    const [legend, legendSelector, legendDescribed] = legendOf(el);
-    const [groupLabel, groupDescribed] = groupLabelOf(el);
     const tag = el.tagName.toLowerCase();
     const type = tag === "input" ? (el.type || "text").toLowerCase() : tag;
+    const upload = type === "file";
+    if (upload) {
+      // The group's own label is reported as group_label, never again as description.
+      const g = el.closest('[role="group"]');
+      if (g) for (const n of byIds(g.getAttribute("aria-labelledby"))) exclude.add(n);
+    }
+    const [adjacent, adjacentErrors] = adjacentText(container, exclude, upload);
+    const [label, labelSource] = upload ? fileLabelOf(el) : labelOf(el);
+    const [legend, legendSelector, legendDescribed] = legendOf(el);
+    const [groupLabel, groupDescribed] = groupLabelOf(el);
     const errTarget = byIds(el.getAttribute("aria-errormessage"))[0];
     return {
       kind: "native",
@@ -377,6 +465,7 @@
       has_value: false,
       aria: ariaObserve(el) || comboFacts(el),
       phone_picker: !picker ? "" : picker.kind === "combobox" ? "combobox:" + (picker.node.id || "") : picker.kind,
+      upload_trigger: upload ? uploadTriggerOf(el, container) : "",
     };
   };
 
@@ -437,6 +526,7 @@
       has_value: hasValue,
       aria: ariaObserve(el) || comboFacts(el),
       phone_picker: "",
+      upload_trigger: "",
     };
   };
 
@@ -585,6 +675,47 @@
   const loadingIndicator = LOADING_TEXT.test(bodyText) ||
     Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"]')).some(visible);
 
+  // Work in progress the runtime waits out (bounded) before and while filling: busy
+  // regions, progress bars and short standalone status texts ("Loading...", a button
+  // reading "Loading...", "Analyzing resume...", "Uploading 40%").
+  const BUSY_WORD = /^(?:loading|please wait|one moment)\b/i;
+  const BUSY_PROGRESS = /^(?:uploading|parsing|processing|analy[sz]ing|autofilling|auto-filling|importing|fetching|saving|scanning)\b.*(?:\.{2,}|…|\d+\s*%)$/i;
+  const busy = [];
+  for (const b of document.querySelectorAll('[aria-busy="true"], [role="progressbar"]')) {
+    if (busy.length >= 8) break;
+    if (visible(b)) busy.push(((b.getAttribute("role") || "busy") + ": " + (textOf(b) || b.getAttribute("aria-label") || "")).slice(0, 80));
+  }
+  if (document.body) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && busy.length < 8; node = walker.nextNode()) {
+      const t = squashText(node.nodeValue);
+      if (!t || t.length > 60 || !(BUSY_WORD.test(t) || BUSY_PROGRESS.test(t))) continue;
+      const parent = node.parentElement;
+      if (!parent || ["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "OPTION", "TEXTAREA"].includes(parent.tagName)) continue;
+      const whole = squashText(parent.textContent);
+      if (whole.length > 60 || !visible(parent)) continue;
+      busy.push(("text: " + whole).slice(0, 80));
+    }
+  }
+
+  // Visible dialogs with their buttons: Python recognises an offer to autofill the
+  // application and its decline control ("No thanks"); nothing here is clicked.
+  const promptEls = [];
+  for (const d of document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog[open], [aria-modal="true"]')) {
+    if (promptEls.length >= 4) break;
+    if (!visible(d) || inPopup(d) || promptEls.some((p) => p.contains(d) || d.contains(p))) continue;
+    promptEls.push(d);
+  }
+  const prompts = promptEls.map((d) => ({
+    text: textOf(d).slice(0, 600),
+    modal: d.getAttribute("aria-modal") === "true" || (d.tagName === "DIALOG" && d.matches(":modal")),
+    buttons: Array.from(d.querySelectorAll('button, [role="button"], a[href], input[type="button"], input[type="submit"]'))
+      .filter(visible).slice(0, 12).map((b) => ({
+        text: squashText((b.tagName === "INPUT" ? b.value : textOf(b)) || b.getAttribute("aria-label") || b.getAttribute("title") || "").slice(0, 120),
+        selector: selectorFor(b),
+      })),
+  }));
+
   return {
     url: location.href,
     title: document.title || "",
@@ -614,6 +745,8 @@
     captcha_tokens: tokens,
     captcha_widget: !!document.querySelector(".g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]"),
     loading_indicator: loadingIndicator,
+    busy,
+    prompts,
     document: String(performance.timeOrigin) + " " + location.href,
   };
 }

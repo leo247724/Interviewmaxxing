@@ -93,6 +93,11 @@ class DomControl(_Raw):
     intl-tel-input-style container), ``dialog`` (a preceding ``aria-haspopup=dialog``
     button) or ``combobox:<id>`` (a sibling combobox; it is a dial-code picker only while
     its display text looks like ``+<code>``)."""
+    upload_trigger: str = ""
+    """For a file input: the text of the visible element a person uses to attach a file
+    to it (its label, an "Upload"/"Attach" button or link in its own box, or a control
+    naming it in ``aria-controls``); "" when there is none. A hidden input with a
+    trigger is still an operable upload control (it is attached directly)."""
 
 
 class DomButton(_Raw):
@@ -169,6 +174,21 @@ class DomConfirmationScope(_Raw):
     """One heading-delimited section, or one ungrouped leaf statement."""
 
 
+class DomPromptButton(_Raw):
+    text: str
+    selector: str
+
+
+class DomPrompt(_Raw):
+    """A visible dialog (``role=dialog``/``alertdialog``, ``aria-modal``, an open
+    ``<dialog>``) with its buttons. The runtime declines an offer to autofill the
+    application with it; nothing else is ever clicked in it."""
+
+    text: str
+    modal: bool
+    buttons: list[DomPromptButton]
+
+
 class DomSnapshot(_Raw):
     url: str
     title: str
@@ -193,6 +213,12 @@ class DomSnapshot(_Raw):
     loading_indicator: bool = False
     """Visible "loading"/"fetching" wording, an ``aria-busy="true"`` element or a
     progress bar: the page may still be rendering (used only to delay readiness)."""
+    busy: list[str] = Field(default_factory=list)
+    """Visible work in progress: ``aria-busy`` regions, progress bars and short status
+    texts ("Loading...", "Analyzing resume...", "Uploading 40%"). Waited out, bounded,
+    before filling and after an upload; never part of a question or of the structure."""
+    prompts: list[DomPrompt] = Field(default_factory=list)
+    """Visible dialogs (at most four)."""
     document: str = ""
     """``performance.timeOrigin`` and ``location.href`` of the inspected document, the
     identity that scopes probed menu observations."""

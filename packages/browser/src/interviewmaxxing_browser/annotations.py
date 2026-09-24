@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from interviewmaxxing_core import ApplicationForm
 
 from .normalize import PageModel
+from .signals import LOADING_STATE, THIRD_PARTY_ASSIST
 
 
 class FormAnnotator(Protocol):
@@ -35,11 +36,23 @@ def semantic_only(original: ApplicationForm, annotated: ApplicationForm) -> Appl
     ]})
 
 
-def observation_signature(model: PageModel, *, include_values: bool = False) -> str:
+_VOLATILE_CONTROL_KEYS = ("id", "selector", "legend_selector", "label_selector", "phone_picker")
+
+
+def observation_signature(model: PageModel, *, include_values: bool = False,
+                          stable: bool = False) -> str:
     """Includes constraints and bindings omitted by canonical question fingerprints.
 
     Value/validation updates caused by our own fill are excluded from structural
-    comparisons; the provider-await guard includes them as well.
+    comparisons; the provider-await guard includes them as well. Third-party autofill
+    helpers ("Apply with LinkedIn") and buttons that only say they are loading (that
+    helper reads "Loading..." first) are never operated and are not structure; the
+    step's primary action is compared separately (``actions``).
+
+    ``stable`` also leaves out the selector strings a re-render may regenerate (DOM ids
+    and element paths) while keeping every question, constraint, option, field id,
+    action text and employer context: two observations equal in this sense bind the
+    same questions to controls that differ only by those selectors.
     """
     controls = []
     for control in model.snapshot.controls:
@@ -57,7 +70,16 @@ def observation_signature(model: PageModel, *, include_values: bool = False) -> 
                     item["aria"].pop(key, None)
                 for option in item["aria"].get("options", []):
                     option.pop("selected", None)
+        if stable:
+            for key in _VOLATILE_CONTROL_KEYS:
+                item.pop(key, None)
         controls.append(item)
+    buttons = [button.model_dump(mode="json") for button in model.snapshot.buttons
+               if not (THIRD_PARTY_ASSIST.search(button.text) or LOADING_STATE.match(button.text))]
+    forms = [form.model_dump(mode="json") for form in model.snapshot.forms]
+    if stable:
+        for item in (*buttons, *forms):
+            item.pop("selector", None)
     identity = model.inspection.job_identity
     payload = {
         "url": model.snapshot.url,
@@ -71,15 +93,19 @@ def observation_signature(model: PageModel, *, include_values: bool = False) -> 
         if identity is not None else None,
         "kind": model.inspection.kind.value,
         "controls": controls,
-        "forms": [form.model_dump(mode="json") for form in model.snapshot.forms],
-        "buttons": [button.model_dump(mode="json") for button in model.snapshot.buttons],
+        "forms": forms,
+        "buttons": buttons,
         "step": model.snapshot.step.model_dump(mode="json") if model.snapshot.step else None,
         "form_index": model.form_index,
-        "form_selector": model.form_selector,
+        "form_selector": None if stable else model.form_selector,
         "actions": {"final": model.form.is_final_step,
-                    "next": model.form.next_selector,
-                    "submit": model.form.submit_selector} if model.form else None,
+                    "next": None if stable else model.form.next_selector,
+                    "submit": None if stable else model.form.submit_selector} if model.form else None,
         "bindings": {key: {
+            "control_type": binding.control_type.value,
+            "options": sorted(binding.option_selectors),
+            "labels": sorted(binding.label_selectors),
+        } if stable else {
             "selector": binding.selector, "control_type": binding.control_type.value,
             "option_selectors": dict(binding.option_selectors),
             "label_selectors": dict(binding.label_selectors),

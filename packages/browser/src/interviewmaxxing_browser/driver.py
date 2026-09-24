@@ -10,6 +10,7 @@ fill or whether something was submitted.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import re
 from collections.abc import Awaitable, Callable
@@ -173,6 +174,27 @@ FILE_SHOWN = (
     "busy: [...box.querySelectorAll('[role=progressbar]')].some(seen), "
     "alert: [...box.querySelectorAll('[role=alert],[aria-invalid=true]')].some((a) => seen(a) && "
     "(a.getAttribute('aria-invalid') === 'true' || norm(a.textContent)))}; }"
+)
+
+# A one-shot capture of the File list a file input delivers with its own input/change
+# event, taken in the document's capture phase (before the page's handlers run). Pages
+# that move the chosen file into their own state and empty the input can still have the
+# delivered bytes verified. It only reads; ``dispose`` removes both listeners.
+_ARM_FILE_CAPTURE = (
+    "(el) => { const box = {files: null}; const grab = (e) => { if (e.target === el && box.files === null) "
+    "box.files = Array.from(el.files || []); }; document.addEventListener('input', grab, true); "
+    "document.addEventListener('change', grab, true); box.dispose = () => { "
+    "document.removeEventListener('input', grab, true); document.removeEventListener('change', grab, true); }; "
+    "return box; }"
+)
+# SHA-256 of the first File captured above (null when none was delivered or the page
+# cannot hash); disposes of the capture.
+_CAPTURED_DIGEST = (
+    "async (box) => { box.dispose(); const file = (box.files && box.files[0]) || null; if (!file) return null; "
+    "if (!(globalThis.crypto && globalThis.crypto.subtle)) return null; "
+    "const d = await crypto.subtle.digest('SHA-256', await file.arrayBuffer()); "
+    "return {name: file.name, size: file.size, sha256: Array.from(new Uint8Array(d))"
+    ".map((b) => b.toString(16).padStart(2, '0')).join('')}; }"
 )
 
 # Scrolls a (possibly virtualized) menu list to its end: the element itself or its
@@ -366,22 +388,43 @@ class PlaywrightDriver:
         self._guard(before, f"setting {selector}")
 
     async def set_files(self, selector: str, path: Path) -> None:
+        """Attach ``path`` to the file input directly (hidden inputs behind an "Attach"
+        button or a drop zone included) and verify it: the bytes the input holds; or, when
+        the uploader emptied or replaced its input, the bytes it was handed with its
+        input/change event (when the page can hash them) and its own display of the
+        file's name without an error (``file_shown``)."""
         pinned = hashlib.sha256(path.read_bytes()).hexdigest()
         before = self._doc_mark()
         anchor = await file_anchor(self, selector)
+        locator = self.page.locator(selector)
+        delivered: Any = None
         try:
-            await self.page.locator(selector).set_input_files(str(path), timeout=self._timeout_ms)
+            capture = await locator.evaluate_handle(_ARM_FILE_CAPTURE, timeout=self._timeout_ms)
+            try:
+                await locator.set_input_files(str(path), timeout=self._timeout_ms)
+                delivered = await capture.evaluate(_CAPTURED_DIGEST)
+            finally:
+                with contextlib.suppress(PlaywrightError):
+                    await capture.evaluate("(box) => box.dispose()")
+                with contextlib.suppress(PlaywrightError):
+                    await capture.dispose()
         except PlaywrightError as exc:
             self._guard(before, f"attaching a file to {selector}", exc)
             raise NotActionable(f"could not attach a file to {selector}: {exc}") from exc
         self._guard(before, f"attaching a file to {selector}")
-        attached = await self.evaluate(_FILE_DIGEST, selector)
+        held = await self.evaluate(_FILE_DIGEST, selector)
         self._guard(before, f"verifying the file attached to {selector}")
-        if isinstance(attached, dict) and attached.get("sha256") == pinned:
-            return
-        if attached is None and await file_shown(self, selector, path.name, anchor=anchor):
-            # The uploader took the file (the bytes came from this exact path) and emptied
-            # or replaced its input; it shows the file's name and no error.
+        if isinstance(held, dict):
+            # The input still holds a file: its own bytes decide.
+            if held.get("sha256") == pinned:
+                return
+            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+        if isinstance(delivered, dict) and delivered.get("sha256") != pinned:
+            raise DriverError(f"the bytes delivered to {selector} are not {path.name}")
+        if held is None and await file_shown(self, selector, path.name, anchor=anchor):
+            # The uploader took the file (the bytes it was handed are this exact path's,
+            # verified above when the page could hash them) and emptied or replaced its
+            # input; it shows the file's name and no error.
             self._guard(before, f"verifying the file attached to {selector}")
             return
         raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")

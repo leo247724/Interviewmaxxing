@@ -68,6 +68,7 @@ from .runtime import (
     GenericApplicationBrowser,
 )
 from .snapshot import inspector_script
+from .uploads import UPLOAD_STATE
 
 DEFAULT_SESSION = "imx-application"
 PROTECTED_SESSION_PREFIXES = ("imx-assessment", "imx-jobs")
@@ -213,7 +214,7 @@ _FOCUSED = (
 _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
-    COMBO_STATE, PHONE_STATE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN, _BUTTONS_WITHIN,
+    COMBO_STATE, PHONE_STATE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN, _BUTTONS_WITHIN, UPLOAD_STATE,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
 
