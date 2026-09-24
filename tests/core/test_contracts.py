@@ -111,7 +111,9 @@ def test_naive_datetimes_rejected_and_aware_normalized_to_utc(mock_identity):
 
 def test_mock_form_covers_every_operable_control(mock_form):
     controls = {f.control_type for f in mock_form.fields}
-    assert controls == set(ControlType) - {ControlType.UNSUPPORTED}
+    # TYPEAHEAD (site-suggestion lookups) is exercised by the browser suites' lookup
+    # scenarios; the standard mock form has no such control.
+    assert controls == set(ControlType) - {ControlType.UNSUPPORTED, ControlType.TYPEAHEAD}
 
 
 def test_option_value_is_distinct_from_label(mock_form):
@@ -314,3 +316,32 @@ def test_page_inspection_form_presence_matches_kind(mock_form):
 def test_receipt_schema_has_required_proof_fields():
     required = set(Receipt.model_json_schema()["required"])
     assert {"application_url", "submitted_at", "confirmed_at", "attempt_id"} <= required
+
+
+def test_typeahead_and_needs_choice_contract_seed() -> None:
+    from interviewmaxxing_core import (
+        ApplicationField,
+        ControlType,
+        FieldFillResult,
+        FieldFillStatus,
+        FillResult,
+        TextValue,
+    )
+    from interviewmaxxing_core.packets import answer_problems
+
+    field = ApplicationField(id="loc", label="Location (City)", control_type=ControlType.TYPEAHEAD,
+                             selector="#loc", required=True)
+    assert field.options is None and answer_problems(field, TextValue(text="Austin, Texas")) == []
+    assert field.fingerprint == field.model_copy(update={"expects_international_phone": True}).fingerprint
+    with pytest.raises(ValueError):
+        ApplicationField(id="loc", label="Location", control_type=ControlType.TYPEAHEAD, selector="#loc",
+                         options=[{"value": "a", "label": "a"}])  # type: ignore[list-item]
+    result = FillResult(form_step=0, fields=[
+        FieldFillResult(field_id="loc", status=FieldFillStatus.NEEDS_CHOICE,
+                        suggestions=["Austin, Texas, United States", "Austin, Minnesota, United States"]),
+        FieldFillResult(field_id="email", status=FieldFillStatus.FILLED),
+        FieldFillResult(field_id="phone", status=FieldFillStatus.FAILED, detail="x"),
+    ])
+    assert not result.ok
+    assert result.failed_field_ids() == ["phone"]
+    assert [f.field_id for f in result.needs_choice()] == ["loc"]

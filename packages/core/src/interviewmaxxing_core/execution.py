@@ -8,7 +8,7 @@ one acceptance signal lets the store mark an application ``SUBMITTED``.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import Field, model_validator
 
@@ -65,12 +65,20 @@ class FieldFillStatus(StrEnum):
     FAILED = "FAILED"
     VERIFICATION_MISMATCH = "VERIFICATION_MISMATCH"
     """The control was operated but reads back a different value."""
+    NEEDS_CHOICE = "NEEDS_CHOICE"
+    """A lookup (``TYPEAHEAD``) control offered suggestions but none, or more than one,
+    matched the typed value exactly; nothing was committed and the input was cleared.
+    ``FieldFillResult.suggestions`` carries the observed suggestion labels so the
+    resolver or the user can choose one; the chosen label is then typed verbatim."""
 
 
 class FieldFillResult(Contract):
     field_id: NonEmptyStr
     status: FieldFillStatus
     detail: str | None = None
+    suggestions: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=25)
+    """Observed suggestion labels (``NEEDS_CHOICE`` only), in the order shown."""
 
 
 class FillResult(Contract):
@@ -81,12 +89,19 @@ class FillResult(Contract):
 
     @property
     def ok(self) -> bool:
-        bad = {FieldFillStatus.FAILED, FieldFillStatus.VERIFICATION_MISMATCH}
+        bad = {FieldFillStatus.FAILED, FieldFillStatus.VERIFICATION_MISMATCH,
+               FieldFillStatus.NEEDS_CHOICE}
         return not self.page_errors and not any(f.status in bad for f in self.fields)
 
     def failed_field_ids(self) -> list[str]:
-        return [f.field_id for f in self.fields if f.status is not FieldFillStatus.FILLED
-                and f.status is not FieldFillStatus.SKIPPED]
+        """Fields the browser could not operate reliably. Open choices are not
+        failures: see ``needs_choice``."""
+        return [f.field_id for f in self.fields
+                if f.status in (FieldFillStatus.FAILED, FieldFillStatus.VERIFICATION_MISMATCH)]
+
+    def needs_choice(self) -> list[FieldFillResult]:
+        """Lookup fields waiting for one of their observed suggestions to be chosen."""
+        return [f for f in self.fields if f.status is FieldFillStatus.NEEDS_CHOICE]
 
 
 class NavigationResult(Contract):

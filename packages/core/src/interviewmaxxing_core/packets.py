@@ -90,6 +90,7 @@ _ACCEPTED_VALUES: dict[ControlType, tuple[type[Contract], ...]] = {
     ControlType.CHECKBOX_GROUP: (MultiChoiceValue,),
     ControlType.CHECKBOX: (BooleanValue,),
     ControlType.FILE: (FileValue,),
+    ControlType.TYPEAHEAD: (TextValue,),
     ControlType.UNSUPPORTED: (),
 }
 

@@ -183,6 +183,12 @@ class ControlType(StrEnum):
     CHECKBOX_GROUP = "CHECKBOX_GROUP"
     """Several checkboxes answering one question; zero or more options."""
     FILE = "FILE"
+    TYPEAHEAD = "TYPEAHEAD"
+    """A text-like lookup control (location, state, country search) whose value is
+    committed only by choosing one of the site's own suggestions after typing. It has
+    no observable option list; answers are ``TextValue`` and the browser reports
+    ``NEEDS_CHOICE`` with the observed suggestions when the typed value does not
+    match exactly one of them."""
     UNSUPPORTED = "UNSUPPORTED"
     """Present on the page but not operable by the runtime; route to the user."""
 
@@ -223,6 +229,11 @@ class ApplicationField(Contract):
     help_text: str | None = None
     validation_error: str | None = None
     """Validation message the page currently shows for this field, if any."""
+    expects_international_phone: bool = False
+    """A ``tel`` control rendered with a country picker (dial-code selector): the
+    value should be typed in international ``+<code><number>`` form so the picker
+    selects the country itself. Rendering detail, not question wording: excluded from
+    ``fingerprint`` and ``question_text``."""
     section_context: list[str] = Field(default_factory=list)
     """Headings and group labels of the sections that precede this control, outermost
     first. Model context for subject and timeframe only: it is not part of the
