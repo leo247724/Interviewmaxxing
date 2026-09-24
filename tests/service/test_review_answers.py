@@ -71,7 +71,8 @@ QUESTIONS_PAGE = make_form(QUESTIONS_URL, 1, [
     make_field("fld_rv_cover", "Cover letter", T.TEXTAREA, SemanticType.COVER_LETTER),
     make_field("fld_rv_why", "Why do you want to join Fictional Co?", T.TEXTAREA,
                SemanticType.CUSTOM_TEXT, required=True, help_text="A few sentences are enough."),
-    make_field("fld_rv_summary", "Summarize a recent campaign", T.TEXT, SemanticType.CUSTOM_TEXT),
+    # A text area: since f850949 a single-line field cannot hold a line break.
+    make_field("fld_rv_summary", "Summarize a recent campaign", T.TEXTAREA, SemanticType.CUSTOM_TEXT),
     make_field("fld_rv_story", "Tell us a short story", T.TEXT, SemanticType.CUSTOM_LONG_TEXT),
     make_field("fld_rv_hobby", "What do you do outside work?", T.TEXTAREA,
                SemanticType.CUSTOM_TEXT),

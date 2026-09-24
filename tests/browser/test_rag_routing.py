@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -2140,3 +2141,534 @@ def test_profile_url_shortcut_keeps_its_status_and_ignores_the_past_identity_gua
     assert packet.is_complete and len(provider.requests) == 1
     assert clarification_trace(resolver)["status"] == "APPROVED_TIMEFRAME_INSENSITIVE_URL"
 
+
+
+# --- round 5: independent fields resolved concurrently within one form -----------------------
+
+def narrative_form(ctx: PacketContext, count: int) -> PacketContext:
+    """``count`` required narrative questions on one form (``story_0``, ``story_1``, ...)."""
+    fields = [ApplicationField(id=f"story_{i}", label=f"Describe a fictional campaign result {i}",
+                               selector=f"#story_{i}", semantic_type=SemanticType.CUSTOM_LONG_TEXT,
+                               control_type=ControlType.TEXTAREA, required=True)
+              for i in range(count)]
+    return replace(ctx, form=ApplicationForm(url="https://synthetic.test/apply", fields=fields))
+
+
+@dataclass
+class BarrierWriter(Writer):
+    """Each write waits until ``parties`` writes are in flight at once (or fails)."""
+    parties: int = 3
+    barrier: threading.Barrier | None = None
+
+    def write(self, **kwargs: Any) -> NarrativeDraft:
+        if self.barrier is None:
+            self.barrier = threading.Barrier(self.parties, timeout=10)
+        self.barrier.wait()
+        return super().write(**kwargs)
+
+
+def test_three_narratives_are_written_concurrently(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    selected = fact(fictional_candidate, "experience", "I managed paid media budgets.")
+    candidate = candidate_with(fictional_candidate, [selected])
+    writer = BarrierWriter([{"text": "I managed paid media budgets.", "fact_ids": [selected.id]}])
+    ctx = narrative_form(context(candidate, mock_job), 3)
+    packet, _, _ = resolve(ctx, Retriever([selected]), writer)
+    # The barrier only opens when all three writes run at once.
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert [answer.field_id for answer in packet.answers] == ["story_0", "story_1", "story_2"]
+    assert len(writer.calls) == 3
+
+
+# --- round 5 tests: bounded, deterministic concurrency within one form -----------------------
+
+WRITER_MODEL = "anthropic/claude-opus-5.5"
+SAMPLE_BUDGET = "I ran the $20,000 monthly search budget at Sample Studios."
+SAMPLE_OTHER_BUDGET = "I ran the $5,000 monthly search budget at Sample Studios."
+BENCHMARK_DELAY = 0.3
+"""Seconds each scripted Jev call and each write take in the benchmark."""
+
+
+def subject_facts(candidate: CandidateProfile) -> tuple[list[CandidateFact], list[CandidateFact]]:
+    """Bullets about three fictional employers and, for each, a same-employer bullet that the
+    consistency check compares it with: one consistency verdict per employer."""
+    chosen = [fact(candidate, "experience", WIDGETS_BUDGET, fid="fact.widgets"),
+              fact(candidate, "experience", LABS_TEAM, fid="fact.labs"),
+              fact(candidate, "experience", SAMPLE_BUDGET, fid="fact.sample")]
+    others = [fact(candidate, "experience", WIDGETS_OTHER_BUDGET, fid="fact.widgets-other"),
+              fact(candidate, "experience", LABS_OTHER_TEAM, fid="fact.labs-other"),
+              fact(candidate, "experience", SAMPLE_OTHER_BUDGET, fid="fact.sample-other")]
+    return chosen, others
+
+
+class PacedProvider(DecisionsProvider):
+    """A thread-safe ``DecisionsProvider``: answers depend only on the request; requests and
+    their sizes in bytes are recorded under a lock; each call first sleeps ``delay`` seconds
+    plus up to ``jitter`` seconds from its own seeded generator. The fields at the
+    ``copy_fields`` form indexes are classified as literal exact-fact questions."""
+
+    def __init__(self, *, delay: float = 0.0, jitter: float = 0.0, seed: int = 0,
+                 copy_fields: tuple[int, ...] = (), **kwargs: Any) -> None:
+        import random
+
+        super().__init__(**kwargs)
+        self.delay, self.jitter, self.copy_fields = delay, jitter, copy_fields
+        self.sizes: list[int] = []
+        self._random = random.Random(seed)
+        self._lock = threading.Lock()
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        from time import sleep
+
+        with self._lock:
+            pause = self.delay + self._random.uniform(0, self.jitter)
+        sleep(pause)
+        with self._lock:
+            self.sizes.append(len(body))
+            response = super().__call__(url, headers, body, timeout)
+        if not self.copy_fields:
+            return response
+        payload = json.loads(response.body)
+        for index in self.copy_fields:
+            for prefix, choice in (("r", "COPY_KNOWN"), ("n", "literal"),
+                                   ("u", "HISTORICAL_OR_CONTEXTUAL"), ("s", "CUSTOM_TEXT")):
+                answer = payload["answers"].get(f"{prefix}{index}")
+                if answer is not None:
+                    answer.update(choice=choice, confidence=1, probabilities={
+                        option: float(option == choice) for option in answer["probabilities"]})
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+@dataclass
+class PacedWriter(Writer):
+    """A thread-safe writer citing the first supplied fact. Each write sleeps ``delay``
+    seconds, plus up to ``jitter`` seconds (seeded) and ``slow[marker]`` seconds when the
+    question contains ``marker``. It records the peak number of writes in flight and the
+    questions in the order their writes finished. Until ``reach`` writes have been in flight
+    at once, a write first waits for that (at most 2 s)."""
+    sentences: list[dict[str, Any]] = field(default_factory=list)
+    delay: float = 0.0
+    jitter: float = 0.0
+    seed: int = 0
+    slow: dict[str, float] = field(default_factory=dict)
+    reach: int = 1
+    peak: int = 0
+    finished: list[str] = field(default_factory=list)
+    _in_flight: int = field(default=0, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _reached: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _random: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        import random
+
+        self._random = random.Random(self.seed)
+
+    def write(self, **kwargs: Any) -> NarrativeDraft:
+        from time import sleep
+
+        question = kwargs["question"]
+        with self._lock:
+            self.calls.append(kwargs)
+            self._in_flight += 1
+            self.peak = max(self.peak, self._in_flight)
+            if self._in_flight >= self.reach:
+                self._reached.set()
+            pause = self.delay + self._random.uniform(0, self.jitter) + sum(
+                extra for marker, extra in self.slow.items() if marker in question)
+        self._reached.wait(timeout=2)
+        sleep(pause)
+        with self._lock:
+            self._in_flight -= 1
+            self.finished.append(question)
+        cited = kwargs["facts"][0]
+        return NarrativeDraft.model_validate({"status": "READY", "missing_information": [],
+            "sentences": [{"text": str(cited["value"]), "fact_ids": [cited["id"]]}]})
+
+
+@dataclass
+class TopicRetriever(Retriever):
+    """Retrieves ``topics[marker]`` for the first marker in the query (else ``facts``) after
+    sleeping ``delays[marker]`` seconds; thread-safe, and records the queries in the order
+    their retrievals finished."""
+    topics: dict[str, list[CandidateFact]] = field(default_factory=dict)
+    delays: dict[str, float] = field(default_factory=dict)
+    finished: list[str] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def retrieve(self, **kwargs: Any) -> Any:
+        from time import sleep
+
+        query = kwargs["query"]
+        sleep(sum(delay for marker, delay in self.delays.items() if marker in query))
+        with self._lock:
+            super().retrieve(**kwargs)
+            self.finished.append(query)
+        facts = next((facts for marker, facts in self.topics.items() if marker in query), self.facts)
+        return SimpleNamespace(facts=facts, job_evidence=self.job_evidence,
+                               voice_samples=self.voice_samples, receipt=self.receipt)
+
+
+class WriterTransport:
+    """The OpenRouter transport of a real ``NarrativeWriter``: a READY draft citing the first
+    supplied fact, after up to ``jitter`` seconds (seeded); thread-safe."""
+
+    def __init__(self, *, jitter: float = 0.0, seed: int = 0) -> None:
+        import random
+
+        self.jitter = jitter
+        self.requests: list[dict[str, Any]] = []
+        self._random = random.Random(seed)
+        self._lock = threading.Lock()
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        from time import sleep
+
+        user = json.loads(json.loads(body)["messages"][1]["content"])
+        with self._lock:
+            self.requests.append(user)
+            pause = self._random.uniform(0, self.jitter)
+        sleep(pause)
+        cited = user["facts"][0]
+        draft = {"status": "READY", "missing_information": [],
+                 "sentences": [{"text": str(cited["value"]), "fact_ids": [cited["id"]]}]}
+        return HttpResponse(200, {}, json.dumps({"model": WRITER_MODEL, "usage": {"cost": 0.002},
+            "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(draft)}}],
+        }).encode())
+
+
+def budgeted_writer(budget: Any, transport: WriterTransport) -> Any:
+    """The real Opus writer on the same budget as Jev, as ``build_ai_runtime`` wires it."""
+    from interviewmaxxing_browser.ai.providers import NarrativeWriter
+
+    return NarrativeWriter(ApiKey("synthetic-writer-key", source="test"), WRITER_MODEL, budget,
+                           transport=transport)
+
+
+def paced_resolver(ctx: PacketContext, retriever: Retriever, writer: Any, provider: DecisionsProvider,
+                   *, max_concurrency: int = 3, budget: Any = None, max_cache_entries: int = 128,
+                   ) -> tuple[PacketContext, DynamicPacketResolver]:
+    """``resolve``'s runtime with a chosen field concurrency, budget and request cache: the
+    form is classified (one batched call) and annotated, but not resolved yet."""
+    from interviewmaxxing_browser.ai.providers import CallBudget
+
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"),
+                                           transport=provider, max_attempts=1),
+                                 budget=CallBudget() if budget is None else budget,
+                                 max_cache_entries=max_cache_entries)
+    router = AIFormRouter(decisions)
+    annotated = router.annotate(ctx.form, document_id="synthetic-concurrency")
+    return replace(ctx, form=annotated), DynamicPacketResolver(
+        decisions, writer, router=router, retriever=retriever, max_concurrency=max_concurrency)
+
+
+def packet_shape(packet: Any) -> dict[str, Any]:
+    """A packet without its random IDs and creation time, for comparing two resolutions."""
+    shape = packet.model_dump(mode="json", exclude={"id", "created_at"})
+    for missing in shape["missing_inputs"]:
+        del missing["id"]
+    return shape
+
+
+def receipt_shape(resolver: DynamicPacketResolver) -> list[tuple[Any, ...]]:
+    """The provider receipts in order, without their measured latency."""
+    return [(receipt.purpose, receipt.model, receipt.resolved_model, receipt.cost_usd, receipt.status)
+            for receipt in resolver.decisions.budget.receipts]
+
+
+def test_no_more_than_max_concurrency_narratives_are_written_at_once(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    selected = fact(fictional_candidate, "experience", "I managed paid media budgets.")
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [selected]), mock_job), 4)
+    shapes = []
+    for bound in (2, 1):
+        writer = PacedWriter(delay=0.05, reach=bound)
+        ready, resolver = paced_resolver(ctx, Retriever([selected]), writer, PacedProvider(),
+                                         max_concurrency=bound)
+        packet = asyncio.run(resolver.resolve(ready))
+        assert packet.is_complete and ready.problems(packet) == []
+        assert len(writer.calls) == 4
+        assert writer.peak == bound  # reached, and never exceeded
+        shapes.append(packet_shape(packet))
+    assert shapes[0] == shapes[1]
+
+
+def test_jittered_concurrent_resolutions_equal_the_sequential_one(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_browser.ai.providers import CallBudget
+
+    (widgets, labs, _), (widgets_other, labs_other, _) = subject_facts(fictional_candidate)
+    candidate = candidate_with(fictional_candidate, [widgets, labs, widgets_other, labs_other])
+    ctx = narrative_form(context(candidate, mock_job), 3)
+    exact = ApplicationField(id="budget", label="Paid media budget you managed", selector="#budget",
+                             semantic_type=SemanticType.CUSTOM_TEXT, control_type=ControlType.TEXT,
+                             required=True)
+    ctx = replace(ctx, form=ctx.form.model_copy(update={"fields": [*ctx.form.fields, exact]}))
+    # story_1 shares widgets with story_0 and labs with story_2; the exact fact route copies
+    # widgets (the first verified fact), so every verdict after the first two is reused.
+    topics = {"result 0": [widgets], "result 1": [widgets, labs], "result 2": [labs]}
+
+    def run(max_concurrency: int, seed: int) -> dict[str, Any]:
+        budget = CallBudget(max_usd=5.0)
+        provider = PacedProvider(consistency=0.96, scope_probability=0.65, jitter=0.03, seed=seed,
+                                 copy_fields=(3,))
+        writer = budgeted_writer(budget, WriterTransport(jitter=0.03, seed=seed + 100))
+        retriever = TopicRetriever([], topics=topics)
+        ready, resolver = paced_resolver(ctx, retriever, writer, provider,
+                                         max_concurrency=max_concurrency, budget=budget)
+        packet = asyncio.run(resolver.resolve(ready))
+        assert packet.is_complete and ready.problems(packet) == [] and len(packet.answers) == 4
+        return {"packet": packet_shape(packet),
+                "traces": json.dumps(resolver.narrative_traces, sort_keys=True),
+                "retrievals": resolver.retrieval_receipts, "receipts": receipt_shape(resolver),
+                "verdicts": list(resolver._consistency_verdicts.items()),
+                "consistency_requests": [check["state"]["comparison_ids"]
+                                         for check in consistency_checks(provider)]}
+
+    sequential = run(1, seed=0)
+    # The checks really ran and the verdict cache was really reused.
+    assert sequential["consistency_requests"] == [{"f0": [widgets_other.id]}, {"f1": [labs_other.id]}]
+    assert len(sequential["verdicts"]) == 2
+    assert [trace["cached"] for trace in json.loads(sequential["traces"])
+            if trace["stage"] == "consistency"] == [[], ["f0"], ["f0"], ["f0"]]
+    assert "narrative" in {receipt[0] for receipt in sequential["receipts"]}
+    for seed in (1, 2, 3, 4):
+        assert run(3, seed) == sequential
+
+
+def test_a_field_arriving_first_still_reuses_the_earlier_fields_consistency_verdict(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    (widgets, labs, _), (widgets_other, labs_other, _) = subject_facts(fictional_candidate)
+    candidate = candidate_with(fictional_candidate, [widgets, labs, widgets_other, labs_other])
+    ctx = narrative_form(context(candidate, mock_job), 2)
+    questions = [field.question_text for field in ctx.form.fields]
+    asked: dict[int, list[Any]] = {}
+    for bound in (3, 1):
+        # story_0 retrieves slowly, so concurrently story_1 reaches its consistency check first.
+        retriever = TopicRetriever([], topics={"result 0": [widgets], "result 1": [widgets, labs]},
+                                   delays={"result 0": 0.15})
+        provider = PacedProvider(consistency=0.96)
+        ready, resolver = paced_resolver(ctx, retriever, PacedWriter(), provider,
+                                         max_concurrency=bound, max_cache_entries=0)
+        packet = asyncio.run(resolver.resolve(ready))
+        assert packet.is_complete
+        assert retriever.finished == (questions[::-1] if bound > 1 else questions)
+        asked[bound] = [check["state"]["comparison_ids"] for check in consistency_checks(provider)]
+        traces = consistency_traces(resolver)
+        assert [trace["selected_fact_ids"] for trace in traces] == [
+            {"f0": widgets.id}, {"f0": widgets.id, "f1": labs.id}]
+        assert [trace["cached"] for trace in traces] == [[], ["f0"]]
+    # Only the verdict cache (the request cache is off) spares story_1 the widgets question.
+    assert asked[3] == asked[1] == [{"f0": [widgets_other.id]}, {"f1": [labs_other.id]}]
+
+
+def test_one_opus_evidence_review_serves_both_narratives_as_in_sequence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    first, second = same_subject_pair(fictional_candidate)
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [first, second]), mock_job), 2)
+    questions = [field.question_text for field in ctx.form.fields]
+    for bound in (3, 1):
+        writer = ReviewingWriter([{"text": "I managed paid media budgets.", "fact_ids": [first.id]}])
+        # story_0 retrieves slowly, so concurrently story_1 waits at its consistency check.
+        retriever = TopicRetriever([first], delays={"result 0": 0.15})
+        ready, resolver = paced_resolver(ctx, retriever, writer, PacedProvider(consistency=0.5),
+                                         max_concurrency=bound)
+        packet = asyncio.run(resolver.resolve(ready))
+        assert packet.is_complete and [answer.confidence for answer in packet.answers] == [0.5, 0.5]
+        assert [review["purpose"] for review in writer.reviews] == ["evidence_consistency"]
+        traces = resolver.narrative_traces
+        assert [trace["stage"] for trace in traces] == [
+            "consistency", "strong_review", "draft", "consistency_cache", "draft"]
+        assert [trace["question"] for trace in traces if trace["stage"] == "draft"] == questions
+        assert traces[3]["jev_minimum"] == 0.5
+
+
+def test_a_request_over_the_size_bound_holds_only_its_own_field(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_browser.ai.providers import CallBudget
+
+    selected = fact(fictional_candidate, "experience", "I managed paid media budgets.")
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [selected]), mock_job), 3)
+    fields = list(ctx.form.fields)
+    fields[1] = fields[1].model_copy(update={
+        "help_text": "Name every channel, audience, budget and outcome involved. " * 250})
+    ctx = replace(ctx, form=ctx.form.model_copy(update={"fields": fields}))
+    # Size each field's grounding request once, without a bound.
+    probe = PacedProvider()
+    ready, resolver = paced_resolver(ctx, Retriever([selected]), PacedWriter(), probe)
+    assert asyncio.run(resolver.resolve(ready)).is_complete
+    sizes = {request["state"]["question"]: size
+             for request, size in zip(probe.requests, probe.sizes, strict=True)
+             if "sentences" in request["state"]}
+    oversized = sizes.pop(fields[1].question_text)
+    bound = (max(sizes.values()) + oversized) // 2
+    assert len(sizes) == 2 and max(sizes.values()) < bound < oversized
+
+    budget, provider, writer = CallBudget(), PacedProvider(), PacedWriter()
+    ready, resolver = paced_resolver(ctx, Retriever([selected]), writer, provider, budget=budget)
+    budget.max_request_bytes = bound  # the form is classified; only its resolution is bounded
+    packet = asyncio.run(resolver.resolve(ready))
+    assert [answer.field_id for answer in packet.answers] == ["story_0", "story_2"]
+    assert [(missing.field_id, missing.prompt) for missing in packet.missing_inputs] == [
+        ("story_1", "AI request exceeds the bounded context size")]
+    assert len(writer.calls) == 3  # story_1 was written; only its grounding request was refused
+    grounded = [request["state"]["question"] for request in provider.requests
+                if "sentences" in request["state"]]
+    assert sorted(grounded) == sorted(sizes)  # the refused request never reached Jev
+    assert budget.calls == len(budget.receipts) == len(provider.requests) == 3
+
+
+@pytest.mark.parametrize("max_calls", [1, 4, 7, 10])
+def test_an_exhausted_call_budget_holds_fields_and_receipts_every_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, max_calls: int,
+) -> None:
+    from interviewmaxxing_browser.ai.providers import CallBudget
+
+    chosen, others = subject_facts(fictional_candidate)
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [*chosen, *others]), mock_job), 3)
+    # One classification, then per narrative a consistency check, a write and a grounding
+    # check: ten calls, all on one budget as build_ai_runtime wires it.
+    budget = CallBudget(max_calls=max_calls, max_usd=5.0)
+    provider = PacedProvider(consistency=0.96, jitter=0.01, seed=max_calls)
+    transport = WriterTransport(jitter=0.01, seed=max_calls)
+    retriever = TopicRetriever([], topics={f"result {i}": [chosen[i]] for i in range(3)})
+    ready, resolver = paced_resolver(ctx, retriever, budgeted_writer(budget, transport), provider,
+                                     budget=budget)
+    packet = asyncio.run(resolver.resolve(ready))  # no exception escapes
+    answered = [answer.field_id for answer in packet.answers]
+    held = {missing.field_id: missing.prompt for missing in packet.missing_inputs}
+    assert sorted([*answered, *held]) == ["story_0", "story_1", "story_2"]
+    assert set(held.values()) <= {"AI call or cost budget exhausted"}
+    assert bool(held) is (max_calls < 10)
+    assert budget.calls == max_calls
+    # Every reserved call reached its transport and left exactly one receipt.
+    assert len(budget.receipts) == len(provider.requests) + len(transport.requests) == max_calls
+    assert {receipt.status for receipt in budget.receipts} == {"OK"}
+
+
+def test_benchmark_three_narratives_take_less_than_twice_one(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from time import perf_counter
+
+    selected = fact(fictional_candidate, "experience", "I managed paid media budgets.")
+    candidate = candidate_with(fictional_candidate, [selected])
+    elapsed: dict[int, float] = {}
+    for count in (1, 3):
+        provider = PacedProvider()
+        ready, resolver = paced_resolver(narrative_form(context(candidate, mock_job), count),
+                                         Retriever([selected]), PacedWriter(delay=BENCHMARK_DELAY),
+                                         provider)
+        provider.delay = BENCHMARK_DELAY  # every Jev call while resolving; classifying was instant
+        started = perf_counter()
+        packet = asyncio.run(resolver.resolve(ready))
+        elapsed[count] = perf_counter() - started
+        assert packet.is_complete and len(packet.answers) == count
+    one_field = 2 * BENCHMARK_DELAY  # its write, then its grounding call
+    assert elapsed[1] >= one_field
+    assert elapsed[3] < 2 * elapsed[1]
+    assert elapsed[3] < 0.6 * 3 * one_field  # well below the sequential 3 x 0.6 s
+
+
+def test_traces_and_receipts_stay_grouped_by_field_in_form_order(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    class ReviewedPacedWriter(PacedWriter):
+        def review(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(verdict="SUPPORTED", issues=[],
+                                   reference_ids=[kwargs["facts"][0]["id"]])
+
+    chosen, others = subject_facts(fictional_candidate)
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [*chosen, *others]), mock_job), 3)
+    questions = [field.question_text for field in ctx.form.fields]
+    writer = ReviewedPacedWriter(slow={"result 0": 0.3})  # story_0 finishes last
+    retriever = TopicRetriever([], topics={f"result {i}": [chosen[i]] for i in range(3)})
+    # Uncertain grounding (0.94) adds a strong-review trace after each write, so a field that
+    # finishes writing later would also trace later if traces were not grouped.
+    ready, resolver = paced_resolver(ctx, retriever, writer, PacedProvider(
+        consistency=0.96, scope_probability=0.65, support=0.94))
+    packet = asyncio.run(resolver.resolve(ready))
+    assert packet.is_complete and [answer.confidence for answer in packet.answers] == [0.94] * 3
+    assert writer.finished[-1] == questions[0]
+    owner = {selected.id: question for selected, question in zip(chosen, questions, strict=True)}
+    assert [(trace["stage"], trace["question"] if "question" in trace
+             else owner[trace["selected_fact_ids"]["f0"]]) for trace in resolver.narrative_traces] == [
+        (stage, question) for question in questions
+        for stage in ("source_scope", "consistency", "draft", "strong_review")]
+    assert [receipt["fact_ids"] for receipt in resolver.retrieval_receipts] == [[f.id] for f in chosen]
+    assert [receipt.purpose for receipt in resolver.decisions.budget.receipts] == [
+        "full_form_routes",
+        *(["narrative_source_scope", "narrative_consistency", "narrative_grounding"] * 3)]
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "Known limitation (round 5 report): "
+    "BoundedDecisions.decide shares one in-flight (then cached) response between fields that "
+    "send an identical Jev request, and its receipt is buffered for whichever field's thread "
+    "called first: when a later field gets there first, the pass's provider receipts are "
+    "ordered differently from the sequential run (providers.py decide + routing.py _each/_emit)"))
+def test_a_request_two_fields_share_is_receipted_where_the_sequential_run_puts_it(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    class UnboundedFieldWritesSlowly(PacedWriter):
+        def write(self, **kwargs: Any) -> NarrativeDraft:
+            from time import sleep
+
+            if kwargs["max_length"] is None:
+                sleep(0.3)
+            return super().write(**kwargs)
+
+    selected = fact(fictional_candidate, "experience", "I managed paid media budgets.")
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [selected]), mock_job), 2)
+    first, second = ctx.form.fields
+    # The same question twice (as a form may repeat it in two sections): both drafts cite the
+    # same fact, so both grounding requests are identical and one Jev call answers both.
+    twin = second.model_copy(update={"label": first.label, "max_length": 3000})
+    ctx = replace(ctx, form=ctx.form.model_copy(update={"fields": [first, twin]}))
+    purposes: dict[int, list[str]] = {}
+    for bound in (1, 3):
+        ready, resolver = paced_resolver(ctx, Retriever([selected]), UnboundedFieldWritesSlowly(),
+                                         PacedProvider(scope_probability=0.65), max_concurrency=bound)
+        packet = asyncio.run(resolver.resolve(ready))
+        assert packet.is_complete
+        purposes[bound] = [receipt.purpose for receipt in resolver.decisions.budget.receipts]
+    assert purposes[1] == ["full_form_routes", "narrative_source_scope", "narrative_grounding",
+                           "narrative_source_scope"]
+    assert purposes[3] == purposes[1]
+
+
+def test_a_call_finished_after_its_pass_was_cancelled_still_leaves_a_receipt(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_browser.ai.providers import CallBudget
+
+    writing, release = threading.Event(), threading.Event()
+
+    class HeldWriter(PacedWriter):
+        def write(self, **kwargs: Any) -> NarrativeDraft:
+            writing.set()
+            release.wait(timeout=5)
+            return super().write(**kwargs)
+
+    selected = fact(fictional_candidate, "experience", "I managed paid media budgets.")
+    ctx = narrative_form(context(candidate_with(fictional_candidate, [selected]), mock_job), 1)
+    budget, provider = CallBudget(), PacedProvider()
+    ready, resolver = paced_resolver(ctx, Retriever([selected]), HeldWriter(), provider, budget=budget)
+
+    async def cancel_while_writing() -> None:
+        task = asyncio.ensure_future(resolver.resolve(ready))
+        assert await asyncio.to_thread(writing.wait, 5)
+        task.cancel()  # as a service shutdown or a Ctrl-C cancels a run mid-resolution
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()  # the field's worker thread goes on to its grounding call
+
+    asyncio.run(cancel_while_writing())  # returns once the worker threads have finished
+    assert len(provider.requests) == budget.calls == 2  # the classification, then the grounding
+    assert len(budget.receipts) == budget.calls

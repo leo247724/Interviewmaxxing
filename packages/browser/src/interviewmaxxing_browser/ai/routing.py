@@ -6,10 +6,12 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from interviewmaxxing_core import (
@@ -69,7 +71,15 @@ from .classification import (
     FormRouteReport,
     SourceScope,
 )
-from .providers import AIHold, BoundedDecisions, NarrativeWriter
+from .providers import (
+    AIHold,
+    BoundedDecisions,
+    CallBudget,
+    CallReceipt,
+    NarrativeWriter,
+    buffered_receipts,
+    flush_receipts,
+)
 
 if TYPE_CHECKING:
     from interviewmaxxing_generation.knowledge import KnowledgeRetriever, RetrievalResult
@@ -88,6 +98,44 @@ TIMEFRAME_INSENSITIVE_IDENTITY = PROFILE_URL_IDENTITY | {
 frames them as current or past; only another person's datum, an explicit answer or an
 unclear subject would make the local value wrong. A contact or name question worded about a
 past identity (``_PAST_IDENTITY``) keeps the strict clarification."""
+BARE_CONTACT_WORDINGS: dict[SemanticType, frozenset[str]] = {
+    SemanticType.FIRST_NAME: frozenset({
+        "first name", "first", "given name", "forename", "legal first name", "first legal name",
+        "first name legal", "your first name", "first given name"}),
+    SemanticType.LAST_NAME: frozenset({
+        "last name", "last", "surname", "family name", "legal last name", "last legal name",
+        "last name legal", "your last name", "last name surname"}),
+    SemanticType.FULL_NAME: frozenset({
+        "name", "full name", "legal name", "full legal name", "your name", "your full name",
+        "full name legal", "legal full name"}),
+    SemanticType.PREFERRED_NAME: frozenset({
+        "preferred name", "preferred first name", "preferred full name", "nickname",
+        "preferred name optional"}),
+    SemanticType.EMAIL: frozenset({
+        "email", "e-mail", "email address", "e-mail address", "your email", "your email address",
+        "personal email", "personal email address", "email id"}),
+    SemanticType.PHONE: frozenset({
+        "phone", "phone number", "mobile", "mobile number", "mobile phone", "mobile phone number",
+        "cell", "cell phone", "cell phone number", "cell number", "telephone", "telephone number",
+        "your phone number", "contact number", "contact phone", "contact phone number",
+        "primary phone", "primary phone number", "phone mobile"}),
+    SemanticType.LINKEDIN: frozenset({
+        "linkedin", "linkedin url", "linkedin profile", "linkedin profile url", "linkedin link",
+        "linkedin profile link"}),
+    SemanticType.GITHUB: frozenset({
+        "github", "github url", "github profile", "github profile url", "github link"}),
+    SemanticType.WEBSITE: frozenset({
+        "website", "personal website", "website url", "personal website url", "personal site",
+        "personal url"}),
+}
+"""Bare contact wordings (``wording_key``) of the applicant's own identity fields, from the
+simple-answers wordings and the browser heuristics' patterns."""
+_OTHER_PERSON = re.compile(
+    r"\b(?:references?|referees?|supervisors?|managers?|employers?|emergency|recruiters?|"
+    r"agency|agencies|spouses?|partners?|parents?|guardians?|contact person|their|his|her)\b",
+    re.IGNORECASE)
+_NON_ANSWER_ROUTES = (FieldRoute.WRITER.value, FieldRoute.UNSUPPORTED.value,
+                      FieldRoute.APPROVED_DOCUMENT.value)
 _PAST_IDENTITY = re.compile(
     r"\b(?:previous|previously|prior|former|formerly|past|maiden|birth|other|another|"
     r"alias|aliases|aka|a\.k\.a|also known|used to)\b", re.IGNORECASE)
@@ -346,6 +394,22 @@ def _polarity(label: str) -> str | None:
     return None
 
 
+def _answer_route(gate: FieldRouteDecision) -> bool:
+    """A literal answer whose route label only split between copying and asking the user:
+    labelled COPY_KNOWN, AMBIGUOUS or HUMAN_INPUT with at most 0.01 of the route mass on
+    writing, a document or an unsupported control."""
+    return (gate.route in (FieldRoute.COPY_KNOWN, FieldRoute.AMBIGUOUS, FieldRoute.HUMAN_INPUT)
+            and sum(gate.probabilities.get(route, 0.0) for route in _NON_ANSWER_ROUTES) <= 0.01)
+
+
+def _scope_passes(gate: FieldRouteDecision, *scopes: SourceScope) -> bool:
+    """The source scope passes its own gate: one of ``scopes`` at probability ≥ 0.95 and
+    confidence ≥ 0.90."""
+    return (gate.source_scope in scopes
+            and (gate.source_scope_confidence or 0.0) >= MIN_CONFIDENCE
+            and gate.source_scope_probabilities.get(gate.source_scope.value, 0.0) >= MIN_PROBABILITY)
+
+
 def _residence_share(gate: FieldRouteDecision) -> float:
     """Jev's semantic mass on the residence types together, for a field the classifier
     typed as one of them (0.0 otherwise)."""
@@ -569,6 +633,67 @@ def _retrieval_metrics(receipt: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+class _Turns:
+    """Form-order entry to one step for concurrently resolved fields: turn k waits until
+    turns 0..k-1 have passed it, or ended without reaching it. The consistency check uses
+    it, so shared verdicts are asked, cached and reused exactly as in a sequential pass."""
+
+    def __init__(self, count: int) -> None:
+        self._passed = [False] * count
+        self._changed = threading.Condition()
+
+    def wait(self, turn: int) -> None:
+        with self._changed:
+            self._changed.wait_for(lambda: all(self._passed[:turn]))
+
+    def release(self, turn: int) -> None:
+        with self._changed:
+            if not self._passed[turn]:
+                self._passed[turn] = True
+                self._changed.notify_all()
+
+    def release_all(self) -> None:
+        with self._changed:
+            self._passed = [True] * len(self._passed)
+            self._changed.notify_all()
+
+
+@dataclass
+class _FieldLog:
+    """What one concurrently resolved field records; emitted in form order afterwards."""
+    turns: _Turns | None = None
+    turn: int = 0
+    traces: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    retrievals: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    receipts: list[tuple[CallBudget, CallReceipt]] = dataclass_field(default_factory=list)
+    emitted: bool = False
+    """The pass has emitted this log; anything recorded later (a worker still running
+    after its pass was cancelled) is emitted by the worker itself when it ends."""
+    sent_traces: int = 0
+    sent_retrievals: int = 0
+
+
+_FIELD_LOG: ContextVar[_FieldLog | None] = ContextVar("interviewmaxxing_field_log", default=None)
+
+
+class _Unrouted(AIHold):
+    """A field admitted to generative routing only as a screener that turned out not to
+    be one: it keeps the hold it had before routing."""
+
+    def __init__(self) -> None:
+        super().__init__("not routed")
+
+
+def _raise_unexpected(result: object) -> None:
+    """A field's result from ``_each``: anything raised other than a hold is a defect."""
+    if isinstance(result, BaseException) and not isinstance(result, AIHold):
+        raise result
+
+
 @dataclass
 class DynamicPacketResolver:
     decisions: BoundedDecisions
@@ -585,8 +710,13 @@ class DynamicPacketResolver:
     """Per-runtime Jev consistency scores keyed by one selected fact and its exact
     comparison set, so another field on the same form reuses the verdict."""
     max_consistency_verdicts: int = 256
+    max_concurrency: int = 3
+    """Fields resolved at once within one form (each phase), bounding provider calls,
+    rate limits and memory; 1 resolves them one after another."""
     _suggestion_decisions: dict[str, dict[str, Any]] = dataclass_field(
         default_factory=dict, init=False, repr=False)
+    _lock: threading.RLock = dataclass_field(default_factory=threading.RLock, init=False, repr=False)
+    """Guards the traces, receipts and caches above across worker threads."""
 
     def __post_init__(self) -> None:
         if self.router is None:
@@ -618,7 +748,7 @@ class DynamicPacketResolver:
         for bucket in (total, *by_purpose.values()):
             bucket["known_cost_usd"] = round(bucket["known_cost_usd"], 6)
             bucket["latency_seconds"] = round(bucket["latency_seconds"], 3)
-        return total | {"by_purpose": by_purpose}
+        return total | {"by_purpose": dict(sorted(by_purpose.items()))}
 
     async def resolve(self, context: PacketContext) -> ApplicationPacket:
         assert self.router is not None
@@ -627,94 +757,114 @@ class DynamicPacketResolver:
             report = await asyncio.to_thread(self.router.classify_form, context.form,
                 document_id="packet-context:" + context.form.inspected_at.isoformat())
         packet = await FactualPacketResolver().resolve(context)
-        return await asyncio.to_thread(self._supplement, context, packet, report)
+        return await self._supplement(context, packet, report)
 
-    def _supplement(self, context: PacketContext, packet: ApplicationPacket,
-                    report: FormRouteReport) -> ApplicationPacket:
-        packet, held = self._map_stored_answers(context, packet, report)
+    # --- concurrency within one form ----------------------------------------------------
+
+    async def _each(self, items: Sequence[_T], work: Callable[[_T], _R], *,
+                    ordered: bool = False) -> list[_R | BaseException]:
+        """``work`` for every item in worker threads, at most ``max_concurrency`` at once;
+        results in item order, with an exception in its item's place.
+
+        Each item's traces, retrieval receipts and provider receipts are buffered and
+        emitted in item order afterwards, so concurrency never reorders them. With
+        ``ordered`` the items enter the consistency check in item order (``_Turns``)."""
+        if not items:
+            return []
+        limit = asyncio.Semaphore(max(1, self.max_concurrency))
+        turns = _Turns(len(items)) if ordered else None
+        logs = [_FieldLog(turns=turns, turn=index) for index in range(len(items))]
+
+        def run(log: _FieldLog, item: _T) -> _R:
+            token = _FIELD_LOG.set(log)
+            try:
+                with buffered_receipts(log.receipts):
+                    return work(item)
+            finally:
+                _FIELD_LOG.reset(token)
+                if log.turns is not None:
+                    log.turns.release(log.turn)
+                self._emit_late(log)
+
+        async def one(log: _FieldLog, item: _T) -> _R:
+            async with limit:
+                return await asyncio.to_thread(run, log, item)
+
+        try:
+            return list(await asyncio.gather(
+                *(one(log, item) for log, item in zip(logs, items, strict=True)),
+                return_exceptions=True))
+        finally:
+            if turns is not None:
+                turns.release_all()  # a cancelled pass never leaves a worker waiting
+            self._emit(logs)
+
+    def _emit(self, logs: Sequence[_FieldLog]) -> None:
+        """Append buffered traces, retrieval receipts and provider receipts in item order."""
+        with self._lock:
+            for log in logs:
+                self._append_log(log)
+                log.emitted = True
+        for log in logs:
+            flush_receipts(log.receipts)
+
+    def _emit_late(self, log: _FieldLog) -> None:
+        """A worker that ends after its pass was emitted (the pass was cancelled) emits
+        what it recorded since, so no provider call it made goes unreported."""
+        with self._lock:
+            if not log.emitted:
+                return
+            self._append_log(log)
+        flush_receipts(log.receipts)
+
+    def _append_log(self, log: _FieldLog) -> None:
+        """The log's traces and retrieval receipts not yet appended (hold ``_lock``)."""
+        traces, retrievals = log.traces[log.sent_traces:], log.retrievals[log.sent_retrievals:]
+        log.sent_traces += len(traces)
+        log.sent_retrievals += len(retrievals)
+        self.narrative_traces.extend(traces)
+        self.retrieval_receipts.extend(retrievals)
+        del self.narrative_traces[:-32]
+        del self.retrieval_receipts[:-128]
+
+    # --- the three passes -----------------------------------------------------------------
+
+    async def _supplement(self, context: PacketContext, packet: ApplicationPacket,
+                          report: FormRouteReport) -> ApplicationPacket:
+        """Stored answers, then the route gates on every answer, then generative routing
+        for the fields still open. Within each pass independent fields are resolved
+        concurrently (``_each``); the packet is assembled in form order."""
+        packet, held = await self._map_stored_answers(context, packet, report)
         answers: list[PacketAnswer] = []
         missing = list(packet.missing_inputs)
         copy_scope_attempted: set[str] = set()
-        for answer in packet.answers:
-            gate = report.field(answer.field_id)
-            fld = context.form.field(answer.field_id)
-            explicit = answer.provenance.source in (AnswerSource.USER_INPUT, AnswerSource.SAVED_ANSWER)
-            approved = answer.provenance.source is AnswerSource.RESUME
-            clarified_scope = None
-            held_reason = "Answer held by the full-form route gate"
-            allowed = ((explicit and gate.route is not FieldRoute.UNSUPPORTED)
-                       or (gate.route is FieldRoute.COPY_KNOWN and not approved and gate.profile_copy_allowed)
-                       or (gate.route is FieldRoute.APPROVED_DOCUMENT and approved and gate.profile_copy_allowed))
-            if not allowed and self._can_clarify_identity_scope(fld, gate, answer):
-                copy_scope_attempted.add(fld.id)
-                try:
-                    clarified_scope = self._identity_scope(context, fld, gate, answer)
-                    allowed = True
-                except AIHold as exc:
-                    held_reason = str(exc)
-            if allowed:
-                confidence = answer.confidence if explicit else min(answer.confidence,
-                    self._gate_confidence(gate, source_approval=clarified_scope))
-                answers.append(answer.model_copy(update={"confidence": confidence}))
-                if approved and gate.autofill:
-                    self._trace({"stage": "resume_upload", "field_id": fld.id,
-                                 "field_fingerprint": fld.fingerprint, "autofill": True,
-                                 "status": "APPROVED"})
-            else:
-                if fld.required:
-                    missing.append(MissingInput.for_field(context.form, fld,
-                        reason=MissingReason.NO_ANSWER, prompt=held_reason))
-        for field in context.form.fields:
-            if (any(a.field_id == field.id for a in answers) or field.id in copy_scope_attempted
-                    or field.id in held):
+        gated = await self._each(packet.answers, lambda answer: self._gate(context, report, answer))
+        for answer, checked in zip(packet.answers, gated, strict=True):
+            _raise_unexpected(checked)
+            assert not isinstance(checked, BaseException)
+            accepted, held_input, attempted = checked
+            if attempted:
+                copy_scope_attempted.add(answer.field_id)
+            if accepted is not None:
+                answers.append(accepted)
+            elif held_input is not None:
+                missing.append(held_input)
+        open_fields = [field for field in context.form.fields
+                       if self._routable(context, report.field(field.id), field, answers, missing)
+                       and field.id not in copy_scope_attempted and field.id not in held]
+        routed = await self._each(open_fields, lambda field: self._generate(
+            context, field, report.field(field.id)), ordered=True)
+        for field, outcome in zip(open_fields, routed, strict=True):
+            _raise_unexpected(outcome)
+            if isinstance(outcome, _Unrouted):
                 continue
-            gate = report.field(field.id)
-            if gate.route not in (FieldRoute.COPY_KNOWN, FieldRoute.WRITER):
-                continue
-            if gate.source_scope in (SourceScope.UNCLEAR, SourceScope.EXPLICIT_ANSWER):
-                continue
-            if gate.route is FieldRoute.WRITER and gate.source_scope is SourceScope.OTHER_PERSON_OR_ENTITY:
-                continue
-            # Explicit, unknown, unsupported and file fields never enter generative routing;
-            # a select-all question enters only as a fact-grounded screener.
-            if (field.semantic_type in EXPLICIT_ANSWER_REQUIRED
-                    or field.semantic_type is SemanticType.UNKNOWN
-                    or (field.control_type not in (ControlType.TEXT, ControlType.TEXTAREA,
-                        ControlType.SELECT, ControlType.RADIO)
-                        and not (field.control_type in MULTI_CHOICE_CONTROLS
-                                 and self._is_fact_screener(field, gate)))):
-                continue
-            # Do not replace a user's scoped answer or a conflicting saved answer.
-            if any(u.field_id == field.id for u in context.user_inputs):
-                continue
-            if any(saved_answer_matches(a, QuestionText.of(field))
-                   for a in context.candidate.applicable_saved_answers(context.job)):
-                continue
-            prior = next((m for m in missing if m.field_id == field.id), None)
-            if prior is not None and prior.reason is MissingReason.AMBIGUOUS:
-                continue
-            writer_scope = None
-            try:
-                if ((gate.source_scope_confidence or 0.0) < MIN_CONFIDENCE
-                        or gate.source_scope_probabilities.get(gate.source_scope.value, 0.0) < MIN_PROBABILITY):
-                    if gate.route is FieldRoute.COPY_KNOWN:
-                        raise AIHold("The field's current-candidate source is not confirmed for exact copying")
-                    writer_scope = self._writer_scope(field, gate)
-                screened = (self._screener(context, field, gate) if self._is_screener(field, gate)
-                            else self._fact_screener(context, field, gate)
-                            if self._is_fact_screener(field, gate) else None)
-                answer = screened if screened is not None else self._route(
-                    context, field, require_writer=gate.route is FieldRoute.WRITER,
-                    purpose="cover_letter" if gate.semantic_type is SemanticType.COVER_LETTER else "answer")
-            except AIHold as exc:
+            if isinstance(outcome, BaseException):
                 if field.required:
                     missing = [m for m in missing if m.field_id != field.id]
                     missing.append(MissingInput.for_field(context.form, field,
-                        reason=MissingReason.NO_ANSWER, prompt=str(exc)))
+                        reason=MissingReason.NO_ANSWER, prompt=str(outcome)))
                 continue
-            answer = answer.model_copy(update={"confidence": min(answer.confidence,
-                self._gate_confidence(gate, source_approval=writer_scope))})
-            answers.append(answer)
+            answers.append(outcome)
             missing = [m for m in missing if m.field_id != field.id]
         result = ApplicationPacket.model_validate(packet.model_dump() | {
             "answers": answers, "missing_inputs": missing})
@@ -723,46 +873,159 @@ class DynamicPacketResolver:
             raise ValueError("AI packet failed canonical validation: " + "; ".join(problems))
         return result
 
+    def _gate(self, context: PacketContext, report: FormRouteReport,
+              answer: PacketAnswer) -> tuple[PacketAnswer | None, MissingInput | None, bool]:
+        """One proposed answer through the full-form route gate: accepted (with its gate
+        confidence), held (a missing input for a required field), and whether the narrow
+        identity-scope clarification was attempted."""
+        gate = report.field(answer.field_id)
+        fld = context.form.field(answer.field_id)
+        explicit = answer.provenance.source in (AnswerSource.USER_INPUT, AnswerSource.SAVED_ANSWER)
+        approved = answer.provenance.source is AnswerSource.RESUME
+        clarified_scope = None
+        attempted = False
+        held_reason = "Answer held by the full-form route gate"
+        allowed = ((explicit and gate.route is not FieldRoute.UNSUPPORTED)
+                   or (gate.route is FieldRoute.COPY_KNOWN and not approved and gate.profile_copy_allowed)
+                   or (gate.route is FieldRoute.APPROVED_DOCUMENT and approved and gate.profile_copy_allowed)
+                   or (answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+                       and gate.route is not FieldRoute.COPY_KNOWN
+                       and self._is_residence(fld, gate) and gate.profile_copy_allowed))
+        if not allowed and self._bare_contact(fld, gate, answer):
+            confidence = min(0.99, answer.confidence, gate.confidence or 0.0,
+                             gate.probabilities.get(FieldRoute.COPY_KNOWN.value, 0.0))
+            self._trace({"stage": "identity_source_clarification", "field_id": fld.id,
+                "field_fingerprint": fld.fingerprint, "question": fld.question_text,
+                "initial_source_scope": gate.source_scope.value,
+                "initial_source_confidence": gate.source_scope_confidence,
+                "initial_source_probabilities": gate.source_scope_probabilities,
+                "status": "APPROVED_BARE_CONTACT"})
+            return answer.model_copy(update={"confidence": confidence}), None, attempted
+        if not allowed and self._can_clarify_identity_scope(fld, gate, answer):
+            attempted = True
+            try:
+                clarified_scope = self._identity_scope(context, fld, gate, answer)
+                allowed = True
+            except AIHold as exc:
+                held_reason = str(exc)
+        if allowed:
+            confidence = answer.confidence if explicit else min(answer.confidence,
+                self._gate_confidence(gate, source_approval=clarified_scope))
+            if approved and gate.autofill:
+                self._trace({"stage": "resume_upload", "field_id": fld.id,
+                             "field_fingerprint": fld.fingerprint, "autofill": True,
+                             "status": "APPROVED"})
+            return answer.model_copy(update={"confidence": confidence}), None, attempted
+        if fld.required:
+            return None, MissingInput.for_field(context.form, fld,
+                reason=MissingReason.NO_ANSWER, prompt=held_reason), attempted
+        return None, None, attempted
+
+    @staticmethod
+    def _bare_contact(field: ApplicationField, gate: FieldRouteDecision, answer: PacketAnswer) -> bool:
+        """The applicant's own identity copied onto a bare contact question ("First Name",
+        "Email", "Phone", "LinkedIn") on a text input, without the source-scope gate: no
+        past-identity or other-person wording in its label, help, placeholder or section,
+        and at most 0.01 of Jev's source mass on another person or entity. Unclear or
+        explicit-answer mass is ignored: a bare contact field on an application cannot be a
+        decision."""
+        wordings = BARE_CONTACT_WORDINGS.get(field.semantic_type)
+        if (wordings is None or answer.provenance.source is not AnswerSource.PROFILE_IDENTITY
+                or answer.field_id != field.id or answer.semantic_type is not field.semantic_type
+                or gate.field_id != field.id or gate.field_fingerprint != field.fingerprint
+                or gate.route is not FieldRoute.COPY_KNOWN
+                or field.control_type is not ControlType.TEXT
+                or field.input_type not in (None, "text", "email", "tel", "url")
+                or wording_key(field.label) not in wordings):
+            return False
+        nearby = " ".join([field.label, field.help_text or "", field.placeholder or "",
+                           *field.section_context])
+        return (_PAST_IDENTITY.search(nearby) is None and _OTHER_PERSON.search(nearby) is None
+                and gate.source_scope_probabilities.get(
+                    SourceScope.OTHER_PERSON_OR_ENTITY.value, 0.0) <= 0.01)
+
+    @staticmethod
+    def _routable(context: PacketContext, gate: FieldRouteDecision, field: ApplicationField,
+                  answers: Sequence[PacketAnswer], missing: Sequence[MissingInput]) -> bool:
+        """Whether a field without an answer enters generative routing."""
+        if any(a.field_id == field.id for a in answers):
+            return False
+        if gate.route not in (FieldRoute.COPY_KNOWN, FieldRoute.WRITER) and not (
+                DynamicPacketResolver._is_screener(field, gate)
+                or DynamicPacketResolver._is_fact_screener(field, gate)):
+            return False
+        if gate.source_scope in (SourceScope.UNCLEAR, SourceScope.EXPLICIT_ANSWER):
+            return False
+        if gate.route is FieldRoute.WRITER and gate.source_scope is SourceScope.OTHER_PERSON_OR_ENTITY:
+            return False
+        # Explicit, unknown, unsupported and file fields never enter generative routing;
+        # a select-all question enters only as a fact-grounded screener.
+        if (field.semantic_type in EXPLICIT_ANSWER_REQUIRED
+                or field.semantic_type is SemanticType.UNKNOWN
+                or (field.control_type not in (ControlType.TEXT, ControlType.TEXTAREA,
+                    ControlType.SELECT, ControlType.RADIO)
+                    and not (field.control_type in MULTI_CHOICE_CONTROLS
+                             and DynamicPacketResolver._is_fact_screener(field, gate)))):
+            return False
+        # Do not replace a user's scoped answer or a conflicting saved answer.
+        if any(u.field_id == field.id for u in context.user_inputs):
+            return False
+        if any(saved_answer_matches(a, QuestionText.of(field))
+               for a in context.candidate.applicable_saved_answers(context.job)):
+            return False
+        prior = next((m for m in missing if m.field_id == field.id), None)
+        return prior is None or prior.reason is not MissingReason.AMBIGUOUS
+
+    def _generate(self, context: PacketContext, field: ApplicationField,
+                  gate: FieldRouteDecision) -> PacketAnswer:
+        """A generative answer for one open field (screener, fact screener, exact fact or
+        grounded narrative), capped by its gate confidence; ``AIHold`` holds it."""
+        writer_scope = None
+        if ((gate.source_scope_confidence or 0.0) < MIN_CONFIDENCE
+                or gate.source_scope_probabilities.get(gate.source_scope.value, 0.0) < MIN_PROBABILITY):
+            if gate.route is FieldRoute.COPY_KNOWN:
+                raise AIHold("The field's current-candidate source is not confirmed for exact copying")
+            writer_scope = self._writer_scope(field, gate)
+        screened = (self._screener(context, field, gate) if self._is_screener(field, gate)
+                    else self._fact_screener(context, field, gate)
+                    if self._is_fact_screener(field, gate) else None)
+        if screened is None and gate.route not in (FieldRoute.COPY_KNOWN, FieldRoute.WRITER):
+            # Admitted only as a screener (its label split); nothing else answers it here.
+            raise _Unrouted()
+        answer = screened if screened is not None else self._route(
+            context, field, require_writer=gate.route is FieldRoute.WRITER,
+            purpose="cover_letter" if gate.semantic_type is SemanticType.COVER_LETTER else "answer")
+        return answer.model_copy(update={"confidence": min(answer.confidence,
+            self._gate_confidence(gate, source_approval=writer_scope))})
+
     # --- stored answers onto a site's own option wording -----------------------------
 
-    def _map_stored_answers(self, context: PacketContext, packet: ApplicationPacket,
-                            report: FormRouteReport) -> tuple[ApplicationPacket, set[str]]:
+    async def _map_stored_answers(self, context: PacketContext, packet: ApplicationPacket,
+                                  report: FormRouteReport) -> tuple[ApplicationPacket, set[str]]:
         """Map the user's stored answer onto a choice control's own option wording.
 
         Saved answers stay bound to the exact question wording; only their mapping onto
         the site's option labels is semantic. Jev only picks among the observed enabled
         options (or NONE); the value is still the user's own answer, keeps its source
         and passes the route gates and canonical validation below like any answer.
+        Fields are decided concurrently (``_each``).
 
         Also returns the fields whose reworded saved answer Jev confirmed but that could not
         be placed on them: those hold for the user and never get a generated answer."""
+        fields = [field for field in context.form.fields
+                  if packet.answer_for(field.id) is None
+                  and not any(u.field_id == field.id for u in context.user_inputs)
+                  and report.field(field.id).route is not FieldRoute.UNSUPPORTED]
+        results = await self._each(fields, lambda field: self._stored_answer(
+            context, field, report.field(field.id)))
         mapped: list[PacketAnswer] = []
         held: dict[str, str] = {}
-        for field in context.form.fields:
-            if (packet.answer_for(field.id) is not None
-                    or any(u.field_id == field.id for u in context.user_inputs)):
-                continue
-            gate = report.field(field.id)
-            if gate.route is FieldRoute.UNSUPPORTED:
-                continue
-            answer: PacketAnswer | None = None
-            settled = False
-            if field.control_type in CHOICE_CONTROLS:
-                if SemanticType.REFERRAL_SOURCE in (field.semantic_type, gate.semantic_type):
-                    answer, settled = self._referral_option(context, field)
-                if not settled:
-                    answer = self._equivalent_option(context, field, gate)
-            if answer is None and not settled and not _exact_saved_answers(context, field):
-                # Second path: a GLOBAL saved answer to a differently worded question.
-                try:
-                    answer = self._reworded_saved_answer(context, field, gate)
-                except AIHold as exc:
-                    held[field.id] = str(exc)
-                    continue
-            if answer is None and not settled and self._is_residence(field, gate):
-                answer = self._residence(context, field)
-            if answer is not None:
-                mapped.append(answer)
+        for field, result in zip(fields, results, strict=True):
+            _raise_unexpected(result)
+            if isinstance(result, BaseException):
+                held[field.id] = str(result)
+            elif result is not None:
+                mapped.append(result)
         if not mapped and not held:
             return packet, set()
         done = {answer.field_id for answer in mapped} | set(held)
@@ -772,6 +1035,25 @@ class DynamicPacketResolver:
                     for field_id, prompt in held.items() if context.form.field(field_id).required]
         return ApplicationPacket.model_validate(packet.model_dump() | {
             "answers": [*packet.answers, *mapped], "missing_inputs": missing}), set(held)
+
+    def _stored_answer(self, context: PacketContext, field: ApplicationField,
+                       gate: FieldRouteDecision) -> PacketAnswer | None:
+        """The stored answer or verified address placed on one field: the referral policy,
+        option equivalence, a reworded saved answer, then residence. ``AIHold`` when a
+        reworded saved answer asks this question but cannot be placed on it."""
+        answer: PacketAnswer | None = None
+        settled = False
+        if field.control_type in CHOICE_CONTROLS:
+            if SemanticType.REFERRAL_SOURCE in (field.semantic_type, gate.semantic_type):
+                answer, settled = self._referral_option(context, field)
+            if not settled:
+                answer = self._equivalent_option(context, field, gate)
+        if answer is None and not settled and not _exact_saved_answers(context, field):
+            # Second path: a GLOBAL saved answer to a differently worded question.
+            answer = self._reworded_saved_answer(context, field, gate)
+        if answer is None and not settled and self._is_residence(field, gate):
+            answer = self._residence(context, field)
+        return answer
 
     def _equivalent_option(self, context: PacketContext, field: ApplicationField,
                            gate: FieldRouteDecision) -> PacketAnswer | None:
@@ -1015,11 +1297,16 @@ class DynamicPacketResolver:
     @staticmethod
     def _is_residence(field: ApplicationField, gate: FieldRouteDecision) -> bool:
         """A required single-choice question about the applicant's own current location
-        (country, state list, city or region options), as the full-form gate routes it."""
+        (country, state list, city or region options), routed as a literal answer. The
+        route label may also be AMBIGUOUS or HUMAN_INPUT when at most 0.01 of the route
+        mass is on writing, documents or unsupported controls and the applicant-current
+        source passes its own gate: the residence decision and the state-list check are
+        the safety gate, not the label."""
         return (field.required and field.semantic_type in RESIDENCE_TYPES
                 and field.control_type in (ControlType.SELECT, ControlType.RADIO)
-                and gate.route is FieldRoute.COPY_KNOWN
-                and gate.source_scope is SourceScope.APPLICANT_CURRENT)
+                and gate.source_scope is SourceScope.APPLICANT_CURRENT
+                and (gate.route is FieldRoute.COPY_KNOWN
+                     or (_answer_route(gate) and _scope_passes(gate, SourceScope.APPLICANT_CURRENT))))
 
     def _residence(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
         """One Jev Choice over the observed options plus UNKNOWN and NOT_RESIDENCE, given
@@ -1082,8 +1369,9 @@ class DynamicPacketResolver:
         the full-form gate: literal, historical/contextual source, and yes/no options (or
         a text question phrased as yes/no)."""
         if (not field.required or field.semantic_type in _SCREENER_EXCLUDED
-                or gate.route is not FieldRoute.COPY_KNOWN
                 or gate.source_scope is not SourceScope.HISTORICAL_OR_CONTEXTUAL
+                or not (gate.route is FieldRoute.COPY_KNOWN or (
+                    _answer_route(gate) and _scope_passes(gate, SourceScope.HISTORICAL_OR_CONTEXTUAL)))
                 or (gate.narrative_confidence or 0.0) < MIN_CONFIDENCE
                 or gate.narrative_probabilities.get("literal", 0.0) < MIN_PROBABILITY):
             return False
@@ -1192,10 +1480,11 @@ class DynamicPacketResolver:
     def _is_fact_screener(field: ApplicationField, gate: FieldRouteDecision) -> bool:
         """A required single-choice (not yes/no) or short numeric question about the
         applicant's own experience, routed as a literal answer from their own background."""
+        own = (SourceScope.HISTORICAL_OR_CONTEXTUAL, SourceScope.APPLICANT_CURRENT)
         if (not field.required or field.semantic_type in _SCREENER_EXCLUDED
-                or gate.route is not FieldRoute.COPY_KNOWN
-                or gate.source_scope not in (SourceScope.HISTORICAL_OR_CONTEXTUAL,
-                                             SourceScope.APPLICANT_CURRENT)
+                or gate.source_scope not in own
+                or not (gate.route is FieldRoute.COPY_KNOWN
+                        or (_answer_route(gate) and _scope_passes(gate, *own)))
                 or (gate.narrative_confidence or 0.0) < MIN_CONFIDENCE
                 or gate.narrative_probabilities.get("literal", 0.0) < MIN_PROBABILITY):
             return False
@@ -1508,10 +1797,22 @@ class DynamicPacketResolver:
         return await asyncio.to_thread(self._choose_suggestion, context, field, typed_value,
                                        list(suggestions))
 
+    async def choose_suggestions(
+        self, context: PacketContext,
+        lookups: Sequence[tuple[ApplicationField, str, Sequence[str]]],
+    ) -> list[str | None]:
+        """``choose_suggestion`` for several lookups (field, typed value, suggestions),
+        decided concurrently under ``max_concurrency``; results and traces in the given
+        order. A failed decision is None, like a held one."""
+        results = await self._each(list(lookups), lambda lookup: self._choose_suggestion(
+            context, lookup[0], lookup[1], list(lookup[2])))
+        return [result if isinstance(result, str) else None for result in results]
+
     def suggestion_decision(self, field_id: str) -> dict[str, Any] | None:
         """The last lookup decision for ``field_id`` (no typed or suggested text)."""
-        decision = self._suggestion_decisions.get(field_id)
-        return dict(decision) if decision is not None else None
+        with self._lock:
+            decision = self._suggestion_decisions.get(field_id)
+            return dict(decision) if decision is not None else None
 
     def _choose_suggestion(self, context: PacketContext, field: ApplicationField,
                            typed_value: str, suggestions: list[str]) -> str | None:
@@ -1520,9 +1821,10 @@ class DynamicPacketResolver:
         trace: dict[str, Any] = {"stage": "suggestion_choice", "field_id": field.id,
             "field_fingerprint": field.fingerprint, "suggestion_count": len(keys),
             "prompt_version": CHOICE_PROMPT_VERSION, "status": "HELD"}
-        if len(self._suggestion_decisions) >= 64:
-            self._suggestion_decisions.pop(next(iter(self._suggestion_decisions)))
-        self._suggestion_decisions[field.id] = trace
+        with self._lock:
+            if len(self._suggestion_decisions) >= 64:
+                self._suggestion_decisions.pop(next(iter(self._suggestion_decisions)))
+            self._suggestion_decisions[field.id] = trace
         if not keys or not typed_value.strip():
             self._trace(trace)
             return None
@@ -1680,8 +1982,13 @@ class DynamicPacketResolver:
                 and _HISTORICAL_TIMEFRAME.search(" ".join([wording, *field.section_context])) is None)
 
     def _trace(self, value: dict[str, Any]) -> dict[str, Any]:
-        self.narrative_traces.append(value)
-        del self.narrative_traces[:-32]
+        log = _FIELD_LOG.get()
+        if log is not None:  # a concurrently resolved field: emitted in form order later
+            log.traces.append(value)
+            return value
+        with self._lock:
+            self.narrative_traces.append(value)
+            del self.narrative_traces[:-32]
         return value
 
     def _writer_scope(self, field: ApplicationField, gate: FieldRouteDecision) -> float:
@@ -1739,15 +2046,31 @@ class DynamicPacketResolver:
         Keys are arbitrary: include all unscoped facts, same-group facts, global
         assertions and negative booleans. Counterevidence is for consistency only;
         it never becomes additional positive evidence available to the writer.
+
+        Concurrently resolved fields enter this check in form order, one at a time, so
+        the verdict and review caches are asked and reused exactly as in sequence.
         """
+        log = _FIELD_LOG.get()
+        if log is None or log.turns is None:
+            return self._consistency(context, selected, allow_strong_review=allow_strong_review)
+        log.turns.wait(log.turn)
+        try:
+            return self._consistency(context, selected, allow_strong_review=allow_strong_review)
+        finally:
+            log.turns.release(log.turn)  # later fields need not wait for this one's writer
+
+    def _consistency(self, context: PacketContext, selected: list[CandidateFact], *,
+                     allow_strong_review: bool) -> float:
         all_facts = {fact.id: fact for fact in context.candidate.verified_facts() if fact.value is not None}
         revision = _digest({"candidate_id": context.candidate.id,
                             "facts": [fact.model_dump(mode="json") for fact in all_facts.values()],
                             "experience": [group.model_dump(mode="json") for group in context.candidate.experience]})
-        if allow_strong_review and revision in self._consistency_reviews:
+        with self._lock:
+            reviewed = self._consistency_reviews.get(revision) if allow_strong_review else None
+        if reviewed is not None:
             self._trace({"stage": "consistency_cache", "candidate_revision": revision,
-                         "status": "SUPPORTED", "jev_minimum": self._consistency_reviews[revision]})
-            return self._consistency_reviews[revision]
+                         "status": "SUPPORTED", "jev_minimum": reviewed})
+            return reviewed
         groups = {fact.id: {group.id for group in context.candidate.experience if fact.id in group.fact_ids}
                   for fact in all_facts.values()}
         subjects = {fact.id: _subject_terms(fact) for fact in all_facts.values()}
@@ -1785,8 +2108,9 @@ class DynamicPacketResolver:
                                           "alternatives": sorted((contextual(o) for o in comparisons[key]),
                                                                  key=lambda item: str(item["id"]))})
                             for key, fact in relevant.items()}
-            scores = {key: self._consistency_verdicts[verdict_keys[key]] for key in relevant
-                      if verdict_keys[key] in self._consistency_verdicts}
+            with self._lock:
+                scores = {key: self._consistency_verdicts[verdict_keys[key]] for key in relevant
+                          if verdict_keys[key] in self._consistency_verdicts}
             asking = {key: fact for key, fact in relevant.items() if key not in scores}
             if asking:
                 asked_ids = {fact.id for key in asking for fact in comparisons[key]}
@@ -1819,9 +2143,10 @@ class DynamicPacketResolver:
                     answer = response.answers[key]
                     scores[key] = answer.noul if isinstance(answer, NoulAnswer) else 0.0
                     if self.max_consistency_verdicts > 0:
-                        if len(self._consistency_verdicts) >= self.max_consistency_verdicts:
-                            self._consistency_verdicts.pop(next(iter(self._consistency_verdicts)))
-                        self._consistency_verdicts[verdict_keys[key]] = scores[key]
+                        with self._lock:
+                            if len(self._consistency_verdicts) >= self.max_consistency_verdicts:
+                                self._consistency_verdicts.pop(next(iter(self._consistency_verdicts)))
+                            self._consistency_verdicts[verdict_keys[key]] = scores[key]
             self._trace({"stage": "consistency", "selected_fact_ids": {key: fact.id for key, fact in relevant.items()},
                 "canonical_alternative_ids": [fact.id for fact in chunk], "probabilities": scores,
                 "cached": sorted(set(relevant) - set(asking)),
@@ -1836,9 +2161,10 @@ class DynamicPacketResolver:
                         "use their canonical group relations and retain explicit global counterclaims.",
                         facts=[contextual(fact) for fact in all_facts.values()],
                         purpose="evidence_consistency")
-                    if len(self._consistency_reviews) >= 16:
-                        self._consistency_reviews.pop(next(iter(self._consistency_reviews)))
-                    self._consistency_reviews[revision] = confidence
+                    with self._lock:
+                        if len(self._consistency_reviews) >= 16:
+                            self._consistency_reviews.pop(next(iter(self._consistency_reviews)))
+                        self._consistency_reviews[revision] = confidence
                     return confidence
                 raise AIHold("Relevant verified facts conflict with canonical evidence outside retrieval")
         return confidence
@@ -1926,12 +2252,18 @@ class DynamicPacketResolver:
             job_ids.add(evidence["id"])
         if any(not isinstance(sample, str) for sample in result.voice_samples):
             raise AIHold("Knowledge retrieval returned invalid voice samples")
-        self.retrieval_receipts.append({"status": "OK", "query_sha256": _digest(field.question_text),
+        receipt = {"status": "OK", "query_sha256": _digest(field.question_text),
             "fact_ids": [f.id for f in facts], "job_evidence_ids": sorted(job_ids),
             "source_versions": sorted({e["source_version"] for e in result.job_evidence}),
-            "receipt_sha256": _digest(result.receipt), **_retrieval_metrics(result.receipt)})
-        # Bound retained metadata across repeated form resolutions.
-        del self.retrieval_receipts[:-128]
+            "receipt_sha256": _digest(result.receipt), **_retrieval_metrics(result.receipt)}
+        log = _FIELD_LOG.get()
+        if log is not None:  # a concurrently resolved field: emitted in form order later
+            log.retrievals.append(receipt)
+            return result
+        with self._lock:
+            self.retrieval_receipts.append(receipt)
+            # Bound retained metadata across repeated form resolutions.
+            del self.retrieval_receipts[:-128]
         return result
 
     @staticmethod

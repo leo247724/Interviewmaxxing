@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import json
 import os
 import socket
 from collections import Counter
@@ -138,6 +139,11 @@ SUGGESTION_EVENT = "field.suggestion_chosen"
 """Emitted by the runner when the resolver chose one of a lookup's site suggestions:
 the question, the chosen label and the chooser's decision metadata. (The store
 reserves the ``application.`` prefix for its own events.)"""
+ROUTING_EVENT = "routing.trace"
+"""Emitted by the runner once per resolved step when its resolver routes through AI:
+the full-form route decisions for every field (route, source scope, semantic type and
+their probabilities) and the resolver's recent decision traces, so a held or failed
+field can be diagnosed from the store without running the site again."""
 RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
 
 
@@ -672,7 +678,8 @@ class _Run:
                 + (f", {unknown} without a reported cost" if unknown else "") + ".")
 
     def _stop(self, state: ApplicationState, message: str, *, reason: str | None = None,
-              missing: Sequence[MissingInput] = ()) -> _Stop:
+              missing: Sequence[MissingInput] = (),
+              metadata: dict[str, Any] | None = None) -> _Stop:
         cost = self._provider_cost()
         current = self.app().state
         if current is S.NEEDS_INPUT and state is not S.NEEDS_INPUT:
@@ -686,7 +693,8 @@ class _Run:
             })
         elif state in (S.FAILED_RETRYABLE, S.FAILED_PERMANENT):
             if current is not state:
-                self.store.transition(self.claim, state, failure_reason=message)
+                self.store.transition(self.claim, state, failure_reason=message,
+                                      metadata=metadata)
         elif state is S.DUPLICATE:
             self.store.transition(self.claim, S.DUPLICATE, reason=message)
         return _Stop(_outcome(self.store, self.app_id, message + cost, missing))
@@ -798,11 +806,31 @@ class _Run:
     async def _resolve(self, form: ApplicationForm) -> ApplicationPacket:
         context = self._context(form)
         packet = await self.runner.resolver.resolve(context)
+        self._record_routing(form)
         problems = context.problems(packet)
         if problems:
             raise self._stop(S.FAILED_RETRYABLE, "Internal error: the answers for this step are "
                              "inconsistent (" + "; ".join(problems[:3]) + ").")
         return self._with_choices(form, self._with_rejections(form, packet))
+
+    def _record_routing(self, form: ApplicationForm) -> None:
+        """Persist the AI resolver's route decisions and recent traces for this step
+        (``ROUTING_EVENT``). A resolver without a router or traces records nothing."""
+        resolver = self.runner.resolver
+        router = getattr(resolver, "router", None)
+        report_for = getattr(router, "report_for", None)
+        report = report_for(form) if callable(report_for) else None
+        traces = list(getattr(resolver, "narrative_traces", None) or ())
+        if report is None and not traces:
+            return
+        metadata: dict[str, Any] = {"form_step": form.step}
+        if report is not None:
+            metadata["prompt_version"] = report.prompt_version
+            metadata["fields"] = [decision.model_dump(mode="json") for decision in report.fields]
+        if traces:
+            # Traces hold provider objects and enums; keep what JSON can carry.
+            metadata["traces"] = json.loads(json.dumps(traces[-32:], default=str))
+        self.store.append_event(self.claim, ROUTING_EVENT, metadata)
 
     def _with_choices(self, form: ApplicationForm, packet: ApplicationPacket) -> ApplicationPacket:
         """Re-apply the suggestions chosen earlier in this run: the resolver types the
@@ -968,8 +996,14 @@ class _Run:
             fill, packet = settled
         failed = fill.failed_field_ids()
         if failed:
+            labels = {fld.id: fld.label for fld in form.fields}
             raise self._stop(S.FAILED_RETRYABLE, "Could not fill " + ", ".join(failed)
-                             + " reliably; nothing was submitted.")
+                             + " reliably; nothing was submitted.",
+                             metadata={"failed_fields": [
+                                 {"field_id": result.field_id, "label": labels.get(result.field_id),
+                                  "status": result.status.value,
+                                  "detail": (result.detail or "")[:500] or None}
+                                 for result in fill.fields if result.field_id in failed]})
         if fill.page_errors:
             self._to(S.INSPECTING)
             return await self.browser.inspect()
@@ -1002,6 +1036,9 @@ class _Run:
         picked: dict[str, str] = {}
         open_: dict[str, tuple[str, list[str]]] = {}
         events: list[dict[str, Any]] = []
+        lookups: list[tuple[ApplicationField, PacketAnswer, str, list[str],
+                            tuple[int, str, str], int | None]] = []
+        asks: list[tuple[ApplicationField, str, list[str]]] = []
         for result in fill.needs_choice():
             field = form.find(result.field_id)
             answer = packet.answer_for(result.field_id)
@@ -1009,14 +1046,19 @@ class _Run:
                 continue
             typed = answer.value.text if isinstance(answer.value, TextValue) else ""
             key = (form.step, field.id, field.fingerprint)
-            label = None
+            ask = None
             if (chooser is not None and key not in self.choice_rounds and typed.strip()
                     and answer.provenance.source is not AnswerSource.USER_INPUT):
                 self.choice_rounds.add(key)
-                label = await self._choose(chooser, form, field, typed, result.suggestions)
+                ask = len(asks)
+                asks.append((field, typed, list(result.suggestions)))
+            lookups.append((field, answer, typed, list(result.suggestions), key, ask))
+        labels = await self._choose(chooser, form, asks) if chooser is not None and asks else []
+        for field, answer, typed, suggestions, key, ask in lookups:
+            label = labels[ask] if ask is not None else None
             if label is None:
                 self.chosen.pop(key, None)  # a label chosen earlier did not commit either
-                open_[field.id] = (typed, list(result.suggestions))
+                open_[field.id] = (typed, suggestions)
                 continue
             chosen[field.id], picked[field.id] = _chosen_answer(answer, label), label
             self.chosen[key] = (typed, label)
@@ -1024,7 +1066,7 @@ class _Run:
             events.append({
                 "form_url": form.url, "form_step": form.step, "field_id": field.id,
                 "field_fingerprint": field.fingerprint, "chosen_label": label,
-                "suggestion_count": len(result.suggestions),
+                "suggestion_count": len(suggestions),
                 "source": answer.provenance.source.value, "chooser": type(chooser).__name__,
                 "decision": decision(field.id) if callable(decision) else None,
             })
@@ -1054,19 +1096,33 @@ class _Run:
         return fill, packet
 
     async def _choose(self, chooser: SuggestionChooser, form: ApplicationForm,
-                      field: ApplicationField, typed: str, suggestions: Sequence[str]) -> str | None:
-        """The chooser's pick, accepted only if it is one of the observed suggestions
-        verbatim and fits the field. A failing chooser means the user picks."""
-        try:
-            label = await chooser.choose_suggestion(self._context(form), field, typed,
-                                                    list(suggestions))
-        except Exception:
-            return None
-        if label is None or label not in suggestions:
-            return None
-        if answer_problems(field, TextValue(text=label)):
-            return None
-        return label
+                      asks: list[tuple[ApplicationField, str, list[str]]]) -> list[str | None]:
+        """The chooser's picks for this step's lookups, each accepted only if it is one of
+        that lookup's observed suggestions verbatim and fits the field. A chooser that can
+        decide several at once (``choose_suggestions``, the dynamic resolver) decides them
+        concurrently; a failing chooser means the user picks."""
+        context = self._context(form)
+        batch = getattr(chooser, "choose_suggestions", None)
+        labels: list[str | None] = []
+        # The chooser gets copies: labels are checked against the observed suggestions.
+        if callable(batch):
+            try:
+                labels = list(await batch(context, [(field, typed, list(suggestions))
+                                                    for field, typed, suggestions in asks]))
+            except Exception:
+                labels = []
+            if len(labels) != len(asks):
+                labels = [None] * len(asks)
+        else:
+            for field, typed, suggestions in asks:
+                try:
+                    labels.append(await chooser.choose_suggestion(context, field, typed,
+                                                                  list(suggestions)))
+                except Exception:
+                    labels.append(None)
+        return [label if (isinstance(label, str) and label in suggestions
+                          and not answer_problems(field, TextValue(text=label))) else None
+                for (field, _, suggestions), label in zip(asks, labels, strict=True)]
 
     def _with_lookups(self, form: ApplicationForm, packet: ApplicationPacket,
                       chosen: dict[str, PacketAnswer],
@@ -1225,6 +1281,7 @@ __all__ = [
     "NEEDS_INPUT_EVENT",
     "PROVIDER_EVENT",
     "REJECTION_EVENT",
+    "ROUTING_EVENT",
     "SUGGESTION_EVENT",
     "LocalApplicationRunner",
     "NoninteractiveInteraction",

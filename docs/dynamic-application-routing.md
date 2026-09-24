@@ -97,6 +97,17 @@ Semantic classification and routing require confidence >= 0.90 and selected prob
 
 Defaults share one per-runtime budget: 48 provider calls (raised from 32 when option-equivalence and lookup-suggestion decisions were added; each is one cheap Jev call), USD 0.50 of conservative reservations and 60,000 request bytes. Jev uses a 15-second timeout; the writer uses a 90-second timeout and at most 3,000 output tokens. Strong review allows at most 1,200 output tokens. Runtime embedding requests reserve and record costs in the same budget before HTTP. Each provider call has one attempt. The router batches the whole form (default 16, configurable 8/16/32 in the historical benchmark), recursively splits oversized requests without dropping context, and handles at most 100 fields, fact routing at most 40 verified facts per bounded comparison, and the writer at most eight relevant facts. Exceeding a bound holds; it never silently truncates candidate evidence or retries indefinitely.
 
+**Concurrency within a form (round 5).** After the single batched full-form classification, `DynamicPacketResolver` resolves independent fields concurrently. It works in three passes, each finished before the next:
+1. stored answers: referral policy, option equivalence, reworded saved answers and residence;
+2. the route gates, with their identity clarifications;
+3. generative routing: screeners, fact screeners, exact facts and narratives, each with its retrieval, consistency check, writing, grounding and any Opus review.
+
+Each field runs in a worker thread, at most `max_concurrency` at once (default 3), which also bounds concurrent provider calls, rate limits and memory. `max_concurrency=1` is the old one-by-one order. The runner's lookup suggestions for a step are decided the same way, through `choose_suggestions`.
+
+Results, `narrative_traces`, retrieval receipts and provider receipts are buffered per field and appended in form order, so they match a sequential run. Fields enter the fact-consistency check one at a time, in form order, so shared verdicts and the Opus evidence review are asked and reused exactly as in sequence while the writers still run in parallel. Identical Jev requests in flight share one call (single-flight in `BoundedDecisions`).
+
+The budget is the same shared one. A refused call (call count, cost or request size) holds only the field that made it, and the others complete. When the budget runs out partway through a form, which fields run out first can vary with timing. An offline benchmark in `tests/browser/test_rag_routing.py` checks that three narratives at 0.3 s per provider call take less than twice as long as one.
+
 Reservations use UTF-8 request bytes plus framing as a conservative input-token allowance and the writer's output-token cap, with the verified model prices below. Failed/unknown-cost calls retain their reservation. Receipts separately record requested/resolved model, purpose, actual provider latency, reported cost, reservation and status. Aggregate cost stays null when any call has unknown cost; a known subtotal and unknown-cost call count are reported separately. Reservations are a client-side estimate, not a provider-enforced billing limit. Browser latency is not included. The bounded in-memory decision cache holds at most 128 entries, never persists raw private profile values, and is not shared across processes. Durable application/resume/duplicate state remains the canonical store's responsibility.
 
 Official contracts checked September 23, 2026:

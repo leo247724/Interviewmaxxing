@@ -7,6 +7,9 @@ import math
 import re
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from typing import Annotated, Any, Literal, Self
 
@@ -43,6 +46,31 @@ class CallReceipt:
     requested_reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
 
+_RECEIPTS: ContextVar[list[tuple[CallBudget, CallReceipt]] | None] = ContextVar(
+    "interviewmaxxing_buffered_receipts", default=None)
+
+
+@contextmanager
+def buffered_receipts(buffer: list[tuple[CallBudget, CallReceipt]]) -> Iterator[None]:
+    """Collect the receipts recorded in this context (and the worker threads it starts)
+    in ``buffer`` instead of their budgets' lists, for ``flush_receipts`` to append in a
+    deterministic order. Call limits and cost accounting still apply at once."""
+    token = _RECEIPTS.set(buffer)
+    try:
+        yield
+    finally:
+        _RECEIPTS.reset(token)
+
+
+def flush_receipts(buffer: list[tuple[CallBudget, CallReceipt]]) -> None:
+    """Move buffered receipts to their budgets, in buffer order. Draining item by item
+    keeps a receipt recorded meanwhile (a worker still running) for the next flush."""
+    while buffer:
+        budget, receipt = buffer.pop(0)
+        with budget._lock:
+            budget.receipts.append(receipt)
+
+
 @dataclass
 class CallBudget:
     max_calls: int = 48
@@ -65,7 +93,11 @@ class CallBudget:
 
     def record(self, receipt: CallReceipt) -> None:
         with self._lock:
-            self.receipts.append(receipt)
+            buffer = _RECEIPTS.get()
+            if buffer is None:
+                self.receipts.append(receipt)
+            else:
+                buffer.append((self, receipt))
             # Keep the reservation if cost is unavailable or a request fails.
             if receipt.cost_usd is not None:
                 self.reserved_usd += max(0.0, receipt.cost_usd - receipt.reserved_usd)
@@ -75,22 +107,61 @@ class CallBudget:
 
 
 @dataclass
+class _Flight:
+    """One provider call in progress; identical concurrent requests wait for it."""
+    done: threading.Event = field(default_factory=threading.Event)
+    response: DecisionResponse | None = None
+
+
+@dataclass
 class BoundedDecisions:
     client: JevClient
     budget: CallBudget = field(default_factory=CallBudget)
     model: str = "typesafe/jev-1.13"
     max_cache_entries: int = 128
     _cache: dict[str, DecisionResponse] = field(default_factory=dict, repr=False)
+    _flights: dict[str, _Flight] = field(default_factory=dict, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def decide(self, request: DecisionRequest, *, purpose: str) -> DecisionResponse:
+        """One bounded call, or the cached response to an identical earlier request.
+
+        Safe from several threads: an identical request already in flight is waited for
+        and shares its response, so concurrency never pays twice for what the cache
+        would have answered; after a failed flight the next caller calls again, as it
+        would have in sequence. With the cache disabled every request is its own call."""
         if self.client.max_attempts != 1:
             raise AIHold("Dynamic AI requires one bounded provider attempt per call")
         if request.model != self.model:
             raise AIHold("Unexpected decision model")
         body = request.body()
         key = hashlib.sha256(body).hexdigest()
-        if key in self._cache:
-            return self._cache[key]
+        if self.max_cache_entries <= 0:
+            return self._call(request, body, purpose)
+        while True:
+            with self._lock:
+                if key in self._cache:
+                    return self._cache[key]
+                flight = self._flights.get(key)
+                if flight is None:
+                    flight = self._flights[key] = _Flight()
+                    break
+            flight.done.wait()
+            if flight.response is not None:
+                return flight.response
+        try:
+            flight.response = self._call(request, body, purpose)
+            return flight.response
+        finally:
+            with self._lock:
+                del self._flights[key]
+                if flight.response is not None:
+                    if len(self._cache) >= self.max_cache_entries:
+                        self._cache.pop(next(iter(self._cache)))
+                    self._cache[key] = flight.response
+            flight.done.set()
+
+    def _call(self, request: DecisionRequest, body: bytes, purpose: str) -> DecisionResponse:
         # UTF-8 bytes conservatively bound tokens plus framing; no output charge for Jev.
         reserve = (len(body) + 2048) * 0.042 / 1_000_000
         self.budget.reserve(body, reserve)
@@ -109,10 +180,6 @@ class BoundedDecisions:
             "OK" if valid_model else "MODEL_MISMATCH"))
         if not valid_model:
             raise AIHold("Jev returned an unexpected model")
-        if self.max_cache_entries > 0:
-            if len(self._cache) >= self.max_cache_entries:
-                self._cache.pop(next(iter(self._cache)))
-            self._cache[key] = response
         return response
 
 

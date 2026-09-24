@@ -1695,3 +1695,595 @@ def test_a_split_that_is_not_one_residence_reading_on_a_choice_stays_unknown(
     assert not stage_traces(resolver, "residence_screener")
     [missing] = packet.missing_inputs
     assert missing.prompt.startswith("Required:")
+
+
+# --- round 5: independent fields resolved concurrently within one form ----------------------
+
+LOOKUPS = {  # typed value -> (the site's suggestions, the one that denotes the typed place)
+    "United States": (["United States Minor Outlying Islands", "United States of America"],
+                      "United States of America"),
+    "Springfield, OR": (["Springfield, Illinois, United States",
+                         "Springfield, Oregon, United States"], "Springfield, Oregon, United States"),
+    "Oregon": (["Oregon, Wisconsin, United States", "Oregon, United States"],
+               "Oregon, United States"),
+}
+
+
+def content_pick(name: str, state: dict[str, Any]) -> tuple[str, float] | None:
+    """An option pick read from one request alone, as Jev would make it: the option with
+    the stored answer's yes/no polarity, the careers option, the "Yes" that is true for the
+    verified address, the saved sponsorship wording, or the suggestion naming the typed
+    place. None keeps the scripted ``ChoiceProvider`` answer."""
+    options: dict[str, str] = state.get("options", {})
+    if name.startswith("equivalent_"):
+        polarity = str(state["stored_answers"][name]).casefold() + ","
+        return next(((key, 0.98) for key, label in options.items()
+                     if label.casefold().startswith(polarity)), None)
+    if name == "referral":
+        return next(((f"careers_{key}", 0.98) for key, label in options.items()
+                     if "careers" in label), None)
+    if name == "residence":
+        return next(((key, 0.99) for key, label in options.items() if label == "Yes"), None)
+    if name == "wording":
+        return next(((key, 0.98) for key, saved in state["saved_questions"].items()
+                     if "sponsorship" in saved["question"]), None)
+    if name == "lookup":
+        wanted = LOOKUPS[state["typed_value"]][1]
+        return next(((key, 0.99) for key, label in state["suggestions"].items()
+                     if label == wanted), None)
+    return None
+
+
+class ByContent(ChoiceProvider):
+    """ChoiceProvider whose option choices come from ``content_pick``: every answer depends
+    on its own request only, never on call order, so concurrent callers get exactly the
+    answers of a sequential run."""
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        request, payload = json.loads(body), json.loads(response.body)
+        for name, question in request["questions"].items():
+            pick = content_pick(name, request["state"]) if question["type"] == "choice" else None
+            if pick is not None:
+                choice, probability = pick
+                rest = (1 - probability) / (len(question["criteria"]) - 1)
+                payload["answers"][name] = {"type": "choice", "choice": choice,
+                    "confidence": self.confidence, "probabilities": {
+                        key: probability if key == choice else rest for key in question["criteria"]}}
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+class Overlapping:
+    """A thread-safe transport around a provider whose answers depend on request content
+    only. Every decision but the full-form classification waits for ``gate`` (if any, 5 s
+    at most), sleeps ``delay(request)`` seconds and counts as in flight meanwhile
+    (``peak``: the most at once); one that ``fails`` then gets HTTP 503."""
+
+    def __init__(self, inner: Any, *, delay: Any = lambda request: 0.0,
+                 fails: Any = lambda request: False, gate: Any = None) -> None:
+        import threading
+
+        self.inner, self.delay, self.fails, self.gate = inner, delay, fails, gate
+        self.lock = threading.Lock()
+        self.calls = self.in_flight = self.peak = 0
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        import time
+
+        request = json.loads(body)
+        if any(name[0] in "rnusd" and name[1:].isdigit() for name in request["questions"]):
+            return self.inner(url, headers, body, timeout)  # the one batched classification
+        with self.lock:
+            self.calls += 1
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+        try:
+            if self.gate is not None:
+                self.gate.wait(5)
+            time.sleep(self.delay(request))
+            if self.fails(request):
+                return HttpResponse(503, {}, b"{}")
+            return self.inner(url, headers, body, timeout)
+        finally:
+            with self.lock:
+                self.in_flight -= 1
+
+
+def resolve_concurrently(transport: Any, candidate: CandidateProfile, job: JobRecord,
+                         fields: list[ApplicationField], *, max_concurrency: int,
+                         ) -> tuple[Any, DynamicPacketResolver]:
+    """``resolve_choice`` resolving at most ``max_concurrency`` fields at once; a hang
+    fails the test after 20 s."""
+    router = AIFormRouter(decisions(transport))
+    f = router.annotate(ApplicationForm(url="https://example.test/apply", fields=fields),
+                        document_id="concurrent-fields")
+    ctx = context(f, candidate, job)
+    resolver = DynamicPacketResolver(router.decisions, router=router,
+                                     max_concurrency=max_concurrency)
+    packet = asyncio.run(asyncio.wait_for(resolver.resolve(ctx), timeout=20))
+    assert ctx.problems(packet) == []
+    return packet, resolver
+
+
+def packet_view(packet: Any) -> dict[str, Any]:
+    """The packet without the ids and timestamp that every resolution generates."""
+    data = packet.model_dump(mode="json", exclude={"id", "created_at"})
+    for missing in data["missing_inputs"]:
+        del missing["id"]
+    return data
+
+
+def receipt_view(resolver: DynamicPacketResolver) -> list[tuple[Any, ...]]:
+    """The provider receipts in budget order, without their measured latency."""
+    return [(r.purpose, r.status, r.resolved_model, r.cost_usd, r.reserved_usd)
+            for r in resolver.decisions.budget.receipts]
+
+
+AUTHORIZED = ("Yes, I am authorized to work in the US", "No, I am not authorized to work in the US")
+
+
+def stored_answer_fields() -> list[ApplicationField]:
+    """Four fields that each need their own Jev decision while stored answers are placed:
+    option equivalence, the referral policy, a residence screener and a reworded saved
+    answer (a wording decision, then option equivalence)."""
+    return [choice_field(WORK_AUTH, SemanticType.WORK_AUTHORIZATION, *AUTHORIZED,
+                         field_id="work_auth"),
+            choice_field("How did you hear about us?", SemanticType.REFERRAL_SOURCE, "LinkedIn",
+                         "Company careers website", "Other", control=ControlType.SELECT,
+                         field_id="referral"),
+            choice_field(RESIDENCE_QUESTION, SemanticType.COUNTRY, *YES_NO, field_id="residence"),
+            choice_field(REWORDED_SPONSORSHIP, SemanticType.SPONSORSHIP, *SPONSORSHIP_OPTIONS,
+                         field_id="sponsorship")]
+
+
+@pytest.mark.parametrize("limit", [3, 2])
+def test_stored_answer_decisions_overlap_and_match_a_sequential_run(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, limit: int,
+) -> None:
+    candidate = with_referral(fictional_candidate)
+
+    def delay(request: dict[str, Any]) -> float:
+        # The first field's decision is the slowest, so the fields finish out of form order.
+        return 0.3 if request["state"].get("question") == WORK_AUTH else 0.1
+
+    provider = Overlapping(ByContent(), delay=delay)
+    packet, resolver = resolve_concurrently(provider, candidate, mock_job, stored_answer_fields(),
+                                            max_concurrency=limit)
+    one_at_a_time = Overlapping(ByContent())
+    sequential, reference = resolve_concurrently(one_at_a_time, candidate, mock_job,
+                                                 stored_answer_fields(), max_concurrency=1)
+    assert 2 <= provider.peak <= limit and one_at_a_time.peak == 1
+    assert provider.calls == one_at_a_time.calls == 5
+    assert packet.is_complete
+    assert [(a.field_id, a.value.label, a.provenance.source) for a in packet.answers] == [
+        ("work_auth", AUTHORIZED[0], AnswerSource.SAVED_ANSWER),
+        ("referral", "Company careers website", AnswerSource.SAVED_ANSWER),
+        ("residence", "Yes", AnswerSource.PROFILE_IDENTITY),
+        ("sponsorship", SPONSORSHIP_OPTIONS[1], AnswerSource.SAVED_ANSWER)]
+    # Traces and receipts come out in form order, exactly as with one field at a time.
+    assert [(t["field_id"], t["stage"], t["status"]) for t in resolver.narrative_traces] == [
+        ("work_auth", "option_equivalence", "MAPPED"),
+        ("referral", "referral_policy", "MAPPED"),
+        ("residence", "residence_screener", "ANSWERED"),
+        ("sponsorship", "option_equivalence", "MAPPED"),
+        ("sponsorship", "question_equivalence", "MAPPED")]
+    assert [r.purpose for r in resolver.decisions.budget.receipts] == [
+        "full_form_routes", "option_equivalence", "referral_policy", "residence_screener",
+        "question_equivalence", "option_equivalence"]
+    assert packet_view(packet) == packet_view(sequential)
+    assert resolver.narrative_traces == reference.narrative_traces
+    assert receipt_view(resolver) == receipt_view(reference)
+
+
+CHANNELS = "Which paid channels have you run campaigns on? (select all)"
+NETWORKS = "Which ad networks have you bought media on? (select all that apply)"
+
+
+def screener_fields() -> list[ApplicationField]:
+    """Three select-all experience questions, each a fact-grounded screener."""
+    return [platform_field(),
+            choice_field(CHANNELS, SemanticType.CUSTOM_MULTISELECT, "Meta Ads", "Google Ads",
+                         "Pinterest Ads", "Other", control=ControlType.CHECKBOX_GROUP,
+                         field_id="channels"),
+            choice_field(NETWORKS, SemanticType.CUSTOM_MULTISELECT, "Google Ads", "Reddit Ads",
+                         "Meta Ads", control=ControlType.CHECKBOX_GROUP, field_id="networks")]
+
+
+def with_search_fact(candidate: CandidateProfile) -> CandidateProfile:
+    """The platform facts plus a second Google Ads fact: the fact every screener selects
+    then needs one Jev consistency verdict, which later fields reuse."""
+    candidate = with_platform_facts(candidate)
+    text = "Ran Google Ads search campaigns for Example Labs"
+    search = candidate.facts[0].model_copy(update={"id": "fact.search", "key": "experience",
+                                                   "value": text, "evidence": [text]})
+    return candidate.model_copy(update={"facts": [*candidate.facts, search]})
+
+
+def test_fact_screeners_overlap_and_reuse_one_consistency_verdict_in_form_order(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    candidate = with_search_fact(fictional_candidate)
+
+    def screeners(**kwargs: Any) -> Overlapping:
+        return Overlapping(platform_provider(("SUPPORTED", 0.98),
+                                             {"Google Ads": 1.0, "Meta Ads": 1.0}), **kwargs)
+
+    def delay(request: dict[str, Any]) -> float:
+        # The first screener is the slowest: the others reach the consistency check first.
+        return 0.25 if request["state"].get("field", {}).get("question") == PLATFORMS else 0.1
+
+    provider = screeners(delay=delay)
+    packet, resolver = resolve_concurrently(provider, candidate, mock_job, screener_fields(),
+                                            max_concurrency=3)
+    one_at_a_time = screeners()
+    sequential, reference = resolve_concurrently(one_at_a_time, candidate, mock_job,
+                                                 screener_fields(), max_concurrency=1)
+    assert 2 <= provider.peak <= 3 and one_at_a_time.peak == 1
+    assert packet.is_complete
+    assert [(a.field_id, [c.label for c in a.value.choices], a.provenance.reference_ids)
+            for a in packet.answers] == [
+        ("platforms", ["Google Ads", "Meta Ads"], ["fact.platforms"]),
+        ("channels", ["Meta Ads", "Google Ads"], ["fact.platforms"]),
+        ("networks", ["Google Ads", "Meta Ads"], ["fact.platforms"])]
+    # The first field in form order asks for the verdict; the later ones reuse it.
+    assert [t["cached"] for t in stage_traces(resolver, "consistency")] == [[], ["f0"], ["f0"]]
+    assert [r.purpose for r in resolver.decisions.budget.receipts] == [
+        "full_form_routes", "fact_screener", "narrative_consistency", "fact_screener",
+        "fact_screener"]
+    assert packet_view(packet) == packet_view(sequential)
+    assert resolver.narrative_traces == reference.narrative_traces
+    assert receipt_view(resolver) == receipt_view(reference)
+
+
+def test_lookup_suggestions_are_decided_concurrently_and_reported_in_the_given_order(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    fields = {field_id: ApplicationField(id=field_id, selector=f"#{field_id}", label=label,
+                                         semantic_type=semantic, required=True,
+                                         control_type=ControlType.TYPEAHEAD)
+              for field_id, label, semantic in (("city", "City", SemanticType.CITY),
+                                                ("state", "State", SemanticType.STATE),
+                                                ("country", "Country", SemanticType.COUNTRY))}
+    ctx = context(ApplicationForm(url="https://example.test/apply", fields=list(fields.values())),
+                  fictional_candidate, mock_job)
+    # Given out of form order; the first decision is the slowest and the city's fails.
+    lookups = [(fields[field_id], typed, LOOKUPS[typed][0]) for field_id, typed in (
+        ("country", "United States"), ("city", "Springfield, OR"), ("state", "Oregon"))]
+    delays = {"United States": 0.25, "Springfield, OR": 0.15, "Oregon": 0.05}
+
+    def fails(request: dict[str, Any]) -> bool:
+        return request["state"]["typed_value"] == "Springfield, OR"
+
+    def choose(transport: Overlapping, limit: int) -> tuple[list[str | None], DynamicPacketResolver]:
+        resolver = DynamicPacketResolver(decisions(transport), max_concurrency=limit)
+        labels = asyncio.run(asyncio.wait_for(resolver.choose_suggestions(ctx, lookups), timeout=20))
+        return labels, resolver
+
+    provider = Overlapping(ByContent(), fails=fails,
+                           delay=lambda request: delays[request["state"]["typed_value"]])
+    labels, resolver = choose(provider, 3)
+    one_at_a_time = Overlapping(ByContent(), fails=fails)
+    sequential, reference = choose(one_at_a_time, 1)
+    assert provider.peak >= 2 and one_at_a_time.peak == 1
+    assert provider.calls == one_at_a_time.calls == 3
+    assert labels == sequential == ["United States of America", None, "Oregon, United States"]
+    traces = stage_traces(resolver, "suggestion_choice")
+    assert [(t["field_id"], t["status"]) for t in traces] == [
+        ("country", "CHOSEN"), ("city", "HELD"), ("state", "CHOSEN")]
+    assert resolver.narrative_traces == reference.narrative_traces
+    assert [(r.purpose, r.status) for r in resolver.decisions.budget.receipts] == [
+        ("lookup_suggestion", "OK"), ("lookup_suggestion", "UNAVAILABLE"),
+        ("lookup_suggestion", "OK")]
+    assert receipt_view(resolver) == receipt_view(reference)
+    for field_id, status in (("country", "CHOSEN"), ("city", "HELD"), ("state", "CHOSEN")):
+        decision = resolver.suggestion_decision(field_id)
+        assert decision is not None
+        assert (decision["status"], decision["suggestion_count"]) == (status, 2)
+        assert "Springfield" not in json.dumps(decision) and "Oregon" not in json.dumps(decision)
+    held = resolver.suggestion_decision("city")
+    assert held is not None and held["reason"] == "Jev UNAVAILABLE"
+
+
+class GatedTransport:
+    """A Jev transport that holds every call until ``release`` is set (5 s at most) and
+    counts the calls; the calls numbered in ``failing`` (from 1) get HTTP 503."""
+
+    def __init__(self, *failing: int) -> None:
+        import threading
+
+        self.lock, self.release = threading.Lock(), threading.Event()
+        self.failing, self.calls = set(failing), 0
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        with self.lock:
+            self.calls += 1
+            call = self.calls
+        self.release.wait(5)
+        if call in self.failing:
+            return HttpResponse(503, {}, b"{}")
+        questions = json.loads(body)["questions"]
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": {name: {"type": "noul", "noul": 0.5} for name in questions},
+            "usage": {"cost": 0.0001}}).encode())
+
+
+def open_transport() -> GatedTransport:
+    transport = GatedTransport()
+    transport.release.set()
+    return transport
+
+
+def probe(topic: str) -> Any:
+    """A one-question decision request about ``topic``."""
+    from interviewmaxxing_selection.jev import DecisionRequest, NoulQuestion
+
+    return DecisionRequest(model="typesafe/jev-1.13", state={"topic": topic}, questions={
+        "probe": NoulQuestion(instructions="Is this a synthetic probe?")})
+
+
+def decide_in_thread(d: BoundedDecisions, request: Any, results: dict[str, Any], name: str) -> Any:
+    """A started daemon thread that stores ``d.decide(request)`` (or its hold) in ``results``."""
+    import threading
+
+    def run() -> None:
+        try:
+            results[name] = d.decide(request, purpose="single_flight")
+        except AIHold as exc:
+            results[name] = exc
+
+    thread = threading.Thread(target=run, name=f"decide-{name}", daemon=True)
+    thread.start()
+    return thread
+
+
+def wait_until(condition: Any, timeout: float = 5.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.002)
+    return True
+
+
+def parked_in_decide(thread: Any) -> bool:
+    """Whether ``thread`` blocks in a ``threading`` wait called by ``BoundedDecisions.decide``
+    itself (another caller's flight), not by the transport of a call of its own."""
+    import sys
+
+    frame = sys._current_frames().get(thread.ident)
+    waiting = False
+    while frame is not None and frame.f_globals.get("__name__") == "threading":
+        waiting, frame = True, frame.f_back
+    return waiting and frame is not None and frame.f_code is BoundedDecisions.decide.__code__
+
+
+def test_identical_concurrent_decisions_share_one_provider_call_and_its_cache() -> None:
+    from interviewmaxxing_selection.jev import DecisionResponse
+
+    transport = GatedTransport()
+    d = decisions(transport)
+    results: dict[str, Any] = {}
+    first = decide_in_thread(d, probe("shared"), results, "first")
+    assert wait_until(lambda: transport.calls == 1)  # the first caller is with the provider
+    second = decide_in_thread(d, probe("shared"), results, "second")
+    assert wait_until(lambda: transport.calls > 1 or parked_in_decide(second))
+    assert transport.calls == 1  # the identical request waits for the call in flight
+    transport.release.set()
+    first.join(5)
+    second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert isinstance(results["first"], DecisionResponse)
+    assert results["second"] == results["first"]
+    assert transport.calls == 1 and d.budget.calls == 1
+    assert [(r.purpose, r.status) for r in d.budget.receipts] == [("single_flight", "OK")]
+    # The shared response is cached: an identical request later makes no call.
+    assert d.decide(probe("shared"), purpose="again") == results["first"]
+    assert transport.calls == 1 and len(d.budget.receipts) == 1
+
+
+def test_without_a_cache_identical_concurrent_decisions_each_call_the_provider() -> None:
+    transport = GatedTransport()
+    d = decisions(transport)
+    d.max_cache_entries = 0
+    results: dict[str, Any] = {}
+    threads = [decide_in_thread(d, probe("shared"), results, name) for name in ("first", "second")]
+    assert wait_until(lambda: transport.calls == 2, timeout=2)  # both with the provider at once
+    transport.release.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert results["first"] == results["second"]
+    assert transport.calls == 2 and d.budget.calls == 2 and len(d.budget.receipts) == 2
+    d.decide(probe("shared"), purpose="again")
+    assert transport.calls == 3  # nothing was cached either
+
+
+def test_after_a_failed_flight_the_waiting_caller_calls_the_provider_itself() -> None:
+    from interviewmaxxing_selection.jev import DecisionResponse
+
+    transport = GatedTransport(1)  # the first call fails with HTTP 503
+    d = decisions(transport)
+    results: dict[str, Any] = {}
+    first = decide_in_thread(d, probe("shared"), results, "first")
+    assert wait_until(lambda: transport.calls == 1)
+    second = decide_in_thread(d, probe("shared"), results, "second")
+    assert wait_until(lambda: transport.calls > 1 or parked_in_decide(second))
+    assert transport.calls == 1
+    transport.release.set()
+    first.join(5)
+    second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert isinstance(results["first"], AIHold) and str(results["first"]) == "Jev UNAVAILABLE"
+    assert isinstance(results["second"], DecisionResponse)  # never the first caller's failure
+    assert results["second"].answers["probe"].noul == 0.5
+    assert transport.calls == 2  # the failure is not shared: the waiter asked again, as in sequence
+    assert [r.status for r in d.budget.receipts] == ["UNAVAILABLE", "OK"]
+    assert d.decide(probe("shared"), purpose="again") == results["second"]
+    assert transport.calls == 2  # the successful answer is cached
+
+
+def test_buffered_receipts_wait_for_their_flush_and_keep_the_buffer_order() -> None:
+    import contextvars
+    import threading
+
+    from interviewmaxxing_browser.ai.providers import buffered_receipts, flush_receipts
+
+    transport = open_transport()
+    one, two = decisions(transport), decisions(transport)
+
+    def ask(d: BoundedDecisions, topic: str) -> None:
+        d.decide(probe(topic), purpose=topic)
+
+    async def off_the_loop() -> None:
+        await asyncio.to_thread(ask, one, "mike")
+
+    buffer: list[Any] = []
+    with buffered_receipts(buffer):
+        ask(one, "zulu")
+        worker = threading.Thread(target=contextvars.copy_context().run, args=(ask, two, "alpha"),
+                                  daemon=True)
+        worker.start()
+        worker.join(5)
+        asyncio.run(off_the_loop())
+        # Every call is counted at once, but no receipt has reached its budget yet.
+        assert (one.budget.calls, two.budget.calls) == (2, 1)
+        assert one.budget.receipts == [] and two.budget.receipts == []
+    assert [(budget is one.budget, receipt.purpose) for budget, receipt in buffer] == [
+        (True, "zulu"), (False, "alpha"), (True, "mike")]
+    ask(one, "outside")  # outside the context a receipt goes straight to its budget
+    flush_receipts(buffer)
+    assert buffer == []
+    assert [r.purpose for r in one.budget.receipts] == ["outside", "zulu", "mike"]
+    assert [r.purpose for r in two.budget.receipts] == ["alpha"]
+    # The flush order, not the recording order, decides the order in the budget.
+    recorded_first: list[Any] = []
+    recorded_second: list[Any] = []
+    with buffered_receipts(recorded_first):
+        ask(two, "echo")
+    with buffered_receipts(recorded_second):
+        ask(two, "bravo")
+    flush_receipts(recorded_second)
+    flush_receipts(recorded_first)
+    assert [r.purpose for r in two.budget.receipts] == ["alpha", "bravo", "echo"]
+
+
+def test_a_buffered_context_still_refuses_a_call_over_the_limit_at_once() -> None:
+    from interviewmaxxing_browser.ai.providers import buffered_receipts
+
+    transport = open_transport()
+    capped = decisions(transport, CallBudget(max_calls=1))
+    held: list[Any] = []
+    with buffered_receipts(held):
+        capped.decide(probe("allowed"), purpose="allowed")
+        with pytest.raises(AIHold, match="budget exhausted"):
+            capped.decide(probe("refused"), purpose="refused")
+        assert transport.calls == 1  # the refused call never reached the provider
+        assert capped.budget.calls == 1 and capped.budget.receipts == []
+    assert [(budget is capped.budget, r.purpose, r.status) for budget, r in held] == [
+        (True, "allowed", "OK")]
+    # Its cost was accounted at once, exactly as without a buffer.
+    unbuffered = decisions(open_transport(), CallBudget(max_calls=1))
+    unbuffered.decide(probe("allowed"), purpose="allowed")
+    assert capped.budget.reserved_usd == pytest.approx(unbuffered.budget.reserved_usd)
+    assert capped.budget.reserved_usd > 0
+
+
+def test_provider_usage_lists_purposes_sorted_whatever_the_call_order() -> None:
+    resolver = DynamicPacketResolver(decisions(open_transport()))
+    for topic, purpose in (("a", "zeta_probe"), ("b", "alpha_probe"), ("c", "mid_probe"),
+                           ("d", "alpha_probe")):
+        resolver.decisions.decide(probe(topic), purpose=purpose)
+    assert [r.purpose for r in resolver.decisions.budget.receipts] == [
+        "zeta_probe", "alpha_probe", "mid_probe", "alpha_probe"]
+    usage = resolver.provider_usage()
+    assert list(usage["by_purpose"]) == ["alpha_probe", "mid_probe", "zeta_probe"]
+    assert [bucket["calls"] for bucket in usage["by_purpose"].values()] == [2, 1, 1]
+    assert (usage["calls"], usage["known_cost_usd"]) == (4, pytest.approx(0.0004))
+    assert list(resolver.provider_usage(2)["by_purpose"]) == ["alpha_probe", "mid_probe"]
+
+
+class NearScope(ByContent):
+    """ByContent whose applicant-current source scope (``u<i>``) is 0.94, just under the
+    copy gate: every identity copy then needs its own clarification decision in the gate
+    pass (``applicant_current_identity``, approved at 1.0)."""
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        payload = json.loads(super().__call__(url, headers, body, timeout).body)
+        for name, answer in payload["answers"].items():
+            if name[0] == "u" and name[1:].isdigit():
+                answer["probabilities"] = {key: {"APPLICANT_CURRENT": 0.94,
+                                                 "HISTORICAL_OR_CONTEXTUAL": 0.06}.get(key, 0.0)
+                                           for key in answer["probabilities"]}
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+def address_fields() -> list[ApplicationField]:
+    return [ApplicationField(id=field_id, selector=f"#{field_id}", label=label,
+                             semantic_type=semantic, control_type=ControlType.TEXT, required=True)
+            for field_id, label, semantic in (("city", "City", SemanticType.CITY),
+                                              ("state", "State", SemanticType.STATE),
+                                              ("zip", "ZIP code", SemanticType.ZIP))]
+
+
+def test_identity_clarifications_overlap_in_the_gate_pass_and_match_a_sequential_run(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    def delay(request: dict[str, Any]) -> float:
+        # The first field's clarification is the slowest: the others finish first.
+        return 0.25 if request["state"].get("target_field") == "f0" else 0.1
+
+    provider = Overlapping(NearScope(), delay=delay)
+    packet, resolver = resolve_concurrently(provider, fictional_candidate, mock_job,
+                                            address_fields(), max_concurrency=3)
+    one_at_a_time = Overlapping(NearScope())
+    sequential, reference = resolve_concurrently(one_at_a_time, fictional_candidate, mock_job,
+                                                 address_fields(), max_concurrency=1)
+    assert 2 <= provider.peak <= 3 and one_at_a_time.peak == 1
+    assert provider.calls == one_at_a_time.calls == 3
+    assert packet.is_complete
+    assert [(a.field_id, a.value.text, a.provenance.source) for a in packet.answers] == [
+        ("city", "Springfield", AnswerSource.PROFILE_IDENTITY),
+        ("state", "OR", AnswerSource.PROFILE_IDENTITY),
+        ("zip", "97477", AnswerSource.PROFILE_IDENTITY)]
+    clarifications = stage_traces(resolver, "identity_source_clarification")
+    assert [(t["field_id"], t["status"]) for t in clarifications] == [
+        ("city", "APPROVED"), ("state", "APPROVED"), ("zip", "APPROVED")]
+    assert [r.purpose for r in resolver.decisions.budget.receipts] == [
+        "full_form_routes", *["identity_source_clarification"] * 3]
+    assert packet_view(packet) == packet_view(sequential)
+    assert resolver.narrative_traces == reference.narrative_traces
+    assert receipt_view(resolver) == receipt_view(reference)
+
+
+def test_a_cancelled_pass_still_records_the_receipt_of_a_call_that_finishes_after_it(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    import threading
+
+    gate = threading.Event()
+    provider = Overlapping(ByContent(), gate=gate)
+    router = AIFormRouter(decisions(provider))
+    f = router.annotate(ApplicationForm(url="https://example.test/apply",
+                                        fields=stored_answer_fields()[:1]),
+                        document_id="cancelled-pass")
+    ctx = context(f, fictional_candidate, mock_job)
+    resolver = DynamicPacketResolver(router.decisions, router=router)
+
+    async def cancel_while_with_the_provider() -> None:
+        task = asyncio.create_task(resolver.resolve(ctx))
+        if not await asyncio.to_thread(wait_until, lambda: provider.in_flight == 1):
+            pytest.fail("the option-equivalence call never started")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        gate.set()  # the call, already made and counted, now finishes in its worker thread
+
+    asyncio.run(cancel_while_with_the_provider())  # returns once that worker thread is done
+    budget = router.decisions.budget
+    if (budget.calls, provider.calls, provider.in_flight) != (2, 1, 0):
+        pytest.fail("expected the classification and one finished option-equivalence call")
+    # Every call made has its receipt, as when the passes ran in one worker thread.
+    assert [r.purpose for r in budget.receipts] == ["full_form_routes", "option_equivalence"]
+    assert resolver.provider_usage()["calls"] == budget.calls
