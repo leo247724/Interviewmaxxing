@@ -9,8 +9,12 @@ Saved cards remain Saved; preparation creates no submission attempt or receipt.
 The no-submit restriction is stored before opening the browser. It survives
 process restarts, repeated application requests and resume, even if a later caller
 uses a submission-capable runner. The store rejects `begin_submission`; an SQLite
-trigger also blocks insertion of a submission attempt. There is no CLI flag that
-clears this restriction. Future submission authorization needs an explicit change.
+trigger also blocks insertion of a submission attempt. No flag of `apply`, `resume`
+or `prepare-batch` clears it. The only way to submit is the explicit, audited path in
+[submission.md](submission.md): you approve the prepared packet (`approve APP`), and
+`submit APP --yes` with `IMX_ALLOW_SUBMISSION=1` authorizes exactly that packet and
+submits it as approved. A new preparation, or a prepare-only run after an approval,
+brings the restriction back.
 
 The browser receives `allow_submission=False`, which also overrides a permissive
 factory action policy. It can fill and advance unambiguous intermediate steps but
