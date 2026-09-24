@@ -180,9 +180,10 @@ const comboFacts = (el) => {
     dialog: !!el.closest('[role=dialog],dialog'),
     value: shown.placeholder ? '' : shown.text, expanded: el.getAttribute('aria-expanded') === 'true'};
 };
+// Never the aria-label: menus put their placeholder or shown value there (Rippling: "Select").
 const comboIdentity = (el) => ({tag: el.tagName, id: el.id, name: el.getAttribute('name') || '',
   role: el.getAttribute('role') || '', haspopup: comboPopup(el),
-  labelledby: el.getAttribute('aria-labelledby') || '', label: el.getAttribute('aria-label') || '',
+  labelledby: el.getAttribute('aria-labelledby') || '',
   labels: el.labels ? [...el.labels].map((l) => ariaText(l.textContent)) : []});
 // The listbox this control owns right now, read only through its aria-controls or
 // aria-owns reference (never a page-wide option scan).
@@ -257,8 +258,16 @@ const phonePicker = (el) => {
   }
   return null;
 };
-const phonePickerText = (picker) => picker.kind === 'combobox' ? comboDisplay(picker.node).text :
-  ariaText(picker.node.getAttribute('aria-label') || picker.node.getAttribute('title') || picker.node.textContent);
+// A picker's name and title, and a picker button's own text: intl-tel-input with
+// separateDialCode shows the dial code only there ("Telephone country code" / "United
+// States" / "+1"). Never a whole widget's text, which would include its country list.
+const phonePickerText = (picker) => {
+  if (picker.kind === 'combobox') return comboDisplay(picker.node).text;
+  const n = picker.node;
+  const parts = [n.getAttribute('aria-label'), n.getAttribute('title')];
+  if (n.hasAttribute('aria-haspopup') && !n.querySelector('[role=listbox],[role=option],[role=dialog]')) parts.push(n.textContent);
+  return ariaText(parts.filter(Boolean).join(' '));
+};
 """
 
 ARIA_OBSERVE = "(selector) => {" + ARIA_HELPERS + """
@@ -375,13 +384,18 @@ _POLL_S = 0.1
 _OPEN_WAIT_S = 1.5
 """Per opening attempt (click, then ArrowDown)."""
 _CLOSE_WAIT_S = 1.0
+"""For a menu to close after an option was clicked."""
+_CLOSE_STEP_S = 0.5
+"""Per closing step (Escape, toggle click, outside press)."""
+_CLOSE_STEPS = ("escape", "toggle", "outside")
 _MAX_OPTIONS = 500
 _FILTER_THRESHOLD = 20
 """Input menus with more options than this are filtered by typing the exact label."""
 _SCROLL_ATTEMPTS = 5
-_SUGGESTION_WAIT_S = 4.0
+_SUGGESTION_WAIT_S = 6.0
 _SUGGESTION_STABLE_S = 0.4
-_NO_SUGGESTION_GRACE_S = 1.5
+_NO_SUGGESTION_GRACE_S = 3.0
+"""A first query may load the site's place-search library before it answers."""
 _MAX_SUGGESTIONS = 20
 _TYPE_DELAY_S = 0.03
 
@@ -406,6 +420,8 @@ class MenuObservation:
     seconds: float = 0.0
     abort: bool = False
     """Probing stops for the rest of this document (it changed, or a menu stayed open)."""
+    close_method: str = ""
+    """The closing step that closed the probed menu (see ``_close_menu``)."""
 
     @property
     def listbox_id_pattern(self) -> str:
@@ -429,7 +445,8 @@ class MenuObservation:
         base: dict[str, Any] = {
             "probed": True, "kind": self.kind, "origin": self.origin, "url": self.url,
             "selector": self.selector, "control": dict(self.control),
-            "open_method": self.open_method, "closed_display": self.closed_display,
+            "open_method": self.open_method, "close_method": self.close_method,
+            "closed_display": self.closed_display,
             "listbox_id_pattern": self.listbox_id_pattern, "editable": self.editable,
             "signature": self.signature, "expanded": bool(facts.get("expanded")), "visible": True,
         }
@@ -452,6 +469,14 @@ def _open(state: Mapping[str, Any]) -> bool:
     menu = state.get("menu")
     return bool(state.get("expanded")) and isinstance(menu, dict) and not menu.get("error") \
         and bool(menu.get("visible"))
+
+
+def _listed(state: Mapping[str, Any]) -> bool:
+    """A lookup's owned list is showing options, whether or not the input exposes
+    ``aria-expanded`` (Rippling's location input never does)."""
+    menu = state.get("menu")
+    return isinstance(menu, dict) and not menu.get("error") and bool(menu.get("visible")) \
+        and int(menu.get("count") or 0) > 0
 
 
 def _labels(state: Mapping[str, Any]) -> list[str]:
@@ -537,28 +562,44 @@ async def _open_menu(driver: PageDriver, selector: str, read: Reader, state: dic
     return state, method
 
 
-async def _close_menu(driver: PageDriver, selector: str, read: Reader, method: str) -> bool:
-    """Close with Escape (a keyboard-opened list may stay in the DOM; aria-expanded
-    decides). A click-opened menu that ignores Escape is toggled closed by one click.
-    Raises ``CapabilityUnsupported`` (after any click toggle) when keys cannot be
-    pressed in this session."""
+async def _close_menu(driver: PageDriver, selector: str, read: Reader, method: str,
+                      closer: str = "") -> tuple[bool, str]:
+    """Close an open menu the ways a person does, one step at a time until
+    ``aria-expanded`` is false (a keyboard-opened list may stay in the DOM): Escape; one
+    toggle click on a click-opened control; a press outside every control (a popover
+    that ignores both). ``closer``, the step that closed this page's menus before, goes
+    first. Returns whether the menu is closed and the step that closed it (``""`` when
+    it was not open). Raises ``CapabilityUnsupported`` (after the other steps) when this
+    session cannot press keys or outside the menu."""
     from .driver import CapabilityUnsupported
 
     state = await read()
     if not state.get("expanded"):
-        return True
+        return True, ""
+    steps = [step for step in _CLOSE_STEPS if step != "toggle" or method == "click"]
+    if closer in steps:
+        steps.remove(closer)
+        steps.insert(0, closer)
     unsupported: CapabilityUnsupported | None = None
-    try:
-        await driver.press(selector, "Escape")
-        state = await _poll(read, lambda s: not s.get("expanded"), _CLOSE_WAIT_S)
-    except CapabilityUnsupported as exc:
-        unsupported = exc
-    if state.get("expanded") and method == "click":
-        await driver.click(selector)
-        state = await _poll(read, lambda s: not s.get("expanded"), _CLOSE_WAIT_S)
+    for step in steps:
+        try:
+            if step == "escape":
+                await driver.press(selector, "Escape")
+            elif step == "toggle":
+                await driver.click(selector)
+            else:
+                await driver.dismiss()
+        except CapabilityUnsupported as exc:
+            unsupported = exc
+            continue
+        state = await _poll(read, lambda s: not s.get("expanded"), _CLOSE_STEP_S)
+        if not state.get("expanded"):
+            if unsupported is not None:
+                raise unsupported
+            return True, step
     if unsupported is not None:
         raise unsupported
-    return not state.get("expanded")
+    return False, ""
 
 
 def _classify(opened: dict[str, Any], before: Mapping[str, Any], selector: str,
@@ -603,9 +644,10 @@ def _classify(opened: dict[str, Any], before: Mapping[str, Any], selector: str,
 
 
 async def probe_menu(driver: PageDriver, selector: str, *, timeout_s: float = 3.0,
-                     open_wait_s: float = _OPEN_WAIT_S) -> MenuObservation:
-    """Open one closed menu control, read its owned options, close it and verify that
-    the page is as it was. Never types, never chooses."""
+                     open_wait_s: float = _OPEN_WAIT_S, closer: str = "") -> MenuObservation:
+    """Open one closed menu control, read its owned options, close it (``closer`` first,
+    see ``_close_menu``) and verify that the page is as it was. Never types, never
+    chooses."""
     from .driver import CapabilityUnsupported, DriverError, PageContextLost
 
     loop = asyncio.get_running_loop()
@@ -651,7 +693,7 @@ async def probe_menu(driver: PageDriver, selector: str, *, timeout_s: float = 3.
         failure = exc
     closed = False
     try:
-        closed = await _close_menu(driver, selector, read, method)
+        closed, closer = await _close_menu(driver, selector, read, method, closer)
     except CapabilityUnsupported as exc:
         # Keys cannot be pressed here: a menu this session cannot close or re-verify is
         # left to the user.
@@ -669,7 +711,7 @@ async def probe_menu(driver: PageDriver, selector: str, *, timeout_s: float = 3.
             or after.get("placeholder") != before.get("placeholder")
             or after.get("fields") != before.get("fields")):
         return MenuObservation("unobservable", reason="probing changed the form", abort=True)
-    return observation
+    return replace(observation, close_method=closer)
 
 
 class MenuProbe:
@@ -692,6 +734,8 @@ class MenuProbe:
         self.probes = 0
         self.seconds = 0.0
         self.stopped = ""
+        self.closer = ""
+        """The closing step that last closed a probed menu of this document."""
         self.log: list[tuple[str, str, float]] = []
         """(selector, kind, seconds) of every probe, for diagnostics and reports."""
 
@@ -702,6 +746,7 @@ class MenuProbe:
         self.probes = 0
         self.seconds = 0.0
         self.stopped = ""
+        self.closer = ""
 
     def confirm(self, selector: str, value: str) -> None:
         """Record a selection verified by the widget's own selected state, so a display
@@ -758,6 +803,14 @@ class MenuProbe:
                          "expanded": bool(facts.get("expanded"))}
             binding = (observation.binding(facts, self.confirmed.get(observation.selector))
                        if observation is not None else None)
+            if binding is None and observation is not None:
+                # A menu its probe could not observe (or close) stays with the user, open or
+                # closed alike: it is never operated through a list it happens to show.
+                controls.append(control.model_copy(update={"aria": {
+                    "combo": 1, "unobservable": observation.reason,
+                    "value": str(facts.get("value") or ""), "expanded": bool(facts.get("expanded"))}}))
+                changed = True
+                continue
             if binding is None:
                 controls.append(control)
                 continue
@@ -787,7 +840,7 @@ class MenuProbe:
             started = loop.time()
             try:
                 observation = await probe_menu(driver, control.selector, timeout_s=self.per_control_s,
-                                               open_wait_s=self.open_wait_s)
+                                               open_wait_s=self.open_wait_s, closer=self.closer)
             except PageContextLost:
                 observation = MenuObservation("unobservable", abort=True,
                                               reason="the page changed while probing")
@@ -799,6 +852,8 @@ class MenuProbe:
             self.seconds += elapsed
             self.log.append((control.selector, observation.kind, elapsed))
             self.observations[key] = replace(observation, seconds=elapsed)
+            if observation.close_method:
+                self.closer = observation.close_method
             if observation.abort:
                 self.stopped = observation.reason
         return touched
@@ -898,9 +953,10 @@ async def _select_probed(
     """Select one option of a probed menu control and verify it.
 
     Opens the way the probe did (never clicking an open menu), re-resolves the listbox
-    from ``aria-controls`` after opening, filters an input menu of more than 20 options
-    by typing the exact label, clicks the one matching option freshly derived from the
-    owned listbox, then reads back: the menu closed and the display shows the label.
+    from ``aria-controls`` after opening, clicks the one matching option freshly derived
+    from the owned listbox (an input menu of more than 20 options that does not render it
+    is filtered by typing, see ``_filter_queries``), then reads back: the menu closed and
+    the display shows the label.
     When the display only shows a suffix of it (a dial code, possibly one several
     options share), the menu is reopened once and its own selection state must name
     the chosen option (see ``_selection_names``). Returns the values read back;
@@ -919,39 +975,60 @@ async def _select_probed(
             await identity_check()
 
     method = str(binding.get("open_method") or "click")
+    closer = str(binding.get("close_method") or "")
     await fresh()
     state = await read()
     _check_probed(state, binding)
     state, method = await _open_menu(driver, selector, read, state, method)
     _check_probed(state, binding)
     if not _open(state):
-        await _close_menu(driver, selector, read, method)
+        await _close_menu(driver, selector, read, method, closer)
         raise NotActionable("the menu did not open")
     state = await _settled(read, state, 0.5)
     shown = _probed_options(state, binding)
     expected = [[o["label"], o["value"], bool(o["disabled"])] for o in all_options]
     if [[o["label"], o["value"], bool(o["disabled"])] for o in shown] != expected:
-        await _close_menu(driver, selector, read, method)
+        await _close_menu(driver, selector, read, method, closer)
         raise NotActionable("the menu's options changed since inspection; re-inspect")
     await fresh()
-    if binding.get("editable") and len(all_options) > _FILTER_THRESHOLD:
-        await driver.type_text(selector, label, delay_s=0.0)
-        state = await _poll(read, lambda s: _open(s) and _norm(label) in [_norm(x) for x in _labels(s)],
-                            _OPEN_WAIT_S)
-        state = await _settled(read, state, 0.5)
-        shown = _probed_options(state, binding) if _open(state) else []
-    matches = [o for o in shown if _norm(str(o["label"])) == _norm(label)
-               and (o["value"] == wanted["value"] or o["value"] == o["label"])]
-    if len(matches) != 1 or matches[0].get("disabled") or not matches[0].get("selector") \
-            or not matches[0].get("visible"):
-        await _close_menu(driver, selector, read, method)
+
+    def pick(options: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+        found = [o for o in options if _norm(str(o["label"])) == _norm(label)
+                 and (o["value"] == wanted["value"] or o["value"] == o["label"])]
+        if len(found) != 1 or found[0].get("disabled") or not found[0].get("selector") \
+                or not found[0].get("visible"):
+            return None
+        return found[0]
+
+    target = pick(shown)
+    if target is None and binding.get("editable") and len(all_options) > _FILTER_THRESHOLD:
+        # The option is not rendered: filter the long input menu by typing. Sites filter
+        # on an option's name, not on what decorates it ("+1", a flag), so the label is
+        # tried, then its name without a trailing code, then its first word.
+        for query in _filter_queries(label):
+            await driver.clear_text(selector)
+            await driver.type_text(selector, query, delay_s=0.0)
+            state = await _poll(read, lambda s: _open(s) and _norm(label) in [_norm(x) for x in _labels(s)],
+                                _OPEN_WAIT_S)
+            state = await _settled(read, state, 0.5)
+            target = pick(_probed_options(state, binding)) if _open(state) else None
+            if target is not None:
+                break
+    if target is None:
+        await _close_menu(driver, selector, read, method, closer)
         raise NotActionable("the menu has no unique visible option with that label")
     if identity_check is not None:
         await identity_check()
-    await driver.click(str(matches[0]["selector"]))
+    await driver.click(str(target["selector"]))
 
     after = await _poll(read, lambda s: not s.get("expanded") or not s.get("menu"), _CLOSE_WAIT_S)
     _check_probed(after, binding)
+    if after.get("expanded") and after.get("menu"):
+        # A menu that stays open after a choice (a popover only an outside press closes)
+        # is closed the way the probe closed it; the display then shows what it holds.
+        await _close_menu(driver, selector, read, method, closer)
+        after = await read()
+        _check_probed(after, binding)
     closed = not after.get("expanded") or not after.get("menu")
     display = "" if after.get("placeholder") else str(after.get("display") or "")
     shown_index = display_option(display, labels)
@@ -972,7 +1049,7 @@ async def _select_probed(
                 _probed_options(reopened, binding), str(reopened.get("activedescendant") or ""), label)
         else:
             confirmation = "the menu did not reopen"
-    if not await _close_menu(driver, selector, read, method):
+    if not (await _close_menu(driver, selector, read, method, closer))[0]:
         raise NotActionable("the menu did not close after reading back the selection")
     if identity_check is not None:
         await identity_check()
@@ -986,6 +1063,19 @@ async def _select_probed(
     if not closed:
         observed.append("menu still open")
     return observed or [f"display {display!r}"]
+
+
+def _filter_queries(label: str) -> list[str]:
+    """What to type into a long input menu to show one option: its label, its name
+    without a trailing code or parenthetical ("United States" of "United States +1"),
+    then its first word."""
+    queries = [label]
+    name = re.sub(r"\s*(?:\([^)]*\)|\+\s?\d[\d\s-]*)\s*$", "", label).strip()
+    words = label.split()
+    for query in (name, words[0] if words else ""):
+        if query and query not in queries:
+            queries.append(query)
+    return queries
 
 
 def _selection_names(options: Sequence[Mapping[str, Any]], activedescendant: str,
@@ -1032,8 +1122,9 @@ async def fill_lookup(
     """Type ``text`` into a lookup and commit the one suggestion ``choose`` accepts.
 
     Suggestions are read from the listbox the input owns once they are stable for
-    400 ms (at most 4 s). With exactly one accepted suggestion it is clicked and read
-    back; otherwise the input is cleared again and the suggestions are returned."""
+    400 ms (at most 6 s; 3 s when none appear). With exactly one accepted suggestion it
+    is clicked and read back; otherwise the input is cleared again and the suggestions
+    are returned."""
     from .driver import NotActionable
 
     read = _reader(driver, selector)
@@ -1053,7 +1144,7 @@ async def fill_lookup(
     while True:
         _check_probed(state, binding)
         menu = state.get("menu")
-        present = _open(state)
+        present = _open(state) or _listed(state)
         loading = present and isinstance(menu, dict) and bool(menu.get("loading"))
         key = (present, loading, tuple(_labels(state)))
         now = loop.time()
@@ -1072,7 +1163,7 @@ async def fill_lookup(
         await driver.clear_text(selector)
         cleared = await read()
         if cleared.get("expanded"):
-            await _close_menu(driver, selector, read, "arrowdown")
+            await _close_menu(driver, selector, read, "arrowdown", str(binding.get("close_method") or ""))
         if (await read()).get("input"):
             raise NotActionable("the lookup input could not be cleared after no unique match")
         if not suggestions:
@@ -1087,7 +1178,8 @@ async def fill_lookup(
         await before_action()
     state = await read()
     _check_probed(state, binding)
-    options = _probed_options(state, {**binding, "listbox_id_pattern": ""}) if _open(state) else []
+    showing = _open(state) or _listed(state)
+    options = _probed_options(state, {**binding, "listbox_id_pattern": ""}) if showing else []
     target = [o for o in options if o["label"][:200] == chosen]
     if len(target) != 1 or not target[0].get("selector") or not target[0].get("visible"):
         await driver.clear_text(selector)

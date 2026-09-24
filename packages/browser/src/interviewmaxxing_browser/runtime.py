@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -74,7 +74,7 @@ from interviewmaxxing_core import (
 
 from .annotations import FormAnnotator, SchemaHintLoader, observation_signature, semantic_only
 from .aria import LookupOutcome, MenuProbe, fill_lookup, fill_phone
-from .driver import DriverError, NotActionable, PageContextLost, PageDriver
+from .driver import DriverError, NotActionable, PageContextLost, PageDriver, file_anchor, file_shown
 from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page, detect_ats
 from .signals import (
@@ -147,6 +147,11 @@ _DOCUMENT_IDENTITY = "() => String(performance.timeOrigin) + ' ' + location.href
 
 _READY_POLL_S = 0.5
 """Interval between page readiness polls (an SPA rendering its form)."""
+_FLICKER_S = 1.0
+"""How long a page may show a passing state after a write (Greenhouse disables its
+"Autofill my application" button while it handles a keystroke) before a difference from
+the approved observation counts as a changed page."""
+_FLICKER_POLL_S = 0.1
 _READY_SETTLE_S = 5.0
 """Upper bound on the network/document settle inside one readiness wait."""
 
@@ -233,6 +238,30 @@ def _same_step_shown_again(
     return len(ids_before & ids_after) * 2 >= len(ids_before)
 
 
+@dataclass(frozen=True)
+class _Upload:
+    """A file this runtime attached whose uploader then emptied or replaced its input."""
+
+    field: ApplicationField
+    binding: FieldBinding
+    anchor: str | None
+    """Selector of the uploader's own container, taken before attaching (see FILE_ANCHOR)."""
+    name: str
+    document: str
+    index: int = -1
+    """Position of the question in the approved form."""
+
+
+def _binding_shape(bindings: Mapping[str, FieldBinding]) -> dict[str, Any]:
+    return {key: [b.selector, b.control_type.value, sorted(b.option_selectors.items()),
+                  sorted(b.label_selectors.items())] for key, b in bindings.items()}
+
+
+def _same_questions(approved: ApplicationForm, current: ApplicationForm) -> bool:
+    return approved.scope.key == current.scope.key and (
+        {f.id: f.fingerprint for f in approved.fields} == {f.id: f.fingerprint for f in current.fields})
+
+
 class GenericApplicationBrowser:
     """``ApplicationBrowser`` for accessible, native HTML forms (the generic adapter)."""
 
@@ -279,6 +308,9 @@ class GenericApplicationBrowser:
         """The document was replaced mid-fill; fresh inspection and refill are required."""
         self._inspected_after_loss = False
         self._fill_document: str | None = None
+        self._fill_bindings: dict[str, Any] = {}
+        self._uploads: dict[str, _Upload] = {}
+        """Files attached in this document whose input the uploader emptied or replaced."""
         self._pending: _PendingSubmit | None = None
         self._accepted = False
 
@@ -353,6 +385,7 @@ class GenericApplicationBrowser:
             break
         else:
             raise PageContextLost("form changed repeatedly during semantic annotation; inspect again")
+        model = await self._with_uploads(model)
         refs: list[EvidenceRef] = []
         if evidence:
             refs = await self._evidence.capture(
@@ -368,6 +401,39 @@ class GenericApplicationBrowser:
             self._identity = model.inspection.job_identity
         self._last = model
         return model
+
+    async def _with_uploads(self, model: PageModel) -> PageModel:
+        """Keep a file question this runtime answered in this document as it was approved
+        while its uploader shows that file: the uploader may replace the input with the
+        file's name (Greenhouse unmounts the input and its Attach and cloud buttons) or
+        show the name beside it (Workable). The question is still on the page, answered;
+        the name it shows is the answer, not new wording."""
+        form = model.form
+        if not self._uploads or form is None:
+            return model
+        fields = list(form.fields)
+        bindings = dict(model.bindings)
+        changed = False
+        for field_id, upload in sorted(self._uploads.items(), key=lambda item: item[1].index):
+            if upload.document != model.snapshot.document:
+                continue
+            present = next((i for i, f in enumerate(fields) if f.id == field_id), None)
+            if present is not None and fields[present].fingerprint == upload.field.fingerprint:
+                continue
+            if not await file_shown(self.driver, upload.binding.selector, upload.name,
+                                    anchor=upload.anchor, wait_s=0.0, emptied=False):
+                continue
+            changed = True
+            if present is not None:
+                fields[present] = upload.field
+                continue
+            fields.insert(upload.index if 0 <= upload.index <= len(fields) else len(fields), upload.field)
+            bindings[field_id] = upload.binding
+        if not changed:
+            return model
+        restored = form.model_copy(update={"fields": fields})
+        return replace(model, inspection=model.inspection.model_copy(update={"form": restored}),
+                       bindings=bindings)
 
     def _evidence_label(self, kind: PageKind) -> str | None:
         if kind in USER_ACTION_PAGES or kind in (
@@ -578,6 +644,8 @@ class GenericApplicationBrowser:
         results: list[FieldFillResult] = []
         lost: PageContextLost | None = None
         self._active_fill_signature = observation_signature(model)
+        self._fill_bindings = _binding_shape(model.bindings)
+        final_signature: str | None = None
         try:
             for app_field in form.fields:
                 binding = model.bindings[app_field.id]
@@ -595,7 +663,11 @@ class GenericApplicationBrowser:
                     if answer is None:
                         results.append(await self._leave_unanswered(app_field, binding))
                     else:
-                        results.append(await self._apply(app_field, binding, answer.value))
+                        outcome = await self._apply(app_field, binding, answer.value)
+                        results.append(outcome)
+                        if (app_field.control_type is ControlType.FILE
+                                and outcome.status is FieldFillStatus.FILLED):
+                            await self._accept_own_upload(form, app_field)
                     await self._assert_fill_context()
                 except PageContextLost as exc:
                     # The document or approved questions changed. Every remaining
@@ -610,6 +682,7 @@ class GenericApplicationBrowser:
                     results.append(FieldFillResult(
                         field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
         finally:
+            final_signature = self._active_fill_signature
             self._active_fill_signature = None
         if lost is not None:
             self._filled = None
@@ -627,7 +700,9 @@ class GenericApplicationBrowser:
         self._inspected_after_loss = False
         # The packet authorized exactly the inspected questions; that stays the authority.
         self._filled = (form.scope.key, form.fingerprint)
-        self._filled_structure = observation_signature(model)
+        self._filled_structure = final_signature or observation_signature(model)
+        # Let a passing state from the last write settle before the page is read again.
+        await self._settled_model(self._filled_structure)
         label = f"filled-step-{form.step}" if only is None else f"filled-step-{form.step}-again"
         after = await self._model(evidence=label)
         await self._assert_fill_context()
@@ -671,20 +746,62 @@ class GenericApplicationBrowser:
         await self._assert_fill_context()
         if self._active_fill_signature is None:
             return
-        try:
-            snapshot = await self._snapshot()
-            fresh = build_page(snapshot, fallback_step=self._steps_advanced,
-                               http_status=self.driver.last_status)
-        except DriverError as exc:
-            raise PageContextLost(
-                "cannot re-observe field constraints before writing; re-inspect before continuing"
-            ) from exc
+        fresh = await self._settled_model(self._active_fill_signature)
         await self._assert_fill_context()
         if observation_signature(fresh) != self._active_fill_signature:
             raise PageContextLost(
                 "questions, bindings, actions, or employer context changed while filling; "
                 "remaining answers were not attempted; re-inspect and resolve again"
             )
+
+    async def _fresh_model(self) -> PageModel:
+        """The page as the fill guard sees it now (probed menus and own uploads kept)."""
+        try:
+            snapshot = await self._snapshot()
+            return await self._with_uploads(build_page(
+                snapshot, fallback_step=self._steps_advanced, http_status=self.driver.last_status))
+        except DriverError as exc:
+            raise PageContextLost(
+                "cannot re-observe field constraints before writing; re-inspect before continuing"
+            ) from exc
+
+    async def _settled_model(self, expected: str) -> PageModel:
+        """The page once it shows the ``expected`` observation again, or after
+        ``_FLICKER_S``: input handlers may change page state for a moment. Only a
+        difference that persists is a change."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + _FLICKER_S
+        fresh = await self._fresh_model()
+        while observation_signature(fresh) != expected and loop.time() < end:
+            await asyncio.sleep(_FLICKER_POLL_S)
+            fresh = await self._fresh_model()
+        return fresh
+
+    async def _accept_own_upload(self, form: ApplicationForm, app_field: ApplicationField) -> None:
+        """An uploader changes its own controls once it takes a file: its Attach and cloud
+        buttons give way to the file's name and a Remove button, and the input may go.
+        That change is the answer, not a changed page: when every other question and
+        binding is as approved, the fill continues against the page as it now is."""
+        if self._active_fill_signature is None:
+            return
+        upload = self._uploads.get(app_field.id)
+        if upload is not None and upload.index < 0:
+            index = [f.id for f in form.fields].index(app_field.id)
+            self._uploads[app_field.id] = replace(upload, index=index)
+        # Past any passing state (attaching fires input events too), then two reads agree.
+        fresh = await self._settled_model(self._active_fill_signature)
+        if observation_signature(fresh) == self._active_fill_signature:
+            return
+        for _ in range(int(_FLICKER_S / _FLICKER_POLL_S)):
+            await asyncio.sleep(_FLICKER_POLL_S)
+            again = await self._fresh_model()
+            settled = observation_signature(again) == observation_signature(fresh)
+            fresh = again
+            if settled:
+                break
+        if (fresh.form is not None and _same_questions(form, fresh.form)
+                and _binding_shape(fresh.bindings) == self._fill_bindings):
+            self._active_fill_signature = observation_signature(fresh)
 
     async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
         await self._assert_fill_freshness()
@@ -832,16 +949,35 @@ class GenericApplicationBrowser:
             return result(got is value.checked, got)
         if isinstance(value, FileValue) and ctype is ControlType.FILE:
             artifact = value.artifact
+            name = Path(artifact.path).name
+            taken = self._uploads.get(fid)
+            if (taken is not None and taken.name == name
+                    and taken.document == str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
+                    and await file_shown(self.driver, binding.selector, name, anchor=taken.anchor, wait_s=0.0)):
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
+                                       detail="the uploader already shows this file")
             if not artifact.verify():
                 return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
                                        detail=f"{artifact.filename} is missing or changed since it was verified")
+            anchor = await file_anchor(self.driver, binding.selector)
             await self._write(lambda: self.driver.set_files(binding.selector, Path(artifact.path)))
             if not artifact.verify():
                 return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
                                        detail="the pinned file changed while attaching it")
             got = (await self._read(binding.selector)).get("files")
             expected = [{"name": artifact.filename, "size": artifact.size_bytes}]
-            return result(got == expected, got)
+            document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
+            if got == expected:
+                # An uploader that keeps the file may still show its name beside the input.
+                self._uploads[fid] = _Upload(app_field, binding, anchor, name, document)
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED)
+            if got in ([], None) and await file_shown(self.driver, binding.selector, name, anchor=anchor):
+                # The uploader took the file and emptied or replaced its input (Workable,
+                # Greenhouse); it shows the file's name and no error.
+                self._uploads[fid] = _Upload(app_field, binding, anchor, name, document)
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
+                                       detail="the uploader shows the file; its input is empty or replaced")
+            return result(False, got)
         return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
                                detail=f"cannot apply a {type(value).__name__} to {ctype}")
 

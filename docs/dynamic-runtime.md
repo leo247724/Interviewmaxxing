@@ -96,9 +96,14 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   dialog, not multi-select, options not observable yet) the runtime focuses it, clicks
   it (never an already open one), falls back to ArrowDown, reads the options of the one
   listbox its `aria-controls`/`aria-owns` names (label, `data-value`, `aria-selected`,
-  disabled, index; never a page-wide option scan), presses Escape and verifies that the
+  disabled, index; never a page-wide option scan), closes it again and verifies that the
   document, the displayed value and the form's field set are unchanged. It never types
-  or chooses. A complete static option set becomes a canonical `SELECT` (values and
+  or chooses. Closing takes the steps a person would, until `aria-expanded` is false:
+  Escape, one toggle click on a click-opened control, then a press outside every control
+  (pointer and mouse press events on the page body, never a click on anything; Rippling's
+  popovers close only that way). The step that closed a document's previous menu goes
+  first. A menu the probe cannot observe or close stays `UNSUPPORTED`, even while it
+  shows its list; probing stops for that document. A complete static option set becomes a canonical `SELECT` (values and
   labels exactly like a native select); an input whose menu offers nothing until
   something is typed becomes a `TYPEAHEAD`; multi-select menus and anything ambiguous,
   virtualized past 5 scrolls or over 500 options stay `UNSUPPORTED` for the user.
@@ -107,10 +112,23 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   per control. Probing runs before semantic annotation with menus closed again, so it
   never counts as a form change. `observe`/`classify` and waits for the user never probe.
   A menu's displayed value or placeholder ("Select...", "+1") is state, not question
-  wording, so fingerprints and saved-answer matching stay stable after filling.
+  wording, so fingerprints and saved-answer matching stay stable after filling. A div
+  menu's `aria-label` that is its placeholder or its displayed value ("Select") names
+  no question; the text around it does.
+- **Open menus are not page changes.** A menu, list or dialog that a combobox or picker
+  owns belongs to that widget wherever it renders, in a body portal or inside the form
+  (Greenhouse). It never adds text to another question, never shifts another element's
+  position in a selector, and its buttons, links, headings and live regions are not the
+  page's. react-select's hidden required proxy input (`aria-hidden`, `tabindex=-1`,
+  rendered only while a required select is empty) is part of its select, not a
+  question.
 - **Selecting.** A probed menu is opened the recorded way, its listbox re-resolved after
-  opening, an input menu of more than 20 options filtered by typing the exact label, and
-  the one matching option (freshly derived from the owned listbox) clicked. Readback:
+  opening, and the one matching option (freshly derived from the owned listbox) clicked.
+  Only when an input menu of more than 20 options does not render that option is it
+  filtered by typing. The label is tried first, then its name without a trailing code or
+  parenthetical ("United States" of "United States +1": Greenhouse filters on the
+  country's name), then its first word. A menu still open after the choice is closed the
+  way the probe closed it. Readback:
   the menu closed and the control displays the chosen label. When it displays only a
   suffix of it (a dial-code select shows "+1", which "United States +1" and "Canada +1"
   share), the menu is reopened once and its own selection must name the chosen option;
@@ -118,8 +136,11 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   `aria-activedescendant`, or exactly one option whose class names the selection
   (react-select's `select__option--is-selected`). A confirmed choice keeps naming the
   "+1" display in that document. Anything else is `VERIFICATION_MISMATCH`.
-- **Lookups.** A `TYPEAHEAD` answer is typed (about 30 ms per character); suggestions are
-  read from the owned listbox once stable for 400 ms (at most 4 s) and matched with
+- **Lookups.** A `TYPEAHEAD` answer is typed (about 30 ms per character). Suggestions are
+  read from the owned listbox once stable for 400 ms. The wait is at most 6 s, or 3 s
+  while nothing appears: Rippling loads its place search on the first query. A shown
+  list counts even when the input never exposes `aria-expanded`, as Rippling's location
+  input doesn't. Suggestions are matched with
   US state abbreviations and United States synonyms spelled out: the typed place must
   equal a whole comma segment ("Austin" never matches "Austintown") and every other typed
   word must begin a word of the suggestion. A suggestion typed verbatim always wins.
@@ -131,8 +152,28 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
 - **Phones.** A `tel` input whose own widget has a country picker (an `.iti` container, a
   preceding `aria-haspopup=dialog` button, or a sibling combobox showing `+<code>`) sets
   `ApplicationField.expects_international_phone`; its value is typed as given and read
-  back by digits and by the picker's dial code. A plain tel input keeps the exact
-  fill-and-readback.
+  back by digits and by the picker's dial code. The picker's text is its name, its
+  title and its own text, because intl-tel-input with a separate dial code (Workable)
+  shows "+1" only in a child element, and "+1" is taken out of the input. A plain tel
+  input keeps the exact fill-and-readback.
+- **File uploaders.** A file answer is verified by the attached bytes. When the page's
+  uploader takes the file and empties its input (Workable), or replaces the input with
+  the file's name (Greenhouse unmounts the input together with its Attach and cloud
+  buttons), the answer is verified instead by the uploader's own container. That
+  container, recorded before attaching, must show the file's name, with no error alert
+  and no progress bar. The file question then keeps its approved wording while the
+  uploader shows that file, and the file is not attached again on a second fill.
+  A hidden file input labelled with its button's verb ("Attach") takes its question from
+  its uploader group ("Resume/CV").
+- **Passing states and own changes.** Before every write the page must still show the
+  approved questions, bindings and actions. A difference is waited out for up to 1 s,
+  because Greenhouse disables its "Autofill my application" button while it handles a
+  keystroke; only a difference that persists stops the fill. After a verified attach,
+  the fill continues against the page as it now is, if every other question and binding
+  is as approved.
+- **Closed postings.** "Job not found", "The job you requested was not found", "posting
+  not found", "job does not exist" and "no longer open" (Greenhouse's redirect for a
+  closed job) classify `JOB_CLOSED`, as "no longer available" already did.
 - **User agent.** Headless Playwright sessions present the browser's own user agent with
   a Linux desktop platform segment (`(X11; Linux x86_64)`; product and version tokens
   unchanged): react-select leaves out `aria-selected` and `aria-activedescendant` when

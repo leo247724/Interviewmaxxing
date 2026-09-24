@@ -19,6 +19,25 @@
   const unique = (sel) => {
     try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; }
   };
+  // Menus a combobox or picker owns (listbox, menu, dialog), as the outermost element of
+  // each that does not contain its owner. Wherever a widget renders an open menu (a
+  // body portal or inside the form), it belongs to that widget: it never adds text to
+  // another control and never shifts another element's position in a selector.
+  const popupRoots = new Set();
+  for (const owner of document.querySelectorAll("[aria-controls], [aria-owns]")) {
+    if (owner.getAttribute("role") !== "combobox" && !owner.hasAttribute("aria-haspopup")) continue;
+    for (const attr of ["aria-controls", "aria-owns"]) {
+      for (const id of (owner.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) {
+        const popup = document.getElementById(id);
+        if (!popup || popup.contains(owner)) continue;
+        let root = popup;
+        while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(owner)) {
+          root = root.parentElement;
+        }
+        popupRoots.add(root);
+      }
+    }
+  }
   const selectorFor = (el) => {
     if (el.id && unique("#" + CSS.escape(el.id))) return "#" + CSS.escape(el.id);
     const tag = el.tagName.toLowerCase();
@@ -38,7 +57,11 @@
       const p = n.parentElement;
       if (!p) { parts.unshift(t); break; }
       const same = Array.from(p.children).filter((c) => c.tagName === n.tagName);
-      parts.unshift(same.length > 1 ? t + ":nth-of-type(" + (same.indexOf(n) + 1) + ")" : t);
+      const index = same.indexOf(n);
+      // An open menu next to this element does not make it "the first of two".
+      const counted = same.filter((c) => c === n || !popupRoots.has(c));
+      const popupBefore = same.slice(0, index).some((c) => popupRoots.has(c));
+      parts.unshift(counted.length > 1 || popupBefore ? t + ":nth-of-type(" + (index + 1) + ")" : t);
     }
     return parts.join(" > ");
   };
@@ -94,10 +117,21 @@
     if (byLabelledby) return [byLabelledby, "aria-labelledby"];
     if (el.labels && el.labels.length) {
       const t = Array.from(el.labels).map((l) => textOf(l)).join(" ").trim();
+      // A styled uploader's hidden file input is labelled with its button's verb
+      // ("Attach"); the question is the name of the uploader's group ("Resume/CV").
+      if (t && el.type === "file" && /^(?:attach|upload|browse|choose|select|add)(?:\s+(?:a\s+)?files?)?$/i.test(t)) {
+        const group = el.closest('[role="group"][aria-labelledby]');
+        const named = group ? byIds(group.getAttribute("aria-labelledby")).map((n) => textOf(n)).join(" ").trim() : "";
+        if (named) return [named, "aria-labelledby"];
+      }
       if (t) return [t, "label"];
     }
     const aria = (el.getAttribute("aria-label") || "").trim();
-    if (aria) return [aria, "aria-label"];
+    // A div menu whose aria-label is its placeholder ("Select", kept after a choice) or
+    // repeats what it displays names no question; its question is the text around it.
+    const placeholderName = el.tagName !== "INPUT" && comboLike(el) &&
+      (comboPlaceholderText.test(ariaText(aria)) || ariaText(aria) === comboDisplay(el).text);
+    if (aria && !placeholderName) return [aria, "aria-label"];
     const title = (el.getAttribute("title") || "").trim();
     if (title) return [title, "title"];
     return ["", "none"];
@@ -107,8 +141,13 @@
   // ---- forms and their controls --------------------------------------------------
   const forms = Array.from(document.forms);
   const formIndex = (el) => (el.form ? forms.indexOf(el.form) : -1);
+  // A combobox's hidden validation proxy (react-select's RequiredInput: aria-hidden,
+  // tabindex -1, rendered only while the menu has no value) is part of that widget.
+  const comboProxy = (el) => el.tagName === "INPUT" && el.getAttribute("aria-hidden") === "true" &&
+    el.tabIndex === -1 && !!el.parentElement &&
+    Array.from(el.parentElement.querySelectorAll('[role="combobox"]')).some((c) => c !== el);
   const nativeControls = Array.from(document.querySelectorAll("input, select, textarea"))
-    .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()));
+    .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el));
 
   const customWidgets = [];
   for (const el of document.querySelectorAll("[role], [contenteditable]")) {
@@ -245,11 +284,11 @@
       }
     }
     for (let sib = start.previousElementSibling; sib; sib = sib.previousElementSibling) {
-      if (!visible(sib)) continue;
+      if (popupRoots.has(sib) || !visible(sib)) continue;
       if (sib.matches('script,style,template,button,label,legend,h1,h2,h3,h4,h5,h6,[role="heading"],[role="alert"],[role="status"],[aria-live]')) continue;
       for (const f of fieldEls) if (sib.contains(f)) return "";
       if (sib.querySelector("button, a[href]")) continue;
-      const t = textOf(sib);
+      const t = textOf(sib, popupRoots);
       if (t) return t.slice(0, 500);
     }
     return "";
@@ -268,7 +307,7 @@
     const members = groupMembers(el);
     const form = el.form;
     const container = containerFor(members, form);
-    const exclude = new Set(ownedEls);
+    const exclude = new Set([...ownedEls, ...popupRoots]);
     for (const m of members) for (const l of m.labels || []) exclude.add(l);
     for (const m of members) for (const d of byIds(m.getAttribute("aria-describedby"))) exclude.add(d);
     const fs = el.closest("fieldset");
@@ -340,7 +379,8 @@
 
   const describeCustom = (el) => {
     const container = containerFor([el], el.closest("form"));
-    const exclude = new Set([...byIds(el.getAttribute("aria-labelledby")), ...byIds(el.getAttribute("aria-describedby"))]);
+    const exclude = new Set([...byIds(el.getAttribute("aria-labelledby")), ...byIds(el.getAttribute("aria-describedby")),
+      ...popupRoots]);
     for (const id of ownedIds) { const o = document.getElementById(id); if (o) exclude.add(o); }
     const [adjacent, adjacentErrors] = adjacentText(container, exclude);
     const [label, labelSource] = labelOf(el);
@@ -404,9 +444,11 @@
   positioned.sort((a, b) => (a[0].compareDocumentPosition(b[0]) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
 
   // ---- buttons, links, page text --------------------------------------------------
+  // Buttons, links, headings and live text inside an open menu belong to its widget.
+  const inPopup = (el) => { for (const p of popupRoots) if (p.contains(el)) return true; return false; };
   const buttons = [];
   for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
-    if (!visible(el)) continue;
+    if (!visible(el) || inPopup(el)) continue;
     if (CUSTOM_ROLES.has(el.getAttribute("role") || "")) continue; // a widget, reported as a control
     // A picker trigger (a phone widget's "Change country" button) opens a dialog or
     // list; it is part of a control, never a step action, and its label is state.
@@ -434,13 +476,13 @@
   }
   const links = [];
   for (const a of document.querySelectorAll("a[href]")) {
-    if (!visible(a)) continue;
+    if (!visible(a) || inPopup(a)) continue;
     links.push({ text: textOf(a) || a.getAttribute("aria-label") || "", href: a.href, selector: selectorFor(a) });
   }
   const headings = Array.from(document.querySelectorAll("h1, h2, h3"))
-    .filter(visible).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h) })).filter((h) => h.text);
+    .filter((h) => visible(h) && !inPopup(h)).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h) })).filter((h) => h.text);
   const regions = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live]'))
-    .filter(visible).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r) })).filter((r) => r.text);
+    .filter((r) => visible(r) && !inPopup(r)).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r) })).filter((r) => r.text);
 
   // Record candidates: members of repeated sibling groups of block elements (cards,
   // articles, list items, rows). Python decides which groups are application records

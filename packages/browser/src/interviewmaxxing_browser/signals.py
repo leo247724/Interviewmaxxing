@@ -87,15 +87,20 @@ ALREADY_APPLIED = _rx(
     r"you already have an application|application (?:for this (?:job|role|position) )?already exists"
 )
 JOB_CLOSED = _rx(
-    r"\bno longer (?:accepting applications|available|active)\b|"
+    r"\bno longer (?:accepting applications|available|active|open)\b|"
     r"\b(?:job|position|posting|role|opening|requisition)(?: posting)? (?:is|has been|was) "
     r"(?:closed|filled|removed|no longer active|not currently active)\b|"
     r"\bthis job is closed\b|"
     r"\b(?:job|position|posting|role|opening|requisition)(?: posting)? has expired\b|"
-    r"\bdoes not exist or is not currently active\b|\bis not currently active\b"
+    r"\bdoes not exist or is not currently active\b|\bis not currently active\b|"
+    r"\b(?:job|position|posting|role|opening|requisition)(?: posting)? "
+    r"(?:not found|does not exist|doesn't exist|(?:could|can)not be found|can't be found)\b|"
+    r"\b(?:job|position|posting|role|opening|requisition) you (?:requested|were looking for|are looking for) "
+    r"(?:was not|wasn't|is not|isn't|could not be|cannot be|can't be) found\b"
 )
-"""Wording that says the job itself is gone (closed, filled, expired, inactive). Tied
-to job words where the verb alone is ambiguous: a session, not a job, "has expired"."""
+"""Wording that says the job itself is gone (closed, filled, expired, inactive, not
+found). Tied to job words where the verb alone is ambiguous: a session, not a job, "has
+expired"; a page, not a job, is "not found"."""
 PENDING = _rx(r"still processing|being processed|cannot confirm|can't confirm|pending review")
 ERROR_HEADING = _rx(
     r"something went wrong|error|not found|unavailable|try again later|bad gateway|timed? ?out"

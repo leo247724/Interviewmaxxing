@@ -46,7 +46,16 @@ from interviewmaxxing_core import BrowserOptions
 
 from .annotations import FormAnnotator, SchemaHintLoader
 from .aria import ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, COMBO_STATE, PHONE_STATE
-from .driver import _FILE_DIGEST, DriverError, NotActionable, PageContextLost
+from .driver import (
+    _FILE_DIGEST,
+    FILE_ANCHOR,
+    FILE_SHOWN,
+    DriverError,
+    NotActionable,
+    PageContextLost,
+    file_anchor,
+    file_shown,
+)
 from .driver import CapabilityUnsupported as CapabilityUnsupported  # public name kept here
 from .runtime import (
     _DOCUMENT_IDENTITY,
@@ -203,7 +212,7 @@ _FOCUSED = (
 _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
-    COMBO_STATE, PHONE_STATE, _FOCUSED,
+    COMBO_STATE, PHONE_STATE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
 
@@ -452,6 +461,7 @@ class OpenCliDriver:
                 f"({'different contents' if digest else 'contents could not be verified'}); "
                 "replace it with the exact pinned file in the browser window, then continue"
             )
+        anchor = await file_anchor(self, selector)
         try:
             envelope = await self._call(self._argv(["upload"], positionals=[selector, str(path)]))
         except OpenCliTargetError:
@@ -465,6 +475,9 @@ class OpenCliDriver:
                 ) from exc
             raise UnverifiedAction(f"upload {selector} failed after changing the field: {exc}") from exc
         self._check_match(envelope, f"upload {selector}")
+        after = await self._files(selector)
+        if after in ([], None) and await file_shown(self, selector, path.name, anchor=anchor):
+            return  # the uploader took the file from its input (or replaced it) and shows it
         after = await self._control(selector)
         if after.get("files") != wanted:
             raise UnverifiedAction(f"upload {selector}: the field holds {after.get('files')!r}")
@@ -524,6 +537,11 @@ class OpenCliDriver:
     async def scroll_to_end(self, selector: str) -> None:
         raise CapabilityUnsupported(
             f"OpenCLI cannot scroll the list {selector}; choose from it yourself in the browser window"
+        )
+
+    async def dismiss(self) -> None:
+        raise CapabilityUnsupported(
+            "OpenCLI cannot press outside an open menu; close it yourself in the browser window"
         )
 
     async def settle(self, timeout_s: float) -> None:

@@ -101,7 +101,9 @@ class Field:
     dom_id: str | None = None
     """Element id of a script-driven widget (``question_6001``, ``field-3``)."""
     display: str | None = None
-    """``dial``: a react_select shows only the dial code of the chosen label."""
+    """``dial``: a react_select shows only the dial code of the chosen label; ``dial-name``
+    also shows a flag in each option and filters on the country's name only (Greenhouse).
+    ``separate``: an intl_tel shows its dial code apart from the number (Workable)."""
     open_on: str | None = None
     """``click`` (default), ``keyboard`` (focus + ArrowDown only) or ``focus``."""
     remote: str | None = None
@@ -114,6 +116,18 @@ class Field:
     """A search combobox that lists every option when opened (a static menu)."""
     embedded: bool = False
     """Rendered inside another widget's block (a phone's country code)."""
+    inline: bool = False
+    """A react_select whose menu renders inside the form (no body portal), with a hidden
+    required proxy input while it is empty and a "Toggle flyout" button (Greenhouse)."""
+    popover: bool = False
+    """A div_combobox or remote_lookup whose menu is a popover dialog that only an
+    outside press or a choice closes (Rippling); lookups never expose aria-expanded."""
+    labelled: bool = False
+    """A popover div_combobox named by aria-labelledby (else only by the paragraph before it)."""
+    uploader: str | None = None
+    """A file field behind a script uploader whose file lives in page state: ``greenhouse``
+    (a hidden input behind "Attach", replaced by the file's name once it takes a file) or
+    ``dropzone`` (Workable: the input is emptied and the file's name shown)."""
 
     @property
     def multi(self) -> bool:
@@ -122,6 +136,11 @@ class Field:
     @property
     def widget(self) -> bool:
         return self.kind in WIDGET_KINDS
+
+    @property
+    def scripted(self) -> bool:
+        """Needs the widget script (a widget, or a file field behind a script uploader)."""
+        return self.widget or self.uploader is not None
 
     def option_label(self, value: str) -> str:
         return next((o.label for o in self.options if o.value == value), value)
@@ -390,6 +409,15 @@ RP_LOCATION = Field("location_short", "Location", "remote_lookup", options=_labe
                     dom_id="field-42", remote="/__fixture__/cities?style=short&q=")
 RP_STATE = Field("state", "What state do you live in?", "search_combobox", True,
                  _labels(*US_STATE_NAMES), dom_id="field-43", idle="Start typing to search")
+RP_POP_GENDER = Field("gender", "Gender", "div_combobox", True,
+                      _labels("Male", "Female", "Non-binary", "Choose not to disclose"),
+                      dom_id="field-55", popover=True, labelled=True)
+RP_POP_AUTHORIZATION = Field(
+    "custom_work_authorization", "Are you legally authorized to work in the United States?",
+    "div_combobox", True, _labels("No", "Yes"), dom_id="field-63", popover=True,
+)
+RP_POP_LOCATION = Field("location", "Location", "remote_lookup", True, _labels(*CITIES_SHORT),
+                        dom_id="field-42", remote="/__fixture__/cities?style=short&q=", popover=True)
 
 ITI_COUNTRIES = (
     ("af", "Afghanistan", "93"), ("ar", "Argentina", "54"), ("au", "Australia", "61"),
@@ -413,6 +441,25 @@ RS_CHANNELS = Field(
 )
 MULTI_PAGE_HEARD = Field("question_8002", "How did you hear about us?", "react_select", True,
                          HEARD_OPTIONS)
+RS_INLINE_COUNTRY = Field("question_9004", "Country", "react_select", True, DIAL_CODES,
+                          display="dial-name", inline=True)
+"""Greenhouse's phone Country: options show a flag, and typing filters on the country's
+name only (typing "United States +1" leaves no option)."""
+GH_RESUME = Field("resume", "Resume/CV", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="greenhouse")
+WK_RESUME = Field("resume", "Resume", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="dropzone")
+WK_PHONE = Field("phone", "Phone", "intl_tel", True, autocomplete="tel", display="separate")
+"""Workable's intl-tel-input (separateDialCode, nationalMode): the dial code is shown apart
+from the number, and typing "+1…" leaves only the national digits in the input."""
+RS_INLINE_AUTHORIZATION = Field(
+    "question_9001", "Are you legally authorized to work in the United States?", "react_select", True,
+    _options(("in_wa_yes", "Yes"), ("in_wa_no", "No")), inline=True,
+)
+RS_INLINE_SPONSORSHIP = Field(
+    "question_9002", "Will you now or in the future require visa sponsorship?", "react_select", True,
+    _options(("in_sp_yes", "Yes"), ("in_sp_no", "No")), inline=True,
+)
+RS_INLINE_HEARD = Field("question_9003", "How did you hear about us?", "react_select",
+                        options=HEARD_OPTIONS, inline=True)
 
 CORE_FIELDS = (
     FIRST_NAME,
@@ -455,6 +502,11 @@ class Job:
     """Page script renders the form 1.5 s after load, behind a loading indicator."""
     cookie_banner: bool = False
     """A modal cookie-consent dialog covers the page (main is inert) until dismissed."""
+    formless: bool = False
+    """The questions are not in a <form>: page script posts them (a Rippling-style SPA)."""
+    autofill: bool = False
+    """A page-level "Autofill my application" button outside the form that the page
+    disables for a moment on every keystroke (Greenhouse)."""
 
     @property
     def multistep(self) -> bool:
@@ -485,6 +537,8 @@ class Job:
             "captcha_widget": self.captcha_widget,
             "spa_loading": self.spa_loading,
             "cookie_banner": self.cookie_banner,
+            "formless": self.formless,
+            "autofill": self.autofill,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -727,6 +781,49 @@ JOBS: dict[str, Job] = {
             "A React-select-style multi-select with chips that the runtime must leave to the "
             "user, beside a single-choice one.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, RS_CHANNELS, MULTI_PAGE_HEARD),
+        ),
+        Job(
+            "react-select-inline",
+            "BWA-GH-125",
+            "Performance Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "Greenhouse-style: React-select questions whose menus open inside the form (no body "
+            "portal) next to a real \"Toggle flyout\" button, with a hidden required proxy input "
+            "while a required one is empty; a dial-code \"Country\" with flags that filters on "
+            "the country's name; a résumé uploader that replaces its hidden input with the "
+            "file's name; and a page-level \"Autofill my application\" button that is disabled "
+            "for a moment on every keystroke.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, RS_INLINE_COUNTRY, PHONE, GH_RESUME,
+                    RS_INLINE_AUTHORIZATION, YEARS_EXPERIENCE, RS_INLINE_SPONSORSHIP, RS_INLINE_HEARD,
+                    WHY_BRAMBLEWAY),
+            autofill=True,
+        ),
+        Job(
+            "workable-like",
+            "BWA-WK-127",
+            "Demand Generation Manager",
+            "Marketing",
+            "Remote (US)",
+            "A Workable-style form: an intl-tel-input phone that shows its dial code apart from "
+            "the number (typing +1… leaves only the national digits in the input) and a "
+            "drag-and-drop résumé uploader that empties its input once it takes the file and "
+            "shows the file's name.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, WK_PHONE, WK_RESUME),
+        ),
+        Job(
+            "div-combobox-orphan",
+            "BWA-RP-126",
+            "Brand Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "A Rippling-style application rendered without a <form> and posted by page "
+            "script: popover div comboboxes that only a choice or an outside press closes "
+            "(a labelled Gender question and a custom question named by its paragraph) and "
+            "a role-less location lookup that never exposes aria-expanded and answers its "
+            "first query slowly.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, RP_POP_GENDER, RP_POP_AUTHORIZATION, RP_POP_LOCATION),
+            formless=True,
         ),
     )
 }
@@ -1245,6 +1342,10 @@ input.select__input{border:0;padding:0;margin:0;background:transparent;width:100
 .rip-select p{margin:0}
 .rip-list{position:absolute;left:0;right:0;z-index:40;list-style:none;margin:2px 0 0;padding:4px 0;background:#fff;border:1px solid #8a94a6;border-radius:4px;max-height:240px;overflow-y:auto}
 .rip-option,.rip-notice{padding:6px 12px}
+.rip-question--popover{position:relative}
+.rip-popper{position:absolute;left:0;right:0;z-index:45;background:#fff;border:1px solid #8a94a6;border-radius:4px}
+.rip-popper .rip-list{position:static;border:0;margin:0}
+.rip-popper p{margin:0}
 .rip-option--active{background:#deebff}
 .rip-phone{display:flex;gap:.5rem}
 .rip-phone .rip-country{position:relative;width:8rem}
@@ -1295,11 +1396,23 @@ WIDGETS_JS = r"""(function () {
     };
     var displayOf = function (value) {
       var label = labelOf(value);
-      if (cfg.display === "dial") { var m = label.match(/\+\d+$/); return m ? m[0] : label; }
+      if (cfg.display === "dial" || cfg.display === "dial-name") { var m = label.match(/\+\d+$/); return m ? m[0] : label; }
       return label;
     };
     var hasValue = function () { return multi ? st.value.length > 0 : st.value !== null; };
+    // Like react-select's RequiredInput: a hidden required proxy rendered only while a
+    // required select has no value (it is removed as soon as one is chosen).
+    function renderRequired() {
+      var proxy = shell.querySelector("input.select__required");
+      if (!cfg.inline || !cfg.required || hasValue()) { if (proxy) proxy.remove(); return; }
+      if (proxy) return;
+      proxy = el("input", {"class": "select__required", name: cfg.name, tabindex: "-1", "aria-hidden": "true", value: ""});
+      proxy.required = true;
+      proxy.style.cssText = "opacity:0;pointer-events:none;position:absolute;bottom:0;left:0;right:0;width:100%;height:1px";
+      shell.appendChild(proxy);
+    }
     function renderValue() {
+      renderRequired();
       Array.prototype.slice.call(values.children).forEach(function (child) {
         if (child !== inputBox) child.remove();
       });
@@ -1333,7 +1446,8 @@ WIDGETS_JS = r"""(function () {
       var text = norm(input.value);
       return cfg.options.filter(function (o) {
         if (multi && st.value.indexOf(o[0]) >= 0) return false;
-        return !text || norm(o[1]).indexOf(text) >= 0;
+        var name = cfg.display === "dial-name" ? o[1].replace(/\s*\+\d+$/, "") : o[1];
+        return !text || norm(name).indexOf(text) >= 0;
       });
     }
     function notice() {
@@ -1366,6 +1480,7 @@ WIDGETS_JS = r"""(function () {
         var option = el("div", {id: "react-select-" + id + "-option-" + i, role: "option",
           "class": "select__option", "aria-selected": String(selected), tabindex: "-1"}, o[1]);
         if (apple || hidden(id)) option.removeAttribute("aria-selected");
+        if (cfg.display === "dial-name") option.insertBefore(el("div", {"class": "iti__flag iti__" + o[0]}), option.firstChild);
         option.addEventListener("mousemove", function () { if (focused !== i) { focused = i; paintFocus(); } });
         option.addEventListener("click", function () { choose(i); });
         list.appendChild(option);
@@ -1377,15 +1492,17 @@ WIDGETS_JS = r"""(function () {
       var r = control.getBoundingClientRect();
       menu = el("div", {"class": "select__menu", id: "react-select-" + id + "-menu"});
       menu.style.cssText = "position:absolute;z-index:50;background:#fff;border:1px solid #8a94a6;" +
-        "border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.15);left:" + (r.left + window.scrollX) +
-        "px;top:" + (r.bottom + window.scrollY + 2) + "px;width:" + r.width + "px";
+        "border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.15);" + (cfg.inline ? "left:0;right:0;top:100%" :
+        "left:" + (r.left + window.scrollX) + "px;top:" + (r.bottom + window.scrollY + 2) + "px;width:" + r.width + "px");
       var list = el("div", {"class": "select__menu-list", role: "listbox", id: "react-select-" + id + "-listbox",
         "aria-multiselectable": String(multi)});
       list.style.cssText = "max-height:300px;overflow-y:auto;padding:4px 0";
       menu.appendChild(list);
       // Keep the focus in the input while the pointer is on the menu, like react-select.
       menu.addEventListener("mousedown", function (e) { e.preventDefault(); });
-      document.body.appendChild(menu);
+      // Without a menuPortalTarget react-select renders the menu inside its container,
+      // so an open menu is part of the form (Greenhouse); otherwise a body portal.
+      if (cfg.inline) shell.appendChild(menu); else document.body.appendChild(menu);
       input.setAttribute("aria-expanded", "true");
       input.setAttribute("aria-controls", "react-select-" + id + "-listbox");
       var current = multi ? -1 : candidates().map(function (o) { return o[0]; }).indexOf(st.value);
@@ -1459,9 +1576,72 @@ WIDGETS_JS = r"""(function () {
     renderValue();
   }
 
+  // Rippling's popover menu (its Select component): focus or a click opens it, a click on
+  // the control while it is open is ignored, Escape and blur do nothing; only a choice
+  // or a press outside the control and the popover (a document mousedown) closes it.
+  // The list sits in a role=dialog popper inside the question block, not a portal; the
+  // aria-label stays the placeholder, which is a <p> while a choice is a bare text node.
+  function popoverCombobox(box, cfg) {
+    var id = box.id;
+    var st = state[cfg.name] = {value: cfg.initial || null};
+    var popper = null;
+    function display() {
+      box.textContent = "";
+      if (st.value === null) box.appendChild(el("p", {}, cfg.placeholder));
+      else box.appendChild(document.createTextNode(st.value));
+    }
+    function open() {
+      if (popper) return;
+      popper = el("div", {role: "dialog", "data-testid": "popper", tabindex: "-1", "class": "rip-popper"});
+      popper.appendChild(el("span", {role: "status", "class": "visually-hidden"},
+        cfg.options.length + " results available. Press up and down arrow keys to navigate."));
+      var list = el("ul", {id: id + "-list", role: "listbox", "data-testid": "menuList",
+        "aria-label": cfg.placeholder, "class": "rip-list"});
+      cfg.options.forEach(function (label, i) {
+        var li = el("li", {id: id + "-list-option-" + i, role: "option", "data-idx": String(i),
+          "aria-posinset": String(i + 1), "aria-setsize": String(cfg.options.length),
+          "aria-selected": String(label === st.value), "aria-disabled": "false", "class": "rip-option"});
+        var outer = el("div", {}), inner = el("div", {"data-testid": "menuListLabel"});
+        inner.appendChild(el("p", {}, label));
+        outer.appendChild(inner);
+        li.appendChild(outer);
+        li.addEventListener("click", function () { choose(i); });
+        list.appendChild(li);
+      });
+      popper.appendChild(list);
+      box.closest(".rip-question").appendChild(popper);
+      box.setAttribute("aria-expanded", "true");
+      box.setAttribute("aria-controls", id + "-list");
+    }
+    function close() {
+      if (!popper) return;
+      popper.remove();
+      popper = null;
+      box.setAttribute("aria-expanded", "false");
+      box.removeAttribute("aria-controls");
+    }
+    function choose(i) {
+      st.value = cfg.options[shift(id, i, cfg.options.length)];
+      close();
+      display();
+    }
+    box.addEventListener("focus", open);
+    box.addEventListener("click", open);
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(); }
+    });
+    document.addEventListener("mousedown", function (e) {
+      // Fixture control (hooks.stuck): a popover no press outside it closes.
+      if (hooks.stuck && hooks.stuck[id]) return;
+      if (popper && !box.contains(e.target) && !popper.contains(e.target)) close();
+    }, true);
+    display();
+  }
+
   // Rippling-style div combobox.
   function divCombobox(box) {
     var cfg = config(box);
+    if (cfg.popover) { popoverCombobox(box, cfg); return; }
     var id = box.id;
     var st = state[cfg.name] = {value: cfg.initial || null};
     var list = null, focused = 0, byKeyboard = false, isOpen = false;
@@ -1542,19 +1722,31 @@ WIDGETS_JS = r"""(function () {
     var id = input.id;
     var st = state[cfg.name] = {value: cfg.initial || null};
     var list = null, focused = 0, items = [], timer = null, seq = 0;
+    var popper = null, loaded = false;
     function ensureList() {
       if (list) return list;
       list = el("ul", {id: id + "-list", role: "listbox", "class": "rip-list"});
       list.addEventListener("mousedown", function (e) { e.preventDefault(); });
-      input.parentNode.appendChild(list);
+      if (cfg.popover) {
+        // Rippling's location input: the list is in a popper dialog, and the input never
+        // gets aria-expanded (only aria-controls while the list shows).
+        popper = el("div", {role: "dialog", "data-testid": "popper", tabindex: "-1", "class": "rip-popper"});
+        popper.appendChild(el("span", {role: "status", "class": "visually-hidden"}, "Results available."));
+        list.setAttribute("aria-label", "textbox");
+        popper.appendChild(list);
+        input.closest(".field").appendChild(popper);
+      } else {
+        input.parentNode.appendChild(list);
+        input.setAttribute("aria-expanded", "true");
+      }
       input.setAttribute("aria-controls", id + "-list");
-      input.setAttribute("aria-expanded", "true");
       return list;
     }
     function hide() {
       if (list) { list.remove(); list = null; }
+      if (popper) { popper.remove(); popper = null; }
       input.removeAttribute("aria-controls");
-      input.setAttribute("aria-expanded", "false");
+      if (!cfg.popover) input.setAttribute("aria-expanded", "false");
       input.removeAttribute("aria-activedescendant");
     }
     function render(labels, emptyNotice) {
@@ -1596,16 +1788,24 @@ WIDGETS_JS = r"""(function () {
       clearTimeout(timer);
       if (!text) { if (cfg.showAll || cfg.idle) openAll(); else hide(); return; }
       if (cfg.remote) {
-        if (text.length < 2) { hide(); return; }
+        if (text.length < (cfg.popover ? 3 : 2)) { hide(); return; }
+        // A popover lookup loads its place-search library on the first query (slow).
+        var delay = cfg.popover ? (loaded ? 300 : 300 + cfg.lazy) : 150;
         timer = setTimeout(function () {
+          loaded = true;
           fetch(cfg.remote + encodeURIComponent(text)).then(function (r) { return r.json(); })
             .then(function (labels) { if (mine === seq) render(labels, ""); });
-        }, 150);
+        }, delay);
         return;
       }
       render(matching(text), "No results");
     }
     input.addEventListener("input", lookup);
+    if (cfg.popover) {
+      document.addEventListener("mousedown", function (e) {
+        if (popper && e.target !== input && !popper.contains(e.target)) hide();
+      }, true);
+    }
     input.addEventListener("click", function () { if (!list) openAll(); });
     input.addEventListener("keydown", function (e) {
       if (!list) { if (e.key === "ArrowDown" && (cfg.showAll || cfg.idle)) { e.preventDefault(); openAll(); } return; }
@@ -1619,12 +1819,57 @@ WIDGETS_JS = r"""(function () {
         e.preventDefault(); hide();
       }
     });
-    input.addEventListener("blur", function () { hide(); });
+    if (!cfg.popover) input.addEventListener("blur", function () { hide(); });
+  }
+
+  // intl-tel-input 18 with separateDialCode and nationalMode (Workable): the flag shows the
+  // dial code in its own element; a typed "+<code>" chooses the country and is taken out
+  // of the input, which keeps only the national digits.
+  function separateDialCode(root, cfg) {
+    var input = root.querySelector("input[type=tel]");
+    var flagBox = root.querySelector(".iti__selected-flag");
+    var list = root.querySelector("[role=listbox]");
+    var st = state[cfg.name] = {country: cfg.initial || "us"};
+    var byIso = {};
+    cfg.countries.forEach(function (c) { byIso[c[0]] = c; });
+    function select(iso) {
+      var c = byIso[iso];
+      st.country = iso;
+      flagBox.querySelector(".iti__flag").className = "iti__flag iti__" + iso;
+      flagBox.querySelector(".iti__selected-dial-code").textContent = "+" + c[2];
+      flagBox.setAttribute("title", c[1]);
+      Array.prototype.forEach.call(list.children, function (li) {
+        li.setAttribute("aria-selected", String(li.getAttribute("data-country-code") === iso));
+      });
+    }
+    function toggle(show) {
+      list.className = "iti__country-list" + (show ? "" : " iti__hide");
+      flagBox.setAttribute("aria-expanded", String(show));
+    }
+    input.addEventListener("input", function () {
+      var raw = input.value.trim();
+      if (raw.charAt(0) !== "+") return;
+      var digits = raw.replace(/\D/g, ""), match = null;
+      cfg.countries.forEach(function (c) {
+        if (digits.indexOf(c[2]) !== 0) return;
+        if (!match || c[2].length > match[2].length || (c[2].length === match[2].length && c[0] === st.country)) match = c;
+      });
+      if (!match) return;
+      if (match[2] !== byIso[st.country][2]) select(match[0]);
+      input.value = digits.slice(match[2].length);
+    });
+    flagBox.addEventListener("click", function () { toggle(list.className.indexOf("iti__hide") >= 0); });
+    flagBox.addEventListener("keydown", function (e) { if (e.key === "Escape") toggle(false); });
+    Array.prototype.forEach.call(list.children, function (li) {
+      li.addEventListener("click", function () { select(li.getAttribute("data-country-code")); toggle(false); });
+    });
+    select(st.country);
   }
 
   // intl-tel-input-like phone widget.
   function intlTel(root) {
     var cfg = config(root);
+    if (cfg.separate) { separateDialCode(root, cfg); return; }
     var input = root.querySelector("input[type=tel]");
     var button = root.querySelector(".iti__selected-country");
     var dropdown = root.querySelector(".iti__dropdown-content");
@@ -1683,6 +1928,63 @@ WIDGETS_JS = r"""(function () {
     select(st.country);
   }
 
+  // Greenhouse's uploader: a visually hidden input behind an Attach button. Once it takes a
+  // file it replaces its button container, input included, with the file's name and a
+  // Remove button; the file lives in page state.
+  function ghUpload(root) {
+    var cfg = config(root);
+    var st = state[cfg.name] = {value: null};
+    var wrapper = root.querySelector(".file-upload__wrapper");
+    var chooser = wrapper.innerHTML;
+    function bind() {
+      var input = wrapper.querySelector("input[type=file]");
+      wrapper.querySelector("button.attach").addEventListener("click", function () { input.click(); });
+      input.addEventListener("change", function () {
+        if (!input.files.length) return;
+        st.value = input.files[0];
+        wrapper.textContent = "";
+        var chip = el("div", {"class": "file-upload__filename"});
+        chip.appendChild(el("span", {}, st.value.name));
+        var remove = el("button", {type: "button", "class": "btn btn--icon", "aria-label": "Remove file"}, "\u00d7");
+        remove.addEventListener("click", function () { st.value = null; wrapper.innerHTML = chooser; bind(); });
+        chip.appendChild(remove);
+        wrapper.appendChild(chip);
+      });
+    }
+    bind();
+  }
+
+  // Workable-style drag-and-drop uploader: it takes the file into page state and empties
+  // its input, then shows the name split in two spans (a middle-ellipsis layout, the first
+  // space a no-break space) and a Delete button. Fixture controls: hooks.uploadError (the
+  // upload fails and an alert is shown instead), hooks.keepFile (the input keeps it).
+  function dropzone(root) {
+    var cfg = config(root);
+    var st = state[cfg.name] = {value: null};
+    var input = root.querySelector("input[type=file]");
+    var preview = root.querySelector("[data-role=preview]");
+    input.addEventListener("change", function () {
+      if (!input.files.length) return;
+      var file = input.files[0];
+      // Fixture control (hooks.keepFile): the input keeps the file, as Workable's does.
+      if (!(hooks.keepFile && hooks.keepFile[cfg.name])) input.value = "";
+      preview.textContent = "";
+      if (hooks.uploadError && hooks.uploadError[cfg.name]) {
+        preview.appendChild(el("p", {role: "alert"}, "Something went wrong. Please try again."));
+        return;
+      }
+      st.value = file;
+      var name = file.name.replace(" ", "\u00a0"), cut = Math.max(0, name.length - 9);
+      var box = el("div", {"data-id": "filename"});
+      box.appendChild(el("span", {}, name.slice(0, cut)));
+      box.appendChild(el("span", {}, name.slice(cut)));
+      preview.appendChild(box);
+      var remove = el("button", {type: "button", "aria-label": "delete " + file.name}, "Delete");
+      remove.addEventListener("click", function () { st.value = null; preview.textContent = ""; });
+      preview.appendChild(remove);
+    });
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-mount]"), function (holder) {
     holder.innerHTML = JSON.parse(holder.getAttribute("data-widget-mount")).html;
   });
@@ -1690,6 +1992,8 @@ WIDGETS_JS = r"""(function () {
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=div-combobox]"), divCombobox);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=search-combobox]"), searchCombobox);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=intl-tel]"), intlTel);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=gh-upload]"), ghUpload);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=dropzone]"), dropzone);
   Array.prototype.forEach.call(document.forms, function (form) {
     form.addEventListener("formdata", function (e) {
       Object.keys(state).forEach(function (name) {
@@ -1697,6 +2001,57 @@ WIDGETS_JS = r"""(function () {
         var value = s.country !== undefined ? s.country : s.value;
         if (value === null || value === undefined) return;
         (Array.isArray(value) ? value : [value]).forEach(function (v) { e.formData.append(name, v); });
+      });
+    });
+  });
+})();"""
+
+
+AUTOFILL_JS = r"""(function () {
+  "use strict";
+  // Like Greenhouse: the page-level autofill button is disabled while a keystroke is
+  // handled, then enabled again.
+  var button = document.getElementById("autofill-application");
+  document.addEventListener("input", function () {
+    button.disabled = true;
+    button.setAttribute("aria-disabled", "true");
+    clearTimeout(button.__timer);
+    button.__timer = setTimeout(function () {
+      button.disabled = false;
+      button.setAttribute("aria-disabled", "false");
+    }, 120);
+  }, true);
+})();"""
+
+
+FORMLESS_JS = r"""(function () {
+  "use strict";
+  // Posts a form-less application the way the form's own submission would: the named
+  // controls, then the widgets' page state (see WIDGETS_JS), as multipart form data.
+  var root = document.getElementById("application");
+  document.getElementById("submit-application").addEventListener("click", function () {
+    var data = new FormData();
+    Array.prototype.forEach.call(root.querySelectorAll("input[name],select[name],textarea[name]"), function (f) {
+      if (f.disabled) return;
+      if (f.type === "file") { Array.prototype.forEach.call(f.files, function (x) { data.append(f.name, x); }); return; }
+      if ((f.type === "checkbox" || f.type === "radio") && !f.checked) return;
+      if (f.tagName === "SELECT") {
+        Array.prototype.forEach.call(f.selectedOptions, function (o) { data.append(f.name, o.value); });
+        return;
+      }
+      data.append(f.name, f.value);
+    });
+    var state = window.__widgetState || {};
+    Object.keys(state).forEach(function (name) {
+      var s = state[name];
+      var value = s.country !== undefined ? s.country : s.value;
+      if (value === null || value === undefined) return;
+      (Array.isArray(value) ? value : [value]).forEach(function (v) { data.append(name, v); });
+    });
+    fetch(root.getAttribute("data-action"), {method: "POST", body: data}).then(function (response) {
+      return response.text().then(function (html) {
+        history.replaceState(null, "", response.url);
+        document.open(); document.write(html); document.close();
       });
     });
   });
@@ -1760,22 +2115,56 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
             "openOnFocus": f.open_on == "focus", "async": f.remote,
             "options": [] if f.remote else options,
             "initial": [v for v in posted if v] if multi else current,
+            "inline": f.inline, "required": f.required,
         }
         if f.remote and current:
             config["options"] = [[current, current]]
         container = "select__value-container" + (" select__value-container--is-multi" if multi else "")
-        return (
-            f'<div class="field"><label id="{esc(dom)}-label" for="{esc(dom)}" class="label select__label">'
-            f"{esc(f.label)}{marker}</label>{err}"
-            f'<div class="select-shell"{_widget_attrs("react-select", config)}>'
+        control = (
             f'<div class="select__control"><div class="{container}">'
             '<div class="select__input-container">'
             f'<input class="select__input" autocapitalize="none" autocomplete="off" autocorrect="off" '
             f'id="{esc(dom)}" spellcheck="false" tabindex="0" type="text" aria-autocomplete="list" '
             f'aria-expanded="false" aria-haspopup="true" aria-labelledby="{esc(dom)}-label"{required} '
             'role="combobox" value=""></div></div>'
-            '<div class="select__indicators" aria-hidden="true"><span class="select__indicator-separator">'
-            "</span><div class=\"select__indicator\">▾</div></div></div></div></div>"
+        )
+        if f.inline:
+            # Greenhouse markup: the control sits in an unnamed wrapper that the in-form
+            # menu becomes a sibling of, with a real "Toggle flyout" indicator button.
+            control = (
+                f"<div>{control}"
+                '<div class="select__indicators"><span class="select__indicator-separator"></span>'
+                '<button type="button" tabindex="-1" aria-label="Toggle flyout" class="select__indicator">'
+                '<span aria-hidden="true">▾</span></button></div></div></div>'
+            )
+        else:
+            control += (
+                '<div class="select__indicators" aria-hidden="true"><span class="select__indicator-separator">'
+                "</span><div class=\"select__indicator\">▾</div></div></div>"
+            )
+        return (
+            f'<div class="field"><label id="{esc(dom)}-label" for="{esc(dom)}" class="label select__label">'
+            f"{esc(f.label)}{marker}</label>{err}"
+            f'<div class="select-shell"{_widget_attrs("react-select", config)}>{control}</div></div>'
+        )
+
+    if f.kind == "div_combobox" and f.popover:
+        # Rippling markup. A labelled control (EEOC questions) names its question with
+        # aria-labelledby; a custom question only has the paragraph before it.
+        labelled = f.labelled
+        placeholder = "Select..." if labelled else "Select"
+        config = {"name": f.name, "options": [o.label for o in f.options], "popover": True,
+                  "placeholder": placeholder, "initial": current}
+        text_id = f' id="{esc(dom)}-label"' if labelled else ""
+        labelledby = f' aria-labelledby="{esc(dom)}-label"' if labelled else ""
+        return (
+            '<div class="rip-question rip-question--popover">'
+            f'<div class="rip-question-text"><p{text_id}>{esc(f.label)}{" *" if f.required else ""}</p></div>'
+            f'<div class="rip-input"><div id="{esc(dom)}" role="combobox" tabindex="0" '
+            f'aria-haspopup="listbox" aria-autocomplete="list" aria-expanded="false" '
+            f'aria-label="{placeholder}"{labelledby}{required} aria-invalid="false" aria-disabled="false" '
+            f'class="rip-select"{_widget_attrs("div-combobox", config)}><p>{placeholder}</p></div></div>'
+            f"{err}</div>"
         )
 
     if f.kind == "div_combobox":
@@ -1793,23 +2182,29 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
     def search_input(field: Field, value: str | None) -> str:
         cfg = {"name": field.name, "options": [o.label for o in field.options],
                "initial": value, "idle": field.idle, "showAll": field.show_all,
-               "remote": field.remote,
+               "remote": field.remote, "popover": field.popover, "lazy": 1500,
                "aliases": ({name: abbr for name, abbr in STATE_ABBREVIATIONS.items()}
                            if field is RP_STATE else {})}
         role = "" if field.kind == "remote_lookup" else ' role="combobox"'
         testid = "" if field.kind == "remote_lookup" else ' data-testid="input-select-search-input"'
         req = ' aria-required="true"' if field.required else ""
+        dom_id = esc(field.dom_id or field.name)
+        # Rippling's location input: no role, never aria-expanded, a fallback aria-label.
+        expanded = (f' aria-label="textbox" aria-labelledby="{dom_id}-label"' if field.popover
+                    else ' aria-expanded="false"')
         return (
-            f'<input id="{esc(field.dom_id or field.name)}" type="text"{role} aria-haspopup="listbox" '
-            f'aria-autocomplete="list" aria-expanded="false"{testid} autocomplete="off"{req} '
+            f'<input id="{dom_id}" type="text"{role} aria-haspopup="listbox" '
+            f'aria-autocomplete="list"{expanded}{testid} autocomplete="off"{req} '
             f'value="{esc(value or "")}"{_widget_attrs("search-combobox", cfg)}>'
         )
 
     if f.kind in ("search_combobox", "remote_lookup"):
         value = current if current is not None else f.prefill
         if f.kind == "remote_lookup":
-            return (f'<div class="field"><label for="{esc(dom)}">{esc(f.label)}{marker}</label>{err}'
-                    f'<div class="rip-input">{search_input(f, value)}</div></div>')
+            label_id = f' id="{esc(dom)}-label"' if f.popover else ""
+            popover = ' style="position:relative"' if f.popover else ""
+            return (f'<div class="field"{popover}><label{label_id} for="{esc(dom)}">{esc(f.label)}{marker}</label>'
+                    f'{err}<div class="rip-input">{search_input(f, value)}</div></div>')
         # Rendered by page script like the rest of a React form: the question is only the
         # preceding paragraph, with no label association.
         mount = {"html": search_input(f, value)}
@@ -1848,6 +2243,23 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
             for iso, name, code in ITI_COUNTRIES
         )
         auto = f' autocomplete="{f.autocomplete}"' if f.autocomplete else ""
+        if f.display == "separate":
+            # intl-tel-input 18 with separateDialCode (Workable): a role=combobox flag
+            # whose name says nothing of the code; the code is its own element.
+            config["separate"] = True
+            return (
+                f'<div class="field"><label for="{esc(f.name)}">{esc(f.label)}{marker}</label>{err}'
+                f'<div class="iti iti--allow-dropdown iti--separate-dial-code"{_widget_attrs("intl-tel", config)}>'
+                '<div class="iti__flag-container"><div class="iti__selected-flag" role="combobox" '
+                'aria-haspopup="listbox" aria-controls="iti-0__country-listbox" aria-expanded="false" '
+                f'aria-label="Telephone country code" tabindex="0" title="{esc(chosen[1])}">'
+                f'<div class="iti__flag iti__{chosen[0]}"></div>'
+                f'<div class="iti__selected-dial-code">+{chosen[2]}</div><div class="iti__arrow"></div></div>'
+                f'<ul id="iti-0__country-listbox" class="iti__country-list iti__hide" role="listbox" '
+                f'aria-label="List of countries">{items}</ul></div>'
+                f'<input type="tel" id="{esc(f.name)}" name="{esc(f.name)}" value="{esc(current or "")}"'
+                f"{auto}{' required' if f.required else ''}></div></div>"
+            )
         return (
             f'<div class="field"><label for="{esc(f.name)}">{esc(f.label)}{marker}</label>{err}'
             f'<div class="iti iti--allow-dropdown"{_widget_attrs("intl-tel", config)}>'
@@ -2018,6 +2430,32 @@ def render_field(
                 f'<input type="hidden" name="resume_upload_id" value="{esc(retained["upload_id"])}">'
             )
         accept = f' accept="{esc(f.accept)}"' if f.accept else ""
+        if f.uploader == "greenhouse":
+            # Greenhouse markup: a labelled group; the input has no name (its file lives in
+            # page state) and is labelled only with its button's verb.
+            marker = '<span class="required">*</span>' if f.required else ""
+            return (
+                '<div class="field-wrapper">'
+                f'<div role="group" aria-labelledby="upload-label-{f.name}" aria-required="{str(f.required).lower()}" '
+                f'class="file-upload" data-allow-s3="false"{_widget_attrs("gh-upload", {"name": f.name})}>'
+                f'<div id="upload-label-{f.name}" class="label upload-label">{esc(f.label)}{marker}</div>'
+                '<div class="file-upload__wrapper"><div class="button-container"><div class="secondary-button">'
+                '<div><button type="button" class="btn btn--pill attach">Attach</button>'
+                f'<label class="visually-hidden" for="{f.name}">Attach</label>'
+                f'<input id="{f.name}" class="visually-hidden" type="file"{accept}></div></div>'
+                '<div class="secondary-button"><button type="button" class="btn btn--pill">Dropbox</button></div>'
+                '<p class="file-upload__filetypes">Accepted file types: pdf, doc, docx, txt</p>'
+                f"</div></div>{err}</div></div>"
+            )
+        if f.uploader == "dropzone":
+            return (
+                f'<div class="field"><label for="input_files_input_{f.name}">{esc(f.label)}'
+                f'{" *" if f.required else ""}</label>{err}'
+                f'<div class="dropzone"{_widget_attrs("dropzone", {"name": f.name})}>'
+                '<p>Drop your file here or choose one</p>'
+                f'<input type="file" id="input_files_input_{f.name}" class="visually-hidden"{accept}>'
+                '<div data-role="preview"></div></div></div>'
+            )
         control = (
             f'<input type="file" id="{fid}" name="{f.name}"{accept}'
             f'{" required" if needs_file else ""}{aria}>'
@@ -2190,6 +2628,7 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/captcha/(?P<token>cap_\d{6})\.svg", "GET", "get_captcha_svg"),
         (r"/captcha/widget\.html", "GET", "get_captcha_widget"),
         (r"/closed", "GET", "get_closed"),
+        (r"/closed/not-found", "GET", "get_closed_not_found"),
         (r"/postings/with-select", "GET", "get_posting_with_select"),
         (r"/forms/unlabeled-custom-questions", "GET", "get_unlabeled_custom_questions"),
         (r"/forms/choices-without-values", "GET", "get_choices_without_values"),
@@ -2509,16 +2948,33 @@ class Handler(BaseHTTPRequestHandler):
             )
         if job.captcha_widget:
             fields_html += render_captcha_widget(errors.get(CAPTCHA_WIDGET_FIELD))
-        form_html = (
-            f'<form method="post" action="/jobs/{job.slug}/apply" enctype="multipart/form-data" '
-            'aria-labelledby="form-title"><h2 id="form-title">Application form</h2>'
-            '<p class="hint">Fields marked with * are required.</p>'
-            + fields_html
-            + '<button type="submit">Submit application</button></form>'
-        )
-        widgets = any(f.widget for f in job.fields)
+        if job.formless:
+            # No <form> element: page script collects the questions and posts them.
+            form_html = (
+                f'<div id="application" class="application" data-action="/jobs/{job.slug}/apply">'
+                '<h2 id="form-title">Application form</h2>'
+                '<p class="hint">Fields marked with * are required.</p>'
+                + fields_html
+                + '<button type="button" id="submit-application">Submit application</button></div>'
+            )
+        else:
+            form_html = (
+                f'<form method="post" action="/jobs/{job.slug}/apply" enctype="multipart/form-data" '
+                'aria-labelledby="form-title"><h2 id="form-title">Application form</h2>'
+                '<p class="hint">Fields marked with * are required.</p>'
+                + fields_html
+                + '<button type="submit">Submit application</button></form>'
+            )
+        widgets = any(f.scripted for f in job.fields)
         if widgets:
             form_html += f"<script>{WIDGETS_JS}</script>"
+        if job.formless:
+            form_html += f"<script>{FORMLESS_JS}</script>"
+        if job.autofill:
+            form_html = (
+                '<div class="autofill"><button type="button" id="autofill-application">'
+                "Autofill my application</button></div>" + form_html + f"<script>{AUTOFILL_JS}</script>"
+            )
         if job.spa_loading and status == HTTPStatus.OK:
             form_html = render_delayed(form_html)
         body = _job_heading(job) + render_error_summary(entries) + form_html
@@ -2967,6 +3423,15 @@ class Handler(BaseHTTPRequestHandler):
             '<p><a href="/">See all open roles</a></p>'
         )
         self._send_html(HTTPStatus.OK, page("Job not available", body))
+
+    def get_closed_not_found(self) -> None:
+        # A removed job worded as "not found" on an application URL, with HTTP 200 (Ashby).
+        body = (
+            "<h1>Job not found</h1>"
+            "<p>The job you requested was not found.</p>"
+            '<p><a href="/">View all open roles</a></p>'
+        )
+        self._send_html(HTTPStatus.OK, page("Jobs", body))
 
     # test-only API: assertions and fixture control, never product runtime
     def test_health(self) -> None:

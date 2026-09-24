@@ -491,7 +491,8 @@ def test_opencli_probes_and_selects_or_holds_without_keys(
         statuses = {f.field_id: f.status for f in fill.fields}
         assert statuses["question_6001"] is statuses["question_6004"] is FieldFillStatus.FILLED
         assert state["question_6001"] == {"value": "rs_wa_yes"} and state["question_6004"] == {"value": "us"}
-        assert {"focus", "keys", "type", "click"} <= set(commands)
+        # A rendered option is clicked; nothing is typed into the menu to filter it.
+        assert {"focus", "keys", "click"} <= set(commands) and "type" not in commands
     else:
         # Without keys a probed menu could not be closed or re-verified by Escape: every
         # menu is held for the user, and nothing was chosen.

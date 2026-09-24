@@ -523,6 +523,8 @@ class SiteAndMarkupTests(MockATSTestCase):
             [("email", catalog["signin"]["email"]), ("password", catalog["signin"]["password"])],
         )
         for job in catalog["jobs"]:
+            if job["formless"]:
+                continue  # rendered without a <form> on purpose (a Rippling-style SPA)
             form = self.open_form(job["job_id"]).form
             for c in form.controls:
                 if c.type != "hidden":

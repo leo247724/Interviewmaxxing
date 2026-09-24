@@ -37,6 +37,11 @@ REPO = Path(__file__).resolve().parents[2]
 RESUME_PATH = REPO / "tests" / "fixtures" / "browser" / "resume_avery_quill.pdf"
 VERIFIED_AT = "2026-09-01T12:00:00Z"
 REACT = "/jobs/react-select/apply"
+INLINE = "/jobs/react-select-inline/apply"
+REACT_MENUS = {"question_6004": "United States +1", "question_6001": "Yes", "question_6002": "No",
+               "question_6003": "LinkedIn"}
+INLINE_MENUS = {"question_9004": "United States +1", "question_9001": "Yes", "question_9002": "No",
+                "question_9003": "LinkedIn"}
 MENU_STATE = "() => JSON.parse(JSON.stringify(window.__widgetState || {}))"
 
 
@@ -50,7 +55,8 @@ async def _inspect_form(options: BrowserOptions, url: str) -> ApplicationForm:
         await browser.close()
 
 
-def _write_profile(paths: LocalPaths, form: ApplicationForm, job_url: str) -> None:
+def _write_profile(paths: LocalPaths, form: ApplicationForm, job_url: str,
+                   menus: dict[str, str] = REACT_MENUS) -> None:
     """The fictional candidate with saved answers worded as this form asks them."""
     directory = paths.profile_dir / "default"
     directory.mkdir(parents=True, exist_ok=True)
@@ -74,12 +80,10 @@ def _write_profile(paths: LocalPaths, form: ApplicationForm, job_url: str) -> No
         "resume": {"id": "resume_supplied", "path": "resume.pdf"},
         "facts": [],
         "saved_answers": [
-            saved("sa.country", "question_6004", "United States +1"),
-            saved("sa.work_auth", "question_6001", "Yes"),
-            saved("sa.sponsorship", "question_6002", "No"),
-            saved("sa.heard", "question_6003", "LinkedIn"),
+            *(saved(f"sa.{field_id}", field_id, value) for field_id, value in menus.items()),
             saved("sa.years", "years_experience", "6 to 9 years"),
-            saved("sa.skills", "skills", ["Python", "SQL", "Apache Spark", "dbt"]),
+            *([saved("sa.skills", "skills", ["Python", "SQL", "Apache Spark", "dbt"])]
+              if any(f.id == "skills" for f in form.fields) else []),
             saved("sa.why", "why_brambleway", "I have built data platforms for seven years and "
                   "want to work on logistics forecasting.", scope="JOB", job_url=job_url,
                   employer="Brambleway Analytics"),
@@ -136,6 +140,29 @@ def test_prepare_only_run_fills_every_react_select_and_submits_nothing(
         "question_6002": {"value": "rs_sp_no"}, "question_6003": {"value": "src_linkedin"},
     }
     assert server.submissions("react-select")["accepted_count"] == 0
+
+
+def test_prepare_only_run_fills_menus_rendered_inside_the_form(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions, isolated_imx_home: LocalPaths
+) -> None:
+    """Greenhouse renders its menus inside the form: opening and choosing must not look
+    like a changed page, so the run fills through every question after them."""
+    url = server.url(INLINE)
+    _write_profile(isolated_imx_home, kit.run(_inspect_form(options, url)), url, INLINE_MENUS)
+    factory = RecordingFactory()
+    runner = LocalApplicationRunner(paths=isolated_imx_home, interaction=NoninteractiveInteraction(),
+                                    headless=True, browser_factory=factory, prepare_only=True)
+    result = kit.run(runner.apply(url, candidate_id="default"))
+    assert result.state is ApplicationState.NEEDS_INPUT, result.message
+    assert "Prepared to the final review step" in result.message, result.message
+    assert result.missing_inputs == []
+    menus = {k: v for k, v in factory.states[-1].items() if k != "resume"}
+    assert menus == {
+        "question_9004": {"value": "us"}, "question_9001": {"value": "in_wa_yes"},
+        "question_9002": {"value": "in_sp_no"}, "question_9003": {"value": "src_linkedin"},
+    }
+    assert factory.states[-1]["resume"]["value"] is not None  # the uploader holds the résumé
+    assert server.submissions("react-select-inline")["accepted_count"] == 0
 
 
 def test_widget_state_reaches_the_form_data_without_hidden_inputs(
@@ -211,6 +238,22 @@ REACT_VALID = [
     ("phone-widget", [*CONTACT, ("phone", "561-555-010"), ("phone_country", "us")], False, False),
     ("multiselect-react", [*CONTACT, ("question_8001", "ch_email"), ("question_8001", "ch_seo"),
                            ("question_8002", "src_site")], False, True),
+    ("react-select-inline", [*CONTACT, ("question_9004", "us"), ("phone", "3035550142"),
+                             ("question_9001", "in_wa_yes"), ("years_experience", "yrs_6_9"),
+                             ("question_9002", "in_sp_no"), ("why_brambleway", "Fictional answer.")],
+     True, True),
+    # The empty required proxy posts "" for the country: rejected like no choice at all.
+    ("react-select-inline", [*CONTACT, ("question_9004", ""), ("phone", "3035550142"),
+                             ("question_9001", "in_wa_yes"), ("years_experience", "yrs_6_9"),
+                             ("question_9002", "in_sp_no"), ("why_brambleway", "Fictional answer.")],
+     True, False),
+    ("workable-like", [*CONTACT, ("phone", "5615550100"), ("phone_country", "us")], True, True),
+    ("workable-like", [*CONTACT, ("phone", "5615550100"), ("phone_country", "us")], False, False),
+    ("div-combobox-orphan", [*CONTACT, ("gender", "Female"), ("custom_work_authorization", "Yes"),
+                             ("location", "Austin, TX, USA")], False, True),
+    # Typed but never chosen from the suggestions: rejected.
+    ("div-combobox-orphan", [*CONTACT, ("gender", "Female"), ("custom_work_authorization", "Yes"),
+                             ("location", "Austin, TX")], False, False),
 ])
 def test_the_mock_accepts_only_valid_widget_values(
     job: str, fields: list[tuple[str, str]], resume: bool, accepted: bool, server: Any

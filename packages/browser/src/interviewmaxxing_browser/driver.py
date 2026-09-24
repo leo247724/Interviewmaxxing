@@ -96,6 +96,12 @@ class PageDriver(Protocol):
         """Scroll a list (or its nearest scrollable ancestor) to its end."""
         ...
 
+    async def dismiss(self) -> None:
+        """Press outside every control, as a person clicks an empty part of the page to
+        close a popover menu: pointer and mouse press events on the page body, never on
+        a control. Raises ``CapabilityUnsupported`` when this session cannot."""
+        ...
+
     async def settle(self, timeout_s: float) -> None:
         """Wait (bounded) for navigation and network activity to finish."""
         ...
@@ -125,12 +131,93 @@ _FILE_DIGEST = (
     ".map((b) => b.toString(16).padStart(2, '0')).join('')}; }"
 )
 
+# Read-only: a selector for a file input's own uploader, the outermost ancestor holding no
+# other field (preferring a labelled group or an id, which survive a re-render). Taken
+# before attaching: some uploaders replace the input with the file's name (Greenhouse).
+FILE_ANCHOR = (
+    "(sel) => { const el = document.querySelector(sel); if (!el) return null; "
+    "const fields = 'input:not([type=hidden]),select,textarea,[role=combobox],[role=textbox]'; "
+    "const unique = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } }; "
+    "let box = null, named = null; "
+    "for (let n = el.parentElement, d = 0; n && d < 8 && n !== document.body && n.tagName !== 'FORM'; "
+    "n = n.parentElement, d++) { if ([...n.querySelectorAll(fields)].some((f) => f !== el)) break; box = n; "
+    "const by = n.getAttribute('aria-labelledby'); "
+    "if (!named && n.id && unique('#' + CSS.escape(n.id))) named = '#' + CSS.escape(n.id); "
+    "else if (!named && by && unique('[aria-labelledby=\"' + by.replace(/\"/g, '') + '\"]')) "
+    "named = '[aria-labelledby=\"' + by.replace(/\"/g, '') + '\"]'; } "
+    "if (named) return named; if (!box) return null; const parts = []; "
+    "for (let n = box; n && n !== document.documentElement; n = n.parentElement) { "
+    "if (n !== box && n.id && unique('#' + CSS.escape(n.id))) { parts.unshift('#' + CSS.escape(n.id)); break; } "
+    "const p = n.parentElement; if (!p) { parts.unshift(n.tagName.toLowerCase()); break; } "
+    "const same = [...p.children].filter((c) => c.tagName === n.tagName); "
+    "parts.unshift(n.tagName.toLowerCase() + (same.length > 1 ? ':nth-of-type(' + (same.indexOf(n) + 1) + ')' : '')); } "
+    "const s = parts.join(' > '); return unique(s) ? s : null; }"
+)
+
+# Read-only: whether a file input's uploader shows the file's name and no error alert or
+# progress: the input's own container (see FILE_ANCHOR), or the anchor when the input is
+# gone. Also the number of files the input itself holds (null without the input).
+FILE_SHOWN = (
+    "(arg) => { const el = document.querySelector(arg.selector); "
+    "const norm = (t) => String(t || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase(); "
+    "const fields = 'input:not([type=hidden]),select,textarea,[role=combobox],[role=textbox]'; let box = null; "
+    "if (el) { for (let n = el.parentElement, d = 0; n && d < 8 && n !== document.body && n.tagName !== 'FORM'; "
+    "n = n.parentElement, d++) { if ([...n.querySelectorAll(fields)].some((f) => f !== el)) break; box = n; } } "
+    "if (!box && arg.anchor) { const found = document.querySelectorAll(arg.anchor); if (found.length === 1) box = found[0]; } "
+    "if (!box) return {shown: false, alert: false, busy: false, files: el && el.files ? el.files.length : null}; "
+    "const seen = (e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); "
+    "return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; }; "
+    "return {origin: String(performance.timeOrigin), url: location.href, "
+    "files: el && el.files ? el.files.length : null, "
+    "shown: !!arg.name && norm(box.innerText).includes(norm(arg.name)), "
+    "busy: [...box.querySelectorAll('[role=progressbar]')].some(seen), "
+    "alert: [...box.querySelectorAll('[role=alert],[aria-invalid=true]')].some((a) => seen(a) && "
+    "(a.getAttribute('aria-invalid') === 'true' || norm(a.textContent)))}; }"
+)
+
 # Scrolls a (possibly virtualized) menu list to its end: the element itself or its
 # nearest scrollable ancestor. A driver action, never an OpenCLI read script.
 _SCROLL_TO_END = (
     "(el) => { for (let n = el, i = 0; n && i < 3; n = n.parentElement, i++) { "
     "if (n.scrollHeight > n.clientHeight + 1) { n.scrollTop = n.scrollHeight; return true; } } return false; }"
 )
+
+async def file_anchor(driver: PageDriver, selector: str) -> str | None:
+    """The selector of a file input's uploader container (see ``FILE_ANCHOR``), or None
+    when it cannot be read: it only helps verify an input the uploader replaces. A lost
+    page context still raises."""
+    try:
+        anchor = await driver.evaluate(FILE_ANCHOR, selector)
+    except PageContextLost:
+        raise
+    except DriverError:
+        return None
+    return anchor if isinstance(anchor, str) else None
+
+
+async def file_shown(driver: PageDriver, selector: str, name: str, *, anchor: str | None = None,
+                     wait_s: float = 3.0, emptied: bool = True) -> bool:
+    """Whether a file input's uploader took the file: its container, or ``anchor`` when
+    the input is gone, shows ``name`` with no error alert once any progress bar is done,
+    and (with ``emptied``) the input itself holds no file (it was emptied, or replaced by
+    the file's name). Waits (bounded) for the widget to render."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + wait_s
+    while True:
+        state = await driver.evaluate(FILE_SHOWN, {"selector": selector, "name": name, "anchor": anchor})
+        if isinstance(state, dict) and state.get("alert"):
+            return False
+        if isinstance(state, dict) and state.get("shown") and not state.get("busy"):
+            return not emptied or state.get("files") in (0, None)
+        if loop.time() >= end:
+            return False
+        await asyncio.sleep(0.1)
+
+
+# An outside press on the page body (Playwright builds PointerEvent/MouseEvent, bubbling
+# and composed): what popover menus listen for to close. No click event follows.
+_OUTSIDE_PRESS = ("pointerdown", "mousedown", "pointerup", "mouseup")
+
 
 class PlaywrightDriver:
     """``PageDriver`` over one Playwright ``Page``."""
@@ -281,6 +368,7 @@ class PlaywrightDriver:
     async def set_files(self, selector: str, path: Path) -> None:
         pinned = hashlib.sha256(path.read_bytes()).hexdigest()
         before = self._doc_mark()
+        anchor = await file_anchor(self, selector)
         try:
             await self.page.locator(selector).set_input_files(str(path), timeout=self._timeout_ms)
         except PlaywrightError as exc:
@@ -289,8 +377,14 @@ class PlaywrightDriver:
         self._guard(before, f"attaching a file to {selector}")
         attached = await self.evaluate(_FILE_DIGEST, selector)
         self._guard(before, f"verifying the file attached to {selector}")
-        if not isinstance(attached, dict) or attached.get("sha256") != pinned:
-            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+        if isinstance(attached, dict) and attached.get("sha256") == pinned:
+            return
+        if attached is None and await file_shown(self, selector, path.name, anchor=anchor):
+            # The uploader took the file (the bytes came from this exact path) and emptied
+            # or replaced its input; it shows the file's name and no error.
+            self._guard(before, f"verifying the file attached to {selector}")
+            return
+        raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
 
     async def click(self, selector: str, *, trial: bool = False) -> None:
         if not trial:
@@ -355,6 +449,18 @@ class PlaywrightDriver:
             self._guard(before, f"scrolling {selector}", exc)
             raise NotActionable(f"could not scroll {selector}: {exc}") from exc
         self._guard(before, f"scrolling {selector}")
+
+    async def dismiss(self) -> None:
+        before = self._doc_mark()
+        body = self.page.locator("body")
+        try:
+            for event in _OUTSIDE_PRESS:
+                await body.dispatch_event(event, {"button": 0, "buttons": 1 if event.endswith("down") else 0},
+                                          timeout=self._timeout_ms)
+        except PlaywrightError as exc:
+            self._guard(before, "pressing outside the menu", exc)
+            raise NotActionable(f"could not press outside the menu: {exc}") from exc
+        self._guard(before, "pressing outside the menu")
 
     async def settle(self, timeout_s: float) -> None:
         """After a click: give a navigation a short grace period to start; if one did,
