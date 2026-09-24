@@ -31,8 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -257,6 +258,51 @@ def _binding_shape(bindings: Mapping[str, FieldBinding]) -> dict[str, Any]:
                   sorted(b.label_selectors.items())] for key, b in bindings.items()}
 
 
+def _button_identity(button: DomButton) -> str:
+    """A button as what it does (text, kind, form, request), not where it sits."""
+    return json.dumps([button.text, button.type, button.form_index, button.submits_form,
+                       button.form_no_validate, button.effective_method, button.effective_action])
+
+
+def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
+                     skip_controls: Collection[str] = ()) -> str:
+    """``observation_signature`` as the fill guard compares it. Buttons and the submit and
+    next actions count by identity (text, kind, form, request), not by a positional
+    selector that shifts when sibling blocks are replaced, and not by whether they are
+    enabled (a submit enabled once required fields are valid). Validity, validation
+    messages and what menus show are already left out. ``skip_*`` leave out the given
+    buttons and controls (an uploader's own). New or removed questions, options, labels,
+    bindings, actions and navigation still count."""
+    identity = {b.selector: _button_identity(b) for b in model.snapshot.buttons}
+    buttons = [b.model_copy(update={"disabled": False, "selector": identity[b.selector]})
+               for b in model.snapshot.buttons if b.selector not in skip_buttons]
+    controls = [c for c in model.snapshot.controls if c.selector not in skip_controls]
+    snapshot = model.snapshot.model_copy(update={"buttons": buttons, "controls": controls})
+    inspection = model.inspection
+    if model.form is not None:
+        form = model.form
+        inspection = inspection.model_copy(update={"form": form.model_copy(update={
+            "submit_selector": identity.get(form.submit_selector or "", form.submit_selector),
+            "next_selector": identity.get(form.next_selector or "", form.next_selector)})})
+    return observation_signature(replace(model, snapshot=snapshot, inspection=inspection))
+
+
+# Read-only: which of the given buttons lie inside the given uploader containers.
+_BUTTONS_WITHIN = """(arg) => {
+  const boxes = [];
+  for (const anchor of arg.anchors) {
+    let found = [];
+    try { found = document.querySelectorAll(anchor); } catch (e) { found = []; }
+    if (found.length === 1) boxes.push(found[0]);
+  }
+  return arg.selectors.map((s) => {
+    let button = null;
+    try { button = document.querySelector(s); } catch (e) { button = null; }
+    return !!button && boxes.some((box) => box.contains(button));
+  });
+}"""
+
+
 def _same_questions(approved: ApplicationForm, current: ApplicationForm) -> bool:
     return approved.scope.key == current.scope.key and (
         {f.id: f.fingerprint for f in approved.fields} == {f.id: f.fingerprint for f in current.fields})
@@ -309,6 +355,11 @@ class GenericApplicationBrowser:
         self._inspected_after_loss = False
         self._fill_document: str | None = None
         self._fill_bindings: dict[str, Any] = {}
+        self._fill_model: PageModel | None = None
+        self._fill_form: ApplicationForm | None = None
+        """The approved observation and form of the current (then the last) fill."""
+        self._uploader_buttons: frozenset[str] = frozenset()
+        """Buttons of ``_fill_model`` inside the containers of this runtime's uploads."""
         self._uploads: dict[str, _Upload] = {}
         """Files attached in this document whose input the uploader emptied or replaced."""
         self._pending: _PendingSubmit | None = None
@@ -395,7 +446,7 @@ class GenericApplicationBrowser:
         if refs:
             model = replace(model, inspection=model.inspection.model_copy(update={"evidence": refs}))
         if self.annotator is not None and model.form is not None:
-            self._observations.append((model.form, document, observation_signature(model)))
+            self._observations.append((model.form, document, _guard_signature(model)))
             self._observations = self._observations[-32:]
         if model.inspection.job_identity is not None:
             self._identity = model.inspection.job_identity
@@ -515,7 +566,7 @@ class GenericApplicationBrowser:
         form = model.form
         if form is None or form.is_final_step is not True:
             return model.inspection
-        if self._context_lost or self._changed_since_fill(form):
+        if self._context_lost or await self._changed_since_fill(form):
             raise ValueError("the final form changed; inspect and resolve it again")
         await self._assert_fill_context()
         invalid = await self.driver.evaluate(
@@ -527,7 +578,7 @@ class GenericApplicationBrowser:
         after = await self._model()
         if after.form is None or after.form.fingerprint != form.fingerprint:
             return after.inspection
-        if self._changed_since_fill(after.form):
+        if await self._changed_since_fill(after.form):
             raise ValueError("the final form constraints changed; inspect and resolve it again")
         # Preserve final-review evidence while using the latest form observation.
         inspection = after.inspection.model_copy(update={"evidence": model.inspection.evidence})
@@ -633,7 +684,7 @@ class GenericApplicationBrowser:
         if self.annotator is not None:
             document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
             if (issued is None or issued[1] != document
-                    or issued[2] != observation_signature(model)):
+                    or issued[2] != _guard_signature(model)):
                 raise ValueError("the annotated document or field bindings changed; re-inspect and resolve")
         if current is None or current.fingerprint != form.fingerprint:
             raise ValueError(
@@ -643,8 +694,10 @@ class GenericApplicationBrowser:
         errors_before = set(current.page_errors)
         results: list[FieldFillResult] = []
         lost: PageContextLost | None = None
-        self._active_fill_signature = observation_signature(model)
+        self._active_fill_signature = _guard_signature(model)
         self._fill_bindings = _binding_shape(model.bindings)
+        self._fill_model, self._fill_form = model, form
+        self._uploader_buttons = await self._buttons_within(model, self._upload_anchors(model))
         final_signature: str | None = None
         try:
             for app_field in form.fields:
@@ -700,7 +753,7 @@ class GenericApplicationBrowser:
         self._inspected_after_loss = False
         # The packet authorized exactly the inspected questions; that stays the authority.
         self._filled = (form.scope.key, form.fingerprint)
-        self._filled_structure = final_signature or observation_signature(model)
+        self._filled_structure = final_signature or _guard_signature(model)
         # Let a passing state from the last write settle before the page is read again.
         await self._settled_model(self._filled_structure)
         label = f"filled-step-{form.step}" if only is None else f"filled-step-{form.step}-again"
@@ -708,7 +761,7 @@ class GenericApplicationBrowser:
         await self._assert_fill_context()
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
         if (after.form is None or after.form.fingerprint != form.fingerprint
-                or self._changed_since_fill(after.form)):
+                or await self._changed_since_fill(after.form)):
             results.extend(await self._contain_changed_questions(form, after))
             new_errors.append(
                 "questions on this step changed while filling; re-inspect and resolve again "
@@ -748,7 +801,11 @@ class GenericApplicationBrowser:
             return
         fresh = await self._settled_model(self._active_fill_signature)
         await self._assert_fill_context()
-        if observation_signature(fresh) != self._active_fill_signature:
+        if _guard_signature(fresh) != self._active_fill_signature and await self._only_uploads_changed(fresh):
+            # Our own upload re-rendered its uploader later (Greenhouse, seconds after
+            # the attach): the page as it now is becomes the approved one.
+            self._active_fill_signature = _guard_signature(fresh)
+        if _guard_signature(fresh) != self._active_fill_signature:
             raise PageContextLost(
                 "questions, bindings, actions, or employer context changed while filling; "
                 "remaining answers were not attempted; re-inspect and resolve again"
@@ -772,7 +829,7 @@ class GenericApplicationBrowser:
         loop = asyncio.get_running_loop()
         end = loop.time() + _FLICKER_S
         fresh = await self._fresh_model()
-        while observation_signature(fresh) != expected and loop.time() < end:
+        while _guard_signature(fresh) != expected and loop.time() < end:
             await asyncio.sleep(_FLICKER_POLL_S)
             fresh = await self._fresh_model()
         return fresh
@@ -790,18 +847,55 @@ class GenericApplicationBrowser:
             self._uploads[app_field.id] = replace(upload, index=index)
         # Past any passing state (attaching fires input events too), then two reads agree.
         fresh = await self._settled_model(self._active_fill_signature)
-        if observation_signature(fresh) == self._active_fill_signature:
+        if _guard_signature(fresh) == self._active_fill_signature:
             return
         for _ in range(int(_FLICKER_S / _FLICKER_POLL_S)):
             await asyncio.sleep(_FLICKER_POLL_S)
             again = await self._fresh_model()
-            settled = observation_signature(again) == observation_signature(fresh)
+            settled = _guard_signature(again) == _guard_signature(fresh)
             fresh = again
             if settled:
                 break
-        if (fresh.form is not None and _same_questions(form, fresh.form)
-                and _binding_shape(fresh.bindings) == self._fill_bindings):
-            self._active_fill_signature = observation_signature(fresh)
+        if await self._only_uploads_changed(fresh):
+            self._active_fill_signature = _guard_signature(fresh)
+
+    def _upload_anchors(self, model: PageModel) -> list[str]:
+        return [u.anchor for u in self._uploads.values()
+                if u.anchor and u.document == model.snapshot.document]
+
+    async def _buttons_within(self, model: PageModel, anchors: Sequence[str]) -> frozenset[str]:
+        """Selectors of ``model``'s buttons that lie inside the given uploader containers
+        now (read-only; only meaningful while the page still matches ``model``)."""
+        if not anchors or not model.snapshot.buttons:
+            return frozenset()
+        selectors = [b.selector for b in model.snapshot.buttons]
+        try:
+            inside = await self.driver.evaluate(_BUTTONS_WITHIN, {"anchors": list(anchors), "selectors": selectors})
+        except PageContextLost:
+            raise
+        except DriverError:
+            return frozenset()  # unknown: nothing is tolerated
+        if not isinstance(inside, list) or len(inside) != len(selectors):
+            return frozenset()
+        return frozenset(s for s, flag in zip(selectors, inside, strict=True) if flag)
+
+    async def _only_uploads_changed(self, fresh: PageModel) -> bool:
+        """Whether ``fresh`` differs from the approved observation only inside the
+        containers of this runtime's uploads (their Attach and cloud buttons replaced by
+        the file's name and a Remove button, the file input gone) and in where page
+        actions sit, while every question, option set and control binding is as
+        approved. An upload's widget may re-render seconds after the attach."""
+        approved, form = self._fill_model, self._fill_form
+        anchors = self._upload_anchors(fresh)
+        if approved is None or form is None or not anchors or fresh.form is None:
+            return False
+        if not _same_questions(form, fresh.form) or _binding_shape(fresh.bindings) != self._fill_bindings:
+            return False
+        uploaded = {u.binding.selector for u in self._uploads.values()
+                    if u.document == fresh.snapshot.document}
+        inside = await self._buttons_within(fresh, anchors)
+        return (_guard_signature(approved, skip_buttons=self._uploader_buttons, skip_controls=uploaded)
+                == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded))
 
     async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
         await self._assert_fill_freshness()
@@ -960,6 +1054,10 @@ class GenericApplicationBrowser:
                 return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
                                        detail=f"{artifact.filename} is missing or changed since it was verified")
             anchor = await file_anchor(self.driver, binding.selector)
+            if anchor and self._fill_model is not None:
+                # The approved buttons this uploader owns (Attach, cloud pickers): it may
+                # replace them once it takes the file, now or seconds later.
+                self._uploader_buttons |= await self._buttons_within(self._fill_model, [anchor])
             await self._write(lambda: self.driver.set_files(binding.selector, Path(artifact.path)))
             if not artifact.verify():
                 return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
@@ -990,14 +1088,20 @@ class GenericApplicationBrowser:
         return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
                                detail=f"checked options read back as {sorted(got)}")
 
-    def _changed_since_fill(self, form: ApplicationForm) -> bool:
-        return (
-            self._filled is not None
-            and self._filled[0] == form.scope.key
-            and (self._filled[1] != form.fingerprint
-                 or (self._filled_structure is not None and self._last is not None
-                     and self._filled_structure != observation_signature(self._last)))
-        )
+    async def _changed_since_fill(self, form: ApplicationForm) -> bool:
+        if self._filled is None or self._filled[0] != form.scope.key:
+            return False
+        if self._filled[1] != form.fingerprint:
+            return True
+        if self._filled_structure is None or self._last is None:
+            return False
+        if self._filled_structure == _guard_signature(self._last):
+            return False
+        if await self._only_uploads_changed(self._last):
+            # An upload of this fill re-rendered its uploader after the fill.
+            self._filled_structure = _guard_signature(self._last)
+            return False
+        return True
 
     # --- navigation -----------------------------------------------------------------
 
@@ -1017,7 +1121,7 @@ class GenericApplicationBrowser:
             raise AmbiguousAction("the step has no unambiguous next-step control")
         if self._context_lost:
             raise ValueError("the page changed while filling; inspect and resolve it again first")
-        if self._changed_since_fill(form):
+        if await self._changed_since_fill(form):
             raise ValueError("questions on this step changed after filling; re-inspect and resolve")
         invalid = await self.driver.evaluate(
             _NATIVE_VALIDITY, {"form": model.form_selector, "button": form.next_selector}
@@ -1074,7 +1178,7 @@ class GenericApplicationBrowser:
         if self._context_lost:
             return not_dispatched("the page changed while filling; inspect and resolve it again",
                                   next_state=NotSubmittedNext.FILLING)
-        if self._changed_since_fill(form):
+        if await self._changed_since_fill(form):
             return not_dispatched("questions changed after filling; re-inspect and resolve",
                                   next_state=NotSubmittedNext.FILLING)
         if model.unsupported_pending:

@@ -124,10 +124,14 @@ class Field:
     outside press or a choice closes (Rippling); lookups never expose aria-expanded."""
     labelled: bool = False
     """A popover div_combobox named by aria-labelledby (else only by the paragraph before it)."""
+    clearable: bool = False
+    """An inline react_select that shows a "Clear selection" button while it holds a value
+    (Greenhouse's ClearIndicator)."""
     uploader: str | None = None
     """A file field behind a script uploader whose file lives in page state: ``greenhouse``
-    (a hidden input behind "Attach", replaced by the file's name once it takes a file) or
-    ``dropzone`` (Workable: the input is emptied and the file's name shown)."""
+    (a hidden input behind "Attach", replaced by the file's name once it takes a file),
+    ``greenhouse-async`` (the same, re-rendered seconds after the attach) or ``dropzone``
+    (Workable: the input is emptied and the file's name shown)."""
 
     @property
     def multi(self) -> bool:
@@ -446,17 +450,22 @@ RS_INLINE_COUNTRY = Field("question_9004", "Country", "react_select", True, DIAL
 """Greenhouse's phone Country: options show a flag, and typing filters on the country's
 name only (typing "United States +1" leaves no option)."""
 GH_RESUME = Field("resume", "Resume/CV", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="greenhouse")
+GH_RESUME_ASYNC = Field("resume", "Resume/CV", "file", True, accept=".pdf,.doc,.docx,.txt",
+                        uploader="greenhouse-async")
+"""Greenhouse's uploader as it behaves live: the input keeps the file while the upload
+runs; 2.5 s later the block re-renders with the file's name (the input and its buttons
+gone) and the page's action area re-renders too (the submit button's path shifts)."""
 WK_RESUME = Field("resume", "Resume", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="dropzone")
 WK_PHONE = Field("phone", "Phone", "intl_tel", True, autocomplete="tel", display="separate")
 """Workable's intl-tel-input (separateDialCode, nationalMode): the dial code is shown apart
 from the number, and typing "+1…" leaves only the national digits in the input."""
 RS_INLINE_AUTHORIZATION = Field(
     "question_9001", "Are you legally authorized to work in the United States?", "react_select", True,
-    _options(("in_wa_yes", "Yes"), ("in_wa_no", "No")), inline=True,
+    _options(("in_wa_yes", "Yes"), ("in_wa_no", "No")), inline=True, clearable=True,
 )
 RS_INLINE_SPONSORSHIP = Field(
     "question_9002", "Will you now or in the future require visa sponsorship?", "react_select", True,
-    _options(("in_sp_yes", "Yes"), ("in_sp_no", "No")), inline=True,
+    _options(("in_sp_yes", "Yes"), ("in_sp_no", "No")), inline=True, clearable=True,
 )
 RS_INLINE_HEARD = Field("question_9003", "How did you hear about us?", "react_select",
                         options=HEARD_OPTIONS, inline=True)
@@ -507,6 +516,9 @@ class Job:
     autofill: bool = False
     """A page-level "Autofill my application" button outside the form that the page
     disables for a moment on every keystroke (Greenhouse)."""
+    validity: bool = False
+    """The submit button stays disabled until every required question is answered, and a
+    text input that loses focus gets aria-invalid="false"."""
 
     @property
     def multistep(self) -> bool:
@@ -539,6 +551,7 @@ class Job:
             "cookie_banner": self.cookie_banner,
             "formless": self.formless,
             "autofill": self.autofill,
+            "validity": self.validity,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -792,12 +805,30 @@ JOBS: dict[str, Job] = {
             "portal) next to a real \"Toggle flyout\" button, with a hidden required proxy input "
             "while a required one is empty; a dial-code \"Country\" with flags that filters on "
             "the country's name; a résumé uploader that replaces its hidden input with the "
-            "file's name; and a page-level \"Autofill my application\" button that is disabled "
-            "for a moment on every keystroke.",
+            "file's name; a page-level \"Autofill my application\" button that is disabled "
+            "for a moment on every keystroke; clearable questions that show a \"Clear "
+            "selection\" button once answered; and a submit button that stays disabled until "
+            "every required question is answered.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, RS_INLINE_COUNTRY, PHONE, GH_RESUME,
                     RS_INLINE_AUTHORIZATION, YEARS_EXPERIENCE, RS_INLINE_SPONSORSHIP, RS_INLINE_HEARD,
                     WHY_BRAMBLEWAY),
             autofill=True,
+            validity=True,
+        ),
+        Job(
+            "react-select-inline-async",
+            "BWA-GH-128",
+            "Lifecycle Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "react-select-inline with Greenhouse's uploader as it behaves live: the upload "
+            "completes 2.5 s after the attach, then the résumé block re-renders with the file's "
+            "name and the page's action area re-renders, shifting the submit button's path.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, RS_INLINE_COUNTRY, PHONE, GH_RESUME_ASYNC,
+                    RS_INLINE_AUTHORIZATION, YEARS_EXPERIENCE, RS_INLINE_SPONSORSHIP, RS_INLINE_HEARD,
+                    WHY_BRAMBLEWAY),
+            autofill=True,
+            validity=True,
         ),
         Job(
             "workable-like",
@@ -1411,8 +1442,26 @@ WIDGETS_JS = r"""(function () {
       proxy.style.cssText = "opacity:0;pointer-events:none;position:absolute;bottom:0;left:0;right:0;width:100%;height:1px";
       shell.appendChild(proxy);
     }
+    // Greenhouse's ClearIndicator: a real "Clear selection" button while there is a value.
+    function renderClear() {
+      if (!cfg.clearable) return;
+      var indicators = shell.querySelector(".select__indicators");
+      var existing = indicators.querySelector("button.select__clear");
+      if (!hasValue()) { if (existing) existing.remove(); return; }
+      if (existing) return;
+      var clear = el("button", {type: "button", "class": "select__clear", "aria-label": "Clear selection",
+        "data-testid": "clear-selection"});
+      clear.appendChild(el("span", {"aria-hidden": "true"}, "\u00d7"));
+      clear.addEventListener("mousedown", function (e) {
+        e.preventDefault(); e.stopPropagation();
+        st.value = multi ? [] : null;
+        renderValue();
+      });
+      indicators.insertBefore(clear, indicators.firstChild);
+    }
     function renderValue() {
       renderRequired();
+      renderClear();
       Array.prototype.slice.call(values.children).forEach(function (child) {
         if (child !== inputBox) child.remove();
       });
@@ -1934,24 +1983,48 @@ WIDGETS_JS = r"""(function () {
   function ghUpload(root) {
     var cfg = config(root);
     var st = state[cfg.name] = {value: null};
-    var wrapper = root.querySelector(".file-upload__wrapper");
-    var chooser = wrapper.innerHTML;
-    function bind() {
-      var input = wrapper.querySelector("input[type=file]");
-      wrapper.querySelector("button.attach").addEventListener("click", function () { input.click(); });
+    var chooser = root.querySelector(".file-upload__wrapper").innerHTML;
+    function showChip(group) {
+      var wrapper = group.querySelector(".file-upload__wrapper");
+      wrapper.textContent = "";
+      var chip = el("div", {"class": "file-upload__filename"});
+      chip.appendChild(el("span", {}, st.value.name));
+      var remove = el("button", {type: "button", "class": "btn btn--icon", "aria-label": "Remove file"}, "\u00d7");
+      remove.addEventListener("click", function () { st.value = null; wrapper.innerHTML = chooser; bind(group); });
+      chip.appendChild(remove);
+      wrapper.appendChild(chip);
+    }
+    function bind(group) {
+      var input = group.querySelector("input[type=file]");
+      group.querySelector("button.attach").addEventListener("click", function () { input.click(); });
       input.addEventListener("change", function () {
         if (!input.files.length) return;
         st.value = input.files[0];
-        wrapper.textContent = "";
-        var chip = el("div", {"class": "file-upload__filename"});
-        chip.appendChild(el("span", {}, st.value.name));
-        var remove = el("button", {type: "button", "class": "btn btn--icon", "aria-label": "Remove file"}, "\u00d7");
-        remove.addEventListener("click", function () { st.value = null; wrapper.innerHTML = chooser; bind(); });
-        chip.appendChild(remove);
-        wrapper.appendChild(chip);
+        if (!cfg.async) { showChip(group); return; }
+        // As live: the input keeps the file while the upload runs; seconds later the
+        // block re-renders (a new element) with the file's name, and so does the page's
+        // action area (the submit button moves up a level). Fixture controls:
+        // hooks.uploadDelayMs sets the delay; hooks.uploadRenderOn = "focusin" re-renders
+        // as the next question takes focus (while a later answer is being written).
+        var rerender = function () {
+          var block = group.closest(".field-wrapper"), next = block.cloneNode(true);
+          block.replaceWith(next);
+          showChip(next.querySelector("[role=group]"));
+          var row = document.querySelector("form .actions-row");
+          if (row) row.replaceWith.apply(row, Array.prototype.slice.call(row.childNodes));
+        };
+        if (hooks.uploadRenderOn === "focusin") {
+          document.addEventListener("focusin", function next(e) {
+            if (group.contains(e.target)) return;
+            document.removeEventListener("focusin", next, true);
+            setTimeout(rerender, 0);
+          }, true);
+        } else {
+          setTimeout(rerender, hooks.uploadDelayMs !== undefined ? hooks.uploadDelayMs : cfg.async);
+        }
       });
     }
-    bind();
+    bind(root);
   }
 
   // Workable-style drag-and-drop uploader: it takes the file into page state and empties
@@ -2004,6 +2077,41 @@ WIDGETS_JS = r"""(function () {
       });
     });
   });
+})();"""
+
+
+VALIDITY_JS = r"""(function () {
+  "use strict";
+  // Like many hosted forms: the submit button stays disabled until every required
+  // question is answered, and a text input that loses focus gets aria-invalid="false".
+  var form = document.querySelector("form");
+  var submit = form.querySelector("button[type=submit]");
+  function answered() {
+    var state = window.__widgetState || {};
+    var natives = Array.prototype.every.call(form.querySelectorAll("[required]"), function (f) {
+      if (f.type === "checkbox" || f.type === "radio") return !!form.querySelector('[name="' + f.name + '"]:checked');
+      return String(f.value || "").trim() !== "";
+    });
+    var uploads = Array.prototype.every.call(
+      form.querySelectorAll("[data-widget-kind=gh-upload][aria-required=true]"), function (group) {
+        var name = JSON.parse(group.getAttribute("data-widget")).name;
+        return !!(state[name] && state[name].value);
+      });
+    return natives && uploads;
+  }
+  function update() {
+    var blocked = !answered();
+    if (submit.disabled === blocked) return;
+    submit.disabled = blocked;
+    submit.setAttribute("aria-disabled", String(blocked));
+  }
+  form.addEventListener("focusout", function (e) {
+    if (e.target.matches("input:not([type=file]):not([role=combobox]), textarea")) {
+      e.target.setAttribute("aria-invalid", "false");
+    }
+  });
+  update();
+  setInterval(update, 100);
 })();"""
 
 
@@ -2115,7 +2223,7 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
             "openOnFocus": f.open_on == "focus", "async": f.remote,
             "options": [] if f.remote else options,
             "initial": [v for v in posted if v] if multi else current,
-            "inline": f.inline, "required": f.required,
+            "inline": f.inline, "required": f.required, "clearable": f.clearable,
         }
         if f.remote and current:
             config["options"] = [[current, current]]
@@ -2430,14 +2538,15 @@ def render_field(
                 f'<input type="hidden" name="resume_upload_id" value="{esc(retained["upload_id"])}">'
             )
         accept = f' accept="{esc(f.accept)}"' if f.accept else ""
-        if f.uploader == "greenhouse":
+        if f.uploader in ("greenhouse", "greenhouse-async"):
             # Greenhouse markup: a labelled group; the input has no name (its file lives in
             # page state) and is labelled only with its button's verb.
             marker = '<span class="required">*</span>' if f.required else ""
+            upload_config = {"name": f.name, "async": 2500 if f.uploader == "greenhouse-async" else 0}
             return (
                 '<div class="field-wrapper">'
                 f'<div role="group" aria-labelledby="upload-label-{f.name}" aria-required="{str(f.required).lower()}" '
-                f'class="file-upload" data-allow-s3="false"{_widget_attrs("gh-upload", {"name": f.name})}>'
+                f'class="file-upload" data-allow-s3="false"{_widget_attrs("gh-upload", upload_config)}>'
                 f'<div id="upload-label-{f.name}" class="label upload-label">{esc(f.label)}{marker}</div>'
                 '<div class="file-upload__wrapper"><div class="button-container"><div class="secondary-button">'
                 '<div><button type="button" class="btn btn--pill attach">Attach</button>'
@@ -2958,18 +3067,24 @@ class Handler(BaseHTTPRequestHandler):
                 + '<button type="button" id="submit-application">Submit application</button></div>'
             )
         else:
+            submit = '<button type="submit">Submit application</button>'
+            if any(f.uploader == "greenhouse-async" for f in job.fields):
+                # Re-rendered once the upload completes, one level up (see ghUpload).
+                submit = f'<div class="form-actions"><div class="actions-row">{submit}</div></div>'
             form_html = (
                 f'<form method="post" action="/jobs/{job.slug}/apply" enctype="multipart/form-data" '
                 'aria-labelledby="form-title"><h2 id="form-title">Application form</h2>'
                 '<p class="hint">Fields marked with * are required.</p>'
                 + fields_html
-                + '<button type="submit">Submit application</button></form>'
+                + submit + "</form>"
             )
         widgets = any(f.scripted for f in job.fields)
         if widgets:
             form_html += f"<script>{WIDGETS_JS}</script>"
         if job.formless:
             form_html += f"<script>{FORMLESS_JS}</script>"
+        if job.validity:
+            form_html += f"<script>{VALIDITY_JS}</script>"
         if job.autofill:
             form_html = (
                 '<div class="autofill"><button type="button" id="autofill-application">'

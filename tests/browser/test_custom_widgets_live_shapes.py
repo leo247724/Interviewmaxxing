@@ -41,6 +41,7 @@ from interviewmaxxing_core import (
 )
 
 INLINE = "/jobs/react-select-inline/apply"
+INLINE_ASYNC = "/jobs/react-select-inline-async/apply"
 ORPHAN = "/jobs/div-combobox-orphan/apply"
 WORKABLE = "/jobs/workable-like/apply"
 COUNT_OPENS = """() => {
@@ -98,7 +99,9 @@ def test_in_form_menus_are_probed_and_an_open_one_changes_nothing(
         browser = await PlaywrightSessionFactory().start(options)
         try:
             page = await browser.open(server.url(INLINE))
-            buttons = [b.text for b in browser.last_page.snapshot.buttons]
+            buttons = [(b.text, b.disabled) for b in browser.last_page.snapshot.buttons]
+            flyouts = await browser.page.evaluate(
+                "() => document.querySelectorAll('button[aria-label=\"Toggle flyout\"]').length")
             proxies = await browser.page.evaluate(PROXIES)
             closed = await _signature(browser)
             await browser.page.click("#question_9004")
@@ -107,11 +110,11 @@ def test_in_form_menus_are_probed_and_an_open_one_changes_nothing(
                 "{inForm: !!m.closest('form'), options: m.querySelectorAll('[role=option]').length}; }")
             opened = await _signature(browser)
             await browser.page.keyboard.press("Escape")
-            return page, buttons, proxies, closed, menu, opened, list(browser.menus.log)
+            return page, buttons, flyouts, proxies, closed, menu, opened, list(browser.menus.log)
         finally:
             await browser.close()
 
-    page, buttons, proxies, closed, menu, opened, log = kit.run(scenario())
+    page, buttons, flyouts, proxies, closed, menu, opened, log = kit.run(scenario())
     assert page.kind is PageKind.APPLICATION_FORM, page.message
     form = page.form
     # The hidden required proxies are part of their selects, never questions of their own.
@@ -126,10 +129,12 @@ def test_in_form_menus_are_probed_and_an_open_one_changes_nothing(
     assert [o.label for o in form.field("question_9001").options or []] == ["Yes", "No"]
     assert len(form.field("question_9004").options or []) == 31
     assert [selector for selector, _, _ in log] == [f"#{m}" for m in INLINE_MENUS]
-    # The fixture reproduces Greenhouse: the open menu is in the form, beside real buttons
-    # whose position among their siblings it would shift.
-    assert buttons.count("Toggle flyout") == 4
-    assert {"Autofill my application", "Attach", "Dropbox"} <= set(buttons)
+    # The fixture reproduces Greenhouse: the open menu is in the form, beside real
+    # "Toggle flyout" buttons. Those belong to their menus and are not page buttons.
+    assert flyouts == 4 and "Toggle flyout" not in [text for text, _ in buttons]
+    assert {"Autofill my application", "Attach", "Dropbox"} <= {text for text, _ in buttons}
+    # The submit button stays disabled until every required question is answered.
+    assert ("Submit application", True) in buttons
     assert menu == {"inForm": True, "options": 31}
     assert opened == closed
 
@@ -138,8 +143,9 @@ def test_in_form_menus_an_uploader_and_a_keystroke_flicker_fill_through(
     kit: SimpleNamespace, server: Any, options: BrowserOptions
 ) -> None:
     """Typing disables the page's autofill button for a moment; attaching replaces the
-    uploader's input and buttons with the file's name; choosing removes a proxy input.
-    None of it is a changed page, and a second fill of the same form is clean."""
+    uploader's input and buttons with the file's name; choosing removes a proxy input and
+    adds a "Clear selection" button; the last answer enables the submit button. None of it
+    is a changed page, and a second fill of the same form is clean."""
     async def scenario() -> tuple[Any, ...]:
         browser = await PlaywrightSessionFactory().start(options)
         try:
@@ -147,22 +153,33 @@ def test_in_form_menus_an_uploader_and_a_keystroke_flicker_fill_through(
             packet = kit.build(page.form, {**CONTACT, **INLINE_ANSWERS, "resume": kit.RESUME}).packet
             fill = await browser.fill(page.form, packet)
             state = await browser.page.evaluate(STATE)
+            # The page enables its submit button on its own schedule (it polls validity).
+            await browser.page.wait_for_function(
+                "() => !document.querySelector('button[type=submit]').disabled", timeout=3000)
             shown = await browser.page.evaluate(
                 "() => ({chip: (document.querySelector('.file-upload__filename') || {}).innerText || null, "
                 "input: !!document.getElementById('resume'), proxies: document.querySelectorAll("
-                "'input.select__required').length})")
+                "'input.select__required').length, clears: document.querySelectorAll("
+                "'button[aria-label=\"Clear selection\"]').length, submit: document.querySelector("
+                "'button[type=submit]').disabled, invalid: document.getElementById('f-first_name')"
+                ".getAttribute('aria-invalid')})")
+            page_buttons = [b.text for b in browser.last_page.snapshot.buttons]
             review = await browser.prepare_review()
             again = await browser.fill(page.form, packet)
-            return fill, state, shown, review, again
+            return fill, state, shown, page_buttons, review, again
         finally:
             await browser.close()
 
-    fill, state, shown, review, again = kit.run(scenario())
+    fill, state, shown, page_buttons, review, again = kit.run(scenario())
     assert fill.ok, [f for f in fill.fields if f.status is not FieldFillStatus.FILLED]
     assert {f.status for f in fill.fields} == {FieldFillStatus.FILLED}
     resume = next(f for f in fill.fields if f.field_id == "resume")
     assert resume.detail == "the uploader shows the file; its input is empty or replaced"
     assert shown["chip"].startswith(kit.RESUME_PATH.name) and not shown["input"] and shown["proxies"] == 0
+    # Answering enabled the submit button, gave the answered clearable menus a "Clear
+    # selection" button (theirs, not the page's) and left aria-invalid="false" behind.
+    assert shown["submit"] is False and shown["clears"] == 2 and shown["invalid"] == "false"
+    assert "Clear selection" not in page_buttons
     assert {k: v for k, v in state.items() if k != "resume"} == {
         "question_9004": {"value": "us"}, "question_9001": {"value": "in_wa_yes"},
         "question_9002": {"value": "in_sp_no"}, "question_9003": {"value": "src_linkedin"}}
@@ -171,6 +188,39 @@ def test_in_form_menus_an_uploader_and_a_keystroke_flicker_fill_through(
     assert review.form.field("resume").label == "Resume/CV"
     assert again.ok and {f.status for f in again.fields} == {FieldFillStatus.FILLED}
     assert next(f for f in again.fields if f.field_id == "resume").detail == "the uploader already shows this file"
+
+
+@pytest.mark.parametrize("hook", ["uploadRenderOn: 'focusin'", None], ids=["lands-mid-fill", "lands-after-fill"])
+def test_an_uploader_that_rerenders_seconds_later_does_not_stop_the_fill(
+    hook: str | None, kit: SimpleNamespace, server: Any, options: BrowserOptions
+) -> None:
+    """Greenhouse finishes the upload seconds after the attach, then re-renders the résumé
+    block (the input and its buttons give way to the file's name and "Remove file") and
+    the page's action area (the submit button's path shifts). Arriving while later fields
+    are written, or after the fill, that is our own answer, not a changed page."""
+    async def scenario() -> tuple[Any, ...]:
+        browser = await PlaywrightSessionFactory().start(options)
+        try:
+            if hook is not None:  # re-render as the next question takes focus
+                await browser.page.add_init_script(f"window.__widgetHooks = {{selectNext: {{}}, {hook}}};")
+            page = await browser.open(server.url(INLINE_ASYNC))
+            submit_before = page.form.submit_selector
+            fill = await browser.fill(page.form, kit.build(
+                page.form, {**CONTACT, **INLINE_ANSWERS, "resume": kit.RESUME}).packet)
+            await browser.page.wait_for_selector(".file-upload__filename", timeout=5000)
+            review = await browser.prepare_review()
+            return fill, submit_before, review, await browser.page.evaluate(STATE)
+        finally:
+            await browser.close()
+
+    fill, submit_before, review, state = kit.run(scenario())
+    assert fill.ok, [f for f in fill.fields if f.status is not FieldFillStatus.FILLED]
+    assert {f.status for f in fill.fields} == {FieldFillStatus.FILLED}
+    assert review.form is not None and review.form.page_errors == []
+    # The submit action is the same button in a new place; the résumé is still answered.
+    assert review.form.submit_selector != submit_before
+    assert review.form.field("resume").label == "Resume/CV"
+    assert state["question_9003"] == {"value": "src_linkedin"}
 
 
 @pytest.mark.parametrize(("chosen", "committed", "status"), [

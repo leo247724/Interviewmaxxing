@@ -168,9 +168,21 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
 - **Passing states and own changes.** Before every write the page must still show the
   approved questions, bindings and actions. A difference is waited out for up to 1 s,
   because Greenhouse disables its "Autofill my application" button while it handles a
-  keystroke; only a difference that persists stops the fill. After a verified attach,
-  the fill continues against the page as it now is, if every other question and binding
-  is as approved.
+  keystroke; only a difference that persists stops the fill.
+
+  Buttons and the submit/next actions count by what they are (text, kind, form, request),
+  not by their position or whether they are enabled: a submit enabled once required
+  fields are valid, or moved to another container, is the same action. A menu's own
+  buttons are part of its widget, not page buttons ("Toggle flyout", a "Clear selection"
+  that appears with a value). Validity (`aria-invalid`) and error messages, including a
+  description the control names in `aria-errormessage`, were never part of the guard.
+
+  After this runtime's own upload, a change confined to that uploader's container is
+  our answer arriving, at any later write and in the after-fill and review checks. The
+  change may be the Attach and cloud buttons giving way to the file's name and "Remove
+  file", the file input going, or the page's actions moving. Greenhouse re-renders the
+  uploader seconds after the attach. Every question, option set and binding must still
+  be as approved, and the approved observation then moves to the page as it now is.
 - **Closed postings.** "Job not found", "The job you requested was not found", "posting
   not found", "job does not exist" and "no longer open" (Greenhouse's redirect for a
   closed job) classify `JOB_CLOSED`, as "no longer available" already did.

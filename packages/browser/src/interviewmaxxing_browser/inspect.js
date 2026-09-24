@@ -108,8 +108,11 @@
     el.getAttribute("role") === "alert" || /error|invalid/i.test((el.id || "") + " " + classOf(el));
   const byIds = (value) =>
     (value || "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter(Boolean);
+  // A description the control names as its error message is an error, whatever it looks like.
+  const errorFor = (el, d) => isErrorEl(d) ||
+    (!!d.id && (el.getAttribute("aria-errormessage") || "").split(/\s+/).includes(d.id));
   const described = (el) =>
-    byIds(el && el.getAttribute("aria-describedby")).map((d) => ({ text: textOf(d), error: isErrorEl(d) }))
+    byIds(el && el.getAttribute("aria-describedby")).map((d) => ({ text: textOf(d), error: errorFor(el, d) }))
       .filter((d) => d.text);
 
   const labelOf = (el) => {
@@ -300,7 +303,7 @@
     byIds(el.getAttribute("aria-describedby"))
       .filter((d) => !displayNodes.some((n) => n === d || d.contains(n) || n.contains(d)))
       .filter((d) => !d.closest('[aria-live],[role="log"],[role="status"]'))
-      .map((d) => ({ text: textOf(d), error: isErrorEl(d) }))
+      .map((d) => ({ text: textOf(d), error: errorFor(el, d) }))
       .filter((d) => d.text);
 
   const describeNative = (el) => {
@@ -446,9 +449,23 @@
   // ---- buttons, links, page text --------------------------------------------------
   // Buttons, links, headings and live text inside an open menu belong to its widget.
   const inPopup = (el) => { for (const p of popupRoots) if (p.contains(el)) return true; return false; };
+  // So do a menu control's own buttons, in the box it shares with no label or other
+  // field: react-select's "Toggle flyout" and, once it holds a value, "Clear selection"
+  // (Greenhouse), or a chip's remove button. They come and go with the answer.
+  const comboButton = (b) => {
+    if (b.tagName === "BUTTON" && (b.getAttribute("type") || "submit").toLowerCase() !== "button") return false;
+    for (let n = b.parentElement, depth = 0; n && depth < 4; n = n.parentElement, depth++) {
+      if (n.tagName === "FORM" || n === document.body) return false;
+      if (n.querySelector("label, legend, h1, h2, h3, h4, h5, h6, [role=heading]")) return false;
+      const inside = [...fieldEls].filter((f) => n.contains(f));
+      if (inside.length > 1) return false;
+      if (inside.length === 1) return comboLike(inside[0]);
+    }
+    return false;
+  };
   const buttons = [];
   for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
-    if (!visible(el) || inPopup(el)) continue;
+    if (!visible(el) || inPopup(el) || comboButton(el)) continue;
     if (CUSTOM_ROLES.has(el.getAttribute("role") || "")) continue; // a widget, reported as a control
     // A picker trigger (a phone widget's "Change country" button) opens a dialog or
     // list; it is part of a control, never a step action, and its label is state.

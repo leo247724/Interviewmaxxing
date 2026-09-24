@@ -142,12 +142,14 @@ def test_prepare_only_run_fills_every_react_select_and_submits_nothing(
     assert server.submissions("react-select")["accepted_count"] == 0
 
 
+@pytest.mark.parametrize("job", ["react-select-inline", "react-select-inline-async"])
 def test_prepare_only_run_fills_menus_rendered_inside_the_form(
-    kit: SimpleNamespace, server: Any, options: BrowserOptions, isolated_imx_home: LocalPaths
+    job: str, kit: SimpleNamespace, server: Any, options: BrowserOptions, isolated_imx_home: LocalPaths
 ) -> None:
-    """Greenhouse renders its menus inside the form: opening and choosing must not look
-    like a changed page, so the run fills through every question after them."""
-    url = server.url(INLINE)
+    """Greenhouse renders its menus inside the form and re-renders its uploader after the
+    upload: neither may look like a changed page, so the run fills through every question
+    and reaches the review."""
+    url = server.url(f"/jobs/{job}/apply")
     _write_profile(isolated_imx_home, kit.run(_inspect_form(options, url)), url, INLINE_MENUS)
     factory = RecordingFactory()
     runner = LocalApplicationRunner(paths=isolated_imx_home, interaction=NoninteractiveInteraction(),
@@ -162,7 +164,7 @@ def test_prepare_only_run_fills_menus_rendered_inside_the_form(
         "question_9002": {"value": "in_sp_no"}, "question_9003": {"value": "src_linkedin"},
     }
     assert factory.states[-1]["resume"]["value"] is not None  # the uploader holds the résumé
-    assert server.submissions("react-select-inline")["accepted_count"] == 0
+    assert server.submissions(job)["accepted_count"] == 0
 
 
 def test_widget_state_reaches_the_form_data_without_hidden_inputs(
