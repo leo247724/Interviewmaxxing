@@ -347,8 +347,10 @@ def test_uncertain_or_other_upload_purpose_is_not_approved(
 ) -> None:
     f = file_form("Autofill from resume", SemanticType.RESUME)
     cases = [
-        # Autofill purpose below the 0.90 confidence gate: held as a parser, never uploaded.
-        (PurposeProvider(route="APPROVED_DOCUMENT", purpose="AUTOFILL_PARSER", confidence=0.80),
+        # Attachment plus autofill mass reaches 0.96, but 0.04 is on another purpose (over the
+        # pooled gate's 0.03 outside bound): held as a parser, never uploaded.
+        (PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
+            "APPLICATION_ATTACHMENT": 0.30, "AUTOFILL_PARSER": 0.66, "OTHER_OR_UNCLEAR": 0.04}),
          FieldRoute.UNSUPPORTED),
         # Attachment plus autofill mass below 0.95: still held as a parser.
         (PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
