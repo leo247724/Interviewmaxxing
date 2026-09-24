@@ -44,6 +44,11 @@ Guarantees:
   a correction stored later, in this run or by ``interviewmaxxing answer`` in another
   process, is used even if the site still shows the old message; a correction the
   site rejects again is asked again.
+* A lookup the site could not commit (``NEEDS_CHOICE``) gets one choice round per
+  question per run: the resolver, when it is a ``SuggestionChooser``, may pick one of
+  the observed suggestions, which is then typed verbatim (a ``field.suggestion_chosen``
+  event records it); otherwise the user is asked to pick one. It is never reported as
+  a failed fill.
 """
 
 from __future__ import annotations
@@ -76,6 +81,7 @@ from interviewmaxxing_core import (
     AnswerSource,
     Application,
     ApplicationBrowser,
+    ApplicationField,
     ApplicationForm,
     ApplicationPacket,
     ApplicationState,
@@ -90,10 +96,14 @@ from interviewmaxxing_core import (
     Claim,
     ClaimLost,
     ClaimUnavailable,
+    ControlType,
+    FieldOption,
+    FillResult,
     IdentityConflict,
     LocalPaths,
     MissingInput,
     MissingReason,
+    PacketAnswer,
     PacketContext,
     PacketResolver,
     PageInspection,
@@ -103,11 +113,15 @@ from interviewmaxxing_core import (
     SavedAnswer,
     SubmissionObservation,
     SubmissionOutcome,
+    TextValue,
     UserInput,
     UserInteraction,
+    answer_problems,
+    new_id,
     utc_now,
 )
-from interviewmaxxing_generation import FactualPacketResolver
+from interviewmaxxing_core.interfaces import SelectiveFill, SuggestionChooser
+from interviewmaxxing_generation import FactualPacketResolver, missing_input_id
 
 S = ApplicationState
 T = TypeVar("T")
@@ -117,6 +131,10 @@ INPUT_EVENT = "input.received"
 REJECTION_EVENT = "validation.rejected"
 """Emitted by the runner (``append_event``) when a step it acted on comes back with
 field validation messages: a rejection epoch for those questions."""
+SUGGESTION_EVENT = "field.suggestion_chosen"
+"""Emitted by the runner when the resolver chose one of a lookup's site suggestions:
+the question, the chosen label and the chooser's decision metadata. (The store
+reserves the ``application.`` prefix for its own events.)"""
 RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
 
 
@@ -241,6 +259,47 @@ def _outcome(store: ApplicationStore, application_id: str, message: str,
 
 def _detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}".splitlines()[0][:300]
+
+
+def _chosen_answer(answer: PacketAnswer, label: str) -> PacketAnswer:
+    """The same answer, typed as the exact site suggestion chosen for its value. The
+    source (identity or saved answer) and its references are unchanged; the note names
+    the value the suggestion was chosen for."""
+    typed = answer.value.text if isinstance(answer.value, TextValue) else ""
+    note = "; ".join(p for p in (answer.provenance.note,
+                                 f"site suggestion chosen for the typed value {typed!r}") if p)
+    return answer.model_copy(update={
+        "value": TextValue(text=label),
+        "provenance": answer.provenance.model_copy(update={"note": note}),
+    })
+
+
+def _lookup_question(form: ApplicationForm, field: ApplicationField, typed: str,
+                     suggestions: Sequence[str]) -> MissingInput:
+    """Ask the user to pick one of a lookup's observed suggestions; the picked label is
+    typed verbatim. The suggestions travel as the item's ``options`` (value = label)."""
+    labels = list(dict.fromkeys(s for s in suggestions if s.strip()))
+    shown = repr(typed) if typed.strip() else "the value"
+    if labels:
+        prompt = (f"The site did not accept {shown} as typed; choose the suggestion it offered "
+                  "that is right for you: " + "; ".join(labels) + ". You can also enter a "
+                  "different value to look up.")
+    else:
+        prompt = (f"The site offered no suggestion for {shown}. Enter the value to look up the "
+                  "way the site spells it.")
+    item = MissingInput.for_field(form, field, reason=MissingReason.NO_ANSWER, prompt=prompt)
+    update: dict[str, Any] = {"id": missing_input_id(form, field)}
+    if field.control_type is ControlType.TYPEAHEAD:  # other controls keep their own options
+        update["options"] = [FieldOption(value=label, label=label) for label in labels] or None
+    return item.model_copy(update=update)
+
+
+def _merged(first: FillResult, refill: FillResult) -> FillResult:
+    """``first`` with the fields ``refill`` operated again replaced by their new results."""
+    redone = {r.field_id: r for r in refill.fields}
+    fields = [redone.pop(r.field_id, r) for r in first.fields]
+    return FillResult(form_step=first.form_step, fields=[*fields, *redone.values()],
+                      page_errors=refill.page_errors, evidence=[*first.evidence, *refill.evidence])
 
 
 def _fail_retryable(store: ApplicationStore, claim: Claim, app: Application, message: str) -> None:
@@ -517,6 +576,12 @@ class _Run:
         """Steps this run filled, advanced or submitted since their last inspection.
         Validation messages on such a step are new rejections (an epoch); messages on
         any other inspection (a fresh open, a page the user operated) are not."""
+        self.choice_rounds: set[tuple[int, str, str]] = set()
+        """Lookup questions ``(step, field id, fingerprint)`` that already had their one
+        choice round in this run."""
+        self.chosen: dict[tuple[int, str, str], tuple[str, str]] = {}
+        """Suggestions chosen in this run: question -> (typed text, chosen label). A
+        re-resolved packet types the stored value again; the chosen label replaces it."""
 
     @property
     def app_id(self) -> str:
@@ -681,17 +746,36 @@ class _Run:
         # e.g. a sign-in that returns to the posting: go back to the application URL.
         return await self.browser.open(self.url)
 
-    async def _resolve(self, form: ApplicationForm) -> ApplicationPacket:
+    def _context(self, form: ApplicationForm) -> PacketContext:
         app = self.app()
-        job = self.store.get_job(app.job_id)
-        context = PacketContext(application=app, job=job, form=form, candidate=self.candidate,
-                                user_inputs=self.store.get_user_inputs(self.app_id, form))
+        return PacketContext(application=app, job=self.store.get_job(app.job_id), form=form,
+                             candidate=self.candidate,
+                             user_inputs=self.store.get_user_inputs(self.app_id, form))
+
+    async def _resolve(self, form: ApplicationForm) -> ApplicationPacket:
+        context = self._context(form)
         packet = await self.runner.resolver.resolve(context)
         problems = context.problems(packet)
         if problems:
             raise self._stop(S.FAILED_RETRYABLE, "Internal error: the answers for this step are "
                              "inconsistent (" + "; ".join(problems[:3]) + ").")
-        return self._with_rejections(form, packet)
+        return self._with_choices(form, self._with_rejections(form, packet))
+
+    def _with_choices(self, form: ApplicationForm, packet: ApplicationPacket) -> ApplicationPacket:
+        """Re-apply the suggestions chosen earlier in this run: the resolver types the
+        stored value again, and the label chosen for exactly that value commits it."""
+        answers: list[PacketAnswer] = []
+        for answer in packet.answers:
+            field = form.find(answer.field_id)
+            choice = (self.chosen.get((form.step, field.id, field.fingerprint))
+                      if field is not None else None)
+            if (choice is not None and answer.value == TextValue(text=choice[0])
+                    and answer.provenance.source is not AnswerSource.USER_INPUT):
+                answer = _chosen_answer(answer, choice[1])
+            answers.append(answer)
+        if answers == packet.answers:
+            return packet
+        return packet.model_copy(update={"answers": answers})
 
     def _note_rejections(self, form: ApplicationForm) -> None:
         """Persist the field validation messages of a step this run acted on as one
@@ -760,34 +844,39 @@ class _Run:
         packet = await self._resolve(form)
         self.store.save_packet(self.claim, packet)
         rounds = 0
-        while not packet.is_complete:
-            required = [m for m in packet.missing_inputs if m.required]
-            unsupported = [m for m in required if m.reason is MissingReason.UNSUPPORTED_CONTROL]
-            questions = [m for m in required if m.reason is not MissingReason.UNSUPPORTED_CONTROL]
-            rounds += 1
-            if rounds > self.limits.max_input_rounds:
-                raise self._stop(S.NEEDS_INPUT, f"{len(required)} required question(s) are still "
-                                 f"open after {self.limits.max_input_rounds} attempts; answer them "
-                                 "and resume.", reason="input rounds exhausted",
-                                 missing=packet.missing_inputs)
-            if questions:
-                inputs = list(await self._fenced(self.interaction.request_inputs(questions)))
-                if not self._accept_inputs(questions, inputs):
-                    raise self._stop(S.NEEDS_INPUT, f"{len(questions)} required question(s) need "
-                                     "your answer.", reason="missing answers",
+        while True:
+            while not packet.is_complete:
+                required = [m for m in packet.missing_inputs if m.required]
+                unsupported = [m for m in required if m.reason is MissingReason.UNSUPPORTED_CONTROL]
+                questions = [m for m in required if m.reason is not MissingReason.UNSUPPORTED_CONTROL]
+                rounds += 1
+                if rounds > self.limits.max_input_rounds:
+                    raise self._stop(S.NEEDS_INPUT, f"{len(required)} required question(s) are "
+                                     f"still open after {self.limits.max_input_rounds} attempts; "
+                                     "answer them and resume.", reason="input rounds exhausted",
                                      missing=packet.missing_inputs)
-            else:
-                page = await self._user_action(page, unsupported)
-                if page.form is None:
-                    return page
-                form = page.form
-            packet = await self._resolve(form)
-            self.store.save_packet(self.claim, packet)
-            if not questions and self._still_unoperated(unsupported, packet):
-                raise self._stop(S.NEEDS_INPUT, "Still waiting for you in the browser: "
-                                 + "; ".join(m.prompt for m in unsupported),
-                                 reason="user action not completed", missing=packet.missing_inputs)
-        return await self._act(form, packet)
+                if questions:
+                    inputs = list(await self._fenced(self.interaction.request_inputs(questions)))
+                    if not self._accept_inputs(questions, inputs):
+                        raise self._stop(S.NEEDS_INPUT, f"{len(questions)} required question(s) "
+                                         "need your answer.", reason="missing answers",
+                                         missing=packet.missing_inputs)
+                else:
+                    page = await self._user_action(page, unsupported)
+                    if page.form is None:
+                        return page
+                    form = page.form
+                packet = await self._resolve(form)
+                self.store.save_packet(self.claim, packet)
+                if not questions and self._still_unoperated(unsupported, packet):
+                    raise self._stop(S.NEEDS_INPUT, "Still waiting for you in the browser: "
+                                     + "; ".join(m.prompt for m in unsupported),
+                                     reason="user action not completed",
+                                     missing=packet.missing_inputs)
+            outcome = await self._act(form, packet)
+            if isinstance(outcome, PageInspection):
+                return outcome
+            packet = outcome  # a lookup the site could not commit now needs the user's pick
 
     @staticmethod
     def _still_unoperated(waited_for: list[MissingInput], packet: ApplicationPacket) -> bool:
@@ -813,7 +902,11 @@ class _Run:
                 self.runner.candidates.save_answer(self.app().candidate_id, saved)
         return True
 
-    async def _act(self, form: ApplicationForm, packet: ApplicationPacket) -> PageInspection:
+    async def _act(self, form: ApplicationForm,
+                   packet: ApplicationPacket) -> PageInspection | ApplicationPacket:
+        """Fill the step, then advance or submit. Returns the page to continue with, or
+        the packet again (saved, still incomplete) when a lookup the site could not
+        commit now needs the user's pick among its suggestions."""
         await self._verify_expected_page()
         self._to(S.PACKET_READY)
         self._to(S.FILLING)
@@ -824,13 +917,22 @@ class _Run:
             # The page changed under us; inspect it again rather than guess.
             self._to(S.INSPECTING)
             return await self.browser.inspect()
-        if not fill.ok:
-            failed = fill.failed_field_ids()
-            if failed:
-                raise self._stop(S.FAILED_RETRYABLE, "Could not fill " + ", ".join(failed)
-                                 + " reliably; nothing was submitted.")
+        if fill.needs_choice() and not fill.failed_field_ids() and not fill.page_errors:
+            settled = await self._settle_choices(form, packet, fill)
+            if settled is None:  # the page changed before the chosen label was typed
+                self._to(S.INSPECTING)
+                return await self.browser.inspect()
+            fill, packet = settled
+        failed = fill.failed_field_ids()
+        if failed:
+            raise self._stop(S.FAILED_RETRYABLE, "Could not fill " + ", ".join(failed)
+                             + " reliably; nothing was submitted.")
+        if fill.page_errors:
             self._to(S.INSPECTING)
             return await self.browser.inspect()
+        if not packet.is_complete:
+            self._to(S.INSPECTING)
+            return packet
         if form.is_final_step is True:
             return await self._submit(packet)
         await self._verify_expected_page()
@@ -841,6 +943,110 @@ class _Run:
                              "Nothing was submitted.") from exc
         self._to(S.INSPECTING)
         return nav.inspection
+
+    async def _settle_choices(
+        self, form: ApplicationForm, packet: ApplicationPacket, fill: FillResult
+    ) -> tuple[FillResult, ApplicationPacket] | None:
+        """Lookups the site could not commit (``NEEDS_CHOICE``): one choice round per
+        question per run. A label the resolver (``SuggestionChooser``) picks among the
+        observed suggestions replaces the typed value, is recorded, and only those
+        fields are filled again. Otherwise the user is asked to pick a suggestion (an
+        optional lookup is left blank). Returns the merged fill and the saved packet,
+        or None when the browser refused to fill again because the page changed."""
+        resolver = self.runner.resolver
+        chooser = resolver if isinstance(resolver, SuggestionChooser) else None
+        chosen: dict[str, PacketAnswer] = {}
+        picked: dict[str, str] = {}
+        open_: dict[str, tuple[str, list[str]]] = {}
+        events: list[dict[str, Any]] = []
+        for result in fill.needs_choice():
+            field = form.find(result.field_id)
+            answer = packet.answer_for(result.field_id)
+            if field is None or answer is None:
+                continue
+            typed = answer.value.text if isinstance(answer.value, TextValue) else ""
+            key = (form.step, field.id, field.fingerprint)
+            label = None
+            if (chooser is not None and key not in self.choice_rounds and typed.strip()
+                    and answer.provenance.source is not AnswerSource.USER_INPUT):
+                self.choice_rounds.add(key)
+                label = await self._choose(chooser, form, field, typed, result.suggestions)
+            if label is None:
+                self.chosen.pop(key, None)  # a label chosen earlier did not commit either
+                open_[field.id] = (typed, list(result.suggestions))
+                continue
+            chosen[field.id], picked[field.id] = _chosen_answer(answer, label), label
+            self.chosen[key] = (typed, label)
+            decision = getattr(chooser, "suggestion_decision", None)
+            events.append({
+                "form_url": form.url, "form_step": form.step, "field_id": field.id,
+                "field_fingerprint": field.fingerprint, "chosen_label": label,
+                "suggestion_count": len(result.suggestions),
+                "source": answer.provenance.source.value, "chooser": type(chooser).__name__,
+                "decision": decision(field.id) if callable(decision) else None,
+            })
+        self._renew()
+        packet = self._with_lookups(form, packet, chosen, open_)
+        self.store.save_packet(self.claim, packet)
+        for metadata in events:
+            self.store.append_event(self.claim, SUGGESTION_EVENT, metadata)
+        if not chosen or not packet.is_complete:
+            # Nothing to type again, or the user must pick first: the whole step is
+            # filled again once the questions are answered.
+            return fill, packet
+        try:
+            refill = await self._refill(form, packet, list(chosen))
+        except ValueError:
+            return None
+        fill = _merged(fill, refill)
+        again = {r.field_id: r for r in refill.needs_choice() if r.field_id in chosen}
+        if again:
+            # The exact label did not commit either; no second round in this run.
+            for field_id in again:
+                field = form.field(field_id)
+                self.chosen.pop((form.step, field.id, field.fingerprint), None)
+            retry = {fid: (picked[fid], list(r.suggestions)) for fid, r in again.items()}
+            packet = self._with_lookups(form, packet, {}, retry)
+            self.store.save_packet(self.claim, packet)
+        return fill, packet
+
+    async def _choose(self, chooser: SuggestionChooser, form: ApplicationForm,
+                      field: ApplicationField, typed: str, suggestions: Sequence[str]) -> str | None:
+        """The chooser's pick, accepted only if it is one of the observed suggestions
+        verbatim and fits the field. A failing chooser means the user picks."""
+        try:
+            label = await chooser.choose_suggestion(self._context(form), field, typed,
+                                                    list(suggestions))
+        except Exception:
+            return None
+        if label is None or label not in suggestions:
+            return None
+        if answer_problems(field, TextValue(text=label)):
+            return None
+        return label
+
+    def _with_lookups(self, form: ApplicationForm, packet: ApplicationPacket,
+                      chosen: dict[str, PacketAnswer],
+                      open_: dict[str, tuple[str, list[str]]]) -> ApplicationPacket:
+        """A new packet with chosen labels in place of typed values, and each lookup still
+        open replaced by a question listing the site's suggestions (required fields) or
+        left blank (optional fields)."""
+        questions = [_lookup_question(form, form.field(fid), typed, suggestions)
+                     for fid, (typed, suggestions) in open_.items() if form.field(fid).required]
+        return ApplicationPacket.model_validate({
+            **packet.model_dump(),
+            "id": new_id("pkt"),
+            "answers": [chosen.get(a.field_id, a).model_dump() for a in packet.answers
+                        if a.field_id not in open_],
+            "missing_inputs": [*(m.model_dump() for m in packet.missing_inputs),
+                               *(q.model_dump() for q in questions)],
+        })
+
+    async def _refill(self, form: ApplicationForm, packet: ApplicationPacket,
+                      field_ids: list[str]) -> FillResult:
+        if isinstance(self.browser, SelectiveFill):
+            return await self.browser.fill_fields(form, packet, field_ids)
+        return await self.browser.fill(form, packet)
 
     async def _submit(self, packet: ApplicationPacket) -> PageInspection:
         if self.store.is_preparation_only(self.app_id):
@@ -972,6 +1178,7 @@ class NoninteractiveInteraction:
 __all__ = [
     "NEEDS_INPUT_EVENT",
     "REJECTION_EVENT",
+    "SUGGESTION_EVENT",
     "LocalApplicationRunner",
     "NoninteractiveInteraction",
     "RunLimits",

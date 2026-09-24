@@ -21,6 +21,7 @@ from interviewmaxxing_browser import AmbiguousAction
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_cli.runner import (
     REJECTION_EVENT,
+    SUGGESTION_EVENT,
     LocalApplicationRunner,
     NoninteractiveInteraction,
     RunLimits,
@@ -58,6 +59,7 @@ from interviewmaxxing_core import (
     TextValue,
     UserInput,
 )
+from interviewmaxxing_generation import FactualPacketResolver
 
 S = ApplicationState
 URL = "http://127.0.0.1:9/jobs/fictional/apply"
@@ -1199,3 +1201,305 @@ def test_an_interrupted_submit_is_left_alone_while_leased_then_settled_for_recon
     assert script.starts == 0
     with _store(isolated_imx_home, clock) as store:
         assert [a.outcome for a in store.list_attempts(app.id)] == ["INTERRUPTED"]
+
+
+# --- lookups the site could not commit: one choice round, never a failed fill (WP2) ---------------
+
+TEXAS = "Austin, Texas, United States"
+MINNESOTA = "Austin, Minnesota, United States"
+SUGGESTIONS = [MINNESOTA, TEXAS]
+
+
+def _austin(candidate: CandidateProfile) -> CandidateProfile:
+    identity = candidate.identity
+    address = identity.address.model_copy(update={"city": "Austin", "region": "TX",
+                                                  "country": "United States"})
+    return candidate.model_copy(update={"identity": identity.model_copy(update={"address": address})})
+
+
+def _lookup_field(field_id: str = "location", *, required: bool = True,
+                  semantic: SemanticType = SemanticType.LOCATION) -> ApplicationField:
+    return ApplicationField(id=field_id, label=f"{field_id.title()} (search)", selector=f"#{field_id}",
+                            semantic_type=semantic, control_type=ControlType.TYPEAHEAD,
+                            required=required)
+
+
+def _lookup_form(*extra: ApplicationField, required: bool = True) -> ApplicationForm:
+    base = _form()
+    return base.model_copy(update={"fields": [*base.fields, _lookup_field(required=required),
+                                              *extra]})
+
+
+class LookupBrowser(ScriptedBrowser):
+    """A lookup commits only when the typed text is exactly one of ``commits``;
+    otherwise it reports NEEDS_CHOICE with ``suggestions`` and stays empty."""
+
+    def __init__(self, script: Script, *, commits: set[str], suggestions: list[str],
+                 failing: frozenset[str] = frozenset(), typed: list[dict[str, str]]) -> None:
+        super().__init__(script)
+        self.commits, self.suggestions, self.failing = commits, suggestions, failing
+        self.typed = typed
+
+    def _results(self, form: ApplicationForm, packet: ApplicationPacket,
+                 only: set[str] | None = None) -> FillResult:
+        typed: dict[str, str] = {}
+        results = []
+        for answer in packet.answers:
+            if only is not None and answer.field_id not in only:
+                continue
+            field = form.field(answer.field_id)
+            if answer.field_id in self.failing:
+                results.append(FieldFillResult(field_id=field.id, status=FieldFillStatus.FAILED,
+                                               detail="scripted failure"))
+            elif field.control_type is ControlType.TYPEAHEAD:
+                assert isinstance(answer.value, TextValue)
+                typed[field.id] = answer.value.text
+                if answer.value.text in self.commits:
+                    results.append(FieldFillResult(field_id=field.id, status=FieldFillStatus.FILLED))
+                else:
+                    results.append(FieldFillResult(field_id=field.id,
+                                                   status=FieldFillStatus.NEEDS_CHOICE,
+                                                   suggestions=self.suggestions))
+            else:
+                results.append(FieldFillResult(field_id=field.id, status=FieldFillStatus.FILLED))
+        self.typed.append(typed)
+        return FillResult(form_step=form.step, fields=results)
+
+    async def fill(self, form: ApplicationForm, packet: ApplicationPacket) -> FillResult:
+        self.s.calls.append("fill")
+        assert packet.problems_against(form) == []
+        return self._results(form, packet)
+
+
+class SelectiveLookupBrowser(LookupBrowser):
+    async def fill_fields(self, form: ApplicationForm, packet: ApplicationPacket,
+                          field_ids: Sequence[str]) -> FillResult:
+        self.s.calls.append("fill_fields:" + ",".join(field_ids))
+        assert packet.problems_against(form) == []
+        return self._results(form, packet, set(field_ids))
+
+
+class LookupFactory(ScriptedFactory):
+    def __init__(self, script: Script, browser: type[LookupBrowser] = LookupBrowser, *,
+                 commits: frozenset[str] = frozenset({TEXAS}), suggestions: list[str] | None = None,
+                 failing: frozenset[str] = frozenset()) -> None:
+        super().__init__(script)
+        self.browser, self.commits, self.failing = browser, set(commits), failing
+        self.suggestions = SUGGESTIONS if suggestions is None else suggestions
+        self.typed: list[dict[str, str]] = []
+
+    async def start(self, options: BrowserOptions) -> LookupBrowser:  # type: ignore[override]
+        self.script.starts += 1
+        self.options.append(options)
+        return self.browser(self.script, commits=self.commits, suggestions=self.suggestions,
+                            failing=self.failing, typed=self.typed)
+
+
+class Chooser(FactualPacketResolver):
+    """A resolver whose model picks ``pick`` (None: no suggestion is clearly right)."""
+
+    def __init__(self, pick: str | None) -> None:
+        super().__init__()
+        self.pick = pick
+        self.calls: list[tuple[str, str, list[str]]] = []
+
+    async def choose_suggestion(self, context, field, typed_value, suggestions):  # type: ignore[no-untyped-def]
+        assert context.form.find(field.id) == field
+        self.calls.append((field.id, typed_value, list(suggestions)))
+        return self.pick
+
+    def suggestion_decision(self, field_id: str) -> dict[str, object]:
+        return {"stage": "suggestion_choice", "choice": "s1", "confidence": 0.99}
+
+
+def _lookup_runner(paths, candidate, factory, *, resolver=None, interaction=None,
+                   prepare_only: bool = True) -> LocalApplicationRunner:
+    return LocalApplicationRunner(
+        paths=paths, interaction=interaction or NoninteractiveInteraction(), headless=True,
+        browser_factory=factory, candidates=Candidates(candidate), resolver=resolver,
+        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=prepare_only)
+
+
+@pytest.mark.parametrize("browser", [SelectiveLookupBrowser, LookupBrowser])
+def test_a_chosen_suggestion_is_typed_verbatim_and_the_step_completes(
+    isolated_imx_home, fictional_candidate, browser
+):
+    script = Script(pages=[_page(_lookup_form())])
+    factory = LookupFactory(script, browser)
+    chooser = Chooser(TEXAS)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=chooser).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert result.missing_inputs == [] and "submit" not in script.calls
+    assert chooser.calls == [("location", "Austin, TX", SUGGESTIONS)]
+    if browser is SelectiveLookupBrowser:  # only the chosen lookup is filled again
+        assert script.calls.count("fill") == 1 and "fill_fields:location" in script.calls
+        assert factory.typed == [{"location": "Austin, TX"}, {"location": TEXAS}]
+    else:  # without selective fill the whole packet is filled again
+        assert script.calls.count("fill") == 2
+        assert factory.typed[-1] == {"location": TEXAS}
+    with _store(isolated_imx_home) as store:
+        packet = store.latest_packet(result.application_id)
+        answer = packet.answer_for("location")
+        assert answer.value == TextValue(text=TEXAS)
+        assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+        assert answer.provenance.note == ("verified identity: location; site suggestion chosen "
+                                          "for the typed value 'Austin, TX'")
+        [event] = [e for e in store.list_events(result.application_id)
+                   if e.event == SUGGESTION_EVENT]
+        assert event.metadata["chosen_label"] == TEXAS
+        assert event.metadata["field_id"] == "location" and event.metadata["form_step"] == 0
+        assert event.metadata["source"] == "PROFILE_IDENTITY"
+        assert event.metadata["decision"] == {"stage": "suggestion_choice", "choice": "s1",
+                                              "confidence": 0.99}
+        assert any(e.event == "preparation.ready" for e in store.list_events(result.application_id))
+
+
+def test_without_a_choice_the_user_picks_a_suggestion_which_is_typed_verbatim(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_lookup_form())])
+    factory = LookupFactory(script)
+    candidate = _austin(fictional_candidate)
+    first = asyncio.run(_lookup_runner(isolated_imx_home, candidate, factory,
+                                       resolver=FactualPacketResolver()).apply(URL, candidate_id="c1"))
+    assert first.state is S.NEEDS_INPUT and "Could not fill" not in first.message
+    [question] = first.missing_inputs
+    assert (question.field_id, question.reason) == ("location", MissingReason.NO_ANSWER)
+    assert question.control_type is ControlType.TYPEAHEAD and question.required
+    assert [o.label for o in question.options or []] == SUGGESTIONS
+    assert [o.value for o in question.options or []] == SUGGESTIONS
+    assert "'Austin, TX'" in question.prompt and TEXAS in question.prompt
+    with _store(isolated_imx_home) as store:
+        [pending] = pending_inputs(store, first.application_id)
+        assert pending == question
+        assert store.get_application(first.application_id).state is S.NEEDS_INPUT
+        assert not [e for e in store.list_events(first.application_id) if e.event == SUGGESTION_EVENT]
+        claim = store.claim(first.application_id, "answer-cli")
+        store.save_user_inputs(claim, [UserInput.answering(pending, TextValue(text=TEXAS))])
+        store.release(claim)
+    second = asyncio.run(_lookup_runner(isolated_imx_home, candidate, factory,
+                                        resolver=FactualPacketResolver())
+                         .resume(first.application_id))
+    assert second.state is S.NEEDS_INPUT and "Prepared to the final review step" in second.message
+    assert factory.typed[-1] == {"location": TEXAS}
+    with _store(isolated_imx_home) as store:
+        answer = store.latest_packet(first.application_id).answer_for("location")
+        assert answer.value == TextValue(text=TEXAS)
+        assert answer.provenance.source is AnswerSource.USER_INPUT
+
+
+def test_an_interactive_user_pick_completes_the_step_in_the_same_run(
+    isolated_imx_home, fictional_candidate
+):
+    class PicksTexas(NoninteractiveInteraction):
+        def __init__(self) -> None:
+            super().__init__()
+            self.asked: list[MissingInput] = []
+
+        async def request_inputs(self, missing):
+            self.asked.extend(missing)
+            return [UserInput.answering(m, TextValue(text=TEXAS)) for m in missing]
+
+    script = Script(pages=[_page(_lookup_form())])
+    factory = LookupFactory(script)
+    interaction = PicksTexas()
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=Chooser(None), interaction=interaction)
+                         .apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert [m.field_id for m in interaction.asked] == ["location"]
+    assert factory.typed == [{"location": "Austin, TX"}, {"location": TEXAS}]
+
+
+def test_a_label_that_still_does_not_commit_gets_no_second_round(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_lookup_form())])
+    factory = LookupFactory(script, SelectiveLookupBrowser, commits=frozenset())
+    chooser = Chooser(TEXAS)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=chooser).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Could not fill" not in result.message
+    assert len(chooser.calls) == 1
+    [question] = result.missing_inputs
+    assert question.field_id == "location" and f"'{TEXAS}'" in question.prompt
+    assert [o.label for o in question.options or []] == SUGGESTIONS
+    with _store(isolated_imx_home) as store:
+        app = store.get_application(result.application_id)
+        assert app.state is S.NEEDS_INPUT and app.failure_reason is None
+
+
+@pytest.mark.parametrize("pick", ["Austin, Nowhere", None])
+def test_a_pick_that_is_not_an_observed_suggestion_is_never_typed(
+    isolated_imx_home, fictional_candidate, pick
+):
+    script = Script(pages=[_page(_lookup_form())])
+    factory = LookupFactory(script, SelectiveLookupBrowser)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=Chooser(pick)).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and [m.field_id for m in result.missing_inputs] == ["location"]
+    assert factory.typed == [{"location": "Austin, TX"}]
+    assert not any(call.startswith("fill_fields") for call in script.calls)
+
+
+def test_an_optional_lookup_without_a_choice_is_left_blank(isolated_imx_home, fictional_candidate):
+    script = Script(pages=[_page(_lookup_form(required=False))])
+    factory = LookupFactory(script, SelectiveLookupBrowser)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=Chooser(None)).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert result.missing_inputs == []
+    with _store(isolated_imx_home) as store:
+        packet = store.latest_packet(result.application_id)
+        assert packet.answer_for("location") is None and packet.is_complete
+
+
+def test_needs_choice_beside_a_real_failure_reports_only_the_failure(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_lookup_form())])
+    factory = LookupFactory(script, failing=frozenset({"first_name"}))
+    chooser = Chooser(TEXAS)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=chooser).apply(URL, candidate_id="c1"))
+    assert result.state is S.FAILED_RETRYABLE
+    assert result.message == "Could not fill first_name reliably; nothing was submitted."
+    assert chooser.calls == []
+
+
+def test_a_choice_is_reapplied_after_the_user_answers_another_lookup(
+    isolated_imx_home, fictional_candidate
+):
+    school = SavedAnswer(id="sa.school", scope="GLOBAL", semantic_type=SemanticType.UNIVERSITY,
+                         question="School (search)", value="Fictional State",
+                         confirmed_at="2026-09-01T12:00:00Z")
+    candidate = _austin(fictional_candidate)
+    candidate = candidate.model_copy(update={"saved_answers": [*candidate.saved_answers, school]})
+    form = _lookup_form(_lookup_field("school", semantic=SemanticType.UNIVERSITY))
+    script = Script(pages=[_page(form)])
+    factory = LookupFactory(script, SelectiveLookupBrowser,
+                            commits=frozenset({TEXAS, "Fictional State University"}))
+
+    class SelectiveChooser(Chooser):
+        async def choose_suggestion(self, context, field, typed_value, suggestions):  # type: ignore[no-untyped-def]
+            self.calls.append((field.id, typed_value, list(suggestions)))
+            return TEXAS if field.id == "location" else None
+
+    class PicksSchool(NoninteractiveInteraction):
+        async def request_inputs(self, missing):
+            return [UserInput.answering(m, TextValue(text="Fictional State University"))
+                    for m in missing]
+
+    chooser = SelectiveChooser(None)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, candidate, factory, resolver=chooser,
+                                        interaction=PicksSchool()).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and "Prepared to the final review step" in result.message
+    assert [call[0] for call in chooser.calls] == ["location", "school"]  # one round each
+    assert factory.typed[0] == {"location": "Austin, TX", "school": "Fictional State"}
+    # After the user's pick the step is filled again with the remembered choice.
+    assert factory.typed[-1] == {"location": TEXAS, "school": "Fictional State University"}
+    with _store(isolated_imx_home) as store:
+        packet = store.latest_packet(result.application_id)
+        assert packet.answer_for("location").value == TextValue(text=TEXAS)
+        assert packet.answer_for("school").provenance.source is AnswerSource.USER_INPUT

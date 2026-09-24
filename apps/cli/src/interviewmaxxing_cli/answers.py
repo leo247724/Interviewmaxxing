@@ -59,6 +59,17 @@ def value_for(item: MissingInput, raw: str | bool | Sequence[str]) -> AnswerValu
             raise AnswerError(f"{item.field_id!r} needs one option")
         option = _option(item, raw)
         return ChoiceValue(value=option.value, label=option.label)
+    if control is ControlType.TYPEAHEAD:
+        # A lookup: the site's own suggestions are offered as options; one of them, or
+        # free text the site will search for, is typed verbatim by the browser.
+        if not isinstance(raw, str) or not raw.strip():
+            raise AnswerError(f"{item.field_id!r} needs the place or entity to look up")
+        if item.options:
+            try:
+                return TextValue(text=_option(item, raw).label)
+            except AnswerError:
+                pass
+        return TextValue(text=raw.strip())
     if control in (ControlType.MULTISELECT, ControlType.CHECKBOX_GROUP):
         parts = [raw] if isinstance(raw, bool) else (
             [p for p in raw.split(MULTI_SEPARATOR)] if isinstance(raw, str) else list(raw))

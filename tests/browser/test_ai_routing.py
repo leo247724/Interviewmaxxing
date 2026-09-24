@@ -16,6 +16,7 @@ from interviewmaxxing_browser.ai import (
 )
 from interviewmaxxing_browser.ai.providers import NarrativeDraft, NarrativeWriter
 from interviewmaxxing_core import (
+    AnswerScope,
     AnswerSource,
     Application,
     ApplicationField,
@@ -25,9 +26,12 @@ from interviewmaxxing_core import (
     ControlType,
     FieldOption,
     JobRecord,
+    MissingReason,
     PacketContext,
+    SavedAnswer,
     SemanticType,
 )
+from interviewmaxxing_core.interfaces import SuggestionChooser
 from interviewmaxxing_selection.credentials import ApiKey
 from interviewmaxxing_selection.jev import HttpResponse, JevClient
 
@@ -357,3 +361,358 @@ def test_writer_needs_input_cannot_produce_packet(fictional_candidate: Candidate
         MissingWriter()).resolve(context(form(), fictional_candidate, mock_job)))
     assert not packet.answers and not packet.is_complete
     assert "explicit facts" in packet.missing_inputs[0].prompt
+
+
+# --- stored answers onto a site's own option wording, referral policy, lookups (WP2) -----------
+
+class ChoiceProvider:
+    """Classifies every field as an applicant's literal COPY_KNOWN datum and answers
+    the option-choice questions from ``picks``: question name -> (choice, probability)
+    or an explicit probability map. Unscripted fact routing holds."""
+
+    def __init__(self, picks: dict[str, tuple[str, float] | dict[str, float]] | None = None, *,
+                 confidence: float = 0.97, status: int = 200, semantic: str = "CUSTOM_SELECT",
+                 scope: str = "APPLICANT_CURRENT") -> None:
+        self.picks = picks or {}
+        self.confidence, self.status, self.semantic = confidence, status, semantic
+        self.scope = scope
+        self.requests: list[dict[str, Any]] = []
+
+    def asked(self, name: str) -> list[dict[str, Any]]:
+        return [r for r in self.requests if name in r["questions"]]
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        self.requests.append(request)
+        if self.status != 200:
+            return HttpResponse(self.status, {}, b"{}")
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            if question["type"] == "noul":
+                answers[name] = {"type": "noul", "noul": 1.0}
+                continue
+            criteria = list(question["criteria"])
+            confidence = self.confidence
+            if name[0] in "rnusd" and name[1:].isdigit():
+                choice = {"r": "COPY_KNOWN", "n": "literal", "u": self.scope,
+                          "s": self.semantic, "d": "APPLICATION_ATTACHMENT"}[name[0]]
+                probabilities = {key: float(key == choice) for key in criteria}
+                confidence = 1.0
+            elif name in self.picks:
+                pick = self.picks[name]
+                if isinstance(pick, dict):
+                    probabilities = {key: pick.get(key, 0.0) for key in criteria}
+                else:
+                    rest = (1 - pick[1]) / (len(criteria) - 1)
+                    probabilities = {key: pick[1] if key == pick[0] else rest for key in criteria}
+            else:
+                held = "hold" if "hold" in criteria else "NONE"
+                probabilities = {key: float(key == held) for key in criteria}
+            choice = max(probabilities, key=lambda key: probabilities[key])
+            answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                             "probabilities": probabilities}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def choice_field(label: str, semantic: SemanticType, *options: str | FieldOption,
+                 control: ControlType = ControlType.RADIO, required: bool = True,
+                 field_id: str = "answer") -> ApplicationField:
+    return ApplicationField(id=field_id, selector=f"#{field_id}", label=label,
+        semantic_type=semantic, control_type=control, required=required,
+        options=[o if isinstance(o, FieldOption) else FieldOption(value=f"v{i}", label=o)
+                 for i, o in enumerate(options)])
+
+
+def resolve_choice(provider: ChoiceProvider, candidate: CandidateProfile, job: JobRecord,
+                   *fields: ApplicationField) -> tuple[Any, PacketContext, DynamicPacketResolver]:
+    router = AIFormRouter(decisions(provider))
+    f = router.annotate(ApplicationForm(url="https://example.test/apply", fields=list(fields)),
+                        document_id="option-choice")
+    ctx = context(f, candidate, job)
+    resolver = DynamicPacketResolver(router.decisions, router=router)
+    packet = asyncio.run(resolver.resolve(ctx))
+    assert ctx.problems(packet) == []
+    return packet, ctx, resolver
+
+
+WORK_AUTH = "Are you legally authorized to work in the United States?"
+SPONSORSHIP = "Will you now or in the future require visa sponsorship?"
+
+
+@pytest.mark.parametrize("yes_label", ["Yes, I am authorized to work in the US",
+                                       "Yes - I am legally authorized to work in the United States"])
+def test_a_stored_yes_maps_to_the_sites_equivalent_option(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, yes_label: str,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.98)})
+    field = choice_field(WORK_AUTH, SemanticType.WORK_AUTHORIZATION, yes_label,
+                         "No, I am not authorized to work in the US")
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", yes_label)
+    assert answer.provenance.source is AnswerSource.SAVED_ANSWER
+    assert answer.provenance.reference_ids == ["sa.work_auth_us"]
+    assert "Jev mapped it onto the site's option wording" in (answer.provenance.note or "")
+    assert answer.confidence == pytest.approx(0.97)
+    [request] = provider.asked("equivalent_0")
+    assert request["state"]["stored_answers"] == {"equivalent_0": "Yes"}
+    assert request["state"]["options"] == {"o0": yes_label,
+                                           "o1": "No, I am not authorized to work in the US"}
+    question = request["questions"]["equivalent_0"]
+    assert set(question["criteria"]) == {"o0", "o1", "NONE"}
+    assert "polarity" in question["instructions"] and "broader or narrower" in question["instructions"]
+    [trace] = [t for t in resolver.narrative_traces if t["stage"] == "option_equivalence"]
+    assert trace["status"] == "MAPPED" and trace["reference_ids"] == ["sa.work_auth_us"]
+    assert yes_label not in json.dumps(trace) and '"Yes"' not in json.dumps(trace)
+
+
+@pytest.mark.parametrize("pick", [("NONE", 0.99), ("o0", 0.90), ("o0", 0.99)])
+def test_no_equivalent_option_or_a_weak_mapping_keeps_the_explicit_hold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, pick: tuple[str, float],
+) -> None:
+    # The stored answer is "No"; the site only offers two "yes" variants.
+    provider = ChoiceProvider({"equivalent_0": pick}, confidence=0.97 if pick[1] != 0.99 or pick[0] == "NONE" else 0.80)
+    field = choice_field(SPONSORSHIP, SemanticType.SPONSORSHIP,
+                         "Yes, I will require sponsorship", "Yes, but only in the future")
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert missing.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED
+    assert "Your saved answer 'No' cannot be used here" in missing.prompt
+    [trace] = [t for t in resolver.narrative_traces if t["stage"] == "option_equivalence"]
+    assert trace["status"] == ("NONE" if pick[0] == "NONE" else "BELOW_GATE")
+
+
+def test_an_exact_option_needs_no_mapping_call(fictional_candidate: CandidateProfile,
+                                               mock_job: JobRecord) -> None:
+    provider = ChoiceProvider()
+    field = choice_field(WORK_AUTH, SemanticType.WORK_AUTHORIZATION, "Yes", "No")
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers[0].value.label == "Yes"
+    assert len(provider.requests) == 1 and not provider.asked("equivalent_0")
+
+
+def test_identity_value_maps_onto_a_country_option_through_the_copy_gate(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o1", 0.99)})
+    field = choice_field("Country", SemanticType.COUNTRY, "Canada",
+                         "United States of America (USA)", control=ControlType.SELECT)
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, field)
+    [answer] = packet.answers
+    assert answer.value.label == "United States of America (USA)"
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert provider.asked("equivalent_0")[0]["state"]["stored_answers"] == {
+        "equivalent_0": "United States"}
+
+
+def test_identity_mapping_is_not_attempted_for_another_subject(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o1", 0.99)}, scope="OTHER_PERSON_OR_ENTITY")
+    field = choice_field("Country", SemanticType.COUNTRY, "Canada",
+                         "United States of America (USA)", control=ControlType.SELECT)
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers == [] and not provider.asked("equivalent_0")
+
+
+def test_multi_choice_maps_only_the_items_without_an_exact_option(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    channels = SavedAnswer(id="sa.channels", scope=AnswerScope.GLOBAL, semantic_type=None,
+                           question="Which channels have you managed?",
+                           value=["Paid search", "Social ads"],
+                           confirmed_at="2026-09-01T12:00:00Z")
+    candidate = fictional_candidate.model_copy(update={"saved_answers": [channels]})
+    provider = ChoiceProvider({"equivalent_1": ("o2", 0.99)})
+    field = choice_field("Which channels have you managed?", SemanticType.CUSTOM_MULTISELECT,
+                         "Paid search", "Email", "Paid social", control=ControlType.CHECKBOX_GROUP)
+    packet, _, _ = resolve_choice(provider, candidate, mock_job, field)
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == ["Paid search", "Paid social"]
+    [request] = provider.asked("equivalent_1")
+    assert list(request["questions"]) == ["equivalent_1"]
+    assert request["state"]["stored_answers"] == {"equivalent_1": "Social ads"}
+
+
+REFERRAL_DEFAULT = SavedAnswer(id="sa.referral", scope=AnswerScope.GLOBAL,
+                               semantic_type=SemanticType.REFERRAL_SOURCE,
+                               question="Where did you hear about us?",
+                               match_phrases=["How did you hear about us?"],
+                               value="Company career page", confirmed_at="2026-09-01T12:00:00Z")
+
+
+def with_referral(candidate: CandidateProfile) -> CandidateProfile:
+    return candidate.model_copy(update={"saved_answers": [*candidate.saved_answers, REFERRAL_DEFAULT]})
+
+
+@pytest.mark.parametrize("options,pick,rule,label", [
+    (["LinkedIn", "Company careers website", "Other"], "careers_o1", 1, "Company careers website"),
+    (["LinkedIn", "Other", "Indeed"], "other_o1", 2, "Other"),
+    (["Indeed", "LinkedIn", "Employee referral"], "board_o1", 3, "LinkedIn"),
+    (["Employee referral", "Conference"], "NONE", 4, "Employee referral"),
+])
+def test_referral_follows_the_owner_order_and_records_the_rule(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    options: list[str], pick: str, rule: int, label: str,
+) -> None:
+    provider = ChoiceProvider({"referral": (pick, 0.98)})
+    field = choice_field("How did you hear about us?", SemanticType.REFERRAL_SOURCE, *options,
+                         control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_referral(fictional_candidate), mock_job, field)
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert answer.value.label == label
+    assert answer.provenance.source is AnswerSource.SAVED_ANSWER
+    assert answer.provenance.reference_ids == ["sa.referral"]
+    assert f"referral policy rule {rule}" in (answer.provenance.note or "")
+    [request] = provider.asked("referral")
+    question = request["questions"]["referral"]
+    assert {"NONE", "NOT_SOURCE", *(f"{c}_o{i}" for c in ("careers", "other", "board")
+                                    for i in range(len(options)))} == set(question["criteria"])
+    assert "(1)" in question["instructions"] and "(3)" in question["instructions"]
+    [trace] = [t for t in resolver.narrative_traces if t["stage"] == "referral_policy"]
+    assert (trace["rule"], trace["status"]) == (rule, "MAPPED")
+    assert label not in json.dumps(trace)
+
+
+def test_referral_rule_four_is_the_first_enabled_real_option_even_when_jev_is_unsure(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Split between two careers-like options and nearly nothing on NOT_SOURCE: never held.
+    provider = ChoiceProvider({"referral": {"careers_o1": 0.55, "careers_o2": 0.43,
+                                            "NOT_SOURCE": 0.02}})
+    field = choice_field("Source", SemanticType.REFERRAL_SOURCE,
+                         FieldOption(value="", label="Select..."),
+                         FieldOption(value="rec", label="Recruiter", disabled=True),
+                         FieldOption(value="event", label="Conference"),
+                         FieldOption(value="site", label="Careers page"),
+                         FieldOption(value="web", label="Company website"),
+                         control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_referral(fictional_candidate), mock_job, field)
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("event", "Conference")
+    assert "referral policy rule 4" in (answer.provenance.note or "")
+    assert answer.confidence == pytest.approx(0.98)
+    [trace] = [t for t in resolver.narrative_traces if t["stage"] == "referral_policy"]
+    assert trace["rule"] == 4 and trace["not_source_probability"] == pytest.approx(0.02)
+
+
+@pytest.mark.parametrize("pick", [("NOT_SOURCE", 0.99), {"NOT_SOURCE": 0.6, "NONE": 0.4}])
+def test_a_referrer_name_question_typed_as_referral_source_is_never_auto_answered(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    pick: tuple[str, float] | dict[str, float],
+) -> None:
+    provider = ChoiceProvider({"referral": pick})
+    field = choice_field("Who referred you?", SemanticType.REFERRAL_SOURCE,
+                         "Fictional Employee A", "Fictional Employee B", control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_referral(fictional_candidate), mock_job, field)
+    assert packet.answers == [] and not packet.is_complete
+    [trace] = [t for t in resolver.narrative_traces if t["stage"] == "referral_policy"]
+    assert trace["rule"] is None
+    assert trace["status"] == ("NOT_REFERRAL_SOURCE" if isinstance(pick, tuple) else "HELD")
+
+
+def test_referral_without_a_stored_referral_answer_or_provider_holds(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    field = choice_field("How did you hear about us?", SemanticType.REFERRAL_SOURCE,
+                         "LinkedIn", "Other", control=ControlType.SELECT)
+    provider = ChoiceProvider({"referral": ("other_o1", 0.99)})
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers == [] and not provider.asked("referral")
+    failing = ChoiceProvider({"referral": ("other_o1", 0.99)})
+    router = AIFormRouter(decisions(ChoiceProvider()))
+    annotated = router.annotate(ApplicationForm(url="https://example.test/apply", fields=[field]),
+                                document_id="option-choice")
+    resolver = DynamicPacketResolver(decisions(failing), router=router)
+    failing.status = 503
+    packet = asyncio.run(resolver.resolve(context(annotated, with_referral(fictional_candidate),
+                                                  mock_job)))
+    assert packet.answers == [] and len(failing.requests) == 1
+
+
+LOOKUP_TEXAS = "Austin, Texas, United States"
+LOOKUP_MINNESOTA = "Austin, Minnesota, United States"
+
+
+def lookup_context(candidate: CandidateProfile, job: JobRecord) -> PacketContext:
+    f = ApplicationForm(url="https://example.test/apply", fields=[ApplicationField(
+        id="location", selector="#location", label="Location (City)",
+        semantic_type=SemanticType.LOCATION, control_type=ControlType.TYPEAHEAD, required=True)])
+    return context(f, candidate, job)
+
+
+@pytest.mark.parametrize("pick,expected", [
+    (("s1", 0.99), LOOKUP_TEXAS),
+    (("NONE", 0.99), None),
+    ({"s0": 0.5, "s1": 0.5}, None),
+    (("s1", 0.93), None),
+])
+def test_lookup_choice_picks_the_candidates_own_city_or_none(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    pick: tuple[str, float] | dict[str, float], expected: str | None,
+) -> None:
+    provider = ChoiceProvider({"lookup": pick})
+    resolver = DynamicPacketResolver(decisions(provider))
+    assert isinstance(resolver, SuggestionChooser)  # what the runner looks for
+    ctx = lookup_context(fictional_candidate, mock_job)
+    chosen = asyncio.run(resolver.choose_suggestion(ctx, ctx.form.fields[0], "Austin, TX",
+                                                    [LOOKUP_MINNESOTA, LOOKUP_TEXAS]))
+    assert chosen == expected
+    [request] = provider.requests
+    assert request["state"]["typed_value"] == "Austin, TX"
+    assert request["state"]["suggestions"] == {"s0": LOOKUP_MINNESOTA, "s1": LOOKUP_TEXAS}
+    question = request["questions"]["lookup"]
+    assert set(question["criteria"]) == {"s0", "s1", "NONE"}
+    assert "same name in another state" in question["instructions"]
+    decision = resolver.suggestion_decision("location")
+    assert decision is not None and decision["suggestion_count"] == 2
+    assert decision["status"] == ("CHOSEN" if expected else
+                                  "NONE" if pick == ("NONE", 0.99) else "BELOW_GATE")
+    assert "Austin" not in json.dumps(decision)
+
+
+def test_lookup_choice_holds_without_a_provider_or_suggestions(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"lookup": ("s0", 0.99)}, status=402)
+    resolver = DynamicPacketResolver(decisions(provider))
+    ctx = lookup_context(fictional_candidate, mock_job)
+    field = ctx.form.fields[0]
+    assert asyncio.run(resolver.choose_suggestion(ctx, field, "Austin, TX", [LOOKUP_TEXAS])) is None
+    assert resolver.suggestion_decision("location")["status"] == "HELD"  # type: ignore[index]
+    assert asyncio.run(resolver.choose_suggestion(ctx, field, "Austin, TX", [])) is None
+    assert len(provider.requests) == 1
+
+
+def test_referral_on_a_select_all_question_picks_one_option(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"referral": ("board_o0", 0.99)})
+    field = choice_field("How did you hear about us?", SemanticType.REFERRAL_SOURCE,
+                         "LinkedIn", "Podcast", control=ControlType.CHECKBOX_GROUP, required=False)
+    packet, _, _ = resolve_choice(provider, with_referral(fictional_candidate), mock_job, field)
+    [answer] = packet.answers
+    assert [(c.value, c.label) for c in answer.value.choices] == [("v0", "LinkedIn")]
+    assert "referral policy rule 3" in (answer.provenance.note or "")
+
+
+def test_protected_answers_map_only_from_the_users_saved_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    field = choice_field("Gender", SemanticType.EEO_GENDER, "Man", "Woman", "Decline to self-identify")
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.99)})
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert packet.answers == [] and not provider.asked("equivalent_0")  # nothing stored: no call
+    gender = SavedAnswer(id="sa.gender", scope=AnswerScope.GLOBAL, semantic_type=SemanticType.EEO_GENDER,
+                         question="Gender", value="Male", confirmed_at="2026-09-01T12:00:00Z")
+    stored = fictional_candidate.model_copy(update={
+        "saved_answers": [*fictional_candidate.saved_answers, gender]})
+    packet, _, _ = resolve_choice(provider, stored, mock_job, field)
+    [answer] = packet.answers
+    assert answer.value.label == "Man"
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.gender"])

@@ -11,7 +11,10 @@ legend. Validation messages go to ``validation_error`` and never into the questi
 Only enabled, operable controls become fields. Hidden inputs, honeypots (aria-hidden
 or off-screen), disabled controls and CAPTCHA answer boxes are excluded; a CAPTCHA
 is reported through the page kind instead. Non-native widgets become ``UNSUPPORTED``
-fields for the user to operate, except unambiguous selection-only ARIA comboboxes.
+fields for the user to operate, except unambiguous selection-only ARIA comboboxes and
+menu controls the runtime probed: a complete static option set becomes ``SELECT``
+(values and labels exactly like a native select), a menu that offers nothing until
+the user types becomes ``TYPEAHEAD``. Multi-select menus stay ``UNSUPPORTED``.
 """
 
 from __future__ import annotations
@@ -292,13 +295,26 @@ def _operable(control: DomControl) -> bool:
     return control.visible or control.label_visible
 
 
+def _observed_select(control: DomControl) -> bool:
+    """An owned listbox observed complete (``version`` 1) or a probed static menu."""
+    aria = control.aria or {}
+    return aria.get("version") == 1 or (bool(aria.get("probed")) and aria.get("kind") == "select")
+
+
+def _probed_lookup(control: DomControl) -> bool:
+    aria = control.aria or {}
+    return bool(aria.get("probed")) and aria.get("kind") == "lookup"
+
+
 def _control_type(control: DomControl, group_size: int) -> ControlType:
-    if control.aria is not None:
+    if _observed_select(control):
         # Wording can reveal multi-select ambiguity missing from ARIA metadata.
         question = " ".join([control.label, *control.adjacent, *(d.text for d in control.described)])
         if re.search(r"(?:mark|select|choose|check)\s+all|multiple\s+(?:answers|options|choices)", question, re.I):
             return ControlType.UNSUPPORTED
         return ControlType.SELECT
+    if _probed_lookup(control):
+        return ControlType.TYPEAHEAD
     if control.kind == "custom":
         return ControlType.UNSUPPORTED
     if control.tag == "select":
@@ -355,7 +371,29 @@ def _groups(controls: list[DomControl]) -> list[_Group]:
     return ordered
 
 
-def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
+_DIAL_CODE = re.compile(r"^\+\d{1,3}\b")
+
+
+def _international_phone(control: DomControl, displays: Mapping[str, str]) -> bool:
+    """A tel input whose own widget has a country picker: an intl-tel-input-style
+    container, a dialog button before it, or a sibling combobox showing a dial code."""
+    kind, _, ref = control.phone_picker.partition(":")
+    if kind in ("iti", "dialog"):
+        return True
+    return kind == "combobox" and bool(ref) and bool(_DIAL_CODE.match(displays.get(ref, "").strip()))
+
+
+def _display(control: DomControl) -> str:
+    """The text a menu control shows now ("" for a placeholder)."""
+    aria = control.aria or {}
+    value = str(aria.get("value") or "")
+    if aria.get("combo") or aria.get("kind") == "lookup":
+        return value
+    shown = [o for o in aria.get("options", []) if o.get("value") == value]
+    return str(shown[0].get("label") or "") if value and len(shown) == 1 else ""
+
+
+def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[ApplicationField, FieldBinding]:
     first = group.members[0]
     control_type = _control_type(first, len(group.members))
     is_group = control_type in (ControlType.RADIO, ControlType.CHECKBOX_GROUP)
@@ -429,8 +467,9 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
         required = first.required or _has_required_marker(label_text)
 
     user_completed = control_type is ControlType.UNSUPPORTED and first.has_value
-    if user_completed or (control_type is ControlType.UNSUPPORTED and first.kind == "native"
-                          and first.value.strip()):
+    shows_value = bool((first.aria or {}).get("combo") and _display(first))
+    if user_completed or (control_type is ControlType.UNSUPPORTED and (
+            (first.kind == "native" and first.value.strip()) or shows_value)):
         user_completed = True
         required = False  # already operated by the user; the runtime never touches it
 
@@ -468,7 +507,15 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
         help_text=help_text,
         validation_error=errors,
         section_context=_section_context(first.section_context, label),
+        expects_international_phone=(
+            control_type is ControlType.TEXT and first.type == "tel"
+            and _international_phone(first, displays)
+        ),
     )
+    operated = first.aria if (
+        (control_type is ControlType.SELECT and _observed_select(first))
+        or (control_type is ControlType.TYPEAHEAD and _probed_lookup(first))
+    ) else None
     binding = FieldBinding(
         field_id=field_id,
         control_type=control_type,
@@ -485,8 +532,8 @@ def _build_field(group: _Group) -> tuple[ApplicationField, FieldBinding]:
         checked_values=frozenset(
             value for m, value in zip(group.members, values, strict=True) if m.checked
         ) if is_group else (frozenset({"on"}) if first.checked else frozenset()),
-        value=first.aria["value"] if first.aria else first.value,
-        aria=first.aria if control_type is ControlType.SELECT else None,
+        value=str(operated["value"]) if operated else first.value,
+        aria=operated,
         user_completed=user_completed,
     )
     return app_field, binding
@@ -678,9 +725,10 @@ def build_page(
             continue
         operable.append(control)
 
+    displays = {c.id: _display(c) for c in snapshot.controls if c.id and c.aria}
     per_form: dict[int, list[tuple[ApplicationField, FieldBinding]]] = {}
     for group in _groups(operable):
-        pair = _build_field(group)
+        pair = _build_field(group, displays)
         per_form.setdefault(group.key[0], []).append(pair)
 
     fillable_counts = {index: len(_fillable([f for f, _ in pairs])) for index, pairs in per_form.items()}
@@ -814,6 +862,8 @@ def build_page(
         kind = PageKind.UNKNOWN
 
     bindings = {b.field_id: b for _, b in pairs}
+    # Native validity does not cover custom menus: a required one without a value that
+    # the widget itself shows (a selected option, a committed lookup) is not complete.
     pending = [
         f.id for f in fields
         if f.required and (f.control_type is ControlType.UNSUPPORTED

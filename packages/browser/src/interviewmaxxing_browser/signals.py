@@ -8,6 +8,7 @@ to the application being submitted.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -189,6 +190,66 @@ def button_intent(text: str, *, submits_form: bool) -> ButtonIntent:
     if _OTHER.search(text):
         return ButtonIntent.OTHER
     return ButtonIntent.AMBIGUOUS if submits_form else ButtonIntent.OTHER
+
+
+# --- lookup suggestions ------------------------------------------------------------------
+
+US_STATES: dict[str, str] = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas", "ca": "california",
+    "co": "colorado", "ct": "connecticut", "de": "delaware", "fl": "florida", "ga": "georgia",
+    "hi": "hawaii", "id": "idaho", "il": "illinois", "in": "indiana", "ia": "iowa",
+    "ks": "kansas", "ky": "kentucky", "la": "louisiana", "me": "maine", "md": "maryland",
+    "ma": "massachusetts", "mi": "michigan", "mn": "minnesota", "ms": "mississippi",
+    "mo": "missouri", "mt": "montana", "ne": "nebraska", "nv": "nevada",
+    "nh": "new hampshire", "nj": "new jersey", "nm": "new mexico", "ny": "new york",
+    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island", "sc": "south carolina",
+    "sd": "south dakota", "tn": "tennessee", "tx": "texas", "ut": "utah", "vt": "vermont",
+    "va": "virginia", "wa": "washington", "wv": "west virginia", "wi": "wisconsin",
+    "wy": "wyoming", "dc": "district of columbia",
+}
+_UNITED_STATES = frozenset({"us", "usa", "u s", "u s a", "united states", "united states of america"})
+
+
+def _place_segments(text: str) -> list[str]:
+    """Comma segments, case- and punctuation-folded, with US state abbreviations and
+    United States synonyms spelled out ("Austin, TX, USA" -> austin|texas|united states)."""
+    segments = []
+    for raw in text.split(","):
+        segment = " ".join(re.sub(r"[^\w\s]", " ", raw).casefold().split())
+        if not segment:
+            continue
+        if segment in _UNITED_STATES:
+            segment = "united states"
+        segments.append(US_STATES.get(segment, segment))
+    return segments
+
+
+def lookup_matches(typed: str, suggestions: Sequence[str]) -> list[int]:
+    """Indexes of the site suggestions that say what was typed.
+
+    A suggestion equal to the typed text always wins (that is how a chosen suggestion
+    is committed later). Otherwise the typed place (the first comma segment) must equal
+    a whole segment of the suggestion, so "Austin" never matches "Austintown", and every
+    other typed word must be a word of the suggestion or begin one ("Tex" for Texas),
+    after spelling out US state abbreviations and United States synonyms."""
+    squashed = " ".join(typed.split())
+    exact = [i for i, s in enumerate(suggestions) if " ".join(s.split()) == squashed]
+    if exact:
+        return exact
+    wanted = _place_segments(typed)
+    if not wanted:
+        return []
+    place, others = wanted[0], [w for segment in wanted[1:] for w in segment.split()]
+    matches = []
+    for i, suggestion in enumerate(suggestions):
+        segments = _place_segments(suggestion)
+        words = [w for segment in segments for w in segment.split()]
+        if place in segments and all(
+            any(w == o or (len(o) >= 2 and w.startswith(o)) for w in words) for o in others
+        ):
+            matches.append(i)
+    return matches
 
 
 def _record_like(text: str) -> bool:

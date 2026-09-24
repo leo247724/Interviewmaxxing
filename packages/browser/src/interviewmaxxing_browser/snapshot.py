@@ -83,7 +83,16 @@ class DomControl(_Raw):
     form_index: int
     has_value: bool
     aria: dict[str, Any] | None = None
-    """Ephemeral, exact owned-listbox observation; absent for ambiguous widgets."""
+    """Ephemeral, exact owned-listbox observation (``version`` 1), the facts of a menu
+    control whose options are not observable yet (``combo``: role, popup, whether it
+    is editable, its display text as ``value``), or, after probing, the probed menu
+    (``probed``: ``kind`` select or lookup, options, open method, closed display).
+    ``value``, ``expanded`` and ``visible`` are state, never structure."""
+    phone_picker: str = ""
+    """For a ``tel`` input: the country picker of its own widget, if any. ``iti`` (an
+    intl-tel-input-style container), ``dialog`` (a preceding ``aria-haspopup=dialog``
+    button) or ``combobox:<id>`` (a sibling combobox; it is a dial-code picker only while
+    its display text looks like ``+<code>``)."""
 
 
 class DomButton(_Raw):
@@ -184,6 +193,9 @@ class DomSnapshot(_Raw):
     loading_indicator: bool = False
     """Visible "loading"/"fetching" wording, an ``aria-busy="true"`` element or a
     progress bar: the page may still be rendering (used only to delay readiness)."""
+    document: str = ""
+    """``performance.timeOrigin`` and ``location.href`` of the inspected document, the
+    identity that scopes probed menu observations."""
 
 
 @cache

@@ -156,6 +156,51 @@ PCRecruiter and Jobvite apply wordings not yet in the accepted list (3), and one
 Workable posting returning HTTP 410 that should be recorded as closed rather than
 retryable (1).
 
+## Custom widgets (bottleneck 1) — implemented
+
+Two Opus 5.5 workers built the design that the live probes called for; nothing is
+site-specific and every action is a fixed script verified by readback
+(`docs/dynamic-runtime.md`, section "Custom widgets"; `docs/dynamic-application-routing.md`,
+section "Option equivalence, referral policy and lookup choice").
+
+- **Menu probing at inspection.** Closed comboboxes inside the form (react-select inputs,
+  Rippling `div[role=combobox]`) are opened once per document, their own `aria-controls`
+  listbox is read, and they are closed and checked unchanged. They then behave like native
+  selects. Budget 24 probes / 20 s per page; results cached; `classify` never probes.
+- **Select and verify.** Open the recorded way (click, or focus + ArrowDown), filter long
+  lists by typing the label, click the option node, then read back: an exact full-label
+  display confirms; a shared abbreviation such as "+1" (United States and Canada) needs the
+  reopened menu's selected option (`aria-selected`, `aria-activedescendant`, or the option's
+  "selected" class). Headless sessions present a Linux Chrome user agent because
+  react-select hides those attributes on Apple user agents, confirmed on the live
+  Greenhouse bundle.
+- **Lookups (`TYPEAHEAD`).** The candidate's own city/state/country is typed, the site's
+  suggestions are read, and exactly one strict match is committed; otherwise Jev chooses
+  among the suggestions ("Austin, TX" versus "Austin, MN"), the label is typed verbatim,
+  and only if Jev is not confident is the person asked with the suggestions as options.
+- **Phone pickers.** A `tel` input with a country picker receives `+1<digits>` so the
+  widget selects the country itself; digits and dial code are read back.
+- **Option equivalence.** When a stored answer does not match an option's wording, Jev maps
+  it to the option with the identical meaning ("No" to "No, I will not require
+  sponsorship") at the usual 0.95 gate; it never produces a value. The referral-source
+  question never holds: careers-page/website option first, then "Other", then a job
+  board, then the first enabled option.
+
+Coverage: five mock-ATS replicas (react-select with a body portal and toggling, Rippling
+div comboboxes including an ArrowDown-only one, async city/state lookups, an
+intl-tel-input phone widget, a held multi-select) and 75 browser tests, plus 78 resolver,
+routing and runner tests. Multi-select chips, virtualized lists under OpenCLI, and widgets
+inside dialogs remain held for the person.
+
+First live check (pilot 5, prepare-only, 15 resumed applications plus 44 fresh jobs): on
+seven of eight resumed Greenhouse forms the phone picker, location lookup and every React
+select were filled, leaving only genuine questions (salary, consent, sponsorship phrased
+differently from the saved answer, experience screeners). Two regressions surfaced and are
+being fixed before the numbers are published here: some Greenhouse forms lose the fill
+context after the first fields (evidence `001-context-lost-step-0.png`), and the live
+Rippling page's comboboxes were not probed at all (all ten stayed UNSUPPORTED), unlike the
+mock replica.
+
 ## Availability of the inventory
 
 A read-only HTTP probe of the 873 resolved URLs (no browser, one request each):

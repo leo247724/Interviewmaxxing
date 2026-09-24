@@ -63,6 +63,13 @@ def _convert(missing: MissingInput, value: object) -> AnswerValue:
         if option is None or option.disabled or not option.value.strip():
             raise ValueError("Choose one of the listed options.")
         return ChoiceValue(value=option.value, label=option.label)
+    if control is ControlType.TYPEAHEAD:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Choose one of the suggestions or enter the place to look up.")
+        option = options.get(value)
+        if option is not None and not option.disabled and option.value.strip():
+            return TextValue(text=option.label)
+        return TextValue(text=value.strip())
     if control in (ControlType.MULTISELECT, ControlType.CHECKBOX_GROUP):
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise ValueError("Choose from the listed options.")

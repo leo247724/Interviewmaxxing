@@ -16,15 +16,18 @@ Rules this driver enforces:
   tab, and refuses protected sessions (the user's assessment session, job-search
   sessions).
 * **Mutations only through structured commands** (``fill``, ``select``, ``check``,
-  ``uncheck``, ``upload``, ``click``, ``open``). Each is verified afterwards: the
-  command's own envelope, then a read-only check of the control and of the
-  document (an unexpected navigation is an error).
+  ``uncheck``, ``upload``, ``click``, ``open``, and for menu widgets ``focus``,
+  ``keys`` and ``type``). Each is verified afterwards: the command's own envelope,
+  then a read-only check of the control and of the document (an unexpected
+  navigation is an error). ``keys`` is sent only after a read-only check that the
+  target element has focus.
 * **Evaluation is read-only and allowlisted.** ``evaluate`` runs only the fixed
   read scripts of this package (inspector, control/document state, digests). It is
   not a general JavaScript sandbox; the internal regex lint is only defence in depth.
 * **Unsupported capabilities are errors, never success.** Selecting several options
-  of a multi-select, uploading when Browser Bridge may not set files, and focusing a
-  window raise :class:`CapabilityUnsupported` with what the user can do instead.
+  of a multi-select, uploading when Browser Bridge may not set files, pressing keys
+  when the CLI refuses them, scrolling a menu list and focusing a window raise
+  :class:`CapabilityUnsupported` with what the user can do instead.
 """
 
 from __future__ import annotations
@@ -42,8 +45,9 @@ from typing import Any, Literal
 from interviewmaxxing_core import BrowserOptions
 
 from .annotations import FormAnnotator, SchemaHintLoader
-from .aria import ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE
+from .aria import ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, COMBO_STATE, PHONE_STATE
 from .driver import _FILE_DIGEST, DriverError, NotActionable, PageContextLost
+from .driver import CapabilityUnsupported as CapabilityUnsupported  # public name kept here
 from .runtime import (
     _DOCUMENT_IDENTITY,
     _EFFECTIVE_SUBMISSION,
@@ -84,11 +88,6 @@ class OpenCliTimeout(OpenCliError):
 
 class OpenCliTargetError(NotActionable):
     """The target element was missing or ambiguous, so nothing was done."""
-
-
-class CapabilityUnsupported(NotActionable):
-    """This driver cannot perform the operation here; nothing was changed. The message
-    says what the user can do in the visible browser instead."""
 
 
 class UnverifiedAction(DriverError):
@@ -196,10 +195,15 @@ _ACTIONABLE = (
     "visible: r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'}; }"
 )
 _HTML = "() => document.documentElement.outerHTML"
+_FOCUSED = (
+    "(sel) => { let els; try { els = document.querySelectorAll(sel); } catch (e) { return false; } "
+    "return els.length === 1 && document.activeElement === els[0]; }"
+)
 
 _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
+    COMBO_STATE, PHONE_STATE, _FOCUSED,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
 
@@ -482,6 +486,45 @@ class OpenCliDriver:
         self._mark = self._doc.origin
         self._check_match(await self._call(self._argv(["click"], positionals=[selector])),
                           f"click {selector}")
+
+    async def _keyboard(self, command: str, positionals: list[str], what: str) -> Any:
+        """Run a focus/keys/type command; a refusal of the command itself means this
+        session cannot use the keyboard here, and nothing was done."""
+        try:
+            return await self._call(self._argv([command], positionals=positionals))
+        except (OpenCliTargetError, OpenCliUnavailable, OpenCliTimeout):
+            raise
+        except OpenCliError as exc:
+            raise CapabilityUnsupported(
+                f"OpenCLI could not {what} ({exc}); operate this control yourself in the "
+                "browser window, then continue"
+            ) from exc
+
+    async def focus(self, selector: str) -> None:
+        self._check_match(await self._keyboard("focus", [selector], f"focus {selector}"),
+                          f"focus {selector}")
+        await self._control(selector)
+
+    async def press(self, selector: str, key: str) -> None:
+        await self.focus(selector)
+        # ``keys`` acts on whatever has focus: send it only while the target does.
+        if await self.evaluate(_FOCUSED, selector) is not True:
+            raise UnverifiedAction(f"{selector} did not keep the focus; {key} was not pressed")
+        await self._keyboard("keys", [key], f"press {key}")
+        await self._control(selector)
+
+    async def type_text(self, selector: str, text: str, *, delay_s: float = 0.03) -> None:
+        self._check_match(await self._keyboard("type", [selector, text], f"type into {selector}"),
+                          f"type {selector}")
+        await self._control(selector)
+
+    async def clear_text(self, selector: str) -> None:
+        await self.fill(selector, "")
+
+    async def scroll_to_end(self, selector: str) -> None:
+        raise CapabilityUnsupported(
+            f"OpenCLI cannot scroll the list {selector}; choose from it yourself in the browser window"
+        )
 
     async def settle(self, timeout_s: float) -> None:
         """Wait (bounded) for a navigation started by the last click to load. Page

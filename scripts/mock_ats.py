@@ -30,6 +30,7 @@ import socketserver
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import Message
@@ -55,7 +56,8 @@ HONEYPOT_FIELD = "website_hp"
 CAPTCHA_WIDGET_FIELD = "g-recaptcha-response"
 CONSENT_COOKIE = "bwa_consent"
 INTERNAL_FIELDS = frozenset(
-    {"resume_upload_id", "captcha_token", "captcha_answer", CAPTCHA_WIDGET_FIELD, HONEYPOT_FIELD}
+    {"resume_upload_id", "captcha_token", "captcha_answer", CAPTCHA_WIDGET_FIELD, HONEYPOT_FIELD,
+     "phone_country"}
 )
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 US_PHONE_RE = re.compile(r"^\d{10}$")
@@ -80,7 +82,10 @@ class Field:
     label: str
     # text, email, tel, url, textarea, select, radio, checkbox,
     # checkbox_group, multiselect, file or custom_combobox (an ARIA widget
-    # backed by a hidden input, deliberately not a native control)
+    # backed by a hidden input, deliberately not a native control). Script-driven
+    # widgets whose value lives only in page state (see WIDGETS_JS): react_select,
+    # react_multi, react_async (lookup), div_combobox, search_combobox,
+    # remote_lookup (role-less lookup input), rippling_phone and intl_tel.
     kind: str
     required: bool = False
     options: tuple[Option, ...] = ()
@@ -93,10 +98,30 @@ class Field:
     legend: str | None = None
     """Wraps a single checkbox in a fieldset with this legend."""
     disabled: bool = False
+    dom_id: str | None = None
+    """Element id of a script-driven widget (``question_6001``, ``field-3``)."""
+    display: str | None = None
+    """``dial``: a react_select shows only the dial code of the chosen label."""
+    open_on: str | None = None
+    """``click`` (default), ``keyboard`` (focus + ArrowDown only) or ``focus``."""
+    remote: str | None = None
+    """Suggestion URL prefix of a lookup (the query is appended)."""
+    prefill: str | None = None
+    """Initial value of a search combobox (a chosen value, like "+1 US")."""
+    idle: str | None = None
+    """Notice a search combobox shows when opened before anything is typed."""
+    show_all: bool = False
+    """A search combobox that lists every option when opened (a static menu)."""
+    embedded: bool = False
+    """Rendered inside another widget's block (a phone's country code)."""
 
     @property
     def multi(self) -> bool:
-        return self.kind in ("checkbox_group", "multiselect")
+        return self.kind in ("checkbox_group", "multiselect", "react_multi")
+
+    @property
+    def widget(self) -> bool:
+        return self.kind in WIDGET_KINDS
 
     def option_label(self, value: str) -> str:
         return next((o.label for o in self.options if o.value == value), value)
@@ -115,8 +140,19 @@ class Field:
         }
 
 
+WIDGET_KINDS = frozenset({
+    "react_select", "react_multi", "react_async", "div_combobox", "search_combobox",
+    "remote_lookup", "rippling_phone", "intl_tel",
+})
+
+
 def _options(*pairs: tuple[str, str]) -> tuple[Option, ...]:
     return tuple(Option(value, label) for value, label in pairs)
+
+
+def _labels(*labels: str) -> tuple[Option, ...]:
+    """Options whose submitted value is their visible label (lookups, Rippling menus)."""
+    return tuple(Option(label, label) for label in labels)
 
 
 FIRST_NAME = Field("first_name", "First name", "text", True, autocomplete="given-name")
@@ -264,6 +300,119 @@ REFERRAL_CODE = Field(
     "text",
     disabled=True,
 )
+
+# --- script-driven widgets (fictional replicas of hosted ATS custom controls) ---------
+
+DIAL_CODES = _options(
+    ("ar", "Argentina +54"), ("au", "Australia +61"), ("at", "Austria +43"),
+    ("be", "Belgium +32"), ("br", "Brazil +55"), ("ca", "Canada +1"), ("cl", "Chile +56"),
+    ("co", "Colombia +57"),
+    ("dk", "Denmark +45"), ("fr", "France +33"), ("de", "Germany +49"), ("in", "India +91"),
+    ("ie", "Ireland +353"), ("il", "Israel +972"), ("it", "Italy +39"), ("jp", "Japan +81"),
+    ("mx", "Mexico +52"), ("nl", "Netherlands +31"), ("nz", "New Zealand +64"),
+    ("no", "Norway +47"), ("ph", "Philippines +63"), ("pl", "Poland +48"),
+    ("pt", "Portugal +351"), ("sg", "Singapore +65"), ("za", "South Africa +27"),
+    ("kr", "South Korea +82"), ("es", "Spain +34"), ("se", "Sweden +46"),
+    ("ch", "Switzerland +41"), ("gb", "United Kingdom +44"), ("us", "United States +1"),
+)
+"""A phone "Country" select: more than 20 options. "United States +1" and "Canada +1"
+share the dial code the control displays after a choice ("+1")."""
+HEARD_OPTIONS = _options(
+    ("src_linkedin", "LinkedIn"), ("src_indeed", "Indeed"), ("src_site", "Company website"),
+    ("src_referral", "Referral"), ("src_other", "Other"),
+)
+RS_PHONE_COUNTRY = Field("question_6004", "Country", "react_select", True, DIAL_CODES, display="dial")
+RS_WORK_AUTHORIZATION = Field(
+    "question_6001", "Are you legally authorized to work in the United States?", "react_select", True,
+    _options(("rs_wa_yes", "Yes"), ("rs_wa_no", "No")),
+)
+RS_SPONSORSHIP = Field(
+    "question_6002", "Will you now or in the future require visa sponsorship?", "react_select", True,
+    _options(("rs_sp_yes", "Yes"), ("rs_sp_no", "No")),
+)
+RS_HEARD = Field("question_6003", "How did you hear about us?", "react_select", True, HEARD_OPTIONS,
+                 open_on="focus")
+"""Opens as soon as it has focus: a click on it while open would toggle it closed."""
+
+RIPPLING_CODES = _labels("+1 US", "+1 CA", "+44 UK", "+49 DE", "+33 FR", "+61 AU", "+91 IN", "+52 MX")
+RP_PHONE_CODE = Field("phone_country_code", "Country code", "search_combobox", options=RIPPLING_CODES,
+                      dom_id="field-7-country", prefill="+1 US", embedded=True)
+RP_PHONE = Field("phone", "Phone number", "rippling_phone", True, autocomplete="tel", dom_id="field-7")
+RP_WORK_AUTHORIZATION = Field(
+    "field-3", "Are you legally authorized to work in the United States?", "div_combobox", True,
+    _labels("No", "Yes"), open_on="click",
+)
+RP_SPONSORSHIP = Field(
+    "field-4", "Will you now or in the future require visa sponsorship?", "div_combobox", True,
+    _labels("No", "Yes"), open_on="keyboard",
+)
+RP_PRONOUNS = Field("pronouns", "Pronouns", "search_combobox",
+                    options=_labels("He/him", "She/her", "They/them", "Prefer not to say"),
+                    dom_id="field-9", show_all=True)
+
+CITIES_LONG = (
+    "Austin, Texas, United States", "Austin, Minnesota, United States",
+    "Austintown, Ohio, United States", "Austin, Indiana, United States",
+    "Austin, Arkansas, United States", "Denver, Colorado, United States",
+    "Boulder, Colorado, United States", "Round Rock, Texas, United States",
+    "Aurora, Colorado, United States", "Dallas, Texas, United States",
+)
+CITIES_SHORT = (
+    "Austin, TX, USA", "Austin, MN, USA", "Austintown, OH, USA", "Denver, CO, USA",
+    "Boulder, CO, USA", "Round Rock, TX, USA",
+)
+US_STATE_NAMES = (
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut",
+    "Delaware", "District of Columbia", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois",
+    "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts",
+    "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada",
+    "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota",
+    "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina",
+    "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+    "West Virginia", "Wisconsin", "Wyoming",
+)
+STATE_ABBREVIATIONS = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA",
+    "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE", "District of Columbia": "DC",
+    "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL",
+    "Indiana": "IN", "Iowa": "IA", "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA",
+    "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
+    "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV",
+    "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY",
+    "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR",
+    "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD",
+    "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA",
+    "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+}
+GH_LOCATION = Field("candidate_location", "Location (City)", "react_async", True, _labels(*CITIES_LONG),
+                    dom_id="candidate-location", remote="/__fixture__/cities?style=long&q=")
+RP_LOCATION = Field("location_short", "Location", "remote_lookup", options=_labels(*CITIES_SHORT),
+                    dom_id="field-42", remote="/__fixture__/cities?style=short&q=")
+RP_STATE = Field("state", "What state do you live in?", "search_combobox", True,
+                 _labels(*US_STATE_NAMES), dom_id="field-43", idle="Start typing to search")
+
+ITI_COUNTRIES = (
+    ("af", "Afghanistan", "93"), ("ar", "Argentina", "54"), ("au", "Australia", "61"),
+    ("at", "Austria", "43"), ("be", "Belgium", "32"), ("br", "Brazil", "55"), ("ca", "Canada", "1"),
+    ("cl", "Chile", "56"), ("co", "Colombia", "57"), ("dk", "Denmark", "45"), ("fr", "France", "33"),
+    ("de", "Germany", "49"), ("in", "India", "91"), ("ie", "Ireland", "353"), ("il", "Israel", "972"),
+    ("it", "Italy", "39"), ("jp", "Japan", "81"), ("mx", "Mexico", "52"), ("nl", "Netherlands", "31"),
+    ("nz", "New Zealand", "64"), ("no", "Norway", "47"), ("ph", "Philippines", "63"),
+    ("pl", "Poland", "48"), ("pt", "Portugal", "351"), ("sg", "Singapore", "65"),
+    ("za", "South Africa", "27"), ("kr", "South Korea", "82"), ("es", "Spain", "34"),
+    ("se", "Sweden", "46"), ("ch", "Switzerland", "41"), ("gb", "United Kingdom", "44"),
+    ("us", "United States", "1"),
+)
+ITI_PHONE = Field("phone", "Phone", "intl_tel", True, autocomplete="tel")
+PHONE_WIDGET_HEARD = Field("question_7003", "How did you hear about us?", "react_select",
+                           options=HEARD_OPTIONS)
+RS_CHANNELS = Field(
+    "question_8001", "Which marketing channels have you managed?", "react_multi", True,
+    _options(("ch_search", "Paid search"), ("ch_social", "Paid social"), ("ch_email", "Email"),
+             ("ch_seo", "SEO"), ("ch_events", "Events")),
+)
+MULTI_PAGE_HEARD = Field("question_8002", "How did you hear about us?", "react_select", True,
+                         HEARD_OPTIONS)
 
 CORE_FIELDS = (
     FIRST_NAME,
@@ -521,6 +670,63 @@ JOBS: dict[str, Job] = {
             "all, Decline all) that must be dismissed before the form can be used.",
             STANDARD_FIELDS,
             cookie_banner=True,
+        ),
+        Job(
+            "react-select",
+            "BWA-GH-120",
+            "Growth Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "The standard questions with work authorization, sponsorship, \"How did you hear "
+            "about us?\" and a phone dial-code \"Country\" as React-select-style comboboxes "
+            "whose values live only in page state.",
+            _single(
+                FIRST_NAME, LAST_NAME, EMAIL, RS_PHONE_COUNTRY, PHONE, LINKEDIN, RESUME,
+                RS_WORK_AUTHORIZATION, YEARS_EXPERIENCE, RS_SPONSORSHIP, SKILLS,
+                WORK_ARRANGEMENTS, OPEN_TO_RELOCATION, RS_HEARD, WHY_BRAMBLEWAY,
+            ),
+        ),
+        Job(
+            "div-combobox",
+            "BWA-RP-121",
+            "Lifecycle Marketing Specialist",
+            "Marketing",
+            "Remote (US)",
+            "Rippling-style div comboboxes (one opens on click, one only from the keyboard) "
+            "with the question in a preceding paragraph, a pre-filled phone country-code "
+            "search and a static pronouns search.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, RP_PHONE_CODE, RP_PHONE, RP_WORK_AUTHORIZATION,
+                    RP_SPONSORSHIP, RP_PRONOUNS),
+        ),
+        Job(
+            "typeahead",
+            "BWA-GH-122",
+            "Field Marketing Manager",
+            "Marketing",
+            "Austin, TX (Hybrid)",
+            "Location lookups: a React-select-style async city search, a role-less location "
+            "input and a state search that list suggestions only after typing.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, GH_LOCATION, RP_LOCATION, RP_STATE),
+        ),
+        Job(
+            "phone-widget",
+            "BWA-GH-123",
+            "Partner Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "An intl-tel-input-style phone field whose country picker follows a typed "
+            "+<code>, beside a React-select-style question.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, ITI_PHONE, PHONE_WIDGET_HEARD),
+        ),
+        Job(
+            "multiselect-react",
+            "BWA-GH-124",
+            "Content Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "A React-select-style multi-select with chips that the runtime must leave to the "
+            "user, beside a single-choice one.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, RS_CHANNELS, MULTI_PAGE_HEARD),
         ),
     )
 }
@@ -832,7 +1038,8 @@ def parse_multipart(
 
 
 def _required_message(f: Field) -> str:
-    if f.kind in ("select", "radio", "custom_combobox"):
+    if f.kind in ("select", "radio", "custom_combobox", "react_select", "div_combobox",
+                  "search_combobox", "react_async", "remote_lookup"):
         return "Select an answer."
     if f.kind == "checkbox":
         return "Check this box to continue."
@@ -907,7 +1114,10 @@ def validate(
                 errors[f.name] = _required_message(f)
             continue
         if f.options and value not in allowed:
+            # Lookups post only a chosen suggestion: typed text never matches.
             errors[f.name] = "Select one of the listed options."
+        elif f.kind == "intl_tel" and (phone_error := _intl_phone_error(value, form)):
+            errors[f.name] = phone_error
         elif f.kind == "checkbox" and value != "yes":
             errors[f.name] = "Unexpected value for this checkbox."
         elif f.kind == "email" and not EMAIL_RE.match(value):
@@ -920,7 +1130,46 @@ def validate(
             errors[f.name] = "Keep this answer under 5,000 characters."
         else:
             values[f.name] = value
+            if f.kind == "intl_tel":
+                values["phone_country"] = (form.get("phone_country") or [""])[0]
     return values, files, errors
+
+
+def _intl_phone_error(value: str, form: dict[str, list[str]]) -> str | None:
+    """The phone widget's number must be a 10-digit US national number and agree with
+    the country its picker shows (posted from page state as ``phone_country``)."""
+    country = (form.get("phone_country") or [""])[0]
+    digits = re.sub(r"\D", "", value)
+    national = digits
+    if value.strip().startswith("+"):
+        code = next((c[2] for c in ITI_COUNTRIES if c[0] == country), None)
+        if code is None or not digits.startswith(code):
+            return "The number does not match the selected country."
+        national = digits[len(code):]
+    if country != "us":
+        return "Enter a US phone number."
+    if len(national) != 10:
+        return "Enter a 10-digit US phone number."
+    return None
+
+
+def _city_words(text: str) -> list[str]:
+    return re.sub(r"[^\w\s]", " ", text).lower().split()
+
+
+def city_matches(query: str, city: str) -> bool:
+    """Suggestion filter of ``/__fixture__/cities`` (at least two query characters)."""
+    wanted = _city_words(query)
+    if len("".join(wanted)) < 2:
+        return False
+    words = _city_words(city)
+    names = {name.lower(): abbr.lower() for name, abbr in STATE_ABBREVIATIONS.items()}
+    aliases = [names[w] for w in words if w in names]
+    aliases += [n for n, a in names.items() for w in words if w == a and " " not in n]
+    if "usa" in words or "united" in words:
+        aliases += ["us", "usa", "united", "states"]
+    vocabulary = words + aliases
+    return all(any(v.startswith(w) for v in vocabulary) for w in wanted)
 
 
 def _extra_fields(job: Job, form: dict[str, list[str]]) -> dict[str, Any]:
@@ -973,6 +1222,487 @@ dl.review dd{margin:0}
 """
 
 
+WIDGET_STYLE = """
+.select__control{display:flex;align-items:center;border:1px solid #8a94a6;border-radius:4px;min-height:38px;background:#fff}
+.select__value-container{display:grid;flex:1;padding:2px 8px;align-items:center}
+.select__value-container--is-multi{display:flex;flex-wrap:wrap;position:relative}
+.select__placeholder,.select__single-value{grid-area:1/1/2/3;color:#4a5568}
+.select__value-container--is-multi .select__placeholder{position:absolute;left:8px}
+.select__single-value{color:#1d2330}
+.select__input-container{grid-area:1/1/2/3;display:grid;flex:1}
+input.select__input{border:0;padding:0;margin:0;background:transparent;width:100%;min-width:2px;outline:0}
+.select__indicators{display:flex;align-items:center;padding:0 8px;color:#8a94a6}
+.select__option{padding:8px 12px}
+.select__option--is-focused{background:#deebff}
+.select__menu-notice{padding:8px 12px;color:#4a5568}
+.select__multi-value{display:inline-flex;align-items:center;background:#e2e8f0;border-radius:2px;margin:2px;padding:0 4px}
+.select__multi-value__remove{padding:0 4px;cursor:pointer}
+.select__multi-value__remove::after{content:"\\00d7"}
+.rip-question{margin:1.25rem 0}
+.rip-question-text p{font-weight:600;margin:0 0 .3rem}
+.rip-input{position:relative}
+.rip-select{border:1px solid #8a94a6;border-radius:4px;padding:.45rem;min-height:1.2rem;background:#fff}
+.rip-select p{margin:0}
+.rip-list{position:absolute;left:0;right:0;z-index:40;list-style:none;margin:2px 0 0;padding:4px 0;background:#fff;border:1px solid #8a94a6;border-radius:4px;max-height:240px;overflow-y:auto}
+.rip-option,.rip-notice{padding:6px 12px}
+.rip-option--active{background:#deebff}
+.rip-phone{display:flex;gap:.5rem}
+.rip-phone .rip-country{position:relative;width:8rem}
+.iti{position:relative;display:flex;gap:.5rem;align-items:center}
+.iti__selected-country{background:#e8ebf0;color:#1d2330;padding:.45rem .6rem}
+.iti__flag{display:inline-block;width:20px;height:14px;background:#8a94a6}
+.iti__dropdown-content{position:absolute;top:100%;left:0;z-index:40;background:#fff;border:1px solid #8a94a6;padding:4px;width:18rem}
+.iti__hide{display:none}
+.iti__country-list{list-style:none;margin:0;padding:0;max-height:200px;overflow-y:auto}
+.iti__country{padding:4px 8px}
+.iti__dial-code{color:#4a5568;margin-left:.3rem}
+"""
+
+WIDGETS_JS = r"""(function () {
+  "use strict";
+  // Fictional replicas of custom widgets seen on hosted ATS forms. Their state lives
+  // in JavaScript only (no hidden inputs); the form's "formdata" event serializes it.
+  var state = window.__widgetState = {};
+  var hooks = window.__widgetHooks = window.__widgetHooks || {selectNext: {}};
+  var norm = function (s) { return String(s || "").replace(/\s+/g, " ").trim().toLowerCase(); };
+  var el = function (tag, attrs, text) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  var config = function (node) { return JSON.parse(node.getAttribute("data-widget")); };
+  var shift = function (id, i, n) { return hooks.selectNext && hooks.selectNext[id] ? Math.min(i + 1, n - 1) : i; };
+  // Like react-select, which leaves out aria-selected and aria-activedescendant when the
+  // user agent names an Apple platform; its select__option--is-selected class stays.
+  var apple = /Mac|iPhone|iPad/.test(navigator.userAgent);
+  // Fixture control: expose none of the three selection signals.
+  var hidden = function (id) { return !!(hooks.hideSelection && hooks.hideSelection[id]); };
+
+  // React-select-like single and multi select (Greenhouse style).
+  function reactSelect(shell) {
+    var cfg = config(shell);
+    var id = cfg.id, multi = !!cfg.multi;
+    var input = document.getElementById(id);
+    var control = shell.querySelector(".select__control");
+    var values = shell.querySelector(".select__value-container");
+    var inputBox = shell.querySelector(".select__input-container");
+    var st = state[cfg.name] = {value: multi ? (cfg.initial || []) : (cfg.initial || null)};
+    var menu = null, focused = -1, shown = [], loading = false, timer = null, remote = [];
+    var labelOf = function (value) {
+      var hit = cfg.options.filter(function (o) { return o[0] === value; })[0];
+      return hit ? hit[1] : value;
+    };
+    var displayOf = function (value) {
+      var label = labelOf(value);
+      if (cfg.display === "dial") { var m = label.match(/\+\d+$/); return m ? m[0] : label; }
+      return label;
+    };
+    var hasValue = function () { return multi ? st.value.length > 0 : st.value !== null; };
+    function renderValue() {
+      Array.prototype.slice.call(values.children).forEach(function (child) {
+        if (child !== inputBox) child.remove();
+      });
+      if (!hasValue()) {
+        values.insertBefore(el("div", {"class": "select__placeholder", id: "react-select-" + id + "-placeholder"},
+          "Select..."), inputBox);
+        input.setAttribute("aria-describedby", "react-select-" + id + "-placeholder");
+        return;
+      }
+      input.removeAttribute("aria-describedby");
+      if (!multi) {
+        values.insertBefore(el("div", {"class": "select__single-value"}, displayOf(st.value)), inputBox);
+        return;
+      }
+      st.value.forEach(function (value) {
+        var chip = el("div", {"class": "select__multi-value"});
+        chip.appendChild(el("div", {"class": "select__multi-value__label"}, labelOf(value)));
+        var remove = el("div", {role: "button", "class": "select__multi-value__remove",
+          "aria-label": "Remove " + labelOf(value)});
+        remove.addEventListener("mousedown", function (e) {
+          e.preventDefault(); e.stopPropagation();
+          st.value = st.value.filter(function (v) { return v !== value; });
+          renderValue(); if (menu) renderMenu();
+        });
+        chip.appendChild(remove);
+        values.insertBefore(chip, inputBox);
+      });
+    }
+    function candidates() {
+      if (cfg.async) return remote;
+      var text = norm(input.value);
+      return cfg.options.filter(function (o) {
+        if (multi && st.value.indexOf(o[0]) >= 0) return false;
+        return !text || norm(o[1]).indexOf(text) >= 0;
+      });
+    }
+    function notice() {
+      if (!cfg.async) return "No options";
+      if (input.value.trim().length < 3) return input.value ? "Type at least 3 characters" : "Type to search";
+      return loading ? "Loading..." : "No options";
+    }
+    function paintFocus() {
+      var options = menu ? menu.querySelectorAll("[role=option]") : [];
+      Array.prototype.forEach.call(options, function (o, i) {
+        var chosen = !!shown[i] && (multi ? st.value.indexOf(shown[i][0]) >= 0 : st.value === shown[i][0]);
+        o.className = "select__option" + (i === focused ? " select__option--is-focused" : "") +
+          (chosen && !hidden(id) ? " select__option--is-selected" : "");
+      });
+      var active = options[focused];
+      input.setAttribute("aria-activedescendant", active && !apple && !hidden(id) ? active.id : "");
+    }
+    function renderMenu() {
+      var list = menu.querySelector("[role=listbox]");
+      list.textContent = "";
+      shown = loading ? [] : candidates();
+      if (!shown.length) {
+        list.appendChild(el("div", {"class": "select__menu-notice"}, notice()));
+        input.setAttribute("aria-activedescendant", "");
+        return;
+      }
+      if (focused < 0 || focused >= shown.length) focused = 0;
+      shown.forEach(function (o, i) {
+        var selected = multi ? st.value.indexOf(o[0]) >= 0 : st.value === o[0];
+        var option = el("div", {id: "react-select-" + id + "-option-" + i, role: "option",
+          "class": "select__option", "aria-selected": String(selected), tabindex: "-1"}, o[1]);
+        if (apple || hidden(id)) option.removeAttribute("aria-selected");
+        option.addEventListener("mousemove", function () { if (focused !== i) { focused = i; paintFocus(); } });
+        option.addEventListener("click", function () { choose(i); });
+        list.appendChild(option);
+      });
+      paintFocus();
+    }
+    function open() {
+      if (menu) return;
+      var r = control.getBoundingClientRect();
+      menu = el("div", {"class": "select__menu", id: "react-select-" + id + "-menu"});
+      menu.style.cssText = "position:absolute;z-index:50;background:#fff;border:1px solid #8a94a6;" +
+        "border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.15);left:" + (r.left + window.scrollX) +
+        "px;top:" + (r.bottom + window.scrollY + 2) + "px;width:" + r.width + "px";
+      var list = el("div", {"class": "select__menu-list", role: "listbox", id: "react-select-" + id + "-listbox",
+        "aria-multiselectable": String(multi)});
+      list.style.cssText = "max-height:300px;overflow-y:auto;padding:4px 0";
+      menu.appendChild(list);
+      // Keep the focus in the input while the pointer is on the menu, like react-select.
+      menu.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      document.body.appendChild(menu);
+      input.setAttribute("aria-expanded", "true");
+      input.setAttribute("aria-controls", "react-select-" + id + "-listbox");
+      var current = multi ? -1 : candidates().map(function (o) { return o[0]; }).indexOf(st.value);
+      focused = current >= 0 ? current : 0;
+      renderMenu();
+    }
+    function close() {
+      if (menu) { menu.remove(); menu = null; }
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-controls");
+      input.setAttribute("aria-activedescendant", "");
+      input.value = "";
+      remote = [];
+      loading = false;
+    }
+    function choose(i) {
+      var option = shown[shift(id, i, shown.length)];
+      // Fixture control: commit another option (by value) than the one clicked.
+      if (hooks.selectValue && hooks.selectValue[id]) {
+        option = cfg.options.filter(function (o) { return o[0] === hooks.selectValue[id]; })[0] || option;
+      }
+      if (!option) return;
+      if (multi) { st.value = st.value.concat([option[0]]); input.value = ""; renderValue(); renderMenu(); return; }
+      st.value = option[0];
+      if (cfg.async) cfg.options = [option];
+      close();
+      renderValue();
+    }
+    function search() {
+      clearTimeout(timer);
+      var text = input.value.trim();
+      remote = [];
+      if (text.length < 3) { loading = false; if (menu) renderMenu(); return; }
+      loading = true;
+      if (menu) renderMenu();
+      timer = setTimeout(function () {
+        fetch(cfg.async + encodeURIComponent(text)).then(function (r) { return r.json(); }).then(function (labels) {
+          if (input.value.trim() !== text) return;
+          remote = labels.map(function (label) { return [label, label]; });
+          loading = false;
+          if (menu) renderMenu();
+        });
+      }, 150);
+    }
+    control.addEventListener("mousedown", function (e) {
+      if (e.target !== input) e.preventDefault();
+      // A click on the control toggles the menu (a focused, open control closes).
+      if (!menu) { input.focus(); open(); } else { close(); }
+    });
+    input.addEventListener("focus", function () { if (cfg.openOnFocus) open(); });
+    input.addEventListener("blur", function () { close(); });
+    input.addEventListener("input", function () {
+      if (!menu) open();
+      focused = 0;
+      if (cfg.async) search(); else renderMenu();
+    });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!menu) { open(); return; }
+        var n = shown.length;
+        if (n) { focused = (focused + (e.key === "ArrowDown" ? 1 : n - 1)) % n; paintFocus(); }
+      } else if (e.key === "Enter") {
+        if (menu && shown.length) { e.preventDefault(); choose(focused); }
+      } else if (e.key === "Tab") {
+        if (menu && shown.length && !multi) choose(focused);  // tabSelectsValue, like react-select
+      } else if (e.key === "Escape") {
+        if (menu) { e.preventDefault(); close(); }
+      }
+    });
+    renderValue();
+  }
+
+  // Rippling-style div combobox.
+  function divCombobox(box) {
+    var cfg = config(box);
+    var id = box.id;
+    var st = state[cfg.name] = {value: cfg.initial || null};
+    var list = null, focused = 0, byKeyboard = false, isOpen = false;
+    function display() {
+      box.textContent = "";
+      box.appendChild(el("p", {}, st.value === null ? "Select" : st.value));
+    }
+    function paint() {
+      var options = list.querySelectorAll("[role=option]");
+      Array.prototype.forEach.call(options, function (o, i) {
+        o.className = i === focused ? "rip-option rip-option--active" : "rip-option";
+      });
+      box.setAttribute("aria-activedescendant", options[focused] ? options[focused].id : "");
+    }
+    function open(keyboard) {
+      if (isOpen) return;
+      byKeyboard = keyboard;
+      list = document.getElementById(id + "-list");
+      if (!list) {
+        list = el("ul", {id: id + "-list", role: "listbox", "class": "rip-list"});
+        cfg.options.forEach(function (label, i) {
+          var li = el("li", {id: id + "-list-option-" + i, role: "option", "class": "rip-option"}, label);
+          li.addEventListener("mousedown", function (e) { e.preventDefault(); });
+          li.addEventListener("click", function () { choose(i); });
+          list.appendChild(li);
+        });
+        box.parentNode.appendChild(list);
+      }
+      Array.prototype.forEach.call(list.querySelectorAll("[role=option]"), function (li) {
+        li.setAttribute("aria-selected", String(li.textContent === st.value));
+      });
+      list.style.display = "";
+      focused = Math.max(0, cfg.options.indexOf(st.value));
+      isOpen = true;
+      box.setAttribute("aria-expanded", "true");
+      box.setAttribute("aria-controls", id + "-list");
+      paint();
+    }
+    function close() {
+      if (!isOpen) return;
+      isOpen = false;
+      box.setAttribute("aria-expanded", "false");
+      box.removeAttribute("aria-controls");
+      box.removeAttribute("aria-activedescendant");
+      // A keyboard-opened list is only hidden and stays in the document.
+      if (byKeyboard) { list.style.display = "none"; } else { list.remove(); }
+      list = null;
+    }
+    function choose(i) {
+      st.value = cfg.options[shift(id, i, cfg.options.length)];
+      close();
+      display();
+    }
+    box.addEventListener("click", function () {
+      if (cfg.open !== "click") return;
+      if (isOpen) close(); else open(false);
+    });
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!isOpen) { open(true); return; }
+        var n = cfg.options.length;
+        focused = (focused + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        paint();
+      } else if (e.key === "Enter" && isOpen) {
+        e.preventDefault(); choose(focused);
+      } else if (e.key === "Escape" && isOpen) {
+        e.preventDefault(); close();
+      }
+    });
+    box.addEventListener("blur", function () { close(); });
+    display();
+  }
+
+  // Rippling-style search comboboxes and role-less lookup inputs.
+  function searchCombobox(input) {
+    var cfg = config(input);
+    var id = input.id;
+    var st = state[cfg.name] = {value: cfg.initial || null};
+    var list = null, focused = 0, items = [], timer = null, seq = 0;
+    function ensureList() {
+      if (list) return list;
+      list = el("ul", {id: id + "-list", role: "listbox", "class": "rip-list"});
+      list.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      input.parentNode.appendChild(list);
+      input.setAttribute("aria-controls", id + "-list");
+      input.setAttribute("aria-expanded", "true");
+      return list;
+    }
+    function hide() {
+      if (list) { list.remove(); list = null; }
+      input.removeAttribute("aria-controls");
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    }
+    function render(labels, emptyNotice) {
+      items = labels;
+      if (!labels.length && !emptyNotice) { hide(); return; }
+      ensureList().textContent = "";
+      if (!labels.length) { list.appendChild(el("li", {"class": "rip-notice"}, emptyNotice)); return; }
+      focused = 0;
+      labels.forEach(function (label, i) {
+        var li = el("li", {id: id + "-list-option-" + i, role: "option", "class": "rip-option",
+          "aria-selected": String(label === st.value)}, label);
+        li.addEventListener("click", function () { choose(i); });
+        list.appendChild(li);
+      });
+      input.setAttribute("aria-activedescendant", id + "-list-option-0");
+    }
+    function choose(i) {
+      var label = items[shift(id, i, items.length)];
+      if (label === undefined) return;
+      st.value = label;
+      input.value = label;
+      hide();
+    }
+    function matching(text) {
+      var q = norm(text);
+      return cfg.options.filter(function (o) {
+        var n = norm(o);
+        return n.indexOf(q) === 0 || n.indexOf(" " + q) >= 0 || norm((cfg.aliases || {})[o]) === q;
+      }).slice(0, 20);
+    }
+    function openAll() {
+      if (cfg.showAll) render(cfg.options, "No options");
+      else if (cfg.idle && !input.value) render([], cfg.idle);
+    }
+    function lookup() {
+      var text = input.value.trim();
+      var mine = ++seq;
+      st.value = null;  // typing again un-chooses
+      clearTimeout(timer);
+      if (!text) { if (cfg.showAll || cfg.idle) openAll(); else hide(); return; }
+      if (cfg.remote) {
+        if (text.length < 2) { hide(); return; }
+        timer = setTimeout(function () {
+          fetch(cfg.remote + encodeURIComponent(text)).then(function (r) { return r.json(); })
+            .then(function (labels) { if (mine === seq) render(labels, ""); });
+        }, 150);
+        return;
+      }
+      render(matching(text), "No results");
+    }
+    input.addEventListener("input", lookup);
+    input.addEventListener("click", function () { if (!list) openAll(); });
+    input.addEventListener("keydown", function (e) {
+      if (!list) { if (e.key === "ArrowDown" && (cfg.showAll || cfg.idle)) { e.preventDefault(); openAll(); } return; }
+      var options = list.querySelectorAll("[role=option]");
+      if (e.key === "ArrowDown" && options.length) {
+        e.preventDefault(); focused = (focused + 1) % options.length;
+        input.setAttribute("aria-activedescendant", options[focused].id);
+      } else if (e.key === "Enter" && options.length) {
+        e.preventDefault(); choose(focused);
+      } else if (e.key === "Escape") {
+        e.preventDefault(); hide();
+      }
+    });
+    input.addEventListener("blur", function () { hide(); });
+  }
+
+  // intl-tel-input-like phone widget.
+  function intlTel(root) {
+    var cfg = config(root);
+    var input = root.querySelector("input[type=tel]");
+    var button = root.querySelector(".iti__selected-country");
+    var dropdown = root.querySelector(".iti__dropdown-content");
+    var search = root.querySelector(".iti__search-input");
+    var list = root.querySelector("[role=listbox]");
+    var flag = button.querySelector(".iti__flag");
+    var st = state[cfg.name] = {country: cfg.initial || "us"};
+    var byIso = {};
+    cfg.countries.forEach(function (c) { byIso[c[0]] = c; });
+    function select(iso) {
+      var c = byIso[iso];
+      st.country = iso;
+      flag.className = "iti__flag iti__" + iso;
+      button.setAttribute("aria-label", "Change country, selected " + c[1] + " (+" + c[2] + ")");
+      button.setAttribute("title", c[1] + " (+" + c[2] + ")");
+      Array.prototype.forEach.call(list.children, function (li) {
+        li.setAttribute("aria-selected", String(li.getAttribute("data-country-code") === iso));
+      });
+    }
+    function toggle(show) {
+      dropdown.className = "iti__dropdown-content" + (show ? "" : " iti__hide");
+      button.setAttribute("aria-expanded", String(show));
+      if (show) search.focus();
+    }
+    function format() {
+      var raw = input.value;
+      if (raw.trim().charAt(0) !== "+") return;
+      var digits = raw.replace(/\D/g, "");
+      var match = null;
+      cfg.countries.forEach(function (c) {
+        if (digits.indexOf(c[2]) !== 0) return;
+        if (!match || c[2].length > match[2].length || (c[2].length === match[2].length && c[0] === st.country)) match = c;
+      });
+      if (!match) return;
+      if (match[0] !== st.country && match[2] !== byIso[st.country][2]) select(match[0]);
+      var national = digits.slice(match[2].length);
+      var pretty = national;
+      if (match[2] === "1" && national.length > 3) {
+        pretty = national.slice(0, 3) + "-" + national.slice(3, 6) + (national.length > 6 ? "-" + national.slice(6) : "");
+      } else if (national.length > 4) {
+        pretty = national.slice(0, national.length - 4) + " " + national.slice(-4);
+      }
+      input.value = "+" + match[2] + " " + pretty;
+    }
+    button.addEventListener("click", function () { toggle(dropdown.className.indexOf("iti__hide") >= 0); });
+    search.addEventListener("input", function () {
+      var q = norm(search.value);
+      Array.prototype.forEach.call(list.children, function (li) {
+        li.style.display = !q || norm(li.textContent).indexOf(q) >= 0 ? "" : "none";
+      });
+    });
+    Array.prototype.forEach.call(list.children, function (li) {
+      li.addEventListener("click", function () { select(li.getAttribute("data-country-code")); toggle(false); input.focus(); });
+    });
+    input.addEventListener("input", format);
+    select(st.country);
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-mount]"), function (holder) {
+    holder.innerHTML = JSON.parse(holder.getAttribute("data-widget-mount")).html;
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=react-select]"), reactSelect);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=div-combobox]"), divCombobox);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=search-combobox]"), searchCombobox);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=intl-tel]"), intlTel);
+  Array.prototype.forEach.call(document.forms, function (form) {
+    form.addEventListener("formdata", function (e) {
+      Object.keys(state).forEach(function (name) {
+        var s = state[name];
+        var value = s.country !== undefined ? s.country : s.value;
+        if (value === null || value === undefined) return;
+        (Array.isArray(value) ? value : [value]).forEach(function (v) { e.formData.append(name, v); });
+      });
+    });
+  });
+})();"""
+
+
 def page(
     title: str, body: str, head_extra: str = "", *, main_attrs: str = "", after_main: str = ""
 ) -> str:
@@ -1005,12 +1735,151 @@ def _job_heading(job: Job) -> str:
     )
 
 
+def _widget_attrs(kind: str, config: dict[str, Any]) -> str:
+    return f' data-widget-kind="{kind}" data-widget="{esc(json.dumps(config))}"'
+
+
+def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> str:
+    """Script-driven widgets. Their values live only in page state (see WIDGETS_JS);
+    a re-render after a rejected POST restores the posted state."""
+    if f.embedded:
+        return ""  # rendered inside the widget it belongs to
+    dom = f.dom_id or f.name
+    posted = values.get(f.name, [])
+    current = posted[0] if posted else None
+    marker = ' <span aria-hidden="true">*</span>' if f.required else ""
+    required = ' aria-required="true"' if f.required else ""
+    err = (f'<p class="error" id="{esc(dom)}-error"><span class="visually-hidden">Error: </span>'
+           f"{esc(error)}</p>") if error else ""
+    options = [[o.value, o.label] for o in f.options]
+
+    if f.kind in ("react_select", "react_multi", "react_async"):
+        multi = f.kind == "react_multi"
+        config: dict[str, Any] = {
+            "id": dom, "name": f.name, "multi": multi, "display": f.display,
+            "openOnFocus": f.open_on == "focus", "async": f.remote,
+            "options": [] if f.remote else options,
+            "initial": [v for v in posted if v] if multi else current,
+        }
+        if f.remote and current:
+            config["options"] = [[current, current]]
+        container = "select__value-container" + (" select__value-container--is-multi" if multi else "")
+        return (
+            f'<div class="field"><label id="{esc(dom)}-label" for="{esc(dom)}" class="label select__label">'
+            f"{esc(f.label)}{marker}</label>{err}"
+            f'<div class="select-shell"{_widget_attrs("react-select", config)}>'
+            f'<div class="select__control"><div class="{container}">'
+            '<div class="select__input-container">'
+            f'<input class="select__input" autocapitalize="none" autocomplete="off" autocorrect="off" '
+            f'id="{esc(dom)}" spellcheck="false" tabindex="0" type="text" aria-autocomplete="list" '
+            f'aria-expanded="false" aria-haspopup="true" aria-labelledby="{esc(dom)}-label"{required} '
+            'role="combobox" value=""></div></div>'
+            '<div class="select__indicators" aria-hidden="true"><span class="select__indicator-separator">'
+            "</span><div class=\"select__indicator\">▾</div></div></div></div></div>"
+        )
+
+    if f.kind == "div_combobox":
+        config = {"name": f.name, "options": [o.label for o in f.options],
+                  "open": f.open_on or "click", "initial": current}
+        return (
+            '<div class="rip-question">'
+            f'<div class="rip-question-text"><p>{esc(f.label)}{" *" if f.required else ""}</p></div>'
+            f'<div class="rip-input"><div id="{esc(dom)}" role="combobox" tabindex="0" '
+            f'aria-haspopup="listbox" aria-autocomplete="list" aria-expanded="false"{required} '
+            f'class="rip-select"{_widget_attrs("div-combobox", config)}><p>Select</p></div></div>'
+            f"{err}</div>"
+        )
+
+    def search_input(field: Field, value: str | None) -> str:
+        cfg = {"name": field.name, "options": [o.label for o in field.options],
+               "initial": value, "idle": field.idle, "showAll": field.show_all,
+               "remote": field.remote,
+               "aliases": ({name: abbr for name, abbr in STATE_ABBREVIATIONS.items()}
+                           if field is RP_STATE else {})}
+        role = "" if field.kind == "remote_lookup" else ' role="combobox"'
+        testid = "" if field.kind == "remote_lookup" else ' data-testid="input-select-search-input"'
+        req = ' aria-required="true"' if field.required else ""
+        return (
+            f'<input id="{esc(field.dom_id or field.name)}" type="text"{role} aria-haspopup="listbox" '
+            f'aria-autocomplete="list" aria-expanded="false"{testid} autocomplete="off"{req} '
+            f'value="{esc(value or "")}"{_widget_attrs("search-combobox", cfg)}>'
+        )
+
+    if f.kind in ("search_combobox", "remote_lookup"):
+        value = current if current is not None else f.prefill
+        if f.kind == "remote_lookup":
+            return (f'<div class="field"><label for="{esc(dom)}">{esc(f.label)}{marker}</label>{err}'
+                    f'<div class="rip-input">{search_input(f, value)}</div></div>')
+        # Rendered by page script like the rest of a React form: the question is only the
+        # preceding paragraph, with no label association.
+        mount = {"html": search_input(f, value)}
+        return (
+            '<div class="rip-question">'
+            f'<div class="rip-question-text"><p>{esc(f.label)}{" *" if f.required else ""}</p></div>'
+            f'<div class="rip-input" data-widget-mount="{esc(json.dumps(mount))}"></div>{err}</div>'
+        )
+
+    if f.kind == "rippling_phone":
+        code = RP_PHONE_CODE
+        code_posted = values.get(code.name, [])
+        code_value = code_posted[0] if code_posted else code.prefill
+        auto = f' autocomplete="{f.autocomplete}"' if f.autocomplete else ""
+        return (
+            '<div class="rip-question">'
+            f'<div class="rip-question-text"><p>{esc(f.label)}{" *" if f.required else ""}</p></div>'
+            '<div class="rip-input rip-phone"><div class="rip-country">'
+            f'<label class="visually-hidden" for="{esc(code.dom_id or code.name)}">{esc(code.label)}</label>'
+            f"{search_input(code, code_value)}</div>"
+            f'<label class="visually-hidden" for="{esc(dom)}">{esc(f.label)}</label>'
+            f'<input type="tel" id="{esc(dom)}" name="{esc(f.name)}" value="{esc(current or "")}"'
+            f"{auto}{required}></div>{err}</div>"
+        )
+
+    if f.kind == "intl_tel":
+        country = (values.get("phone_country") or ["us"])[0]
+        chosen = next((c for c in ITI_COUNTRIES if c[0] == country), ITI_COUNTRIES[-1])
+        config = {"name": "phone_country", "initial": chosen[0],
+                  "countries": [list(c) for c in ITI_COUNTRIES]}
+        items = "".join(
+            f'<li id="iti-0__item-{iso}" class="iti__country" role="option" data-dial-code="{code}" '
+            f'data-country-code="{iso}" aria-selected="{"true" if iso == chosen[0] else "false"}">'
+            f'<div class="iti__flag iti__{iso}"></div><span class="iti__country-name">{esc(name)}</span>'
+            f'<span class="iti__dial-code">+{code}</span></li>'
+            for iso, name, code in ITI_COUNTRIES
+        )
+        auto = f' autocomplete="{f.autocomplete}"' if f.autocomplete else ""
+        return (
+            f'<div class="field"><label for="{esc(f.name)}">{esc(f.label)}{marker}</label>{err}'
+            f'<div class="iti iti--allow-dropdown"{_widget_attrs("intl-tel", config)}>'
+            '<div class="iti__country-container">'
+            '<button type="button" class="iti__selected-country" aria-haspopup="dialog" '
+            'aria-controls="iti-0__dropdown-content" aria-expanded="false" '
+            f'aria-label="Change country, selected {esc(chosen[1])} (+{chosen[2]})" '
+            f'title="{esc(chosen[1])} (+{chosen[2]})"><div class="iti__flag iti__{chosen[0]}"></div>'
+            '<div class="iti__arrow" aria-hidden="true">▾</div></button>'
+            '<div id="iti-0__dropdown-content" class="iti__dropdown-content iti__hide" role="dialog" '
+            'aria-modal="true" aria-label="Select country">'
+            '<label class="visually-hidden" for="iti-0__search-input">Search</label>'
+            '<input id="iti-0__search-input" type="search" class="iti__search-input" role="combobox" '
+            'aria-expanded="true" aria-autocomplete="list" aria-controls="iti-0__country-listbox" '
+            'autocomplete="off" placeholder="Search">'
+            f'<ul id="iti-0__country-listbox" class="iti__country-list" role="listbox" '
+            f'aria-label="List of countries">{items}</ul></div></div>'
+            f'<input type="tel" id="{esc(f.name)}" name="{esc(f.name)}" value="{esc(current or "")}"'
+            f"{auto}{' required' if f.required else ''}></div></div>"
+        )
+
+    raise ValueError(f"unknown widget kind {f.kind}")
+
+
 def render_field(
     f: Field,
     values: dict[str, list[str]],
     error: str | None,
     retained: dict[str, Any] | None = None,
 ) -> str:
+    if f.widget:
+        return render_widget(f, values, error)
     fid = f"f-{f.name}"
     posted = values.get(f.name, [])
     current = posted[0] if posted else ""
@@ -1326,6 +2195,7 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/forms/choices-without-values", "GET", "get_choices_without_values"),
         (r"/postings/apply-wording", "GET", "get_apply_wording_posting"),
         (r"/postings/go-apply", "POST", "post_go_apply"),
+        (r"/__fixture__/cities", "GET", "get_fixture_cities"),
         (r"/__test__/health", "GET", "test_health"),
         (r"/__test__/jobs", "GET", "test_jobs"),
         (r"/__test__/submissions", "GET", "test_submissions"),
@@ -1646,6 +2516,9 @@ class Handler(BaseHTTPRequestHandler):
             + fields_html
             + '<button type="submit">Submit application</button></form>'
         )
+        widgets = any(f.widget for f in job.fields)
+        if widgets:
+            form_html += f"<script>{WIDGETS_JS}</script>"
         if job.spa_loading and status == HTTPStatus.OK:
             form_html = render_delayed(form_html)
         body = _job_heading(job) + render_error_summary(entries) + form_html
@@ -1653,7 +2526,8 @@ class Handler(BaseHTTPRequestHandler):
         if job.cookie_banner and not self._consented():
             main_attrs, after_main = ' inert aria-hidden="true"', render_cookie_banner()
         title = f"Apply: {job.title}" if not errors else f"Error: Apply: {job.title}"
-        self._send_html(status, page(title, body, main_attrs=main_attrs, after_main=after_main))
+        head = f"<style>{WIDGET_STYLE}</style>" if widgets else ""
+        self._send_html(status, page(title, body, head, main_attrs=main_attrs, after_main=after_main))
 
     # multistep
     def _draft(self, job: Job, draft_id: str) -> dict[str, Any]:
@@ -2066,6 +2940,15 @@ class Handler(BaseHTTPRequestHandler):
         form, _ = self._read_form()
         job = self._job((form.get("job") or ["standard"])[0])
         self._redirect(f"/jobs/{job.slug}/apply")
+
+    def get_fixture_cities(self) -> None:
+        # The site's own city suggestions (fetched by the lookup widgets' page script),
+        # with a fixed 250 ms latency. Every query word must begin a word of the city;
+        # US state names and abbreviations and "USA"/"United States" are equivalent.
+        query = (self.query.get("q") or [""])[0]
+        cities = CITIES_SHORT if (self.query.get("style") or [""])[0] == "short" else CITIES_LONG
+        time.sleep(0.25)
+        self._send_json(HTTPStatus.OK, [c for c in cities if city_matches(query, c)][:10])
 
     def get_captcha_widget(self) -> None:
         # The badge iframe of the fixture widget: a tiny static document.

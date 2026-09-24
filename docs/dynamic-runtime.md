@@ -82,3 +82,67 @@ loading candidate data or making network calls. Missing credentials mark the run
 unavailable and block application requests before they are recorded. Credentials
 and their contents are never included in health responses. The configured runner
 constructs its AI components only when executing an authorized application run.
+
+## Custom widgets (menus, lookups, phone pickers)
+
+Hosted ATS forms (Greenhouse, Rippling) render most choices as script widgets: React
+selects whose options exist only while the menu is open, Rippling `div` comboboxes,
+search comboboxes, location lookups and intl-tel-input phone fields. The generic
+runtime operates them without site adapters, coordinates or provider-written code; every
+page script involved is a fixed read-only script (also allowlisted for OpenCLI).
+
+- **Probing at inspection.** For each visible, enabled, closed menu control of the
+  selected application form (`role=combobox` or `aria-haspopup=listbox`, not inside a
+  dialog, not multi-select, options not observable yet) the runtime focuses it, clicks
+  it (never an already open one), falls back to ArrowDown, reads the options of the one
+  listbox its `aria-controls`/`aria-owns` names (label, `data-value`, `aria-selected`,
+  disabled, index; never a page-wide option scan), presses Escape and verifies that the
+  document, the displayed value and the form's field set are unchanged. It never types
+  or chooses. A complete static option set becomes a canonical `SELECT` (values and
+  labels exactly like a native select); an input whose menu offers nothing until
+  something is typed becomes a `TYPEAHEAD`; multi-select menus and anything ambiguous,
+  virtualized past 5 scrolls or over 500 options stay `UNSUPPORTED` for the user.
+  Observations are cached per document (reused by later inspections without reopening,
+  dropped on navigation or context loss); at most 24 probes and 20 s per document, 3 s
+  per control. Probing runs before semantic annotation with menus closed again, so it
+  never counts as a form change. `observe`/`classify` and waits for the user never probe.
+  A menu's displayed value or placeholder ("Select...", "+1") is state, not question
+  wording, so fingerprints and saved-answer matching stay stable after filling.
+- **Selecting.** A probed menu is opened the recorded way, its listbox re-resolved after
+  opening, an input menu of more than 20 options filtered by typing the exact label, and
+  the one matching option (freshly derived from the owned listbox) clicked. Readback:
+  the menu closed and the control displays the chosen label. When it displays only a
+  suffix of it (a dial-code select shows "+1", which "United States +1" and "Canada +1"
+  share), the menu is reopened once and its own selection must name the chosen option;
+  the first signal the widget exposes decides: `aria-selected` (exactly one option),
+  `aria-activedescendant`, or exactly one option whose class names the selection
+  (react-select's `select__option--is-selected`). A confirmed choice keeps naming the
+  "+1" display in that document. Anything else is `VERIFICATION_MISMATCH`.
+- **Lookups.** A `TYPEAHEAD` answer is typed (about 30 ms per character); suggestions are
+  read from the owned listbox once stable for 400 ms (at most 4 s) and matched with
+  US state abbreviations and United States synonyms spelled out: the typed place must
+  equal a whole comma segment ("Austin" never matches "Austintown") and every other typed
+  word must begin a word of the suggestion. A suggestion typed verbatim always wins.
+  Exactly one match is clicked and read back (`FILLED`); otherwise the input is emptied
+  and `NEEDS_CHOICE` carries up to 20 suggestions in the order shown.
+  `fill_fields(form, packet, field_ids)` (`SelectiveFill`) then types the chosen label
+  into just those fields with the same guards as `fill`, leaving every other control as
+  it is.
+- **Phones.** A `tel` input whose own widget has a country picker (an `.iti` container, a
+  preceding `aria-haspopup=dialog` button, or a sibling combobox showing `+<code>`) sets
+  `ApplicationField.expects_international_phone`; its value is typed as given and read
+  back by digits and by the picker's dial code. A plain tel input keeps the exact
+  fill-and-readback.
+- **User agent.** Headless Playwright sessions present the browser's own user agent with
+  a Linux desktop platform segment (`(X11; Linux x86_64)`; product and version tokens
+  unchanged): react-select leaves out `aria-selected` and `aria-activedescendant` when
+  the user agent names an Apple platform (a VoiceOver workaround), which was confirmed on
+  a live Greenhouse board on a Mac. Visible sessions and OpenCLI keep the platform user
+  agent, so the person's own browsing is unchanged.
+- **OpenCLI.** The same flow runs over `focus`, `keys` (sent only while the target holds
+  focus) and `type`. When the session cannot press keys, a probed menu cannot be closed
+  or re-verified by Escape and is held for the user; menu lists are never scrolled there.
+
+Mock scenarios `react-select`, `div-combobox`, `typeahead`, `phone-widget` and
+`multiselect-react` (`tests/browser/MOCK_ATS.md`) reproduce these widgets; the tests are
+`tests/browser/test_custom_widgets*.py`.

@@ -35,6 +35,11 @@ class PageContextLost(DriverError):
     again; the runtime aborts the rest of the fill."""
 
 
+class CapabilityUnsupported(NotActionable):
+    """This driver cannot perform the operation here; nothing was changed. The message
+    says what the user can do in the visible browser instead."""
+
+
 @runtime_checkable
 class PageDriver(Protocol):
     @property
@@ -69,6 +74,28 @@ class PageDriver(Protocol):
         only. Raises ``NotActionable`` when the element could not be clicked."""
         ...
 
+    async def focus(self, selector: str) -> None:
+        """Focus the element without clicking or typing."""
+        ...
+
+    async def press(self, selector: str, key: str) -> None:
+        """Focus the element and press one key (``ArrowDown``, ``Escape``). Raises
+        ``CapabilityUnsupported`` when this session cannot press keys."""
+        ...
+
+    async def type_text(self, selector: str, text: str, *, delay_s: float = 0.03) -> None:
+        """Type ``text`` key by key into the element (appending; it is not cleared)."""
+        ...
+
+    async def clear_text(self, selector: str) -> None:
+        """Empty a text input the way a person does (select all, delete) and verify it
+        is empty; raises ``NotActionable`` otherwise."""
+        ...
+
+    async def scroll_to_end(self, selector: str) -> None:
+        """Scroll a list (or its nearest scrollable ancestor) to its end."""
+        ...
+
     async def settle(self, timeout_s: float) -> None:
         """Wait (bounded) for navigation and network activity to finish."""
         ...
@@ -96,6 +123,13 @@ _FILE_DIGEST = (
     "const d = await crypto.subtle.digest('SHA-256', buf); "
     "return {origin: String(performance.timeOrigin), url: location.href, sha256: Array.from(new Uint8Array(d))"
     ".map((b) => b.toString(16).padStart(2, '0')).join('')}; }"
+)
+
+# Scrolls a (possibly virtualized) menu list to its end: the element itself or its
+# nearest scrollable ancestor. A driver action, never an OpenCLI read script.
+_SCROLL_TO_END = (
+    "(el) => { for (let n = el, i = 0; n && i < 3; n = n.parentElement, i++) { "
+    "if (n.scrollHeight > n.clientHeight + 1) { n.scrollTop = n.scrollHeight; return true; } } return false; }"
 )
 
 class PlaywrightDriver:
@@ -267,6 +301,60 @@ class PlaywrightDriver:
             )
         except PlaywrightError as exc:
             raise NotActionable(f"could not click {selector}: {exc}") from exc
+
+    async def focus(self, selector: str) -> None:
+        before = self._doc_mark()
+        try:
+            await self.page.locator(selector).focus(timeout=self._timeout_ms)
+        except PlaywrightError as exc:
+            self._guard(before, f"focusing {selector}", exc)
+            raise NotActionable(f"could not focus {selector}: {exc}") from exc
+        self._guard(before, f"focusing {selector}")
+
+    async def press(self, selector: str, key: str) -> None:
+        before = self._doc_mark()
+        try:
+            await self.page.locator(selector).press(key, timeout=self._timeout_ms)
+        except PlaywrightError as exc:
+            self._guard(before, f"pressing {key} in {selector}", exc)
+            raise NotActionable(f"could not press {key} in {selector}: {exc}") from exc
+        self._guard(before, f"pressing {key} in {selector}")
+
+    async def type_text(self, selector: str, text: str, *, delay_s: float = 0.03) -> None:
+        before = self._doc_mark()
+        try:
+            await self.page.locator(selector).press_sequentially(
+                text, delay=delay_s * 1000, timeout=self._timeout_ms + len(text) * delay_s * 1000)
+        except PlaywrightError as exc:
+            self._guard(before, f"typing into {selector}", exc)
+            raise NotActionable(f"could not type into {selector}: {exc}") from exc
+        self._guard(before, f"typing into {selector}")
+
+    async def clear_text(self, selector: str) -> None:
+        before = self._doc_mark()
+        locator = self.page.locator(selector)
+        try:
+            if await locator.input_value(timeout=self._timeout_ms):
+                await locator.press("ControlOrMeta+a", timeout=self._timeout_ms)
+                await locator.press("Backspace", timeout=self._timeout_ms)
+            if await locator.input_value(timeout=self._timeout_ms):
+                await locator.fill("", timeout=self._timeout_ms)
+            left = await locator.input_value(timeout=self._timeout_ms)
+        except PlaywrightError as exc:
+            self._guard(before, f"clearing {selector}", exc)
+            raise NotActionable(f"could not clear {selector}: {exc}") from exc
+        self._guard(before, f"clearing {selector}")
+        if left:
+            raise NotActionable(f"{selector} still holds text after clearing it")
+
+    async def scroll_to_end(self, selector: str) -> None:
+        before = self._doc_mark()
+        try:
+            await self.page.locator(selector).evaluate(_SCROLL_TO_END)
+        except PlaywrightError as exc:
+            self._guard(before, f"scrolling {selector}", exc)
+            raise NotActionable(f"could not scroll {selector}: {exc}") from exc
+        self._guard(before, f"scrolling {selector}")
 
     async def settle(self, timeout_s: float) -> None:
         """After a click: give a navigation a short grace period to start; if one did,

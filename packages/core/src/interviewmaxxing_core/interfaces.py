@@ -1,9 +1,10 @@
 """Public service interfaces implemented by the downstream packages.
 
 * ``CandidateLoader``, ``SavedAnswerWriter`` — packages/candidate (candidate-brain)
-* ``PacketResolver``          — packages/generation  (application-packets)
-* ``BrowserSessionFactory`` / ``ApplicationBrowser`` / ``ATSAdapter``
-                              — packages/browser, packages/ats (browser-ats)
+* ``PacketResolver`` (optionally ``SuggestionChooser``)
+                              — packages/generation  (application-packets)
+* ``BrowserSessionFactory`` / ``ApplicationBrowser`` (optionally ``SelectiveFill``) /
+  ``ATSAdapter``              — packages/browser, packages/ats (browser-ats)
 * ``UserInteraction`` / ``ApplicationRunner`` — apps/cli (core, task I1)
 
 Browser-facing and packet interfaces are asynchronous. Implementations import the
@@ -31,7 +32,7 @@ from .execution import (
     SubmissionObservation,
     SubmitActionResult,
 )
-from .forms import ApplicationForm
+from .forms import ApplicationField, ApplicationForm
 from .jobs import JobRecord
 from .packets import ApplicationPacket, MissingInput, UserInput, provenance_problems
 
@@ -127,6 +128,26 @@ class PacketResolver(Protocol):
         ...
 
 
+@runtime_checkable
+class SuggestionChooser(Protocol):
+    """Optional resolver capability for lookup (``TYPEAHEAD``) controls.
+
+    When the browser reports ``FieldFillStatus.NEEDS_CHOICE`` for a lookup the
+    runner asks the resolver, if it has this method, which observed suggestion
+    denotes the value it typed. Return one label exactly as given in
+    ``suggestions``, or None when no suggestion is clearly the same place or entity
+    (a resolver without a model always returns None). The runner then types that
+    label verbatim or asks the user to pick; it never invents a label."""
+
+    async def choose_suggestion(
+        self,
+        context: PacketContext,
+        field: ApplicationField,
+        typed_value: str,
+        suggestions: Sequence[str],
+    ) -> str | None: ...
+
+
 # --- browser -----------------------------------------------------------------------
 
 
@@ -186,6 +207,21 @@ class ApplicationBrowser(Protocol):
         ...
 
     async def close(self) -> None: ...
+
+
+@runtime_checkable
+class SelectiveFill(Protocol):
+    """Optional ``ApplicationBrowser`` capability used after a lookup choice.
+
+    Same checks as ``fill`` (it refuses a packet with ``problems_against(form)``
+    or a page that no longer shows ``form``), but operates and reads back only the
+    answered fields listed in ``field_ids``; every other control is left exactly as
+    it is. The result lists only those fields. Without it the runner re-fills the
+    whole packet with ``fill``."""
+
+    async def fill_fields(
+        self, form: ApplicationForm, packet: ApplicationPacket, field_ids: Sequence[str]
+    ) -> FillResult: ...
 
 
 @runtime_checkable

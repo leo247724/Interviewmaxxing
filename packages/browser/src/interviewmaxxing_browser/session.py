@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from interviewmaxxing_core import BrowserOptions
@@ -9,6 +11,42 @@ from interviewmaxxing_core import BrowserOptions
 from .annotations import FormAnnotator, SchemaHintLoader
 from .driver import PlaywrightDriver
 from .runtime import ActionPolicy, GenericApplicationBrowser
+
+LINUX_PLATFORM = "(X11; Linux x86_64)"
+
+
+def linux_user_agent(user_agent: str) -> str:
+    """The same browser's user agent with a Linux desktop platform segment.
+
+    Widget libraries such as react-select leave out ``aria-selected`` and
+    ``aria-activedescendant`` when the user agent names an Apple platform (a VoiceOver
+    workaround); the runtime reads those back to verify a choice. The first
+    parenthesized platform segment changes and the ``HeadlessChrome`` product token
+    becomes ``Chrome`` (headless Chromium is otherwise refused by common bot filters);
+    the version stays the browser's own."""
+    agent = re.sub(r"\([^)]*\)", LINUX_PLATFORM, user_agent, count=1)
+    return agent.replace("HeadlessChrome/", "Chrome/")
+
+
+_HEADLESS_AGENTS: dict[str, str] = {}
+"""Browser executable -> its headless user agent with a Linux platform (per process)."""
+
+
+async def _headless_user_agent(playwright: Playwright, browser: Browser | None) -> str:
+    key = playwright.chromium.executable_path
+    if key not in _HEADLESS_AGENTS:
+        probe = browser or await playwright.chromium.launch(headless=True)
+        try:
+            page = await probe.new_page()
+            try:
+                agent = str(await page.evaluate("() => navigator.userAgent"))
+            finally:
+                await page.close()
+        finally:
+            if browser is None:
+                await probe.close()
+        _HEADLESS_AGENTS[key] = linux_user_agent(agent)
+    return _HEADLESS_AGENTS[key]
 
 
 class PlaywrightApplicationBrowser(GenericApplicationBrowser):
@@ -65,7 +103,12 @@ class PlaywrightSessionFactory:
     With ``BrowserOptions.profile_dir`` the session uses a persistent profile, so a
     sign-in the user completes once is kept for later runs (one process at a time
     per profile). ``headless=False`` (the default) shows the window so the user can
-    sign in or solve a CAPTCHA when the runtime asks."""
+    sign in or solve a CAPTCHA when the runtime asks.
+
+    Headless sessions present the browser's own user agent with a Linux desktop
+    platform segment (see ``linux_user_agent``), so menu widgets expose the selection
+    state the runtime reads back; visible sessions keep the platform's user agent.
+    ``user_agent`` sets one explicitly for every session (tests, diagnostics)."""
 
     def __init__(
         self,
@@ -75,12 +118,14 @@ class PlaywrightSessionFactory:
         policy: ActionPolicy | None = None,
         annotator: FormAnnotator | None = None,
         schema_hint_loader: SchemaHintLoader | None = None,
+        user_agent: str | None = None,
     ) -> None:
         self.action_timeout_s = action_timeout_s
         self.settle_timeout_s = settle_timeout_s
         self.policy = policy
         self.annotator = annotator
         self.schema_hint_loader = schema_hint_loader
+        self.user_agent = user_agent
 
     async def start(self, options: BrowserOptions) -> PlaywrightApplicationBrowser:
         playwright = await async_playwright().start()
@@ -88,18 +133,23 @@ class PlaywrightSessionFactory:
         try:
             if options.profile_dir is not None:
                 options.profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                agent = self.user_agent or (
+                    await _headless_user_agent(playwright, None) if options.headless else None)
                 context = await playwright.chromium.launch_persistent_context(
                     str(options.profile_dir),
                     headless=options.headless,
                     slow_mo=options.slow_mo_ms,
                     accept_downloads=False,
+                    user_agent=agent,
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
             else:
                 browser = await playwright.chromium.launch(
                     headless=options.headless, slow_mo=options.slow_mo_ms
                 )
-                context = await browser.new_context(accept_downloads=False)
+                agent = self.user_agent or (
+                    await _headless_user_agent(playwright, browser) if options.headless else None)
+                context = await browser.new_context(accept_downloads=False, user_agent=agent)
                 page = await context.new_page()
         except BaseException:
             if browser is not None:

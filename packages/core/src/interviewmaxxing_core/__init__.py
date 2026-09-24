@@ -127,6 +127,8 @@ from .interfaces import (
     PacketContext,
     PacketResolver,
     SavedAnswerWriter,
+    SelectiveFill,
+    SuggestionChooser,
     UserInteraction,
 )
 from .jobs import IdentityEvidenceKind, JobIdentityObservation, JobRecord
@@ -263,6 +265,7 @@ __all__ = [
     "SelectionChoice",
     "SelectionOverride",
     "SelectionPreferences",
+    "SelectiveFill",
     "SemanticType",
     "SourceSearchResult",
     "SourceSearchState",
@@ -273,6 +276,7 @@ __all__ = [
     "SubmissionOutcome",
     "SubmissionReconciliation",
     "SubmitActionResult",
+    "SuggestionChooser",
     "TextValue",
     "UnknownCompensationPolicy",
     "UserInput",

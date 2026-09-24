@@ -20,7 +20,7 @@ from interviewmaxxing_selection.jev import ChoiceAnswer, ChoiceQuestion, Decisio
 
 from .providers import AIHold, BoundedDecisions
 
-PROMPT_VERSION = "full-form-routing-v9"
+PROMPT_VERSION = "full-form-routing-v10"
 CUSTOM_TYPES = frozenset({SemanticType.UNKNOWN, SemanticType.CUSTOM_TEXT,
     SemanticType.CUSTOM_LONG_TEXT, SemanticType.CUSTOM_BOOLEAN, SemanticType.CUSTOM_SELECT,
     SemanticType.CUSTOM_MULTISELECT})
@@ -139,6 +139,7 @@ _SEMANTICS.update({
     "COVER_LETTER": "A field explicitly asking for a cover letter document or text",
     "RESUME": "A dedicated resume or CV upload",
     "CONSENT": "Personal permission or agreement, including privacy terms",
+    "REFERRAL_SOURCE": "How or where the applicant heard about or found the job or company (careers site, job board, LinkedIn, referral, event or other channel); not a referrer's name or contact, and not whether an employee referred them",
     "ATTESTATION": "Certification, acknowledgement, declaration or signature",
     "UNKNOWN": "Unclear, missing wording, conflicting context or not covered",
 })

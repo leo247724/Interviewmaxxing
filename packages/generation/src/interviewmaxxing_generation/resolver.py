@@ -10,6 +10,12 @@ Each field of the inspected form step is resolved from, in order:
 4. for free-text questions that are pure fact lookups ("What is your current job
    title?"): text assembled from verified facts.
 
+A lookup control (``TYPEAHEAD``) takes only the first two sources or the candidate's
+own location, city, state or country from the verified identity (``contact``); the
+runner later picks among the site's suggestions. A phone control with a country
+picker gets the verified number in international form, or is asked when that
+conversion is not reliable.
+
 Anything else is unknown. Unknown optional fields stay blank. Unknown required
 fields become a ``MissingInput`` scoped to this form step and question, with a
 stable id. Work authorization, sponsorship, salary, consent, attestations and
@@ -50,11 +56,13 @@ from interviewmaxxing_core import (
     utc_now,
 )
 
+from .contact import LOOKUP_TYPES, PhoneFormatError, international_phone, lookup_text
 from .questions import (
     QuestionText,
     display_question,
     factual_template,
     parse_years_question,
+    question_key,
     saved_answer_matches,
     years_fact_area,
 )
@@ -161,6 +169,8 @@ class _FieldResolver:
             return saved
         if fld.semantic_type in EXPLICIT_ANSWER_REQUIRED:
             return _Unresolved()
+        if fld.control_type is ControlType.TYPEAHEAD:
+            return self._lookup_control(fld)
         if fld.semantic_type is SemanticType.RESUME:
             return self._resume(fld)
         if fld.semantic_type in _IDENTITY_ATTRIBUTES:
@@ -184,19 +194,24 @@ class _FieldResolver:
             Provenance(source=AnswerSource.USER_INPUT, reference_ids=[user_input.id]),
         )
 
-    def _from_saved_answers(self, fld: ApplicationField, question: QuestionText) -> _Outcome | None:
+    def saved_tier(self, fld: ApplicationField, question: QuestionText) -> list[SavedAnswer]:
+        """Saved answers given for exactly this question wording; job-scoped ones
+        take precedence over global ones."""
         if fld.control_type is ControlType.FILE:
-            return None
+            return []
         matching = [
             a
             for a in self.saved_answers
             if (a.semantic_type is None or a.semantic_type is fld.semantic_type)
             and saved_answer_matches(a, question)
         ]
-        if not matching:
-            return None
         job_scoped = [a for a in matching if a.scope is AnswerScope.JOB]
-        tier = job_scoped or matching
+        return job_scoped or matching
+
+    def _from_saved_answers(self, fld: ApplicationField, question: QuestionText) -> _Outcome | None:
+        tier = self.saved_tier(fld, question)
+        if not tier:
+            return None
         translated = [(a, translate(fld, a.value)) for a in tier]
         values: list[AnswerValue] = []
         for _, result in translated:
@@ -254,18 +269,35 @@ class _FieldResolver:
         known = attribute(self.candidate.identity)
         if not known or not known.strip():
             return _Unresolved()
+        note = f"verified identity: {fld.semantic_type.value.lower()}"
+        if fld.semantic_type is SemanticType.PHONE and fld.expects_international_phone:
+            try:
+                international = international_phone(known, self.candidate.identity.address.country)
+            except PhoneFormatError as exc:
+                return _Unresolved(f"{exc}.")
+            if international != known.strip():
+                known, note = international, note + " (international form for the country picker)"
+        return self._identity_answer(fld, known, note)
+
+    def _lookup_control(self, fld: ApplicationField) -> _Outcome:
+        """A lookup asking for the candidate's own location, city, state or country
+        is typed from the verified address; any other lookup needs a saved answer or
+        the user's input."""
+        if fld.semantic_type not in LOOKUP_TYPES:
+            return _Unresolved()
+        known = lookup_text(self.candidate.identity, fld.semantic_type)
+        if known is None:
+            return _Unresolved()
+        return self._identity_answer(fld, known, f"verified identity: {fld.semantic_type.value.lower()}")
+
+    @staticmethod
+    def _identity_answer(fld: ApplicationField, known: str, note: str) -> _Outcome:
         result = translate(fld, known)
         if isinstance(result, Unmapped):
             return _Unresolved(f"Your verified profile value cannot be used: {result.reason}.",
                                MissingReason.AMBIGUOUS if result.candidates else None,
                                result.candidates)
-        return _Answer(
-            result.value,
-            Provenance(
-                source=AnswerSource.PROFILE_IDENTITY,
-                note=f"verified identity: {fld.semantic_type.value.lower()}",
-            ),
-        )
+        return _Answer(result.value, Provenance(source=AnswerSource.PROFILE_IDENTITY, note=note))
 
     def _fact_value(self, keys: Sequence[str]) -> tuple[RawValue, list[CandidateFact]] | None:
         """The single value verified facts with any of ``keys`` agree on, or None
@@ -406,6 +438,9 @@ def _instruction(fld: ApplicationField) -> str:
         return f"Provide a file{accepted}."
     if control is ControlType.UNSUPPORTED:
         return "Complete this field yourself in the browser."
+    if control is ControlType.TYPEAHEAD:
+        return ("Enter the value to look up; it is typed into the site's search and the "
+                "matching suggestion is chosen.")
     limit = f" (up to {fld.max_length} characters)" if fld.max_length else ""
     return f"Enter your answer{limit}."
 
@@ -489,6 +524,50 @@ def resolve_packet(
     return packet
 
 
+@dataclass(frozen=True, slots=True)
+class StoredValue:
+    """A value the user already gave for one question: their saved answer to exactly
+    this wording, or their verified identity value for an identity field."""
+
+    value: RawValue
+    provenance: Provenance
+
+
+def _value_key(value: RawValue) -> object:
+    if isinstance(value, list):
+        return tuple(question_key(v) for v in value)
+    return question_key(render_scalar(value))
+
+
+def stored_value(context: PacketContext, fld: ApplicationField) -> StoredValue | None:
+    """The stored value that applies to ``fld``, in the user's own words.
+
+    Saved answers must be for exactly this question wording (job-scoped ones win)
+    and agree; otherwise, for a non-explicit identity field, the verified identity
+    value. None when the user answered this question for this application (their
+    input is used verbatim), when nothing applies, or when saved answers disagree.
+    Mapping the value onto a site's option wording is the caller's job."""
+    fields = _FieldResolver(context)
+    if fld.id in fields.user_inputs:
+        return None
+    tier = fields.saved_tier(fld, QuestionText.of(fld))
+    if tier:
+        if len({_value_key(_raw(a.value)) for a in tier}) != 1:
+            return None
+        return StoredValue(_raw(tier[0].value), Provenance(
+            source=AnswerSource.SAVED_ANSWER, reference_ids=[a.id for a in tier],
+            note=f"saved answer for {tier[0].question!r}"))
+    attribute = _IDENTITY_ATTRIBUTES.get(fld.semantic_type)
+    if fld.semantic_type in EXPLICIT_ANSWER_REQUIRED or attribute is None:
+        return None
+    known = attribute(context.candidate.identity)
+    if not known or not known.strip():
+        return None
+    return StoredValue(known, Provenance(
+        source=AnswerSource.PROFILE_IDENTITY,
+        note=f"verified identity: {fld.semantic_type.value.lower()}"))
+
+
 class FactualPacketResolver:
     """``PacketResolver`` that answers only from verified data and explicit answers.
 
@@ -500,3 +579,11 @@ class FactualPacketResolver:
 
     async def resolve(self, context: PacketContext) -> ApplicationPacket:
         return resolve_packet(context, created_at=self._clock())
+
+    async def choose_suggestion(
+        self, context: PacketContext, field: ApplicationField, typed_value: str,
+        suggestions: Sequence[str],
+    ) -> str | None:
+        """``SuggestionChooser``: without a model no site suggestion is chosen; the
+        user picks one of them."""
+        return None

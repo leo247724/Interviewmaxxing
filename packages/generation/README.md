@@ -9,6 +9,10 @@ network, LLM or Jev calls. Its only dependency is `interviewmaxxing-core`.
 
 ## Public API
 
+Lookups and phone pickers: `FactualPacketResolver.choose_suggestion` (always `None`: the
+factual resolver never picks among site suggestions; the AI resolver does), `stored_value` /
+`StoredValue`, `lookup_text`, `international_phone` and `PhoneFormatError`.
+
 ```python
 from interviewmaxxing_generation import FactualPacketResolver, PacketResolutionError
 
@@ -52,7 +56,12 @@ placeholder or options change.
 4. **Resume** (FILE `RESUME` fields): the supplied file after its digest is rechecked,
    provided it satisfies `accept`.
 5. **Verified identity** for `PROFILE_IDENTITY_TYPES`. `LOCATION` is
-   `"city, region, country"`.
+   `"city, region, country"`. A `TYPEAHEAD` (site lookup) field takes only a user
+   input, an exact-wording saved answer, or the candidate's own `LOCATION`, `CITY`,
+   `STATE` or `COUNTRY` from the address (`lookup_text`); the browser types it and
+   commits exactly one matching site suggestion, or reports the suggestions for a
+   choice (CONTRACTS.md §4). A `tel` field with `expects_international_phone` gets
+   `+<code><number>` from the identity country (`international_phone`), or is asked.
 6. **Verified facts**, looked up by key:
    - `current_company`, `current_title`
    - `education_level` or `highest_education_level`
@@ -158,8 +167,10 @@ give an `AMBIGUOUS` item listing both values, never the GLOBAL answer as a fallb
   - "Yes" never maps to "Yes, a full license".
 - **Zero and false:** `0` fills text as `"0"`. `False` is a real answer and is never
   dropped. A saved `False` on a required checkbox is reported and never flipped.
-- **Text:** text is never truncated or reformatted. A value that exceeds
-  `max_length`, or a non-number for `input_type="number"`, is reported instead.
+- **Text:** text is never truncated or reformatted, except that a phone number for a
+  control with a country picker is converted to international form (above). A value
+  that exceeds `max_length`, or a non-number for `input_type="number"`, is reported
+  instead.
 
 ## Verification
 

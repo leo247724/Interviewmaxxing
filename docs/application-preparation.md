@@ -42,6 +42,21 @@ never treated as a submit, so an unfilled posting is never reported as prepared.
 Section headings that precede a control are recorded as `section_context`, not as
 part of its question, so saved answers keep matching the bare question wording.
 
+Lookup controls (location, state, country or school search boxes, `TYPEAHEAD`) are
+typed from your answer to that exact question or a saved answer. For your own
+location, city, state or country they are typed from your verified address:
+"Austin, TX" for a location, "Texas" for a state, and the country as saved. The
+browser commits only the one site suggestion that matches exactly. When the site
+offers several, or none matching, the run asks the resolver once, and with AI routing
+Jev picks the suggestion that is your own city (for example the Texas Austin, not the
+Minnesota one). The exact label is then typed, and a `field.suggestion_chosen` event
+records it. Otherwise the question is asked with the site's suggestions listed, and
+your pick is typed verbatim. Such a lookup never fails the run. A phone field with a
+country picker gets your verified number in international form (`+1512…`, from your
+profile country). If the country is unknown or the digit count does not fit, the
+number is asked instead of guessed; a plain phone field keeps the number exactly as
+you saved it.
+
 Verification uses fictional identities and localhost forms. No real employer
 applications are submitted. Actual candidate details still need to be supplied
 and verified before filling employer forms. Some sites save drafts during earlier

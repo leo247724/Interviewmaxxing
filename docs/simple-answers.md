@@ -98,7 +98,11 @@ referral, age, work-authorization and Hispanic/Latino answers also accept `"Yes"
 `"No"`, or `null`. Referral
 wording also accepts “How did you hear about us?” and “Where did you first hear about
 the company?”. A referrer's name is a different question. Per Leo's instruction,
-`"Company career page"` is the referral default for all applications.
+`"Company career page"` is the referral default for all applications. With AI routing,
+a form that does not offer that exact option is never held on it. The option meaning
+the company's careers page or website is chosen, otherwise "Other", otherwise a job
+board or LinkedIn, otherwise the first option
+(see [dynamic-application-routing.md](dynamic-application-routing.md)).
 
 The importer accepts the original longer sponsorship key (including its accidental
 space), `Where_did_you_first_hear_about_company`, and

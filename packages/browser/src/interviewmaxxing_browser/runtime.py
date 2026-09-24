@@ -21,6 +21,10 @@ Safety rules enforced here:
   a generic "Thank you" or a timeout is never acceptance; it is UNKNOWN.
 * ``reconcile`` re-reads the site later (status links and GET lookup forms only)
   to establish an uncertain outcome without ever resubmitting.
+* Custom menu controls of the selected application form are probed once per
+  document during inspection (opened, read through their own listbox, closed and
+  verified unchanged; never typed into or chosen) so their options become canonical
+  ``SELECT`` fields; ``observe`` and waits for the user never probe.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -69,6 +73,7 @@ from interviewmaxxing_core import (
 )
 
 from .annotations import FormAnnotator, SchemaHintLoader, observation_signature, semantic_only
+from .aria import LookupOutcome, MenuProbe, fill_lookup, fill_phone
 from .driver import DriverError, NotActionable, PageContextLost, PageDriver
 from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page, detect_ats
@@ -84,6 +89,7 @@ from .signals import (
     application_records,
     confirmation_references,
     job_ids,
+    lookup_matches,
 )
 from .snapshot import DomButton, DomSnapshot, inspector_script
 
@@ -241,9 +247,14 @@ class GenericApplicationBrowser:
         on_close: Callable[[], Awaitable[None]] | None = None,
         annotator: FormAnnotator | None = None,
         schema_hint_loader: SchemaHintLoader | None = None,
+        menus: MenuProbe | None = None,
     ) -> None:
         self.driver = driver
         self.options = options
+        self.menus = menus or MenuProbe()
+        """Probed menu controls of the current document (and the probing budget)."""
+        self.probe_menus = True
+        self._observing = False
         requested_policy = policy or ActionPolicy()
         self.policy = ActionPolicy(
             automation_may_navigate=requested_policy.automation_may_navigate,
@@ -274,11 +285,13 @@ class GenericApplicationBrowser:
     # --- inspection -----------------------------------------------------------------
 
     async def _snapshot(self) -> DomSnapshot:
+        """One read-only inspection, with the menus probed earlier in this document
+        attached (probing itself happens only in ``_model``)."""
         last_error: Exception | None = None
         for _ in range(3):
             try:
                 raw = await self.driver.evaluate(inspector_script())
-                return DomSnapshot.model_validate(raw)
+                return self.menus.merge(DomSnapshot.model_validate(raw))
             except DriverError:
                 raise
             except Exception as exc:  # e.g. the context was destroyed by a navigation
@@ -286,7 +299,21 @@ class GenericApplicationBrowser:
                 await self.driver.settle(self.settle_timeout_s)
         raise DriverError(f"could not inspect the page: {last_error}")
 
-    async def _model(self, *, evidence: str | None = None, html: bool = False) -> PageModel:
+    async def _probe(self, model: PageModel) -> bool:
+        """Probe the application form's closed menu controls that are not cached yet
+        (bounded; see ``MenuProbe``). True when the page was touched and must be re-read
+        with every menu closed again."""
+        if model.form is None:
+            return False
+        targets = self.menus.targets(model.snapshot, model.form_index)
+        return bool(targets) and await self.menus.probe(self.driver, targets)
+
+    async def _model(self, *, evidence: str | None = None, html: bool = False,
+                     probe: bool = True) -> PageModel:
+        # Menus are probed before semantic annotation, so every observation signature
+        # below is computed with the menus closed again and probing is never taken for
+        # a form change.
+        probe = probe and self.probe_menus and not self._observing
         # Read identity on both sides of inspection and provider work. A semantic
         # answer is never applied to a document or binding the provider did not see.
         for _ in range(3):
@@ -294,6 +321,12 @@ class GenericApplicationBrowser:
             snapshot = await self._snapshot()
             model = build_page(snapshot, fallback_step=self._steps_advanced,
                                http_status=self.driver.last_status)
+            if probe:
+                probe = False
+                if await self._probe(model):
+                    snapshot = await self._snapshot()
+                    model = build_page(snapshot, fallback_step=self._steps_advanced,
+                                       http_status=self.driver.last_status)
             if self.annotator is None or model.form is None:
                 break
             if document != str(await self.driver.evaluate(_DOCUMENT_IDENTITY)):
@@ -475,10 +508,15 @@ class GenericApplicationBrowser:
         return inspection
 
     async def observe(self, url: str) -> PageInspection:
-        """Open precisely this URL and classify it without following or acting on forms."""
-        await self.driver.goto(url)
-        await self._await_ready()
-        return await self.inspect()
+        """Open precisely this URL and classify it without following or acting on forms
+        (menus are not expanded either)."""
+        self._observing = True
+        try:
+            await self.driver.goto(url)
+            await self._await_ready()
+            return await self.inspect()
+        finally:
+            self._observing = False
 
     async def _follow_apply(self, model: PageModel) -> bool:
         link = next((lk for lk in model.snapshot.links if APPLY_LINK.search(lk.text)), None)
@@ -503,6 +541,21 @@ class GenericApplicationBrowser:
     # --- fill -----------------------------------------------------------------------
 
     async def fill(self, form: ApplicationForm, packet: ApplicationPacket) -> FillResult:
+        return await self._fill(form, packet, None)
+
+    async def fill_fields(
+        self, form: ApplicationForm, packet: ApplicationPacket, field_ids: Sequence[str]
+    ) -> FillResult:
+        """``SelectiveFill``: the checks of ``fill``, but only the listed fields that the
+        packet answers are operated and read back (after a lookup choice); every other
+        control is left exactly as it is and only those fields are reported."""
+        unknown = [field_id for field_id in field_ids if form.find(field_id) is None]
+        if unknown:
+            raise ValueError("fields are not on this form: " + ", ".join(unknown))
+        return await self._fill(form, packet, frozenset(field_ids))
+
+    async def _fill(self, form: ApplicationForm, packet: ApplicationPacket,
+                    only: frozenset[str] | None) -> FillResult:
         if self._context_lost and not self._inspected_after_loss:
             raise ValueError("the page changed while filling; inspect it again first")
         problems = packet.problems_against(form)
@@ -529,6 +582,8 @@ class GenericApplicationBrowser:
             for app_field in form.fields:
                 binding = model.bindings[app_field.id]
                 answer = packet.answer_for(app_field.id)
+                if only is not None and (app_field.id not in only or answer is None):
+                    continue  # a selective fill never touches or reports other controls
                 if lost is not None:
                     if answer is not None:
                         results.append(FieldFillResult(
@@ -548,6 +603,7 @@ class GenericApplicationBrowser:
                     lost = exc
                     self._context_lost = True
                     self._inspected_after_loss = False
+                    self.menus.reset()
                     results.append(FieldFillResult(
                         field_id=app_field.id, status=FieldFillStatus.FAILED, detail=str(exc)))
                 except DriverError as exc:  # per-field, page still the same: keep going
@@ -572,7 +628,8 @@ class GenericApplicationBrowser:
         # The packet authorized exactly the inspected questions; that stays the authority.
         self._filled = (form.scope.key, form.fingerprint)
         self._filled_structure = observation_signature(model)
-        after = await self._model(evidence=f"filled-step-{form.step}")
+        label = f"filled-step-{form.step}" if only is None else f"filled-step-{form.step}-again"
+        after = await self._model(evidence=label)
         await self._assert_fill_context()
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
         if (after.form is None or after.form.fingerprint != form.fingerprint
@@ -597,10 +654,12 @@ class GenericApplicationBrowser:
         except DriverError as exc:
             self._context_lost = True
             self._inspected_after_loss = False
+            self.menus.reset()
             raise PageContextLost("cannot verify the filling document; re-inspect before continuing") from exc
         if current != self._fill_document:
             self._context_lost = True
             self._inspected_after_loss = False
+            self.menus.reset()
             raise PageContextLost("the page changed while filling; re-inspect before continuing")
 
     async def _assert_fill_freshness(self) -> None:
@@ -634,6 +693,7 @@ class GenericApplicationBrowser:
         except PageContextLost:
             self._context_lost = True
             self._inspected_after_loss = False
+            self.menus.reset()
             raise
         except DriverError:
             # A per-field failure is recoverable only while the same document remains.
@@ -697,11 +757,40 @@ class GenericApplicationBrowser:
                                    detail=f"reads back {observed!r}")
 
         ctype = app_field.control_type
+        if isinstance(value, TextValue) and ctype is ControlType.TEXT and app_field.expects_international_phone:
+            # Typed as given: "+<code><number>" makes the widget's picker choose the
+            # country itself. The readback compares digits, not the widget's formatting.
+            phone: list[tuple[bool, str]] = []
+
+            async def type_phone() -> None:
+                phone.append(await fill_phone(self.driver, binding.selector, value.text))
+
+            await self._write(type_phone)
+            return result(*phone[0])
         if isinstance(value, TextValue) and ctype in (ControlType.TEXT, ControlType.TEXTAREA):
             await self._write(lambda: self.driver.fill(binding.selector, value.text))
             got = (await self._read(binding.selector)).get("value")
             text = value.text.replace("\r\n", "\n")
             return result(isinstance(got, str) and got.replace("\r\n", "\n") == text, got)
+        if isinstance(value, TextValue) and ctype is ControlType.TYPEAHEAD and binding.aria is not None:
+            outcomes: list[LookupOutcome] = []
+
+            async def look_up() -> None:
+                outcomes.append(await fill_lookup(
+                    self.driver, binding.selector, value.text, dict(binding.aria or {}),
+                    lookup_matches, before_action=self._assert_fill_freshness))
+
+            await self._write(look_up)
+            outcome = outcomes[0]
+            if outcome.chosen is None:
+                # Nothing committed and the input is empty again: one of the observed
+                # suggestions has to be chosen (and is then typed verbatim).
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.NEEDS_CHOICE,
+                                       detail=outcome.detail, suggestions=list(outcome.suggestions))
+            if outcome.verified:
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED)
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
+                                   detail=outcome.detail)
         if isinstance(value, ChoiceValue) and ctype is ControlType.SELECT:
             if binding.aria is not None:
                 selected: list[str] = []
@@ -712,6 +801,8 @@ class GenericApplicationBrowser:
                         before_action=self._assert_fill_freshness))
 
                 await self._write(select_accessible)
+                if selected == [value.value] and (binding.aria or {}).get("probed"):
+                    self.menus.confirm(binding.selector, value.value)
                 return result(selected == [value.value], selected)
             await self._write(lambda: self.driver.select_values(binding.selector, [value.value]))
             got = (await self._read(binding.selector)).get("values")
@@ -1084,7 +1175,8 @@ class GenericApplicationBrowser:
         loop = asyncio.get_running_loop()
         deadline = None if timeout_s is None else loop.time() + timeout_s
         while True:
-            model = await self._model()
+            # Never open a menu while the person may be operating the page.
+            model = await self._model(probe=False)
             if not self._needs_user(model):
                 break
             if deadline is not None and loop.time() >= deadline:

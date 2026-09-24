@@ -114,6 +114,21 @@ def _spellings(text: str, semantic_type: SemanticType) -> frozenset[str]:
     return frozenset(spellings)
 
 
+def is_united_states(country: str | None) -> bool:
+    """True for the spellings of the United States that country options accept
+    ("United States", "USA", "U.S.", ...)."""
+    return bool(country) and question_key(country) in _EQUIVALENTS[SemanticType.COUNTRY][0]
+
+
+def us_state_name(region: str) -> str | None:
+    """The state name for a two-letter US state abbreviation ("TX" -> "Texas",
+    "DC" -> "District of Columbia"); None for anything else."""
+    name = _US_STATES.get(question_key(region))
+    if name is None:
+        return None
+    return " ".join(word if word == "of" else word.capitalize() for word in name.split())
+
+
 # --- numeric ranges ------------------------------------------------------------------
 
 _UNIT = re.compile(r"\s*\b(?:years?|yrs?)\b\.?")
@@ -193,7 +208,8 @@ def translate(fld: ApplicationField, raw: RawValue, *, numeric_ranges: bool = Fa
     """Map ``raw`` onto ``fld``'s control, or explain why it cannot be mapped."""
     control = fld.control_type
     result: Translation
-    if control in (ControlType.TEXT, ControlType.TEXTAREA):
+    if control in (ControlType.TEXT, ControlType.TEXTAREA, ControlType.TYPEAHEAD):
+        # A lookup is typed as text; the site's matching suggestion is chosen later.
         result = _to_text(fld, raw)
     elif control in (ControlType.SELECT, ControlType.RADIO):
         result = _to_choice(fld, raw, numeric_ranges=numeric_ranges)

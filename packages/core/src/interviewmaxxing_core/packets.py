@@ -257,6 +257,8 @@ class MissingInput(Contract):
     semantic_type: SemanticType = SemanticType.UNKNOWN
     control_type: ControlType | None = None
     options: list[FieldOption] | None = None
+    """The field's options; for a lookup (``TYPEAHEAD``) item, the site's observed
+    suggestions (value = label) that the user may pick and have typed verbatim."""
     required: bool = True
     candidates: list[AnswerValue] = Field(default_factory=list)
     """For AMBIGUOUS: the plausible answers the user can choose between."""
@@ -379,7 +381,11 @@ class UserInput(Contract):
         *,
         reuse: AnswerReuse = AnswerReuse.APPLICATION,
     ) -> UserInput:
-        """Answer a ``MissingInput``; the value is checked against its options."""
+        """Answer a ``MissingInput``; the value is checked against its options.
+
+        A lookup (``TYPEAHEAD``) item may list the site's suggestions as ``options``
+        for the user to pick from; they are not field options, so the answer is a
+        ``TextValue`` checked like any text (the chosen label is typed verbatim)."""
         if (
             missing.field_id is None
             or missing.form_url is None
@@ -388,13 +394,14 @@ class UserInput(Contract):
         ):
             raise ValueError("USER_ACTION items are not answered with a UserInput")
         if missing.control_type is not None:
+            lookup = missing.control_type is ControlType.TYPEAHEAD
             probe = ApplicationField(
                 id=missing.field_id,
                 label=missing.label,
                 control_type=missing.control_type,
                 selector="-",
                 required=missing.required,
-                options=missing.options,
+                options=None if lookup else missing.options,
             )
             problems = answer_problems(probe, value)
             if problems:

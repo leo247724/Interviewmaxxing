@@ -117,17 +117,23 @@
     const role = el.getAttribute("role");
     const editable = el.hasAttribute("contenteditable") && el.isContentEditable;
     if (!(CUSTOM_ROLES.has(role) || editable)) continue;
+    // A list that is not shown is a closed popup (some menus leave theirs in the
+    // document after closing), never a question of its own.
+    if (role === "listbox" && !visible(el)) continue;
     if (el.querySelector("input:not([type=hidden]), select, textarea")) continue; // wraps native controls
     if (customWidgets.some((w) => w.contains(el))) continue;
     customWidgets.push(el);
   }
-  // Popups (listbox, menu) owned by a combobox belong to it.
+  // Popups (listbox, menu) owned by a combobox, or by a role-less input with a popup,
+  // belong to it.
   const ownedIds = new Set();
-  for (const w of [...customWidgets, ...nativeControls.filter(el => el.getAttribute("role") === "combobox")]) {
+  const owners = nativeControls.filter((el) => el.getAttribute("role") === "combobox" || el.hasAttribute("aria-haspopup"));
+  for (const w of [...customWidgets, ...owners]) {
     for (const attr of ["aria-controls", "aria-owns"]) {
       for (const id of (w.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) ownedIds.add(id);
     }
   }
+  const ownedEls = new Set(Array.from(ownedIds).map((id) => document.getElementById(id)).filter(Boolean));
   const widgets = customWidgets.filter((w) => !(w.id && ownedIds.has(w.id)));
   const fieldEls = new Set([...nativeControls, ...widgets]);
 
@@ -249,15 +255,28 @@
     return "";
   };
 
+  // A menu control's shown value or placeholder (a React select's "Select..." or "+1")
+  // is state, not part of the question; neither are live-region descriptions.
+  const comboDescribed = (el, displayNodes) =>
+    byIds(el.getAttribute("aria-describedby"))
+      .filter((d) => !displayNodes.some((n) => n === d || d.contains(n) || n.contains(d)))
+      .filter((d) => !d.closest('[aria-live],[role="log"],[role="status"]'))
+      .map((d) => ({ text: textOf(d), error: isErrorEl(d) }))
+      .filter((d) => d.text);
+
   const describeNative = (el) => {
     const members = groupMembers(el);
     const form = el.form;
     const container = containerFor(members, form);
-    const exclude = new Set();
+    const exclude = new Set(ownedEls);
     for (const m of members) for (const l of m.labels || []) exclude.add(l);
     for (const m of members) for (const d of byIds(m.getAttribute("aria-describedby"))) exclude.add(d);
     const fs = el.closest("fieldset");
     if (fs) for (const d of byIds(fs.getAttribute("aria-describedby"))) exclude.add(d);
+    const combo = comboLike(el);
+    const displayNodes = combo ? comboDisplayNodes(el) : [];
+    for (const n of displayNodes) exclude.add(n);
+    const picker = phonePicker(el);
     const [adjacent, adjacentErrors] = adjacentText(container, exclude);
     const [label, labelSource] = labelOf(el);
     const [legend, legendSelector, legendDescribed] = legendOf(el);
@@ -276,7 +295,7 @@
       autocomplete_list: (el.getAttribute("aria-autocomplete") || "") === "list",
       label,
       label_source: labelSource,
-      described: described(el),
+      described: combo ? comboDescribed(el, displayNodes) : described(el),
       error_message: errTarget && visible(errTarget) ? textOf(errTarget) : "",
       legend,
       legend_selector: legendSelector,
@@ -314,7 +333,8 @@
       image_alts: imgAlts(fs || container),
       form_index: formIndex(el),
       has_value: false,
-      aria: ariaObserve(el),
+      aria: ariaObserve(el) || comboFacts(el),
+      phone_picker: !picker ? "" : picker.kind === "combobox" ? "combobox:" + (picker.node.id || "") : picker.kind,
     };
   };
 
@@ -372,7 +392,8 @@
       image_alts: [],
       form_index: form ? forms.indexOf(form) : -1,
       has_value: hasValue,
-      aria: ariaObserve(el),
+      aria: ariaObserve(el) || comboFacts(el),
+      phone_picker: "",
     };
   };
 
@@ -387,6 +408,10 @@
   for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
     if (!visible(el)) continue;
     if (CUSTOM_ROLES.has(el.getAttribute("role") || "")) continue; // a widget, reported as a control
+    // A picker trigger (a phone widget's "Change country" button) opens a dialog or
+    // list; it is part of a control, never a step action, and its label is state.
+    if (el.tagName === "BUTTON" && (el.getAttribute("type") || "submit").toLowerCase() === "button" &&
+        ["dialog", "listbox"].includes((el.getAttribute("aria-haspopup") || "").toLowerCase())) continue;
     const isInput = el.tagName === "INPUT";
     const type = el.tagName === "BUTTON" ? (el.getAttribute("type") || "submit").toLowerCase()
       : isInput ? el.type.toLowerCase() : "role-button";
@@ -530,5 +555,6 @@
     captcha_tokens: tokens,
     captcha_widget: !!document.querySelector(".g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]"),
     loading_indicator: loadingIndicator,
+    document: String(performance.timeOrigin) + " " + location.href,
   };
 }

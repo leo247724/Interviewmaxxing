@@ -45,7 +45,7 @@ class CallReceipt:
 
 @dataclass
 class CallBudget:
-    max_calls: int = 32
+    max_calls: int = 48
     max_usd: float = 0.50
     max_request_bytes: int = 60000
     receipts: list[CallReceipt] = field(default_factory=list)

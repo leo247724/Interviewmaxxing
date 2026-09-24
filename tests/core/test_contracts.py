@@ -345,3 +345,63 @@ def test_typeahead_and_needs_choice_contract_seed() -> None:
     assert not result.ok
     assert result.failed_field_ids() == ["phone"]
     assert [f.field_id for f in result.needs_choice()] == ["loc"]
+
+
+def test_a_lookup_question_lists_suggestions_and_takes_the_picked_label_as_text() -> None:
+    from interviewmaxxing_core import (
+        ApplicationField,
+        ApplicationForm,
+        ChoiceValue,
+        ControlType,
+        FieldOption,
+        MissingInput,
+        MissingReason,
+        TextValue,
+        UserInput,
+    )
+
+    field = ApplicationField(id="loc", label="Location (City)", control_type=ControlType.TYPEAHEAD,
+                             selector="#loc", required=True)
+    form = ApplicationForm(url="http://127.0.0.1:9/apply", fields=[field])
+    suggestions = ["Austin, Texas, United States", "Austin, Minnesota, United States"]
+    item = MissingInput.for_field(form, field, reason=MissingReason.NO_ANSWER,
+                                  prompt="Choose the suggestion that is right for you.").model_copy(
+        update={"options": [FieldOption(value=s, label=s) for s in suggestions]})
+    picked = UserInput.answering(item, TextValue(text=suggestions[0]))
+    assert picked.value == TextValue(text=suggestions[0]) and picked.matches(form)
+    # Another value to look up is still text; a choice value is not.
+    assert UserInput.answering(item, TextValue(text="Austin, TX")).matches(form)
+    with pytest.raises(ValueError, match="cannot take a choice value"):
+        UserInput.answering(item, ChoiceValue(value=suggestions[0], label=suggestions[0]))
+    with pytest.raises(ValueError, match="empty answer"):
+        UserInput.answering(item, TextValue(text=" "))
+    # Real choice controls still check their own options.
+    select = item.model_copy(update={"control_type": ControlType.SELECT})
+    with pytest.raises(ValueError):
+        UserInput.answering(select, ChoiceValue(value="elsewhere", label="Elsewhere"))
+
+
+def test_suggestion_chooser_and_selective_fill_are_optional_runtime_protocols() -> None:
+    from interviewmaxxing_core.interfaces import (
+        ApplicationBrowser,
+        PacketResolver,
+        SelectiveFill,
+        SuggestionChooser,
+    )
+
+    class Resolver:
+        async def resolve(self, context):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+    class Chooser(Resolver):
+        async def choose_suggestion(self, context, field, typed_value, suggestions):  # type: ignore[no-untyped-def]
+            return None
+
+    assert isinstance(Resolver(), PacketResolver) and not isinstance(Resolver(), SuggestionChooser)
+    assert isinstance(Chooser(), SuggestionChooser)
+
+    class Refill:
+        async def fill_fields(self, form, packet, field_ids):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+    assert isinstance(Refill(), SelectiveFill) and not isinstance(Refill(), ApplicationBrowser)

@@ -128,6 +128,7 @@ def question_id(missing: MissingInput) -> str:
 _ANSWERABLE_CONTROLS = {
     ControlType.TEXT,
     ControlType.TEXTAREA,
+    ControlType.TYPEAHEAD,
     ControlType.SELECT,
     ControlType.RADIO,
     ControlType.MULTISELECT,
@@ -174,6 +175,10 @@ _CONTROLS: dict[ControlType, QuestionControl] = {
 
 
 def _control(missing: MissingInput) -> QuestionControl:
+    if missing.control_type is ControlType.TYPEAHEAD:
+        # A lookup with the site's suggestions is picked like a select; without
+        # suggestions the person types the place or entity to look up.
+        return "single_select" if missing.options else "text"
     return _CONTROLS.get(missing.control_type or ControlType.TEXT, "text")
 
 
