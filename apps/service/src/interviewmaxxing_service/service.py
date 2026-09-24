@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +43,7 @@ from interviewmaxxing_core import (
     normalize_application_url,
     sha256_file,
 )
+from interviewmaxxing_pipeline import PipelineItem
 
 from . import errors
 from .answers import plan_answers, unanswered_required
@@ -69,16 +71,17 @@ from .models import (
     UserConfirmedNotReceivedInput,
     UserFoundConfirmationInput,
 )
+from .summaries import StoreSnapshot, store_snapshot, url_alias
 from .views import (
     SAFE_ID,
     PriorRecord,
     Snapshot,
     application_view,
     awaited_inputs,
+    form_step_of,
     prepared_event,
-    preparing_run,
+    preparing_attempt,
     run_packet_ids,
-    summary_view,
 )
 
 log = logging.getLogger("interviewmaxxing.service")
@@ -127,6 +130,29 @@ _DOWNLOAD_TYPES = {
 }
 
 
+class _LoadOnUse(Mapping[str, str]):
+    """A mapping read from ``load`` the first time a value is asked for, so a view that
+    needs no saved-answer wording never reads the profile."""
+
+    def __init__(self, load: Callable[[], Mapping[str, str]]) -> None:
+        self._load = load
+        self._data: Mapping[str, str] | None = None
+
+    def _loaded(self) -> Mapping[str, str]:
+        if self._data is None:
+            self._data = self._load()
+        return self._data
+
+    def __getitem__(self, key: str) -> str:
+        return self._loaded()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._loaded())
+
+    def __len__(self) -> int:
+        return len(self._loaded())
+
+
 class PresentationService:
     def __init__(
         self,
@@ -146,6 +172,9 @@ class PresentationService:
         ``review``; optional."""
         self.owner = f"service:{os.getpid()}"
         self.application_links: ApplicationLinks | None = None
+        self._wording: dict[str, tuple[int, dict[str, str]]] = {}
+        """Application id -> (its version, the saved-answer wording its review used)."""
+        self._wording_lock = threading.Lock()
 
     # --- plumbing -------------------------------------------------------------------
 
@@ -226,7 +255,9 @@ class PresentationService:
             review_packets=review_packets,
             saved_questions=(
                 {} if app.state in _WORKING
-                else self._saved_questions([*review_packets, *([packet] if packet else [])])
+                else _LoadOnUse(lambda: self._saved_wording(
+                    app, [*review_packets, *([packet] if packet else [])]
+                ))
             ),
         )
         return application_view(snap, public_base=self.config.public_base)
@@ -236,21 +267,38 @@ class PresentationService:
         store: ApplicationStore, app: Application, events: Sequence[ApplicationEvent]
     ) -> list[ApplicationPacket]:
         """For a prepared application, the latest packet of each step of the preparing
-        run, so the review covers every page and not only the final one."""
+        attempt, so the review covers every page and not only the final one: pages
+        filled before a question round included, a failed run's pages not."""
         prepared = prepared_event(events) if app.state is S.NEEDS_INPUT else None
         if prepared is None:
             return []
         packets = []
-        for packet_id in run_packet_ids(preparing_run(events, prepared)):
+        attempt = preparing_attempt(events, prepared)
+        for packet_id in run_packet_ids(attempt, last_step=form_step_of(prepared)):
             try:
                 packets.append(store.get_packet(packet_id))
             except NotFound:
                 continue
         return packets
 
-    def _saved_questions(self, packets: list[ApplicationPacket]) -> dict[str, str]:
+    def _saved_wording(self, app: Application, packets: list[ApplicationPacket]) -> dict[str, str]:
+        """``_saved_questions`` once per application version: the packets a view uses
+        change only with the version, so repeated status reads, answers and resumes do
+        not read the profile from disk again. A failed read is not kept."""
+        with self._wording_lock:
+            kept = self._wording.get(app.id)
+        if kept is not None and kept[0] == app.version:
+            return kept[1]
+        wording = self._saved_questions(packets)
+        if wording is None:
+            return {}
+        with self._wording_lock:
+            self._wording[app.id] = (app.version, wording)
+        return wording
+
+    def _saved_questions(self, packets: list[ApplicationPacket]) -> dict[str, str] | None:
         """Saved-answer id -> the question it was saved for, for the saved answers these
-        packets used. Empty when none were used or the profile can't be read."""
+        packets used; empty when none were used. None when the profile can't be read."""
         wanted = {
             ref
             for packet in packets
@@ -264,9 +312,9 @@ class PresentationService:
             profile = self.profile_loader()
         except Exception as exc:
             log.warning("reading saved answers for a review failed: %s", type(exc).__name__)
-            return {}
+            return None
         if profile is None:
-            return {}
+            return None
         return {saved.id: saved.question for saved in profile.saved_answers if saved.id in wanted}
 
     @staticmethod
@@ -455,51 +503,48 @@ class PresentationService:
 
     def list_applications(self) -> ApplicationListView:
         """Every application of the configured candidate, most recently updated first,
-        with its preparation state and the pipeline cards that point at it."""
+        with its preparation state and the pipeline cards that point at it. One read of
+        the store with a fixed number of queries (``summaries``), however many
+        applications and cards there are."""
         cid = self.config.candidate_id
-        with self._store() as store:
-            cards = self._cards_by_application(store)
-            rows = []
-            for app in store.list_applications(candidate_id=cid):
-                requests = store.list_requests(app.id)
-                if not requests:
-                    continue
-                events = store.list_events(app.id)
-                prepared = app.state is S.NEEDS_INPUT and prepared_event(events) is not None
-                snap = Snapshot(
-                    application=app,
-                    job=store.get_job(app.job_id),
-                    request=next((r for r in requests if r.id == app.request_id), requests[0]),
-                    events=events,
-                    evidence=store.list_evidence(app.id) if prepared else (),
-                )
-                rows.append(summary_view(snap, public_base=self.config.public_base,
-                                         pipeline_entry_ids=cards.get(app.id, [])))
+        items = self._pipeline_items()
+        with self._store(), store_snapshot(self.config.paths.state_db) as snapshot:
+            cards = self._cards_by_application(snapshot, items)
+            rows = snapshot.summaries(cid, public_base=self.config.public_base, cards=cards)
         rows.sort(key=lambda row: row.updated_at, reverse=True)
         return ApplicationListView(applications=rows)
 
-    def _cards_by_application(self, store: ApplicationStore) -> dict[str, list[str]]:
-        """Pipeline card ids per application: cards linked to it, and unlinked cards whose
-        application URL the store resolves to it (its own normalization and aliases)."""
+    def _pipeline_items(self) -> list[PipelineItem]:
         links = self.application_links
         if links is None:
-            return {}
+            return []
         try:
             with links.pipeline.store() as pipeline:
-                items = pipeline.list_items(links.pipeline.candidate_id)
+                return pipeline.list_items(links.pipeline.candidate_id)
         except Exception as exc:
             log.warning("reading pipeline cards for the application list failed: %s",
                         type(exc).__name__)
-            return {}
+            return []
+
+    def _cards_by_application(
+        self, snapshot: StoreSnapshot, items: Sequence[PipelineItem]
+    ) -> dict[str, list[str]]:
+        """Pipeline card ids per application: cards linked to it, and unlinked cards whose
+        application URL the store resolves to it (its own normalization and aliases), in
+        one alias query for all unlinked cards."""
+        aliases: dict[str, str] = {}
+        for item in items:
+            if item.application_id is None and item.application_url:
+                try:
+                    aliases[item.id] = url_alias(item.application_url)
+                except (InvalidApplicationUrl, ValueError):
+                    continue
+        found = snapshot.applications_by_alias(self.config.candidate_id, set(aliases.values()))
         out: dict[str, list[str]] = {}
         for item in items:
             app_id = item.application_id
-            if app_id is None and item.application_url:
-                try:
-                    found = store.find_application(self.config.candidate_id, item.application_url)
-                except (InvalidApplicationUrl, ValueError):
-                    found = None
-                app_id = found.id if found is not None else None
+            if app_id is None and item.id in aliases:
+                app_id = found.get(aliases[item.id])
             if app_id is not None:
                 out.setdefault(app_id, []).append(item.id)
         return out

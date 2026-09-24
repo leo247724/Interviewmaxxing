@@ -71,7 +71,10 @@ QUESTIONS_PAGE = make_form(QUESTIONS_URL, 1, [
     make_field("fld_rv_cover", "Cover letter", T.TEXTAREA, SemanticType.COVER_LETTER),
     make_field("fld_rv_why", "Why do you want to join Fictional Co?", T.TEXTAREA,
                SemanticType.CUSTOM_TEXT, required=True, help_text="A few sentences are enough."),
-    make_field("fld_rv_summary", "Summarize a recent campaign", T.TEXT, SemanticType.CUSTOM_TEXT),
+    # A text area (a single-line field refuses a typed line break, f850949) that is never
+    # asked, so only its line break makes it long text.
+    make_field("fld_rv_summary", "Summarize a recent campaign", T.TEXTAREA,
+               SemanticType.CUSTOM_TEXT),
     make_field("fld_rv_story", "Tell us a short story", T.TEXT, SemanticType.CUSTOM_LONG_TEXT),
     make_field("fld_rv_hobby", "What do you do outside work?", T.TEXTAREA,
                SemanticType.CUSTOM_TEXT),
@@ -415,9 +418,25 @@ def test_review_takes_the_latest_packet_of_each_step_of_the_run(
     ]
 
 
-def test_review_ignores_packets_of_earlier_runs(served: Harness, scenario: Scenario) -> None:
+def answer_the_motto(h: Harness, scenario: Scenario, app_id: str) -> None:
+    [motto_question] = view(h, app_id)["needs"]["questions"]
+    saved = h.client.post(f"/applications/{app_id}/answers", {
+        "answers": {motto_question["id"]: "Calm is fast."}, "attestations": {},
+    })
+    assert saved.status == 200 and saved.json["needs"]["errors"] == {}, saved.json
+    resume(h, scenario, app_id)
+
+
+def test_review_keeps_pages_filled_before_a_question_round(
+    served: Harness, scenario: Scenario
+) -> None:
+    """Page 1 is filled, the run stops for a page-2 question, and the resumed run carries
+    on in the draft the site kept, from page 2. The site still holds page 1's answers, so
+    the review lists them (WP11 M5); the evidence is still the preparing run's only."""
+
     def asks(ctx: RunContext) -> None:
         ctx.fill(STEP0, [first_name("Avery")])
+        ctx.screenshot("question-1.png", "page 2 when the run stopped for a question")
         ctx.ask(STEP1, [city("Austin, TX, USA")], [question(STEP1, "fld_rs_motto")])
 
     def resumes_on_page_two(ctx: RunContext) -> None:
@@ -431,16 +450,74 @@ def test_review_ignores_packets_of_earlier_runs(served: Harness, scenario: Scena
     started = served.start()
     app_id = str(started.json["id"])
     scenario.settle(served)
-    [motto_question] = view(served, app_id)["needs"]["questions"]
-    saved = served.client.post(f"/applications/{app_id}/answers", {
-        "answers": {motto_question["id"]: "Calm is fast."}, "attestations": {},
-    })
-    assert saved.status == 200 and saved.json["needs"]["errors"] == {}, saved.json
+    answer_the_motto(served, scenario, app_id)
+    body = view(served, app_id)
+    assert body["preparation"] is not None
+    assert pages_and_values(body["review"]) == [
+        (1, "Avery"), (2, "Austin, TX, USA"), (2, "Calm is fast."), (3, "avery@example.test"),
+    ]
+    [question_shot] = scenario.contexts[0].evidence
+    [review_shot] = scenario.contexts[1].evidence
+    assert [e["href"] for e in body["preparation"]["evidence"]] == [
+        f"/api/imx/applications/{app_id}/evidence/{review_shot.id}"
+    ]
+    assert question_shot.id not in str(body["preparation"])
+
+
+def test_review_starts_over_after_a_failure(served: Harness, scenario: Scenario) -> None:
+    """A failed run is a new start: its pages are not part of the prepared form's review."""
+
+    def fails_on_page_two(ctx: RunContext) -> None:
+        ctx.fill(STEP0, [first_name("Ashley")])
+        ctx.fail("Stopped by a fictional browser error on page 2.")
+
+    def retries_from_page_two(ctx: RunContext) -> None:
+        ctx.fill(STEP1, [city("Austin, TX, USA"), motto("Calm is fast.")])
+        ctx.prepare(STEP2, ctx.fill(STEP2, [email()]))
+
+    scenario.then(fails_on_page_two, retries_from_page_two)
+    started = served.start()
+    app_id = str(started.json["id"])
+    scenario.settle(served)
+    assert view(served, app_id)["state"] == "FAILED_RETRYABLE"
     resume(served, scenario, app_id)
     body = view(served, app_id)
     assert body["preparation"] is not None
     assert pages_and_values(body["review"]) == [
         (2, "Austin, TX, USA"), (2, "Calm is fast."), (3, "avery@example.test"),
+    ]
+
+
+def test_review_leaves_out_pages_after_the_final_step(served: Harness, scenario: Scenario) -> None:
+    """An earlier round saw a longer form; the prepared form ends at page 2, so the
+    earlier round's page 3 is not a page of it."""
+    short_final = make_form(QUESTIONS_URL, 1, list(STEP1.fields), final=True)
+    step1_open = make_form(QUESTIONS_URL, 1, list(STEP1.fields), final=False)
+
+    def asks_on_page_three(ctx: RunContext) -> None:
+        ctx.fill(STEP0, [first_name("Avery")])
+        ctx.fill(step1_open, [city("Austin, TX, USA"), motto("Calm is fast.")])
+        ctx.ask(STEP2, [], [question(STEP2, "fld_rs_email")])
+
+    def prepares_two_pages(ctx: RunContext) -> None:
+        ctx.fill(STEP0, [first_name("Avery")])
+        packet = ctx.fill(short_final, [city("Austin, TX, USA"), motto("Calm is fast.")])
+        ctx.prepare(short_final, packet)
+
+    scenario.then(asks_on_page_three, prepares_two_pages)
+    started = served.start()
+    app_id = str(started.json["id"])
+    scenario.settle(served)
+    [email_question] = view(served, app_id)["needs"]["questions"]
+    saved = served.client.post(f"/applications/{app_id}/answers", {
+        "answers": {email_question["id"]: "avery@example.test"}, "attestations": {},
+    })
+    assert saved.status == 200 and saved.json["needs"]["errors"] == {}, saved.json
+    resume(served, scenario, app_id)
+    body = view(served, app_id)
+    assert body["preparation"]["formStep"] == 1
+    assert pages_and_values(body["review"]) == [
+        (1, "Avery"), (2, "Austin, TX, USA"), (2, "Calm is fast."),
     ]
 
 

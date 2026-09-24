@@ -3,6 +3,7 @@ each with its preparation and the pipeline cards that point at it."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from interviewmaxxing_core import (
 from interviewmaxxing_pipeline import PipelineUpdate
 from interviewmaxxing_service import ServiceInteraction
 
+from .board_support import KINDS, PREPARED_KINDS, count_statements, seed_board
 from .conftest import SITE_URL, FakeCandidates, FictionalSite, Harness, serve
 from .preparation_support import RunContext, Scenario, answer, make_field, make_form
 
@@ -216,3 +218,57 @@ def test_posting_still_starts_an_application_which_is_then_listed(harness: Harne
     assert row["state"] == "NEEDS_INPUT"  # the scripted site asks questions
     assert row["preparation"] is None
     assert row["pipelineEntryIds"] == []
+
+
+# --- one read per list, however large the board (WP11 M6) ---------------------------------------
+
+
+def board_statements(h: Harness) -> tuple[list[dict[str, Any]], list[str]]:
+    with count_statements() as statements:
+        rows = h.service.list_applications().dump()["applications"]
+    return rows, statements
+
+
+def test_list_matches_each_detail_view_on_a_board_of_every_shape(harness: Harness) -> None:
+    board = seed_board(harness.paths, applications=2 * len(KINDS))
+    rows = listed(harness)
+    assert {row["id"] for row in rows} == set(board.applications)
+    updated = [row["updatedAt"] for row in rows]
+    assert updated == sorted(updated, reverse=True)
+    for row in rows:
+        detail = view(harness, row["id"])
+        assert {k: row[k] for k in SHARED_KEYS} == {k: detail[k] for k in SHARED_KEYS}, row["id"]
+        assert (row["preparation"] is not None) == (board.applications[row["id"]] in PREPARED_KINDS)
+    pointed = {card: app for card, app in board.cards.items() if app is not None}
+    listed_cards = {card: row["id"] for row in rows for card in row["pipelineEntryIds"]}
+    assert listed_cards == pointed
+    # A prepared stop's review page address keeps no draft token (WP11 L8).
+    prepared = [row["preparation"] for row in rows if row["preparation"] is not None]
+    assert prepared and all("?" not in p["formUrl"] and "token" not in p["formUrl"] for p in prepared)
+
+
+def test_list_reads_the_store_with_a_fixed_number_of_statements(harness: Harness) -> None:
+    seed_board(harness.paths, applications=len(KINDS), cards=len(KINDS))
+    small, few = board_statements(harness)
+    seed_board(harness.paths, applications=3 * len(KINDS), cards=5 * len(KINDS),
+               start=len(KINDS))
+    large, many = board_statements(harness)
+    assert len(small) == len(KINDS) and len(large) == 4 * len(KINDS)
+    assert sum(len(row["pipelineEntryIds"]) for row in large) > sum(
+        len(row["pipelineEntryIds"]) for row in small)
+    # The same statements for four times the applications and six times the cards: no
+    # per-application history read, no per-card alias lookup.
+    assert len(many) == len(few), [s for s in many if s not in few][:5]
+    assert not any("FROM events WHERE application_id = ?" in s for s in many)
+    reads = [s for s in many if s.lstrip().upper().startswith(("SELECT", "WITH"))]
+    assert len(reads) <= 30, len(reads)
+
+
+def test_list_of_a_large_board_stays_fast(harness: Harness) -> None:
+    seed_board(harness.paths, applications=200)
+    harness.service.list_applications()  # warm the file cache
+    started = time.perf_counter()
+    rows = harness.service.list_applications().applications
+    elapsed = time.perf_counter() - started
+    assert len(rows) == 200
+    assert elapsed < 0.5, f"listing 200 applications took {elapsed:.3f}s"

@@ -12,7 +12,8 @@ Nothing is inferred beyond what the store recorded:
   wording and options, or a browser interaction (sign-in, CAPTCHA).
 * ``preparation`` for a NEEDS_INPUT stop recorded right after ``preparation.ready``: the
   form was filled to its final review step and nothing was submitted. Such a stop is
-  not a request for input, so ``needs`` then lists only questions that remain.
+  not a request for input, so ``needs`` then lists only questions that remain. Its
+  ``formUrl`` is the review page's scheme, host and path only (``page_address``).
 * ``review``: the filled answers, with the recorded wording where there is one and no
   internal ids.
 
@@ -26,10 +27,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import ValidationError
 
@@ -58,7 +60,6 @@ from interviewmaxxing_core.packets import BooleanValue, ChoiceValue, MultiChoice
 
 from .models import (
     ApplicationEventView,
-    ApplicationSummaryView,
     ApplicationView,
     AttestationView,
     ConfirmationAuthority,
@@ -128,10 +129,13 @@ class Snapshot:
     running: RunStatus | None = None
     answer_errors: Mapping[str, str] = field(default_factory=dict)
     review_packets: Sequence[ApplicationPacket] = ()
-    """For a prepared application, the latest packet of each form step saved by the
-    preparing run (``run_packet_ids``); the review list falls back to ``packet``."""
+    """For a prepared application, the latest packet of each form step saved in the
+    preparing attempt, question rounds included (``preparing_attempt``,
+    ``run_packet_ids``); the review list falls back to ``packet``."""
     saved_questions: Mapping[str, str] = field(default_factory=dict)
-    """Saved-answer id -> the question it was saved for, from the candidate profile."""
+    """Saved-answer id -> the question it was saved for, from the candidate profile. Read
+    only for a review row that has no other recorded wording (the service passes a
+    mapping that loads on first use)."""
 
 
 # --- questions --------------------------------------------------------------------------
@@ -443,6 +447,9 @@ def evidence_view(public_base: str, application_id: str, evidence: EvidenceRef) 
 PREPARED_EVENT = "preparation.ready"
 _RUN_STATES = frozenset({S.INSPECTING, S.PACKET_READY, S.FILLING})
 """States a run passes through between two stops."""
+_ATTEMPT_STARTS = frozenset({S.REQUESTED, S.FAILED_RETRYABLE, S.FAILED_PERMANENT, S.DUPLICATE})
+"""Transitions after which the form is filled from the start again. A question stop
+(NEEDS_INPUT) is not one: the resumed run carries on in the draft the site kept."""
 
 
 def prepared_event(events: Sequence[ApplicationEvent]) -> ApplicationEvent | None:
@@ -468,25 +475,49 @@ def prepared_event(events: Sequence[ApplicationEvent]) -> ApplicationEvent | Non
     return None
 
 
-def preparing_run(
-    events: Sequence[ApplicationEvent], prepared: ApplicationEvent
+def _events_since(
+    events: Sequence[ApplicationEvent],
+    prepared: ApplicationEvent,
+    starts: Callable[[ApplicationState], bool],
 ) -> list[ApplicationEvent]:
-    """The events of the run that recorded ``prepared``: after the previous stop (the
-    last transition into a state a run does not pass through) up to ``prepared``."""
+    """The events after the last transition before ``prepared`` into a state that
+    ``starts`` accepts, up to and including ``prepared``."""
     end = next((i for i, e in enumerate(events) if e.id == prepared.id), None)
     if end is None:
         return []
     start = 0
     for i in range(end - 1, -1, -1):
         to_state = events[i].to_state
-        if to_state is not None and to_state not in _RUN_STATES:
+        if to_state is not None and starts(to_state):
             start = i + 1
             break
     return list(events[start : end + 1])
 
 
-def run_packet_ids(run: Sequence[ApplicationEvent]) -> list[str]:
-    """The latest packet saved for each form step in ``run``, in step order."""
+def preparing_run(
+    events: Sequence[ApplicationEvent], prepared: ApplicationEvent
+) -> list[ApplicationEvent]:
+    """The events of the run that recorded ``prepared``: after the previous stop (the
+    last transition into a state a run does not pass through) up to ``prepared``. Its
+    evidence is the prepared form's; an earlier stop's screenshots are not."""
+    return _events_since(events, prepared, lambda state: state not in _RUN_STATES)
+
+
+def preparing_attempt(
+    events: Sequence[ApplicationEvent], prepared: ApplicationEvent
+) -> list[ApplicationEvent]:
+    """The events of the attempt that ``prepared`` completed: after the last request,
+    failure or DUPLICATE transition up to ``prepared``, through any question stops. A
+    run resumed after the user answers carries on in the draft the site kept, so the
+    pages filled before the question round are still part of the form under review."""
+    return _events_since(events, prepared, lambda state: state in _ATTEMPT_STARTS)
+
+
+def run_packet_ids(
+    run: Sequence[ApplicationEvent], *, last_step: int | None = None
+) -> list[str]:
+    """The latest packet saved for each form step in ``run``, in step order. Steps after
+    ``last_step`` (the final step, when known) are not pages of the form under review."""
     latest: dict[int, str] = {}
     for event in run:
         if event.event != "packet.saved":
@@ -494,17 +525,65 @@ def run_packet_ids(run: Sequence[ApplicationEvent]) -> list[str]:
         step, packet_id = event.metadata.get("form_step"), event.metadata.get("packet_id")
         if isinstance(step, int) and isinstance(packet_id, str):
             latest[step] = packet_id
-    return [latest[step] for step in sorted(latest)]
+    return [
+        latest[step] for step in sorted(latest) if last_step is None or step <= last_step
+    ]
 
 
-def _run_evidence_ids(run: Sequence[ApplicationEvent]) -> set[str]:
+def form_step_of(event: ApplicationEvent) -> int | None:
+    """The 0-based form step a ``preparation.ready`` event records, if any."""
+    step = event.metadata.get("form_step")
+    return step if isinstance(step, int) and not isinstance(step, bool) else None
+
+
+EVIDENCE_EVENT = "evidence.recorded"
+
+
+def recorded_evidence_ids(metadata: Mapping[str, Any]) -> set[str]:
+    """The evidence ids an ``evidence.recorded`` event lists."""
+    recorded = metadata.get("evidence_ids")
+    return {i for i in recorded if isinstance(i, str)} if isinstance(recorded, list) else set()
+
+
+def run_evidence_ids(run: Sequence[ApplicationEvent]) -> set[str]:
     ids: set[str] = set()
     for event in run:
-        if event.event == "evidence.recorded":
-            recorded = event.metadata.get("evidence_ids")
-            if isinstance(recorded, list):
-                ids.update(i for i in recorded if isinstance(i, str))
+        if event.event == EVIDENCE_EVENT:
+            ids |= recorded_evidence_ids(event.metadata)
     return ids
+
+
+def page_address(url: str) -> str | None:
+    """``scheme://host[:port]/path`` of an http(s) page. The query and fragment are
+    dropped because sites put per-session draft tokens there, and so is any user name or
+    password; None for anything that is not an http(s) URL."""
+    try:
+        parts = urlsplit(url.strip())
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            return None
+    except ValueError:
+        return None
+    return urlunsplit((parts.scheme, parts.netloc.rpartition("@")[2], parts.path, "", ""))
+
+
+def prepared_view(
+    event: ApplicationEvent,
+    evidence: Sequence[EvidenceRef],
+    *,
+    application_id: str,
+    public_base: str,
+) -> PreparationView:
+    """The ``preparation`` of a prepared stop from its ``preparation.ready`` event and the
+    evidence its run recorded (``preparing_run``)."""
+    meta = event.metadata
+    url = meta.get("form_url")
+    return PreparationView(
+        form_step=form_step_of(event),
+        form_url=page_address(url) if isinstance(url, str) else None,
+        captcha_pending=meta.get("captcha_pending") is True,
+        prepared_at=iso(event.timestamp),
+        evidence=[evidence_view(public_base, application_id, e) for e in evidence],
+    )
 
 
 def preparation_view(snap: Snapshot, public_base: str) -> PreparationView | None:
@@ -514,15 +593,10 @@ def preparation_view(snap: Snapshot, public_base: str) -> PreparationView | None
     event = prepared_event(snap.events)
     if event is None:
         return None
-    meta = event.metadata
-    step, url = meta.get("form_step"), meta.get("form_url")
-    recorded = _run_evidence_ids(preparing_run(snap.events, event))
-    return PreparationView(
-        form_step=step if isinstance(step, int) and not isinstance(step, bool) else None,
-        form_url=url if isinstance(url, str) and url.strip() else None,
-        captcha_pending=meta.get("captcha_pending") is True,
-        prepared_at=iso(event.timestamp),
-        evidence=[evidence_view(public_base, app.id, e) for e in snap.evidence if e.id in recorded],
+    recorded = run_evidence_ids(preparing_run(snap.events, event))
+    return prepared_view(
+        event, [e for e in snap.evidence if e.id in recorded],
+        application_id=app.id, public_base=public_base,
     )
 
 
@@ -655,8 +729,9 @@ def _review_value(
 
 
 def review_view(snap: Snapshot) -> list[ReviewAnswerView]:
-    """The filled answers in form order: every page of the preparing run for a prepared
-    application, otherwise the latest packet. No provenance ids, notes or paths."""
+    """The filled answers in form order: every page of the preparing attempt for a
+    prepared application, otherwise the latest packet. No provenance ids, notes or
+    paths."""
     packets = list(snap.review_packets) or ([snap.packet] if snap.packet is not None else [])
     recorded = recorded_questions(snap.events)
     out: list[ReviewAnswerView] = []
@@ -949,6 +1024,10 @@ def _prior_view(snap: Snapshot) -> PriorSubmissionView | None:
     )
 
 
+def job_identity_view(title: str | None, company: str | None, ats_type: str | None) -> JobIdentityView:
+    return JobIdentityView(title=title, company=company, ats=_ats_name(ats_type))
+
+
 def application_view(snap: Snapshot, *, public_base: str) -> ApplicationView:
     app = snap.application
     receipt = (
@@ -965,9 +1044,7 @@ def application_view(snap: Snapshot, *, public_base: str) -> ApplicationView:
         id=app.id,
         state=app.state.value,
         application_url=snap.request.application_url,
-        job=JobIdentityView(
-            title=snap.job.title, company=snap.job.company, ats=_ats_name(snap.job.ats_type)
-        ),
+        job=job_identity_view(snap.job.title, snap.job.company, snap.job.ats_type),
         requested_at=iso(snap.request.requested_at),
         updated_at=iso(app.updated_at),
         progress=progress,
@@ -980,24 +1057,4 @@ def application_view(snap: Snapshot, *, public_base: str) -> ApplicationView:
         events=events_view(snap.events),
         preparation=preparation_view(snap, public_base),
         review=review_view(snap),
-    )
-
-
-def summary_view(
-    snap: Snapshot, *, public_base: str, pipeline_entry_ids: Sequence[str] = ()
-) -> ApplicationSummaryView:
-    """One row of ``GET /applications``. Needs only the application, job, request,
-    events and (for a prepared application) evidence of ``snap``."""
-    app = snap.application
-    return ApplicationSummaryView(
-        id=app.id,
-        state=app.state.value,
-        application_url=snap.request.application_url,
-        job=JobIdentityView(
-            title=snap.job.title, company=snap.job.company, ats=_ats_name(snap.job.ats_type)
-        ),
-        requested_at=iso(snap.request.requested_at),
-        updated_at=iso(app.updated_at),
-        preparation=preparation_view(snap, public_base),
-        pipeline_entry_ids=list(pipeline_entry_ids),
     )

@@ -36,6 +36,8 @@ from .preparation_support import (
 from .test_http_flow import VIEW_KEYS, answer_all, poll
 
 REVIEW_URL = "http://127.0.0.1:9/fictional-co/4012/apply/review?src=desk"
+REVIEW_ADDRESS = "http://127.0.0.1:9/fictional-co/4012/apply/review"
+"""``formUrl`` of ``REVIEW_URL``: scheme, host and path only (WP11 L8)."""
 CONTACT = make_form(SITE_URL, 0, [
     make_field("fld_pv_first", "First name", ControlType.TEXT, SemanticType.FIRST_NAME,
                required=True),
@@ -170,7 +172,7 @@ def test_prepared_stop_is_a_review_not_a_request_for_input(
     assert {k: v for k, v in preparation.items() if k != "evidence"} == {
         "ready": True,
         "formStep": 1,
-        "formUrl": REVIEW_URL,
+        "formUrl": REVIEW_ADDRESS,
         "captchaPending": captcha_pending,
         "preparedAt": iso(ready.timestamp),
         "submitted": False,
