@@ -304,6 +304,14 @@ FAA_CERTIFICATE = Field(
     True,
     _options(("faa_yes", "Yes"), ("faa_no", "No")),
 )
+TRAVEL_REQUIREMENT = Field(
+    "travel_willingness",
+    "Are you willing to travel to client sites up to 25% of the time?",
+    "radio",
+    True,
+    _options(("travel_yes", "Yes"), ("travel_no", "No")),
+)
+"""The required question the ``changed-after-prepare`` form gains from its second load on."""
 ATTEST_ACCURACY = Field(
     "attest_accuracy",
     "I certify that the information in this application is true and complete "
@@ -564,6 +572,10 @@ class Job:
     fixture_identity: bool = False
     """Accepts only the fixture candidate's own identity values and resume file, so values
     page script wrote (a resume parser, LinkedIn) are rejected (fixture_identity_errors)."""
+    added_on_reload: Field | None = None
+    """A question the (single-step) form gains from the second load of its application
+    page on: the server counts ``GET /jobs/<job>/apply`` per job (``/__test__/reset``
+    clears the count), and renders and validates the changed form after the first."""
 
     @property
     def multistep(self) -> bool:
@@ -598,6 +610,7 @@ class Job:
             "autofill": self.autofill,
             "validity": self.validity,
             "fixture_identity": self.fixture_identity,
+            "added_on_reload": self.added_on_reload.describe() if self.added_on_reload else None,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -962,6 +975,19 @@ JOBS: dict[str, Job] = {
             _single(FIRST_NAME, LAST_NAME, EMAIL, PHONE, RESUME),
             fixture_identity=True,
         ),
+        Job(
+            "changed-after-prepare",
+            "BWA-DS-128",
+            "Decision Scientist",
+            "Data",
+            "Denver, CO (Hybrid)",
+            "The core questions on the first load of the application page; from the second "
+            "load on the form also asks a new required question (willing to travel), so an "
+            "application prepared on the first load no longer matches when it is opened "
+            "again. The server renders and validates whichever form it served last.",
+            _single(*CORE_FIELDS),
+            added_on_reload=TRAVEL_REQUIREMENT,
+        ),
     )
 }
 SCENARIO_JOBS = frozenset(
@@ -1025,6 +1051,7 @@ class Store:
             "drafts": {},
             "captchas": {},
             "sessions": {},
+            "loads": {},
         }
 
     def _save(self) -> None:
@@ -1042,6 +1069,18 @@ class Store:
                 path.unlink()
             self.data = self._empty()
             self._save()
+
+    # application page loads (a form that changes after its first load)
+    def count_load(self, job_id: str) -> int:
+        with self.lock:
+            loads = self.data.setdefault("loads", {})
+            loads[job_id] = loads.get(job_id, 0) + 1
+            self._save()
+            return int(loads[job_id])
+
+    def loads(self, job_id: str) -> int:
+        with self.lock:
+            return int(self.data.get("loads", {}).get(job_id, 0))
 
     # uploads
     def store_upload(self, upload: Upload) -> dict[str, Any]:
@@ -1447,8 +1486,8 @@ def city_matches(query: str, city: str) -> bool:
     return all(any(v.startswith(w) for v in vocabulary) for w in wanted)
 
 
-def _extra_fields(job: Job, form: dict[str, list[str]]) -> dict[str, Any]:
-    declared = {f.name for f in job.fields} | INTERNAL_FIELDS
+def _extra_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> dict[str, Any]:
+    declared = {f.name for f in fields} | INTERNAL_FIELDS
     return {
         name: vals if len(vals) > 1 else vals[0]
         for name, vals in form.items()
@@ -3496,11 +3535,19 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_html(HTTPStatus.OK, page(job.title, body, head))
 
+    def _fields(self, job: Job) -> tuple[Field, ...]:
+        """The single-step form's questions as the server currently serves them."""
+        if job.added_on_reload is not None and self.store.loads(job.slug) > 1:
+            return (*job.fields, job.added_on_reload)
+        return job.fields
+
     def get_apply(self, slug: str) -> None:
         job = self._job(slug)
         if job.requires_signin and not self._signed_in():
             self._redirect_to_login(job)
             return
+        if job.added_on_reload is not None:
+            self.store.count_load(job.slug)
         if job.multistep:
             self._render_step(job, None, 1, {}, {}, None, HTTPStatus.OK)
         else:
@@ -3521,8 +3568,9 @@ class Handler(BaseHTTPRequestHandler):
         prior = self.store.get_upload((form.get("resume_upload_id") or [""])[0])
         if prior:
             retained["resume"] = prior
+        fields = self._fields(job)
         values, files, errors = validate(
-            job.fields, form, uploads, retained, strict_phone=job.strict_phone
+            fields, form, uploads, retained, strict_phone=job.strict_phone
         )
         if job.fixture_identity:
             for name, message in fixture_identity_errors(job.fields, values, files).items():
@@ -3551,7 +3599,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        record = self.store.add_submission(job, values, _extra_fields(job, form), files_meta)
+        record = self.store.add_submission(job, values, _extra_fields(fields, form), files_meta)
         if job.generic_thanks:
             # Accepted and counted; the page proves nothing about which application.
             body = "<h1>Thank you!</h1><p>We appreciate your interest.</p>"
@@ -3585,13 +3633,14 @@ class Handler(BaseHTTPRequestHandler):
         captcha_error: str | None,
         status: HTTPStatus,
     ) -> None:
-        entries = _summary_entries(job.fields, errors)
+        fields = self._fields(job)
+        entries = _summary_entries(fields, errors)
         if captcha_error:
             entries.append(("f-captcha_answer", "Characters shown in the image", captcha_error))
         if errors.get(CAPTCHA_WIDGET_FIELD):
             entries.append((CAPTCHA_WIDGET_FIELD, "CAPTCHA", errors[CAPTCHA_WIDGET_FIELD]))
         fields_html = _field_layout(job, [
-            (f, render_field(f, values, errors.get(f.name), retained.get(f.name))) for f in job.fields
+            (f, render_field(f, values, errors.get(f.name), retained.get(f.name))) for f in fields
         ])
         if job.captcha:
             fields_html += render_captcha(self.store.new_captcha(), captcha_error)
@@ -3627,7 +3676,7 @@ class Handler(BaseHTTPRequestHandler):
                 + fields_html
                 + submit + "</form>"
             )
-        widgets = any(f.scripted for f in job.fields)
+        widgets = any(f.scripted for f in fields)
         if widgets:
             form_html += f"<script>{WIDGETS_JS}</script>"
         if job.formless:
