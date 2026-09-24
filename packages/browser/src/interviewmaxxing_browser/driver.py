@@ -16,8 +16,9 @@ import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
-from playwright.async_api import ElementHandle, Page, Request, Response
+from playwright.async_api import ElementHandle, Frame, Page, Request, Response
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
@@ -150,10 +151,29 @@ def reject_control_characters(text: str, selector: str) -> None:
 
 
 
+DEEP_QUERY = (
+    "const deepFlat = (sel) => { let found; try { found = Array.from(document.querySelectorAll(sel)); } "
+    "catch (e) { return []; } if (found.length) return found; const roots = []; "
+    "for (const el of document.querySelectorAll('*')) if (el.shadowRoot) roots.push(el.shadowRoot); "
+    "for (let i = 0; i < roots.length && i < 50; i++) { for (const el of roots[i].querySelectorAll('*')) "
+    "if (el.shadowRoot) roots.push(el.shadowRoot); found.push(...roots[i].querySelectorAll(sel)); } "
+    "return found; }; "
+    "const deepAll = (sel) => { const parts = String(sel).split(' >> '); let found = deepFlat(parts[0]); "
+    "for (const part of parts.slice(1)) { const next = []; for (const host of found) { "
+    "try { next.push(...(host.shadowRoot || host).querySelectorAll(part)); } catch (e) { return []; } } "
+    "found = next; } return found; }; "
+    "const deepOne = (sel) => deepAll(sel)[0] || null; "
+)
+"""Read-only lookup shared by the fixed page scripts: a selector's matches in the
+document, or, only when there are none, inside open shadow roots (where some sites
+render their application dialog). ``host >> inner`` (the inspector's selector for an
+element inside a shadow root, which Playwright chains the same way) resolves ``inner``
+inside that host's shadow root."""
+
 # Read-only SHA-256 of the first file attached to a control (null when the page cannot
 # hash, e.g. no crypto.subtle in an insecure context).
 _FILE_DIGEST = (
-    "async (sel) => { const el = document.querySelector(sel); if (!el || !el.files || !el.files.length) "
+    "async (sel) => { " + DEEP_QUERY + "const el = deepOne(sel); if (!el || !el.files || !el.files.length) "
     "return null; if (!(globalThis.crypto && globalThis.crypto.subtle)) return null; const buf = await el.files[0].arrayBuffer(); "
     "const d = await crypto.subtle.digest('SHA-256', buf); "
     "return {origin: String(performance.timeOrigin), url: location.href, sha256: Array.from(new Uint8Array(d))"
@@ -320,6 +340,9 @@ _OUTSIDE_PRESS = ("pointerdown", "mousedown", "pointerup", "mouseup")
 class PlaywrightDriver:
     """``PageDriver`` over one Playwright ``Page``."""
 
+    attaches_files = True
+    """Playwright sets a file input's files directly."""
+
     def __init__(
         self,
         page: Page,
@@ -336,19 +359,47 @@ class PlaywrightDriver:
         self._navigations = 0
         self._loads = 0
         self._mark = (0, 0)
+        self._frame: Frame | None = None
+        """The child frame entered with ``enter_frame``; None operates the page itself."""
         page.on("response", self._on_response)
         page.on("request", self._on_request)
         page.on("load", self._on_load)
+        page.on("framenavigated", self._on_frame_navigated)
+
+    @property
+    def _scope(self) -> Page | Frame:
+        """Where every read and action runs: the page, or the entered child frame."""
+        return self._frame if self._frame is not None else self.page
 
     def _on_request(self, request: Request) -> None:
         try:
-            if request.is_navigation_request() and request.frame == self.page.main_frame:
+            if request.is_navigation_request() and (
+                    request.frame == self.page.main_frame
+                    or (self._frame is not None and request.frame == self._frame)):
                 self._navigations += 1
         except PlaywrightError:  # pragma: no cover - page closed mid-event
             pass
 
     def _on_load(self, _page: Page) -> None:
         self._loads += 1
+
+    def _on_frame_navigated(self, frame: Frame) -> None:
+        if self._frame is not None and frame == self._frame:
+            self._loads += 1
+
+    async def enter_frame(self, src: str) -> None:
+        """Run every later read and action inside the child frame that shows ``src`` (an
+        embedded application page that refuses to load on its own), until the next
+        ``goto``. Raises ``NotActionable`` when no frame shows it."""
+        wanted = urlsplit(src)
+        for frame in self.page.frames:
+            shown = urlsplit(frame.url)
+            if frame is not self.page.main_frame and (shown.scheme, shown.netloc, shown.path) == (
+                    wanted.scheme, wanted.netloc, wanted.path):
+                self._frame = frame
+                self._mark = (self._navigations, self._loads)
+                return
+        raise NotActionable(f"no frame on the page shows {src}")
 
     def _on_response(self, response: Response) -> None:
         try:
@@ -359,13 +410,14 @@ class PlaywrightDriver:
 
     @property
     def url(self) -> str:
-        return self.page.url
+        return self._scope.url
 
     @property
     def last_status(self) -> int | None:
         return self._last_status
 
     async def goto(self, url: str) -> int | None:
+        self._frame = None
         try:
             response = await self.page.goto(url, wait_until="load", timeout=self._timeout_ms * 3)
         except PlaywrightError as exc:
@@ -377,7 +429,7 @@ class PlaywrightDriver:
 
     async def evaluate(self, expression: str, arg: Any = None) -> Any:
         try:
-            return await self.page.evaluate(expression, arg)
+            return await self._scope.evaluate(expression, arg)
         except PlaywrightError as exc:
             if _context_lost(exc):
                 raise PageContextLost(f"page context unavailable: {exc}") from exc
@@ -395,7 +447,7 @@ class PlaywrightDriver:
     async def fill(self, selector: str, text: str) -> None:
         before = self._doc_mark()
         try:
-            await self.page.locator(selector).fill(text, timeout=self._timeout_ms)
+            await self._scope.locator(selector).fill(text, timeout=self._timeout_ms)
         except PlaywrightError as exc:
             self._guard(before, f"typing into {selector}", exc)
             raise NotActionable(f"could not type into {selector}: {exc}") from exc
@@ -404,7 +456,7 @@ class PlaywrightDriver:
     async def select_values(self, selector: str, values: list[str]) -> None:
         before = self._doc_mark()
         try:
-            await self.page.locator(selector).select_option(value=values, timeout=self._timeout_ms)
+            await self._scope.locator(selector).select_option(value=values, timeout=self._timeout_ms)
         except PlaywrightError as exc:
             self._guard(before, f"selecting in {selector}", exc)
             raise NotActionable(f"could not select {values} in {selector}: {exc}") from exc
@@ -417,14 +469,15 @@ class PlaywrightDriver:
         from .aria import select_accessible
 
         before = self._doc_mark()
-        handle = await self.page.query_selector(selector)
+        handle = await self._scope.query_selector(selector)
         if handle is None:
             raise NotActionable("ARIA control no longer exists")
 
         async def identity_check() -> None:
             self._guard(before, f"selecting in {selector}")
             same = await handle.evaluate(
-                "(el, selector) => el.isConnected && document.querySelector(selector) === el", selector,
+                "(el, selector) => { " + DEEP_QUERY + "return el.isConnected && deepOne(selector) === el; }",
+                selector,
             )
             if not same:
                 raise NotActionable("ARIA control node was replaced; re-inspect")
@@ -443,7 +496,7 @@ class PlaywrightDriver:
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None:
         before = self._doc_mark()
-        locator = self.page.locator(selector)
+        locator = self._scope.locator(selector)
         try:
             await locator.set_checked(checked, timeout=self._timeout_ms)
             self._guard(before, f"setting {selector}")
@@ -455,7 +508,7 @@ class PlaywrightDriver:
         # Custom-styled inputs are often hidden behind their label: click the label.
         try:
             if await locator.is_checked() != checked:
-                await self.page.locator(label_selector).click(timeout=self._timeout_ms)
+                await self._scope.locator(label_selector).click(timeout=self._timeout_ms)
         except PlaywrightError as exc:
             self._guard(before, f"setting {selector}", exc)
             raise NotActionable(f"could not set {selector} via its label: {exc}") from exc
@@ -473,7 +526,7 @@ class PlaywrightDriver:
         pinned = hashlib.sha256(path.read_bytes()).hexdigest()
         before = self._doc_mark()
         anchor = await file_anchor(self, selector)
-        locator = self.page.locator(selector)
+        locator = self._scope.locator(selector)
         delivered: Any = None
         attached: ElementHandle | None = None
         try:
@@ -521,7 +574,7 @@ class PlaywrightDriver:
         if not trial:
             self._mark = (self._navigations, self._loads)
         try:
-            await self.page.locator(selector).click(
+            await self._scope.locator(selector).click(
                 trial=trial, no_wait_after=True, timeout=self._timeout_ms
             )
         except PlaywrightError as exc:
@@ -530,7 +583,7 @@ class PlaywrightDriver:
     async def focus(self, selector: str) -> None:
         before = self._doc_mark()
         try:
-            await self.page.locator(selector).focus(timeout=self._timeout_ms)
+            await self._scope.locator(selector).focus(timeout=self._timeout_ms)
         except PlaywrightError as exc:
             self._guard(before, f"focusing {selector}", exc)
             raise NotActionable(f"could not focus {selector}: {exc}") from exc
@@ -539,7 +592,7 @@ class PlaywrightDriver:
     async def press(self, selector: str, key: str) -> None:
         before = self._doc_mark()
         try:
-            await self.page.locator(selector).press(key, timeout=self._timeout_ms)
+            await self._scope.locator(selector).press(key, timeout=self._timeout_ms)
         except PlaywrightError as exc:
             self._guard(before, f"pressing {key} in {selector}", exc)
             raise NotActionable(f"could not press {key} in {selector}: {exc}") from exc
@@ -549,7 +602,7 @@ class PlaywrightDriver:
         reject_control_characters(text, selector)
         before = self._doc_mark()
         try:
-            await self.page.locator(selector).press_sequentially(
+            await self._scope.locator(selector).press_sequentially(
                 text, delay=delay_s * 1000, timeout=self._timeout_ms + len(text) * delay_s * 1000)
         except PlaywrightError as exc:
             self._guard(before, f"typing into {selector}", exc)
@@ -558,7 +611,7 @@ class PlaywrightDriver:
 
     async def clear_text(self, selector: str) -> None:
         before = self._doc_mark()
-        locator = self.page.locator(selector)
+        locator = self._scope.locator(selector)
         try:
             if await locator.input_value(timeout=self._timeout_ms):
                 await locator.press("ControlOrMeta+a", timeout=self._timeout_ms)
@@ -576,7 +629,7 @@ class PlaywrightDriver:
     async def scroll_to_end(self, selector: str) -> None:
         before = self._doc_mark()
         try:
-            await self.page.locator(selector).evaluate(_SCROLL_TO_END)
+            await self._scope.locator(selector).evaluate(_SCROLL_TO_END)
         except PlaywrightError as exc:
             self._guard(before, f"scrolling {selector}", exc)
             raise NotActionable(f"could not scroll {selector}: {exc}") from exc
@@ -584,7 +637,7 @@ class PlaywrightDriver:
 
     async def dismiss(self) -> None:
         before = self._doc_mark()
-        body = self.page.locator("body")
+        body = self._scope.locator("body")
         try:
             for event in _OUTSIDE_PRESS:
                 await body.dispatch_event(event, {"button": 0, "buttons": 1 if event.endswith("down") else 0},
@@ -611,7 +664,7 @@ class PlaywrightDriver:
         for state in states:
             remaining = max(deadline - loop.time(), 0.1)
             try:
-                await self.page.wait_for_load_state(state, timeout=remaining * 1000)
+                await self._scope.wait_for_load_state(state, timeout=remaining * 1000)
             except PlaywrightTimeout:
                 return
             except PlaywrightError:  # pragma: no cover - navigation replaced the frame
@@ -622,7 +675,7 @@ class PlaywrightDriver:
         await self.page.screenshot(path=str(path), full_page=True, timeout=self._timeout_ms)
 
     async def html(self) -> str:
-        return await self.page.content()
+        return await self._scope.content()
 
     async def bring_to_front(self) -> None:
         await self.page.bring_to_front()

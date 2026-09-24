@@ -127,6 +127,8 @@ class DomControl(_Raw):
     Options", opened by a button in the form): a selector of that button's box, where the
     uploader shows the attached file; "" otherwise (the runtime then finds the input's
     own container)."""
+    dialog_index: int = -1
+    """Index in ``DomSnapshot.dialogs`` of the innermost dialog holding the control."""
 
 
 class DomButton(_Raw):
@@ -141,12 +143,17 @@ class DomButton(_Raw):
     """Method the button would submit with (form method or its ``formmethod``)."""
     effective_action: str
     """URL the button would submit to (form action or its ``formaction``)."""
+    dialog_index: int = -1
+    """Index in ``DomSnapshot.dialogs`` of the innermost dialog holding the button."""
+    toggle: bool = False
+    """A toggle (``aria-pressed``), such as a search filter pill; never an apply control."""
 
 
 class DomLink(_Raw):
     text: str
     href: str
     selector: str
+    dialog_index: int = -1
 
 
 class DomHeading(_Raw):
@@ -157,6 +164,7 @@ class DomHeading(_Raw):
 class DomRegion(_Raw):
     role: str
     text: str
+    dialog_index: int = -1
 
 
 class DomForm(_Raw):
@@ -171,6 +179,46 @@ class DomStep(_Raw):
     current: int
     total: int
     source: str
+
+
+class DomProgress(_Raw):
+    """A determinate progress indicator (``<progress>`` or ``role=progressbar`` with a
+    value), e.g. a wizard's "25%" bar."""
+
+    value: float
+    max: float
+    text: str = ""
+    """Its accessible name or visible text ("25%", "Your application is 25% complete")."""
+    form_index: int = -1
+    dialog_index: int = -1
+
+
+class DomDialog(_Raw):
+    """A dialog-like element (``role=dialog``/``alertdialog``, ``dialog``,
+    ``aria-modal=true``): a modal application wizard, a cookie banner, a picker popup."""
+
+    index: int
+    selector: str
+    label: str
+    """Accessible name (``aria-labelledby``/``aria-label``) or its first heading."""
+    modal: bool
+    visible: bool
+    parent: int = -1
+    """Index of the dialog enclosing this one, or -1."""
+    step: DomStep | None = None
+    """"Step N of M" or an ``aria-current=step`` list inside this dialog."""
+
+
+class DomFrame(_Raw):
+    """An ``iframe`` that is not a CAPTCHA widget."""
+
+    id: str
+    src: str
+    """Resolved absolute URL of its ``src`` ("" for ``srcdoc`` or none)."""
+    title: str
+    visible: bool
+    width: float = 0.0
+    height: float = 0.0
 
 
 class DomMeta(_Raw):
@@ -206,6 +254,10 @@ class DomConfirmationScope(_Raw):
 class DomPromptButton(_Raw):
     text: str
     selector: str
+    submits: bool = False
+    """Submits a form (one with ``method="dialog"`` only closes its dialog: not counted)."""
+    navigates: bool = False
+    """A link that loads another document."""
 
 
 class DomPrompt(_Raw):
@@ -216,6 +268,8 @@ class DomPrompt(_Raw):
     text: str
     modal: bool
     buttons: list[DomPromptButton]
+    dialog_index: int = -1
+    """The dialog's entry in ``DomSnapshot.dialogs`` (-1: not listed)."""
 
 
 class DomSnapshot(_Raw):
@@ -251,6 +305,12 @@ class DomSnapshot(_Raw):
     document: str = ""
     """``performance.timeOrigin`` and ``location.href`` of the inspected document, the
     identity that scopes probed menu observations."""
+    dialogs: list[DomDialog] = Field(default_factory=list)
+    """Dialog-like elements in document order (see ``DomControl.dialog_index``)."""
+    progress: list[DomProgress] = Field(default_factory=list)
+    """Visible determinate progress indicators."""
+    frames: list[DomFrame] = Field(default_factory=list)
+    """Embedded documents other than CAPTCHA widgets."""
 
 
 @cache

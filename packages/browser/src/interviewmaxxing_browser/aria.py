@@ -294,7 +294,7 @@ const comboMenu = (el) => {
     setsize: sizes.length ? Math.max(...sizes) : null, scrollable: !!scroller, covered};
 };
 const comboFieldSet = (el) => {
-  const scope = el.form || el.closest('form') || document.body;
+  const scope = el.form || el.closest('form') || el.closest('[role=dialog],[role=alertdialog],dialog') || document.body;
   return [...scope.querySelectorAll(comboFieldSel)].filter((f) => !f.closest('[role=listbox]') && ariaVisible(f))
     .map((f) => [f.tagName, f.getAttribute('type') || '', f.id, f.getAttribute('name') || '',
       f.getAttribute('role') || ''].join('|')).join('\n');
@@ -824,23 +824,26 @@ class MenuProbe:
         return json.dumps([control.id or control.selector, control.label])
 
     @staticmethod
-    def candidate(control: DomControl, form_index: int) -> bool:
+    def candidate(control: DomControl, form_index: int, dialog: int | None = None) -> bool:
         """A visible, enabled, closed single-choice menu control of the selected form
-        whose options are not observable yet (never inside a dialog)."""
+        whose options are not observable yet, never inside a dialog other than the
+        application dialog itself (``dialog``: a modal wizard that is the form)."""
         facts = control.aria or {}
         return (
             bool(facts.get("combo")) and control.form_index == form_index
             and control.visible and not control.disabled
-            and not facts.get("expanded") and not facts.get("dialog")
+            and not facts.get("expanded")
+            and (not facts.get("dialog") or (dialog is not None and control.dialog_index == dialog))
             and not facts.get("multiselectable")
             and (facts.get("haspopup") in ("listbox", "true", "menu") or facts.get("autocomplete") == "list")
         )
 
-    def targets(self, snapshot: DomSnapshot, form_index: int | None) -> list[DomControl]:
+    def targets(self, snapshot: DomSnapshot, form_index: int | None,
+                dialog: int | None = None) -> list[DomControl]:
         if form_index is None or snapshot.document != self.document:
             return []
         return [c for c in snapshot.controls
-                if self.candidate(c, form_index) and self.key(c) not in self.observations]
+                if self.candidate(c, form_index, dialog) and self.key(c) not in self.observations]
 
     def merge(self, snapshot: DomSnapshot) -> DomSnapshot:
         """Attach cached observations to their (closed or open) controls and drop the

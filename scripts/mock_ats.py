@@ -41,7 +41,7 @@ from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 COMPANY = "Brambleway Analytics"
 REFERENCE_PREFIX = "BWA"
@@ -118,7 +118,8 @@ class Field:
     """Wraps a single checkbox in a fieldset with this legend."""
     disabled: bool = False
     dom_id: str | None = None
-    """Element id of a script-driven widget (``question_6001``, ``field-3``)."""
+    """Element id of a script-driven widget (``question_6001``, ``field-3``) or of a
+    control on a replicated vendor page (``resumator-firstname-value``)."""
     display: str | None = None
     """``dial``: a react_select shows only the dial code of the chosen label; ``dial-name``
     also shows a flag in each option and filters on the country's name only (Greenhouse).
@@ -130,8 +131,9 @@ class Field:
     remote: str | None = None
     """Suggestion URL prefix of a lookup (the query is appended)."""
     prefill: str | None = None
-    """Initial value of a search combobox (a chosen value, like "+1 US"), or the option id a
-    fab_select shows already (BambooHR's Country)."""
+    """Initial value of a search combobox (a chosen value, like "+1 US"), the option id a
+    fab_select shows already (BambooHR's Country), or the value of a pre-filled Easy
+    Apply question ("3035550142")."""
     idle: str | None = None
     """Notice a search combobox shows when opened before anything is typed."""
     show_all: bool = False
@@ -561,6 +563,112 @@ COVER_LETTER = Field("cover_letter", "Cover letter", "label_file", accept=UPLOAD
 LEVER_NAME = Field("name", "Full name", "text", True, autocomplete="name")
 LEVER_LOCATION = Field("location", "Current location", "text")
 LEVER_LINKEDIN = Field("urls[LinkedIn]", "LinkedIn URL", "url")
+
+# --- replicas of real application flows (fictional; see the Handler's flow pages) ---------
+
+MODAL_WIZARD = "modal-wizard"
+"""LinkedIn-style Easy Apply: a modal dialog wizard built by page script."""
+IFRAME_EMBED = "iframe-embed"
+"""An employer careers page embedding a Greenhouse-style application iframe."""
+STEPPER_AMBIGUOUS = "stepper-ambiguous"
+"""JazzHR-style form whose only action controls are anchors."""
+APPLY_IN_ALERT_FORM = "apply-in-alert-form"
+"""Dayforce-style posting inside one form beside a job-alert signup."""
+
+EASY_APPLY_POSTING = "4007130"
+"""The fictional LinkedIn job number inside the Easy Apply element ids."""
+EASY_APPLY_PLACEHOLDER = "Select an option"
+"""LinkedIn's select placeholder: a real option whose value is its text."""
+EASY_APPLY_MAX_UPLOAD = 2 * 1024 * 1024
+EASY_APPLY_EXTENSIONS = (".pdf", ".doc", ".docx")
+SQL_YEARS_RE = re.compile(r"^\d{1,2}$")
+SQL_YEARS_MESSAGE = "Enter a whole number between 0 and 99"
+
+
+def _ea_id(component: str, element: int, suffix: str) -> str:
+    """A LinkedIn-style Easy Apply control id (``…-9001-multipleChoice``)."""
+    return (f"{component}-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-"
+            f"{EASY_APPLY_POSTING}-{element}-{suffix}")
+
+
+EA_EMAIL = Field("email", "Email address", "select", True,
+                 _labels("avery.quill@example.test", "a.quill@example.test"),
+                 dom_id=_ea_id("text-entity-list-form-component", 9001, "multipleChoice"),
+                 prefill="avery.quill@example.test")
+EA_PHONE_COUNTRY = Field(
+    "phone_country", "Phone country code", "select", True,
+    _labels("United States (+1)", "Canada (+1)", "United Kingdom (+44)", "Afghanistan (+93)"),
+    dom_id=_ea_id("text-entity-list-form-component", 9002, "phoneNumber-country"), prefill="United States (+1)",
+)
+EA_PHONE = Field("phone", "Mobile phone number", "text", True,
+                 dom_id=_ea_id("single-line-text-form-component", 9002, "phoneNumber-nationalNumber"),
+                 prefill="3035550142")
+EA_CITY = Field("city", "City", "text", True, dom_id=_ea_id("single-line-text-form-component", 9003, "text"),
+                prefill="Boulder")
+EA_RESUME = Field(
+    "resume", "Resume", "file", True, hint="DOC, DOCX, PDF (2 MB)",
+    accept="application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+    "application/pdf",
+    dom_id="jobs-document-upload-file-input-upload-resume",
+)
+EA_SQL_YEARS = Field("sql_years", "How many years of work experience do you have with SQL?", "text", True,
+                     dom_id=_ea_id("single-line-text-form-component", 9004, "numeric"))
+EA_WORK_AUTHORIZATION = Field(
+    "work_authorization", "Are you legally authorized to work in the United States?", "radio", True,
+    _labels("Yes", "No"),
+    dom_id="urn:li:fsd_formElement:urn:li:jobs_applyformcommon_easyApplyFormElement:"
+    f"({EASY_APPLY_POSTING},9005,multipleChoice)",
+)
+"""Its radios share this urn-like ``name`` and have the ids ``<name>-0`` and ``<name>-1``."""
+EA_SPONSORSHIP = Field(
+    "sponsorship", "Will you now or in the future require sponsorship for employment visa status?", "select",
+    True, _labels("Yes", "No"), dom_id=_ea_id("text-entity-list-form-component", 9006, "multipleChoice"),
+)
+EA_FOLLOW = Field("follow_company", f"Follow {COMPANY} to stay up to date with their page.", "checkbox",
+                  dom_id="follow-company-checkbox")
+EASY_APPLY_QUESTIONS = {
+    "email": EA_EMAIL, "phone_country": EA_PHONE_COUNTRY, "phone": EA_PHONE, "city": EA_CITY,
+    "sql_years": EA_SQL_YEARS, "work_authorization": EA_WORK_AUTHORIZATION, "sponsorship": EA_SPONSORSHIP,
+}
+"""The dialog's questions by their ``window.__easyApply`` key (which is also the posted name)."""
+EASY_APPLY_RESUMES: dict[str, tuple[tuple[str, str], ...]] = {
+    "match": (("Avery_Quill_Resume_2025.pdf", "290 KB · Last used on 8/12/2026"),
+              ("resume_avery_quill.pdf", "1 KB · Last used on 3/2/2026")),
+    "one": (("Avery_Quill_Resume_2025.pdf", "290 KB · Last used on 8/12/2026"),),
+    "nomatch": (("Avery_Quill_Resume_2025.pdf", "290 KB · Last used on 8/12/2026"),
+                ("AQ_CV_marketing.docx", "48 KB · Last used on 1/15/2026")),
+    "none": (),
+}
+"""Saved resume cards (file name, details) per ``?resumes=`` variant; the first is preselected."""
+EASY_APPLY_PROFILE = {"name": "Avery Quill", "initials": "AQ", "headline": "Growth marketing and analytics",
+                      "location": "Boulder, Colorado, United States"}
+
+EMBED_BOARD = "brambleway"
+EMBED_TOKEN = "4007131"
+"""``/embed/job_app?for=<board>&token=<token>`` serves the embedded form of ``iframe-embed``."""
+
+JZ_FIRST_NAME = Field("first_name", "First Name", "text", True, autocomplete="given-name",
+                      dom_id="resumator-firstname-value")
+JZ_LAST_NAME = Field("last_name", "Last Name", "text", True, autocomplete="family-name",
+                     dom_id="resumator-lastname-value")
+JZ_EMAIL = Field("email", "Email", "email", True, autocomplete="email", dom_id="resumator-email-value")
+JZ_PHONE = Field("phone", "Phone", "tel", True, autocomplete="tel", dom_id="resumator-phone-value")
+JZ_SALARY = Field("desired_salary", "Desired salary", "text", dom_id="resumator-salary-value")
+JZ_HEARD = Field(
+    "heard_about", "How did you hear about this job?", "select", True,
+    _options(("hear_linkedin", "LinkedIn"), ("hear_indeed", "Indeed"), ("hear_site", "Company website"),
+             ("hear_other", "Other")),
+    dom_id="resumator-heard-value",
+)
+JZ_RESUME = Field("resume", "Resume", "file", True, accept=".pdf,.doc,.docx", dom_id="resumator-resume-file")
+"""Required, but a pasted resume (``resume_text``) stands in for the file."""
+JZ_RESUME_TEXT = Field("resume_text", "Paste resume", "textarea", dom_id="resumator-resume-value")
+JAZZHR_HIDDEN = (
+    ("resumator-job-id", "BWA-JZ-132"), ("resumator-board-code", "bramblewayanalytics"),
+    ("resumator-source", "applytojob"), ("resumator-referrer", ""),
+    ("resumator-applicant-token", "c0ffee0132"), ("resumator-form-version", "3"),
+)
+"""The hidden inputs of the JazzHR-style form, posted unchanged (recorded as extra fields)."""
 
 CORE_FIELDS = (
     FIRST_NAME,
@@ -1082,6 +1190,53 @@ JOBS: dict[str, Job] = {
             "script-set value is reverted and the first typed change re-renders the fields.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, WHY_BRAMBLEWAY),
         ),
+        Job(
+            MODAL_WIZARD,
+            "BWA-LI-130",
+            "Growth Marketing Lead",
+            "Marketing",
+            "Remote (US)",
+            "A LinkedIn-style job view whose Easy Apply link or button opens a four-step modal dialog "
+            "(contact info, saved resume cards, additional questions, review) built by page script over "
+            "page-behind decoys; only its final \"Submit application\" contacts the server.",
+            (
+                Step("Contact info", (EA_EMAIL, EA_PHONE_COUNTRY, EA_PHONE, EA_CITY)),
+                Step("Resume", (EA_RESUME,)),
+                Step("Additional Questions", (EA_SQL_YEARS, EA_WORK_AUTHORIZATION, EA_SPONSORSHIP)),
+                Step("Review your application", (EA_FOLLOW,)),
+            ),
+        ),
+        Job(
+            IFRAME_EMBED,
+            "BWA-GH-141",
+            "Partnerships Manager",
+            "Partnerships",
+            "Remote (US)",
+            "An employer careers page with Role overview and Application tabs; the Application panel "
+            "holds the standard form in a Greenhouse-style iframe that page script injects 300 ms after load.",
+            STANDARD_FIELDS,
+        ),
+        Job(
+            STEPPER_AMBIGUOUS,
+            "BWA-JZ-132",
+            "Head of Paid Media",
+            "Marketing",
+            "Remote (US)",
+            "A JazzHR-style form whose only action controls are anchors: \"Submit Application\" validates "
+            "and submits by script, beside cookie-consent buttons and a Share anchor outside the form.",
+            _single(JZ_FIRST_NAME, JZ_LAST_NAME, JZ_EMAIL, JZ_PHONE, JZ_SALARY, JZ_HEARD, JZ_RESUME,
+                    JZ_RESUME_TEXT),
+        ),
+        Job(
+            APPLY_IN_ALERT_FORM,
+            "BWA-DF-133",
+            "Marketing Project Manager",
+            "Marketing",
+            "Denver, CO (Hybrid)",
+            "A Dayforce-style posting wrapped in one form whose job-alert email and Subscribe button sit "
+            "beside Apply; Apply leads to a flow-selection page, then a client-side route to the form.",
+            _single(*CORE_FIELDS),
+        ),
     )
 }
 SCENARIO_JOBS = frozenset(
@@ -1110,7 +1265,8 @@ class Upload:
 
 
 class Store:
-    """JSON-file state: submissions, rejections, uploads, drafts, captchas, sessions.
+    """JSON-file state: submissions, rejections, uploads, drafts, captchas, sessions and
+    job-alert subscriptions.
 
     Identifiers come from monotonically increasing counters, so a fresh state
     directory always produces the same ids and confirmation references.
@@ -1124,6 +1280,7 @@ class Store:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             self.data = json.loads(self.path.read_text("utf-8"))
+            self.data.setdefault("alerts", [])  # state written before alerts existed
         else:
             self.data = self._empty()
             self._save()
@@ -1146,6 +1303,7 @@ class Store:
             "drafts": {},
             "captchas": {},
             "sessions": {},
+            "alerts": [],
         }
 
     def _save(self) -> None:
@@ -1268,6 +1426,7 @@ class Store:
         with self.lock:
             subs = [s for s in self.data["submissions"] if job_id in (None, s["job_id"])]
             rejs = [r for r in self.data["rejections"] if job_id in (None, r["job_id"])]
+            alerts = [a for a in self.data["alerts"] if job_id in (None, a["job_id"])]
             return {
                 "job_id": job_id,
                 "accepted_count": len(subs),
@@ -1275,7 +1434,17 @@ class Store:
                 "submissions": subs,
                 "rejections": rejs,
                 "consents": [c for c in self.data.get("consents", []) if job_id in (None, c["job_id"])],
+                "alert_count": len(alerts),
+                "alerts": alerts,
             }
+
+    # job-alert subscriptions (never applications)
+    def add_alert(self, job: Job, email: str) -> dict[str, Any]:
+        with self.lock:
+            record = {"job_id": job.slug, "email": email, "received_at": _now()}
+            self.data["alerts"].append(record)
+            self._save()
+            return record
 
     # multistep drafts
     def save_step(
@@ -3195,6 +3364,711 @@ SCENARIO_JS = r"""(function () {
 })();"""
 
 
+# --- replicas of real application flows -------------------------------------------------
+
+EASY_APPLY_PAGE_STYLE = """
+body.artdeco-modal-is-open{overflow:hidden}
+.jobs-search-bar{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin-bottom:1rem}
+.jobs-search-bar form{display:flex;gap:.5rem;flex:1 1 18rem}
+.jobs-search-bar input[type=search]{flex:1;padding:.45rem;border:1px solid #8a94a6;border-radius:4px;font:inherit}
+.filter-pill{background:#fff;color:#1d2330;border:1px solid #8a94a6;border-radius:1rem;padding:.3rem .9rem}
+.filter-pill[aria-pressed=true]{background:#0a66c2;color:#fff;border-color:#0a66c2}
+.jobs-apply-control{margin:1rem 0}
+.jobs-apply-control a,.jobs-apply-button{display:inline-flex;align-items:center;gap:.4rem;background:#0a66c2;color:#fff;border:0;border-radius:1.2rem;padding:.5rem 1.2rem;font-weight:600;text-decoration:none}
+.jobs-apply-control svg{width:16px;height:16px}
+"""
+
+EASY_APPLY_DIALOG_STYLE = """
+.artdeco-modal-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);font:16px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;color:#1d2330}
+.artdeco-modal{position:relative;display:flex;flex-direction:column;box-sizing:border-box;width:min(744px,calc(100vw - 32px));max-height:calc(100vh - 48px);background:#fff;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+.artdeco-modal:focus{outline:none}
+.artdeco-modal__dismiss{position:absolute;top:10px;right:10px;width:36px;height:36px;padding:0;border:0;border-radius:50%;background:transparent;cursor:pointer}
+.artdeco-modal__dismiss::before{content:"\\00d7";font-size:26px;line-height:36px;color:#444}
+.artdeco-modal__header{padding:16px 56px 12px 24px;border-bottom:1px solid #e0e0e0}
+.artdeco-modal__header h2{margin:0;font-size:20px}
+.artdeco-modal__content{flex:1 1 auto;overflow-y:auto}
+.artdeco-completeness-meter-linear{display:flex;align-items:center;padding:12px 24px 0}
+.artdeco-completeness-meter-linear__progress-element{flex:1;height:8px}
+.ph5{padding-left:24px;padding-right:24px}
+.pl3{padding-left:12px}
+.pt1{padding-top:4px}
+.t-12{font-size:12px}
+.t-14{font-size:14px}
+.t-16{font-size:16px}
+.t-bold{font-weight:600}
+.t-black--light{color:#555}
+.display-flex{display:flex;align-items:center}
+.visually-hidden,.visually-hidden-radio,.visually-hidden-checkbox,.a11y-text{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:0!important;border:0!important;overflow:hidden!important;clip:rect(1px,1px,1px,1px)!important;white-space:nowrap!important}
+.hidden{display:none!important}
+.jobs-easy-apply-profile-card{display:flex;gap:12px;align-items:center;margin:12px 0}
+.jobs-easy-apply-profile-card__photo{display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;background:#dfe7ef;font-weight:600}
+.fb-dash-form-element{margin:16px 0}
+.fb-dash-form-element label,.fb-dash-form-element legend{display:block;font-size:14px;font-weight:400;margin-bottom:4px}
+.fb-dash-form-element fieldset{border:0;margin:0;padding:0}
+.fb-dash-form-element select,.fb-dash-form-element input[type=text]{display:block;box-sizing:border-box;width:100%;padding:8px;border:1px solid #666;border-radius:4px;font:inherit;background:#fff}
+.fb-text-selectable__option{display:flex;align-items:center;gap:8px;margin:4px 0}
+.fb-text-selectable__option label{display:inline;margin:0}
+.fb-dash-form-element__error-field{border-color:#cc1016!important;outline:1px solid #cc1016}
+.artdeco-inline-feedback--error{color:#cc1016;font-size:13px;margin-top:4px}
+.artdeco-inline-feedback--error ul{margin:4px 0 0;padding-left:20px}
+.jobs-document-upload__title--is-required{display:block;margin-bottom:8px}
+.ui-attachment{position:relative;display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid #c0c0c0;border-radius:8px;padding:12px;margin:8px 0}
+.jobs-document-upload-redesign-card__container--selected{border:2px solid #0a66c2}
+.jobs-document-upload-redesign-card__file-name,.jobs-document-upload-redesign-card__header p{margin:0}
+.jobs-document-upload-redesign-card__download-button{width:32px;height:32px;padding:0;border:0;background:transparent;cursor:pointer}
+.jobs-document-upload-redesign-card__container .display-flex{position:relative}
+.jobs-document-upload-redesign-card__container .visually-hidden-radio{top:12px;right:12px}
+.jobs-document-upload-redesign-card__toggle-label{display:inline-block;box-sizing:border-box;width:24px;height:24px;margin-left:8px;border:2px solid #666;border-radius:50%;cursor:pointer}
+.jobs-document-upload-redesign-card__container--selected .jobs-document-upload-redesign-card__toggle-label{border:7px solid #0a66c2}
+.jobs-document-upload__show-more-less-button{border:0;background:transparent;color:#0a66c2;font:inherit;font-weight:600;padding:4px 0;cursor:pointer}
+.js-jobs-document-upload__container{margin-top:12px}
+.artdeco-button{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-height:32px;padding:6px 16px;border:1px solid #0a66c2;border-radius:16px;background:#fff;color:#0a66c2;font:inherit;font-weight:600;cursor:pointer}
+.artdeco-button--primary{background:#0a66c2;color:#fff}
+.artdeco-button--tertiary{border-color:transparent}
+.artdeco-button:disabled{opacity:.6;cursor:default}
+.artdeco-modal footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;padding:16px 24px;margin-top:16px;border-top:1px solid #e0e0e0}
+.artdeco-modal footer p{flex:1 0 100%;margin:0}
+.jobs-easy-apply-review__section{border-top:1px solid #e0e0e0;padding:8px 0}
+.jobs-easy-apply-review__section-header{display:flex;align-items:center;justify-content:space-between}
+.jobs-easy-apply-review__section-header h4{margin:8px 0}
+.jobs-easy-apply-review__section dl{margin:0}
+.jobs-easy-apply-review__section dt{font-size:14px;color:#555}
+.jobs-easy-apply-review__section dd{margin:0 0 8px}
+.jobs-easy-apply-follow{position:relative;margin:16px 0}
+.jobs-easy-apply-follow .visually-hidden-checkbox{top:10px;left:10px}
+.jobs-easy-apply-follow label{cursor:pointer}
+.jobs-easy-apply-follow label::before{content:"";display:inline-block;box-sizing:border-box;width:20px;height:20px;margin-right:8px;border:2px solid #666;border-radius:4px;vertical-align:middle}
+.visually-hidden-checkbox:checked+label::before{border:6px solid #0a66c2}
+.jobs-easy-apply-post-apply{padding-top:16px}
+"""
+"""Rendered in the page head; the ``?shadow=1`` variant copies it into the shadow root."""
+
+EASY_APPLY_JS = r"""(function () {
+  "use strict";
+  // A LinkedIn-style Easy Apply dialog (fictional replica). Every answer lives in page state
+  // until "Submit application", the only request the dialog makes. window.__easyApply is test
+  // instrumentation: the step, the answers and per-field counts of input/change events.
+  var cfg = JSON.parse(document.getElementById("easy-apply-config").textContent);
+  var q = cfg.questions;
+  var PLACEHOLDER = cfg.placeholder;  // a real option whose value is its text
+  var PROGRESS = [0, 33, 67, 100];
+  var KEYS = ["email", "phone_country", "phone", "city", "sql_years", "work_authorization", "sponsorship",
+    "resume", "follow"];
+  var STEP_KEYS = [["email", "phone_country", "phone", "city"], ["resume"],
+    ["sql_years", "work_authorization", "sponsorship"], []];
+  var host = null, root = null, outlet = null, ui = {}, cards = [], seq = 0, pending = false, busy = false;
+  var app = window.__easyApply = {open: false, opens: 0, step: 0, submitted: false, writes: zeros(), answers: {},
+    imported: 0, skipped: 0};
+
+  function zeros() {
+    var writes = {};
+    KEYS.forEach(function (key) { writes[key] = 0; });
+    return writes;
+  }
+  function h(tag, attrs, kids) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (name) {
+      var value = attrs[name];
+      if (value !== false && value !== null && value !== undefined) {
+        node.setAttribute(name, value === true ? "" : String(value));
+      }
+    });
+    (kids || []).forEach(function (kid) {
+      node.appendChild(typeof kid === "string" ? document.createTextNode(kid) : kid);
+    });
+    return node;
+  }
+  function icon() {
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    return svg;
+  }
+  function button(text, attrs, onClick) {
+    var node = h("button", Object.assign({type: "button"}, attrs), [h("span", {"class": "artdeco-button__text"}, [text])]);
+    node.addEventListener("click", onClick);
+    return node;
+  }
+  function keyed(node, key) { node.__easyApplyKey = key; return node; }
+  function heading(text) { return h("h3", {"class": "t-16 t-bold"}, [text]); }
+
+  // The page behind the dialog.
+  Array.prototype.forEach.call(document.querySelectorAll(".filter-pill"), function (pill) {
+    pill.addEventListener("click", function () {
+      pill.setAttribute("aria-pressed", String(pill.getAttribute("aria-pressed") !== "true"));
+    });
+  });
+  if (cfg.shadow) {
+    // LinkedIn's 2026 layout renders its dialogs inside an open shadow root.
+    host = h("div", {id: "interop-outlet", "data-testid": "interop-shadowdom"});
+    document.body.appendChild(host);
+    root = host.attachShadow({mode: "open"});
+  }
+  var trigger = document.getElementById("jobs-apply-button-id");
+  if (trigger) {
+    trigger.addEventListener("click", function () {
+      if (pending || app.open) return;
+      pending = true;
+      setTimeout(function () { pending = false; open(); }, 400);  // the simulated apply request
+    });
+  }
+  if (cfg.autoOpen) setTimeout(open, 300);
+
+  function open() {
+    if (app.open) return;
+    var answers = {resume: null, resume_uploaded: false, follow: true};
+    Object.keys(q).forEach(function (key) {
+      var spec = q[key];
+      answers[key] = spec.value !== null ? spec.value : spec.kind === "select" ? PLACEHOLDER : spec.kind === "radio" ? null : "";
+    });
+    app = window.__easyApply = {open: true, opens: app.opens + 1, step: 1, submitted: false, writes: zeros(),
+      answers: answers, imported: 0, skipped: 0};
+    seq = 0;
+    cards = cfg.cards.map(function (c, i) { return card(c.name, c.meta, null, i === 0); });
+    syncResume();
+    build();
+    if (root) {
+      host.setAttribute("style", "position:fixed;inset:0;z-index:1000");
+      root.appendChild(document.getElementById("easy-apply-dialog-style").cloneNode(true));
+      root.appendChild(outlet);
+    } else {
+      document.body.appendChild(outlet);
+    }
+    document.body.classList.add("artdeco-modal-is-open");
+    render();
+    ui.dialog.focus();
+  }
+  function close() {
+    if (!app.open) return;
+    app.open = false;
+    if (root) { root.replaceChildren(); host.removeAttribute("style"); } else { outlet.remove(); }
+    outlet = null;
+    document.body.classList.remove("artdeco-modal-is-open");
+  }
+  function build() {
+    ui = {fields: {}};
+    ui.progress = h("progress", {max: "100", value: "0", "class": "artdeco-completeness-meter-linear__progress-element",
+      "aria-valuetext": "Current value: 0", "aria-valuemin": "0", "aria-valuenow": "0", "aria-valuemax": "100"});
+    ui.note = h("span", {"class": "pl3 t-14", role: "note"});
+    ui.body = h("div", {"class": "ph5"});
+    ui.footer = h("footer", {role: "presentation"});
+    var form = h("form", {}, [ui.body, ui.footer]);
+    form.addEventListener("submit", function (e) { e.preventDefault(); });  // Enter never navigates
+    ui.region = h("div", {role: "region", tabindex: "-1"}, [
+      h("div", {"class": "artdeco-completeness-meter-linear"}, [ui.progress, ui.note]), h("div", {}, [form])]);
+    ui.content = h("div", {"class": "artdeco-modal__content jobs-easy-apply-modal__content"}, [ui.region]);
+    var dismiss = h("button", {"aria-label": "Dismiss", "data-test-modal-close-btn": true,
+      "class": "artdeco-button artdeco-modal__dismiss"}, [icon()]);
+    dismiss.addEventListener("click", close);
+    ui.dialog = h("div", {"data-test-modal": true, role: "dialog", tabindex: "-1",
+      "aria-labelledby": "jobs-apply-header", "class": "artdeco-modal jobs-easy-apply-modal"}, [dismiss,
+      h("div", {"class": "artdeco-modal__header"}, [h("h2", {id: "jobs-apply-header"}, ["Apply to " + cfg.job.company])]),
+      ui.content]);
+    ui.dialog.addEventListener("input", written);
+    ui.dialog.addEventListener("change", written);
+    outlet = h("div", {id: "artdeco-modal-outlet"}, [h("div", {
+      "class": "artdeco-modal-overlay artdeco-modal-overlay--is-top-layer", "data-test-modal-container": true,
+      "aria-hidden": "false"}, [ui.dialog])]);
+  }
+  function render() {
+    var pct = PROGRESS[app.step - 1];
+    var said = "Your job application progress is at " + pct + " percent.";
+    ui.region.setAttribute("aria-label", said);
+    ui.progress.value = pct;
+    ui.progress.setAttribute("aria-valuenow", String(pct));
+    ui.progress.setAttribute("aria-valuetext", "Current value: " + pct);
+    ui.progress.textContent = "Current value: " + pct;
+    ui.note.setAttribute("aria-label", said);
+    ui.note.textContent = pct + "%";
+    ui.fields = {};
+    ui.body.replaceChildren.apply(ui.body, [contactStep, resumeStep, questionsStep, reviewStep][app.step - 1]());
+    ui.footer.replaceChildren.apply(ui.footer, footer());
+  }
+  function footer() {
+    var primary = "artdeco-button artdeco-button--2 artdeco-button--primary";
+    var kids = [h("p", {"class": "t-12 t-black--light"},
+      ["Submitting this application won\u2019t change your LinkedIn profile."])];
+    if (app.step > 1) {
+      kids.push(button("Back", {"aria-label": "Back to previous step",
+        "class": "artdeco-button artdeco-button--2 artdeco-button--secondary"}, back));
+    }
+    if (app.step === 1 && cfg.importOffer) {
+      // ?import=1: the step offers an import, worded like an autofill offer. Skip and
+      // Continue both submit the step's form by default; Skip moves on unvalidated.
+      kids.push(button("Skip", {type: "submit", "class": "artdeco-button artdeco-button--2 artdeco-button--secondary"},
+        function () { app.skipped += 1; app.step += 1; render(); }));
+      kids.push(button("Continue", {type: "submit", "aria-label": "Continue to next step",
+        "data-easy-apply-next-button": true, "class": primary}, next));
+    } else if (app.step < 3) {
+      kids.push(button("Next", {"aria-label": "Continue to next step", "data-easy-apply-next-button": true,
+        "data-live-test-easy-apply-next-button": true, "class": primary}, next));
+    } else if (app.step === 3) {
+      kids.push(button("Review", {"aria-label": "Review your application",
+        "data-live-test-easy-apply-review-button": true, "class": primary}, next));
+    } else {
+      ui.submit = button("Submit application", {"aria-label": "Submit application",
+        "data-live-test-easy-apply-submit-button": true, "class": primary}, submit);
+      kids.push(ui.submit);
+    }
+    return kids;
+  }
+  function next() { if (valid()) { app.step += 1; render(); } }
+  function back() { app.step -= 1; render(); }
+
+  // Steps.
+  function element(key, kids, controls, anchor) {
+    // Like LinkedIn, every question keeps an empty "<id>-error" container that an error
+    // fills and input empties again, so the question's own markup never moves.
+    var slot = h("div", {id: anchor + "-error"});
+    var node = h("div", {"class": "fb-dash-form-element", "data-test-form-element": true}, kids.concat([slot]));
+    ui.fields[key] = {node: node, controls: controls, id: anchor, slot: slot};
+    return node;
+  }
+  function selectQuestion(key) {
+    var spec = q[key], value = app.answers[key];
+    var select = keyed(h("select", {id: spec.id, required: true, "aria-required": "true",
+      "data-test-text-entity-list-form-select": true}, [PLACEHOLDER].concat(spec.options).map(function (o) {
+        return h("option", {value: o, selected: o === value}, [o]);
+      })), key);
+    select.value = value;
+    return element(key, [h("label", {"for": spec.id, "class": "fb-dash-form-element__label"}, [spec.label]), select],
+      [select], spec.id);
+  }
+  function textQuestion(key, extra) {
+    var spec = q[key];
+    var input = keyed(h("input", Object.assign({"class": "artdeco-text-input--input", id: spec.id, type: "text",
+      required: true, "aria-required": "true", value: app.answers[key]}, extra || {})), key);
+    return element(key, [h("div", {"class": "artdeco-text-input--container"}, [
+      h("label", {"for": spec.id, "class": "artdeco-text-input--label"}, [spec.label]), input])], [input], spec.id);
+  }
+  function radioQuestion(key) {
+    var spec = q[key], radios = [];
+    var options = spec.options.map(function (o, i) {
+      var radio = keyed(h("input", {type: "radio", id: spec.id + "-" + i, name: spec.id, value: o, required: true,
+        checked: app.answers[key] === o}), key);
+      radios.push(radio);
+      return h("div", {"data-test-text-selectable-option": String(i), "class": "fb-text-selectable__option"},
+        [radio, h("label", {"for": spec.id + "-" + i, "class": "t-14"}, [o])]);
+    });
+    var legend = h("legend", {}, [h("span", {"class": "fb-dash-form-element__label"}, [h("span", {}, [spec.label])]),
+      h("span", {"class": "visually-hidden"}, ["Required"])]);
+    var fieldset = h("fieldset", {id: spec.group, "data-test-form-builder-radio-button-form-component": "true"},
+      [legend].concat(options));
+    return element(key, [fieldset], radios, spec.group);
+  }
+  function contactStep() {
+    var p = cfg.profile;
+    var offer = !cfg.importOffer ? [] : [h("div", {"class": "jobs-easy-apply-import"}, [
+      h("p", {"class": "t-14"}, ["Import from LinkedIn or fill out this form."]),
+      button("Import from LinkedIn", {"class": "artdeco-button artdeco-button--2 artdeco-button--secondary"},
+        function () { app.imported += 1; })])];
+    return offer.concat([heading("Contact info"),
+      h("div", {"class": "jobs-easy-apply-profile-card"}, [
+        h("div", {"class": "jobs-easy-apply-profile-card__photo", "aria-hidden": "true"}, [p.initials]),
+        h("div", {}, [h("div", {"class": "artdeco-entity-lockup__title t-16 t-bold"}, [p.name]),
+          h("div", {"class": "artdeco-entity-lockup__subtitle t-14"}, [p.headline]),
+          h("div", {"class": "artdeco-entity-lockup__caption t-12 t-black--light"}, [p.location])])]),
+      selectQuestion("email"), selectQuestion("phone_country"), textQuestion("phone", {inputmode: "text"}),
+      textQuestion("city")]);
+  }
+  function questionsStep() {
+    return [heading("Additional Questions"), textQuestion("sql_years"), radioQuestion("work_authorization"),
+      selectQuestion("sponsorship")];
+  }
+
+  // Resume cards: selecting one deselects the others; the selected card's toggle deselects it.
+  function card(name, meta, file, selected) {
+    var c = {id: seq++, name: name, meta: meta, file: file, selected: selected,
+      ext: (name.split(".").pop() || "").toLowerCase()};
+    var toggle = "jobsDocumentCardToggle-" + c.id;
+    c.radio = keyed(h("input", {id: toggle, type: "radio", "class": "visually-hidden-radio"}), "resume");
+    c.radio.addEventListener("click", function () { choose(c); });
+    c.text = h("span", {"class": "a11y-text"});
+    c.node = h("div", {"class": "ui-attachment", tabindex: "0", "aria-label": ""}, [
+      h("div", {"class": "jobs-document-upload-redesign-card__header"}, [
+        h("h3", {"class": "t-12 t-bold jobs-document-upload-redesign-card__file-name"}, [name]),
+        h("p", {"class": "pt1 t-12"}, [meta])]),
+      h("div", {"class": "display-flex"}, [
+        h("button", {type: "button", "aria-label": "Download resume " + name,
+          "class": "jobs-document-upload-redesign-card__download-button"}, [icon()]),
+        c.radio,
+        h("label", {"for": toggle, "class": "jobs-document-upload-redesign-card__toggle-label"}, [c.text])])]);
+    return c;
+  }
+  function selectedCard() { return cards.filter(function (c) { return c.selected; })[0] || null; }
+  function syncResume() {
+    var c = selectedCard();
+    app.answers.resume = c ? c.name : null;
+    app.answers.resume_uploaded = !!(c && c.file);
+  }
+  function paint() {
+    cards.forEach(function (c) {
+      c.node.className = "ui-attachment jobs-document-upload-redesign-card__container" +
+        (c.selected ? " jobs-document-upload-redesign-card__container--selected" : "") + " ui-attachment--" + c.ext;
+      c.node.setAttribute("aria-label", c.selected ? "Selected" : "Select this resume");
+      c.radio.checked = c.selected;
+      c.text.textContent = (c.selected ? "Deselect resume " : "Select resume ") + c.name;
+    });
+    if (cards.length > 1) {
+      var more = "Show " + (cards.length - 1) + " more resumes";
+      ui.more.setAttribute("aria-label", more);
+      ui.more.textContent = more;
+      ui.list.after(ui.more);
+    } else {
+      ui.more.remove();
+    }
+  }
+  function choose(c) {
+    var was = c.selected;
+    cards.forEach(function (other) { other.selected = !was && other === c; });
+    paint();
+    syncResume();
+    clearError("resume");
+    if (was) {
+      // Unchecking by script fires nothing; report the deselection like a user edit.
+      c.radio.dispatchEvent(new Event("input", {bubbles: true}));
+      c.radio.dispatchEvent(new Event("change", {bubbles: true}));
+    }
+  }
+  function uploaded() {
+    var file = ui.file.files && ui.file.files[0];
+    clearError("resume");
+    if (!file) return;
+    var problem = !/\.(pdf|docx?)$/i.test(file.name) ? "Only DOC, DOCX and PDF files are supported" :
+      !file.size ? "The selected file is empty" :
+      file.size > 2 * 1024 * 1024 ? "The file must be 2 MB or smaller" : null;
+    if (problem) { fail("resume", problem); return; }
+    var c = card(file.name, Math.max(1, Math.round(file.size / 1024)) + " KB \u00b7 Uploaded just now", file, true);
+    cards.forEach(function (other) { other.selected = false; });
+    cards.unshift(c);
+    ui.list.insertBefore(c.node, ui.list.firstChild);
+    paint();
+    syncResume();
+  }
+  function resumeStep() {
+    ui.list = h("div", {"class": "jobs-document-upload-redesign-card__list"}, cards.map(function (c) { return c.node; }));
+    ui.more = h("button", {type: "button", "class": "jobs-document-upload__show-more-less-button"});
+    ui.file = keyed(h("input", {name: "file", "class": "hidden", id: cfg.upload.id, type: "file",
+      accept: cfg.upload.accept}), "resume");
+    ui.file.addEventListener("change", uploaded);
+    var node = h("div", {"class": "jobs-document-upload"}, [heading("Resume"),
+      h("span", {"class": "t-14 jobs-document-upload__title--is-required"}, ["Be sure to include an updated resume"]),
+      ui.list,
+      h("div", {"class": "js-jobs-document-upload__container"}, [
+        h("label", {"class": "jobs-document-upload__upload-button artdeco-button artdeco-button--secondary",
+          "for": cfg.upload.id}, [h("span", {role: "button", "aria-label":
+            "Upload resume button. Only, DOC, DOCX, PDF formats are supported. Max file size is (2 MB)."},
+            ["Upload resume"])]),
+        ui.file,
+        h("p", {"class": "t-12 jobs-document-upload__format-text"}, ["DOC, DOCX, PDF (2 MB)"])])]);
+    var slot = h("div", {id: cfg.upload.id + "-error"});
+    node.appendChild(slot);
+    ui.fields.resume = {node: node, controls: [], id: cfg.upload.id, slot: slot};
+    paint();
+    return [node];
+  }
+
+  // Review.
+  function labelOf(key) { return key === "resume" ? "Resume" : q[key] ? q[key].label : key; }
+  function reviewStep() {
+    var sections = [["Contact info", 1], ["Resume", 2], ["Additional Questions", 3]];
+    ui.alert = h("div", {"class": "jobs-easy-apply-review__feedback"});
+    var follow = keyed(h("input", {id: "follow-company-checkbox", "class": "visually-hidden-checkbox", type: "checkbox",
+      checked: app.answers.follow}), "follow");
+    return [heading("Review your application"),
+      h("p", {"class": "t-14"}, ["The employer will also receive a copy of your profile."]), ui.alert]
+      .concat(sections.map(function (s) {
+        var rows = [];
+        STEP_KEYS[s[1] - 1].forEach(function (key) {
+          var value = app.answers[key];
+          rows.push(h("dt", {}, [labelOf(key)]), h("dd", {}, [value === null || value === "" ? "Not provided" : String(value)]));
+        });
+        return h("section", {"class": "jobs-easy-apply-review__section"}, [
+          h("div", {"class": "jobs-easy-apply-review__section-header"}, [h("h4", {"class": "t-16 t-bold"}, [s[0]]),
+            button("Edit", {"aria-label": "Edit " + s[0], "class": "artdeco-button artdeco-button--2 artdeco-button--tertiary"},
+              function () { app.step = s[1]; render(); })]),
+          h("dl", {}, rows)]);
+      }))
+      .concat([h("div", {"class": "jobs-easy-apply-follow"}, [follow, h("label", {"for": "follow-company-checkbox"},
+        ["Follow ", h("span", {}, [cfg.job.company]), " to stay up to date with their page."])])]);
+  }
+
+  // Answers, validation and the one request.
+  function written(e) {
+    var key = e.target.__easyApplyKey;
+    if (!key || !app.open) return;
+    app.writes[key] += 1;
+    if (key === "follow") app.answers.follow = e.target.checked;
+    else if (key === "work_authorization") { if (e.target.checked) app.answers[key] = e.target.value; }
+    else if (key !== "resume") app.answers[key] = e.target.value;
+    if (key !== "resume" && key !== "follow") clearError(key);
+  }
+  function problem(key) {
+    if (key === "resume") return selectedCard() ? null : "Please select or upload a resume";
+    var value = app.answers[key];
+    if (value === null || String(value).trim() === "" || value === PLACEHOLDER) return "Please enter a valid answer";
+    if (key === "sql_years" && !/^\d{1,2}$/.test(String(value).trim())) return "Enter a whole number between 0 and 99";
+    return null;
+  }
+  function valid() {
+    var ok = true;
+    STEP_KEYS[app.step - 1].forEach(function (key) {
+      clearError(key);
+      var message = problem(key);
+      if (message) { fail(key, message); ok = false; }
+    });
+    return ok;
+  }
+  function fail(key, message) {
+    var f = ui.fields[key];
+    if (!f) return;
+    var id = f.id + "-error";
+    f.slot.replaceChildren(h("div", {"class": "artdeco-inline-feedback artdeco-inline-feedback--error", role: "alert"},
+      [h("span", {"class": "artdeco-inline-feedback__message"}, [message])]));
+    f.controls.forEach(function (control) {
+      control.setAttribute("aria-invalid", "true");
+      control.setAttribute("aria-describedby", id);
+      control.classList.add("fb-dash-form-element__error-field");
+    });
+  }
+  function clearError(key) {
+    var f = ui.fields[key];
+    if (!f) return;
+    f.slot.replaceChildren();
+    f.controls.forEach(function (control) {
+      control.removeAttribute("aria-invalid");
+      control.removeAttribute("aria-describedby");
+      control.classList.remove("fb-dash-form-element__error-field");
+    });
+  }
+  function submit() {
+    if (busy) return;
+    busy = true;
+    ui.submit.disabled = true;
+    var body = new FormData();
+    Object.keys(q).forEach(function (key) {
+      if (app.answers[key] !== null) body.append(key, app.answers[key]);
+    });
+    if (app.answers.follow) body.append("follow_company", "yes");
+    var c = selectedCard();
+    if (c && c.file) body.append("resume", c.file, c.file.name);
+    else if (c) body.append("resume_choice", c.name);
+    fetch(cfg.submitUrl, {method: "POST", body: body, credentials: "same-origin"}).then(function (response) {
+      return response.json().then(function (data) { return {ok: response.ok, data: data}; });
+    }).then(function (result) {
+      busy = false;
+      if (result.ok && result.data.accepted) submitted(result.data); else refused(result.data.errors || {});
+    }).catch(function () {
+      busy = false;
+      refused({application: "Something went wrong. Please try again."});
+    });
+  }
+  function submitted(data) {
+    app.submitted = true;
+    app.result = data;
+    ui.content.replaceChildren(
+      h("div", {"class": "ph5 jobs-easy-apply-post-apply", role: "status"}, [h("h3", {}, ["Application submitted"]),
+        h("p", {}, ["Your application for ", h("strong", {}, [cfg.job.title]),
+          " (Job ID " + cfg.job.code + ") was sent to " + cfg.job.company + "."])]),
+      h("footer", {role: "presentation"}, [button("Done",
+        {"class": "artdeco-button artdeco-button--2 artdeco-button--primary"}, close)]));
+  }
+  function refused(errors) {
+    ui.submit.disabled = false;
+    var items = Object.keys(errors).map(function (key) {
+      return h("li", {}, [(q[key] || key === "resume" ? labelOf(key) + ": " : "") + errors[key]]);
+    });
+    ui.alert.replaceChildren(h("div", {id: "jobs-easy-apply-submit-error", role: "alert",
+      "class": "artdeco-inline-feedback artdeco-inline-feedback--error"}, [
+      h("span", {"class": "artdeco-inline-feedback__message"}, ["Your application could not be submitted."]),
+      h("ul", {}, items)]));
+  }
+})();"""
+
+CAREERS_EMBED_JS = r"""(function () {
+  "use strict";
+  // An employer careers page with tabs. The timer stands in for the Greenhouse job board embed
+  // script (boards.greenhouse.io/embed/job_board/js?for=<board>) injecting the application iframe.
+  var cfg = JSON.parse(document.getElementById("careers-config").textContent);
+  var tabs = [document.getElementById("tab-overview"), document.getElementById("tab-application")];
+  function select(tab) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute("aria-selected", String(on));
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).style.display = on ? "" : "none";
+    });
+  }
+  tabs.forEach(function (t) { t.addEventListener("click", function () { select(t); }); });
+  document.querySelector(".apply-btn").addEventListener("click", function () { select(tabs[1]); });
+  setTimeout(function () {
+    var frame = document.createElement("iframe");
+    frame.id = "grnhse_iframe";
+    frame.title = "Greenhouse Job Board";
+    frame.width = "100%";
+    frame.height = "1200";
+    frame.setAttribute("frameborder", "0");
+    frame.setAttribute("scrolling", "no");
+    frame.setAttribute("src", cfg.src);
+    document.getElementById("grnhse_app").appendChild(frame);
+  }, 300);
+})();"""
+
+JAZZHR_STYLE = """
+.cookie-consent-bar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;background:#20364f;color:#fff;padding:.75rem 1rem;margin-bottom:1rem}
+.cookie-consent-bar p{flex:1 1 16rem;margin:0}
+.job-header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:0 1rem}
+.btn{display:inline-block;padding:.55rem 1.1rem;border:1px solid #1f6f43;border-radius:4px;color:#1f6f43;font-weight:600;text-decoration:none}
+.btn-primary{background:#1f6f43;color:#fff}
+.form-group{margin:1rem 0}
+.control-label{display:block;font-weight:600;margin-bottom:.3rem}
+.required{color:#b42318}
+.help-block{display:block;margin:.25rem 0;color:#4a5568}
+.has-error .form-control{border-color:#b42318;outline:2px solid #b42318}
+.has-error .help-block[role=alert]{color:#b42318;font-weight:600}
+"""
+
+JAZZHR_JS = r"""(function () {
+  "use strict";
+  // A JazzHR-style application page (fictional replica): every action control is an anchor.
+  // "Submit Application" validates required fields, then submits the form by script.
+  var form = document.getElementById("form_submit_new_resume");
+  var file = document.getElementById("resumator-resume-file");
+  var text = document.getElementById("resumator-resume-value");
+  var EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  var sent = false;
+  function click(node, handler) {
+    if (node) node.addEventListener("click", function (e) { e.preventDefault(); handler(); });
+  }
+  function anchor(scope, label) {
+    return Array.prototype.filter.call(scope.querySelectorAll("a.btn"), function (a) {
+      return a.textContent.trim() === label;
+    })[0];
+  }
+  var bar = document.getElementById("resumator-cookie-consent");
+  Array.prototype.forEach.call(bar.querySelectorAll("button"), function (b) {
+    b.addEventListener("click", function () { bar.style.display = "none"; });
+  });
+  click(document.querySelector("a.share"), function () {});
+  click(document.getElementById("resumator-choose-upload"), function () { file.click(); });
+  click(document.getElementById("resumator-choose-paste"), function () {
+    document.getElementById("resumator-resume-paste").style.display = "";
+    text.focus();
+  });
+  file.addEventListener("change", function () {
+    document.getElementById("resumator-resume-filename").textContent =
+      file.files.length ? "Attached: " + file.files[0].name : "";
+    clear(file);
+  });
+  function clear(control) {
+    var old = document.getElementById(control.id + "-error");
+    if (old) old.remove();
+    control.closest(".form-group").classList.remove("has-error");
+    control.removeAttribute("aria-invalid");
+    control.removeAttribute("aria-describedby");
+  }
+  function fail(control, message) {
+    clear(control);
+    var group = control.closest(".form-group");
+    var note = document.createElement("span");
+    note.className = "help-block";
+    note.id = control.id + "-error";
+    note.setAttribute("role", "alert");
+    note.textContent = message;
+    group.appendChild(note);
+    group.classList.add("has-error");
+    control.setAttribute("aria-invalid", "true");
+    control.setAttribute("aria-describedby", note.id);
+  }
+  function problem(control) {
+    if (control === file) {
+      var kept = form.querySelector("input[name=resume_upload_id]");
+      return file.files.length || text.value.trim() || kept ? null : "Attach or paste your resume.";
+    }
+    var value = control.value.trim();
+    if (!value) return "This field is required.";
+    if (control.type === "email" && !EMAIL.test(value)) return "Enter a valid email address.";
+    return null;
+  }
+  function check(scope) {
+    var ok = true;
+    Array.prototype.forEach.call(scope.querySelectorAll("[aria-required=true]"), function (control) {
+      var message = problem(control);
+      if (message) { fail(control, message); ok = false; } else { clear(control); }
+    });
+    return ok;
+  }
+  form.addEventListener("submit", function () { sent = true; });
+  click(document.getElementById("resumator-submit-resume"), function () {
+    if (sent || !check(form)) return;
+    if (form.requestSubmit) form.requestSubmit(); else form.submit();
+  });
+  // ?sections=2: two client-side sections with Next / Save / Back anchors (never posted).
+  var one = document.getElementById("resumator-section-1");
+  var two = document.getElementById("resumator-section-2");
+  if (one && two) {
+    click(anchor(one, "Next"), function () {
+      if (!check(one)) return;
+      one.style.display = "none";
+      two.style.display = "";
+    });
+    click(anchor(one, "Save"), function () {
+      var saved = {};
+      Array.prototype.forEach.call(one.querySelectorAll("input[name]"), function (i) { saved[i.name] = i.value; });
+      try { sessionStorage.setItem("resumator-saved-application", JSON.stringify(saved)); } catch (e) { /* ignore */ }
+      document.getElementById("resumator-save-status").textContent = "Saved";
+    });
+    click(anchor(two, "Back"), function () {
+      two.style.display = "none";
+      one.style.display = "";
+    });
+  }
+})();"""
+
+DAYFORCE_STYLE = """
+.ant-btn{display:inline-block;border:1px solid #1f6f43;border-radius:6px;padding:.5rem 1.2rem;font:inherit;font-weight:600;cursor:pointer}
+.ant-btn-primary{background:#1f6f43;color:#fff}
+.ant-btn-default{background:#fff;color:#1f6f43}
+.ant-btn-loading{opacity:.65}
+.job-actions{display:flex;gap:.75rem;margin:1rem 0}
+.job-alerts{border-top:1px solid #d5dae2;margin-top:2rem;padding-top:1rem}
+.flow-selection button{margin:.5rem .75rem .5rem 0}
+"""
+
+DAYFORCE_JS = r"""(function () {
+  "use strict";
+  // A Dayforce-style portal (fictional replica): its buttons change routes on the client after
+  // the portal's delay, with history.pushState and in-place rendering; no document is loaded.
+  var cfg = JSON.parse(document.getElementById("dayforce-config").textContent);
+  var main = document.getElementById("main");
+  var waiting = false;
+  function navigate(route) {
+    history.pushState({url: route.url}, "", route.url);
+    document.title = route.title;
+    main.innerHTML = route.html;
+    window.scrollTo(0, 0);
+    wire();
+  }
+  function later(button, route) {
+    button.addEventListener("click", function () {
+      if (waiting) return;
+      waiting = true;
+      button.classList.add("ant-btn-loading");
+      setTimeout(function () { waiting = false; navigate(route); }, cfg.delayMs);
+    });
+  }
+  function wire() {
+    Array.prototype.forEach.call(main.querySelectorAll("button"), function (button) {
+      var text = button.textContent.trim();
+      if (button.getAttribute("test-id") === "apply-button") later(button, cfg.routes.flow);
+      else if (text === "Apply without an Account") later(button, cfg.routes.manual);
+      else if (text === "Sign In") button.addEventListener("click", function () { location.assign(cfg.signIn); });
+    });
+  }
+  window.addEventListener("popstate", function () { location.reload(); });
+  wire();
+})();"""
+
+
 def page(
     title: str, body: str, head_extra: str = "", *, main_attrs: str = "", after_main: str = ""
 ) -> str:
@@ -3224,6 +4098,23 @@ def _job_heading(job: Job) -> str:
         f"<h1>{esc(job.title)}</h1>\n"
         f'<p class="meta">{COMPANY} · {esc(job.department)} · {esc(job.location)} · '
         f"Job ID {esc(job.code)}</p>"
+    )
+
+
+def _json_island(element_id: str, payload: Any) -> str:
+    """Page-script configuration in an inert ``application/json`` script element. Markup
+    characters are escaped, so embedded route content never reads as tags in the raw HTML."""
+    data = json.dumps(payload).replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+    return f'<script type="application/json" id="{element_id}">{data}</script>'
+
+
+def _flow_selection_html(job: Job) -> str:
+    """The Dayforce-style "How would you like to apply?" route: two buttons and no form."""
+    return (
+        '<div class="flow-selection"><h1>How would you like to apply?</h1>'
+        f'<p class="meta">{esc(job.title)} · {COMPANY} · {esc(job.location)} · Job ID {esc(job.code)}</p>'
+        '<button type="button" class="ant-btn ant-btn-primary">Apply without an Account</button> '
+        '<button type="button" class="ant-btn ant-btn-default">Sign In</button></div>'
     )
 
 
@@ -3925,6 +4816,11 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (rf"/jobs/{SLUG}/apply/{DRAFT}/review", "GET", "get_review"),
         (rf"/jobs/{SLUG}/apply/{DRAFT}/submit", "POST", "post_submit"),
         (rf"/jobs/{SLUG}/application-status", "GET", "get_status"),
+        (rf"/jobs/{MODAL_WIZARD}/easy-apply", "POST", "post_easy_apply"),
+        (r"/embed/job_app", "GET", "get_embed_job_app"),
+        (rf"/jobs/{APPLY_IN_ALERT_FORM}/start", "POST", "post_alert_start"),
+        (rf"/jobs/{APPLY_IN_ALERT_FORM}/alerts", "POST", "post_alert_subscribe"),
+        (rf"/jobs/{APPLY_IN_ALERT_FORM}/apply/manual", "GET", "get_manual_apply"),
         (r"/applications/(?P<submission_id>sub_\d{6})", "GET", "get_confirmation"),
         (r"/login", "GET", "get_login"),
         (r"/login", "POST", "post_login"),
@@ -4079,6 +4975,10 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(HTTPStatus.NOT_FOUND, "No such job.")
         return job
 
+    def _param(self, name: str) -> str:
+        """The first value of a query parameter ("" when absent)."""
+        return (self.query.get(name) or [""])[0]
+
     def _signed_in(self) -> bool:
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", ""))
@@ -4141,8 +5041,8 @@ class Handler(BaseHTTPRequestHandler):
         # Keeps browser consoles free of an unrelated 404.
         self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
 
-    def get_job(self, slug: str) -> None:
-        job = self._job(slug)
+    def _posting_head(self, job: Job) -> str:
+        """The canonical link and schema.org ``JobPosting`` JSON-LD block of a posting."""
         ld = {
             "@context": "https://schema.org",
             "@type": "JobPosting",
@@ -4157,12 +5057,25 @@ class Handler(BaseHTTPRequestHandler):
             "datePosted": "2026-09-01",
             "description": f"{job.title} on the {job.department} team at {COMPANY}.",
         }
-        head = (
+        return (
             f'<link rel="canonical" href="{esc(self.app.origin)}/jobs/{job.slug}">'
             '<script type="application/ld+json">'
             + json.dumps(ld).replace("</", "<\\/")
             + "</script>"
         )
+
+    def get_job(self, slug: str) -> None:
+        job = self._job(slug)
+        if job.slug == MODAL_WIZARD:
+            self._render_easy_apply(job, auto_open=False)
+            return
+        if job.slug == IFRAME_EMBED:
+            self._render_careers_embed(job)
+            return
+        if job.slug == APPLY_IN_ALERT_FORM:
+            self._render_alert_posting(job)
+            return
+        head = self._posting_head(job)
         body = (
             _job_heading(job)
             + f"<h2>About the role</h2><p>{COMPANY} builds forecasting tools for regional "
@@ -4185,6 +5098,15 @@ class Handler(BaseHTTPRequestHandler):
         if job.data_consent and not self._data_consented():
             self._render_data_consent(job)
             return
+        if job.slug == MODAL_WIZARD:  # the SDUI apply URL: the job view with its dialog open
+            self._render_easy_apply(job, auto_open=True)
+            return
+        if job.slug == STEPPER_AMBIGUOUS:
+            self._render_jazzhr(job, {}, {}, {}, HTTPStatus.OK)
+            return
+        if job.slug == APPLY_IN_ALERT_FORM and self._param("flowSelection") == "true":
+            self._render_flow_selection(job)
+            return
         if job.multistep:
             self._render_step(job, None, 1, {}, {}, None, HTTPStatus.OK)
         else:
@@ -4196,6 +5118,9 @@ class Handler(BaseHTTPRequestHandler):
             self._read_body()
             self._redirect_to_login(job)
             return
+        if job.slug == MODAL_WIZARD:
+            self._read_body()
+            raise HttpError(HTTPStatus.METHOD_NOT_ALLOWED, "Easy Apply applications are sent from the dialog only.")
         form, uploads = self._read_form()
         if job.data_consent and form.get("policyIds"):
             # Jobvite: "I Accept" posts the chosen policy back to the apply URL, which
@@ -4217,6 +5142,9 @@ class Handler(BaseHTTPRequestHandler):
         values, files, errors = validate(
             job.fields, form, uploads, retained, strict_phone=job.strict_phone
         )
+        if (job.slug == STEPPER_AMBIGUOUS and values.get(JZ_RESUME_TEXT.name)
+                and errors.get(JZ_RESUME.name) == _required_message(JZ_RESUME)):
+            del errors[JZ_RESUME.name]  # a pasted resume stands in for the file
         if job.fixture_identity:
             for name, message in fixture_identity_errors(job.fields, values, files).items():
                 if name not in errors:
@@ -4239,6 +5167,9 @@ class Handler(BaseHTTPRequestHandler):
             errors[CAPTCHA_WIDGET_FIELD] = "Please complete the CAPTCHA."
         if errors:
             self.store.add_rejection(job, errors)
+            if job.slug == STEPPER_AMBIGUOUS:
+                self._render_jazzhr(job, form, errors, files_meta, HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             self._render_single(
                 job, form, errors, files_meta, captcha_error, HTTPStatus.UNPROCESSABLE_ENTITY
             )
@@ -4278,6 +5209,22 @@ class Handler(BaseHTTPRequestHandler):
         captcha_error: str | None,
         status: HTTPStatus,
     ) -> None:
+        title, body, head = self._single_form(job, values, errors, retained, captcha_error, status)
+        main_attrs, after_main = "", ""
+        if job.cookie_banner and not self._consented():
+            main_attrs, after_main = ' inert aria-hidden="true"', render_cookie_banner()
+        self._send_html(status, page(title, body, head, main_attrs=main_attrs, after_main=after_main))
+
+    def _single_form(
+        self,
+        job: Job,
+        values: dict[str, list[str]],
+        errors: dict[str, str],
+        retained: dict[str, dict[str, Any]],
+        captcha_error: str | None,
+        status: HTTPStatus,
+    ) -> tuple[str, str, str]:
+        """(title, main body, head extra) of a single-page application form."""
         entries = _summary_entries(job.fields, errors)
         if captcha_error:
             entries.append(("f-captcha_answer", "Characters shown in the image", captcha_error))
@@ -4342,14 +5289,12 @@ class Handler(BaseHTTPRequestHandler):
         body = heading + render_error_summary(entries) + form_html
         if job.flash_closed and status == HTTPStatus.OK:
             body = render_flash_closed(body)
-        main_attrs, after_main = "", ""
-        if job.cookie_banner and not self._consented():
-            main_attrs, after_main = ' inert aria-hidden="true"', render_cookie_banner()
         title = f"Apply: {job.title}" if not errors else f"Error: Apply: {job.title}"
         head = f"<style>{WIDGET_STYLE}</style>" if widgets else ""
         if scripted:
             head += f"<style>{SCENARIO_STYLE}</style>"
-        self._send_html(status, page(title, body, head, main_attrs=main_attrs, after_main=after_main))
+        return title, body, head
+
 
     # multistep
     def _draft(self, job: Job, draft_id: str) -> dict[str, Any]:
@@ -4947,6 +5892,376 @@ class Handler(BaseHTTPRequestHandler):
             '<p><a href="/">View all open roles</a></p>'
         )
         self._send_html(HTTPStatus.OK, page("Jobs", body))
+
+    # replicas of real application flows (fictional; see MOCK_ATS.md)
+    def _render_easy_apply(self, job: Job, *, auto_open: bool) -> None:
+        """A LinkedIn-style job view. Page script (EASY_APPLY_JS) builds the Easy Apply dialog
+        from a JSON island: ``/apply`` opens it 300 ms after load, the ``trigger=button``
+        control 400 ms after a click. Variants: ``trigger``, ``resumes``, ``shadow`` and ``import``."""
+        resumes = self._param("resumes")
+        if resumes not in EASY_APPLY_RESUMES:
+            resumes = "match"
+        variant = [(key, self._param(key)) for key in ("trigger", "resumes", "shadow", "import") if key in self.query]
+        if self._param("trigger") == "button":
+            # No type attribute and no form: only its click handler does anything.
+            control = (
+                '<button id="jobs-apply-button-id" class="jobs-apply-button artdeco-button artdeco-button--3 '
+                f'artdeco-button--primary" aria-label="Easy Apply to {esc(job.title)} at {COMPANY}" '
+                'data-live-test-job-apply-button><svg aria-hidden="true"></svg>'
+                '<span class="artdeco-button__text">Easy Apply</span></button>'
+            )
+        else:
+            href = f"/jobs/{job.slug}/apply?" + urlencode([("openSDUIApplyFlow", "true"), *variant])
+            control = (
+                f'<a aria-label="Easy Apply to this job" href="{esc(href)}"><span>'
+                '<svg aria-hidden="true"></svg><span>Easy Apply</span></span></a>'
+            )
+        questions: dict[str, dict[str, Any]] = {
+            key: {"id": f.dom_id, "label": f.label, "kind": f.kind, "options": [o.label for o in f.options],
+                  "value": f.prefill}
+            for key, f in EASY_APPLY_QUESTIONS.items()
+        }
+        questions["work_authorization"]["group"] = _ea_id("radio-button-form-component", 9005, "multipleChoice")
+        config = {
+            "autoOpen": auto_open,
+            "shadow": self._param("shadow") == "1",
+            "importOffer": self._param("import") == "1",
+            "job": {"title": job.title, "code": job.code, "company": COMPANY},
+            "profile": EASY_APPLY_PROFILE,
+            "placeholder": EASY_APPLY_PLACEHOLDER,
+            "questions": questions,
+            "upload": {"id": EA_RESUME.dom_id, "accept": EA_RESUME.accept},
+            "cards": [{"name": name, "meta": meta} for name, meta in EASY_APPLY_RESUMES[resumes]],
+            "submitUrl": f"/jobs/{job.slug}/easy-apply?" + urlencode({"resumes": resumes}),
+        }
+        # Page-behind decoys: a search form, an "Easy Apply" search filter and two fillable
+        # controls outside any form. A runtime must ignore them once the dialog is open.
+        body = (
+            '<div class="jobs-search-bar">'
+            f'<form role="search" method="get" action="/jobs/{job.slug}">'
+            '<label for="jobs-search-keywords" class="visually-hidden">Search jobs</label>'
+            '<input type="search" id="jobs-search-keywords" name="keywords" aria-label="Search jobs">'
+            '<button type="submit">Search</button></form>'
+            '<div class="jobs-search-filters" role="group" aria-label="Search filters">'
+            '<button type="button" aria-pressed="false" class="filter-pill">Easy Apply</button> '
+            '<button type="button" aria-pressed="false" class="filter-pill">Remote</button></div></div>'
+            + _job_heading(job)
+            + f'<div class="jobs-apply-control">{control}</div>'
+            + "<h2>About the job</h2>"
+            f"<p>{COMPANY} is hiring a {esc(job.title)} to own acquisition and lifecycle programs for its "
+            "forecasting products, from experiment design to reporting.</p>"
+            '<section class="jobs-hiring-team"><h2>Meet the hiring team</h2>'
+            f"<p>The {COMPANY} growth team is hiring for this role.</p>"
+            '<textarea rows="3" aria-label="Write a message to the hiring team"></textarea></section>'
+            '<section class="jobs-notes"><h2>My notes</h2>'
+            '<input type="text" aria-label="Add a note about this job"></section>'
+        )
+        head = (
+            self._posting_head(job)
+            + f"<style>{EASY_APPLY_PAGE_STYLE}</style>"
+            + f'<style id="easy-apply-dialog-style">{EASY_APPLY_DIALOG_STYLE}</style>'
+        )
+        after = _json_island("easy-apply-config", config) + f"<script>{EASY_APPLY_JS}</script>"
+        self._send_html(HTTPStatus.OK, page(job.title, body, head, after_main=after))
+
+    def post_easy_apply(self) -> None:
+        # The dialog's one request (multipart, by fetch). The resume is an uploaded file
+        # ("resume") or the name of an offered saved card ("resume_choice"); the cards
+        # offered are those of the ?resumes= variant in the request URL. Answers JSON.
+        job = self._job(MODAL_WIZARD)
+        form, uploads = self._read_form()
+        offered = dict(EASY_APPLY_RESUMES.get(self._param("resumes"), EASY_APPLY_RESUMES["match"]))
+        attached = [u for u in uploads.get(EA_RESUME.name, []) if u.filename]
+        choice = (form.get("resume_choice") or [""])[0]
+        retained: dict[str, dict[str, Any]] = {}
+        choice_error = None
+        if not attached and choice in offered:
+            retained[EA_RESUME.name] = {"source": "saved_resume", "filename": choice, "details": offered[choice]}
+        elif not attached and choice:
+            choice_error = "Select one of your saved resumes or upload a resume."
+        values, files, errors = validate(job.fields, form, uploads, retained)
+        if choice_error:
+            errors[EA_RESUME.name] = choice_error
+        elif attached and EA_RESUME.name not in errors:
+            upload = attached[0]
+            if not upload.filename.lower().endswith(EASY_APPLY_EXTENSIONS):
+                errors[EA_RESUME.name] = "Upload a DOC, DOCX or PDF file."
+            elif len(upload.data) > EASY_APPLY_MAX_UPLOAD:
+                errors[EA_RESUME.name] = "The file must be 2 MB or smaller."
+        sql_years = values.get(EA_SQL_YEARS.name)
+        if sql_years is not None and not SQL_YEARS_RE.match(sql_years):
+            errors[EA_SQL_YEARS.name] = SQL_YEARS_MESSAGE
+        if errors:
+            self.store.add_rejection(job, errors)
+            self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"accepted": False, "errors": errors})
+            return
+        extra = {k: v for k, v in _extra_fields(job, form).items() if k != "resume_choice"}
+        record = self.store.add_submission(job, values, extra, self._store_files(files))
+        self._send_json(HTTPStatus.OK, {
+            "accepted": True, "submission_id": record["submission_id"],
+            "confirmation_reference": record["confirmation_reference"],
+            "job_id": job.slug, "job_code": job.code,
+        })
+
+    def _render_careers_embed(self, job: Job) -> None:
+        """An employer careers page (careers.<employer>?gh_jid=… style): Role overview and
+        Application tabs; page script injects the Greenhouse-style iframe 300 ms after load."""
+        visible = self._param("panel") == "visible"
+        query = [("for", EMBED_BOARD), ("token", EMBED_TOKEN)]
+        if self._param("embedded_only") == "1":
+            query.append(("embedded_only", "1"))
+        hidden = ' style="display:none"'
+
+        def tab(dom_id: str, panel: str, text: str, selected: bool) -> str:
+            return (
+                f'<button id="{dom_id}" role="tab" aria-controls="{panel}" '
+                f'aria-selected="{"true" if selected else "false"}" tabindex="{0 if selected else -1}">'
+                f"{text}</button>"
+            )
+
+        body = (
+            f'<form role="search" method="get" action="/jobs/{job.slug}" hidden>'
+            '<label for="careers-search">Search open roles</label>'
+            '<input type="search" id="careers-search" name="q"></form>'
+            + _job_heading(job)
+            + '<div id="main-content" role="tablist" aria-label="Job details">'
+            + tab("tab-overview", "job-detail-panel", "Role overview", not visible)
+            + tab("tab-application", "job-application-panel", "Application", visible)
+            + "</div>"
+            f'<div id="job-detail-panel" role="tabpanel" aria-labelledby="tab-overview"{hidden if visible else ""}>'
+            f"<h2>About the role</h2><p>{COMPANY} is looking for a {esc(job.title)} to build and grow "
+            "partnerships with logistics platforms and data providers.</p>"
+            '<button class="apply-btn" aria-label="Switch to application form">Apply Now</button></div>'
+            '<div id="job-application-panel" role="tabpanel" aria-labelledby="tab-application"'
+            f'{"" if visible else hidden}><div id="grnhse_app"></div></div>'
+        )
+        after = (_json_island("careers-config", {"src": "/embed/job_app?" + urlencode(query)})
+                 + f"<script>{CAREERS_EMBED_JS}</script>")
+        self._send_html(HTTPStatus.OK, page(job.title, body, self._posting_head(job), after_main=after))
+
+    def get_embed_job_app(self) -> None:
+        # The embedded job application (boards.greenhouse.io/embed/job_app style): exactly the
+        # iframe-embed form page. With embedded_only=1 it is served only into an iframe.
+        job = self._job(IFRAME_EMBED)
+        if self._param("for") != EMBED_BOARD or self._param("token") != EMBED_TOKEN:
+            raise HttpError(HTTPStatus.NOT_FOUND, "No such job application.")
+        if self._param("embedded_only") == "1" and self.headers.get("Sec-Fetch-Dest") != "iframe":
+            body = (
+                "<h1>Application unavailable</h1>"
+                f"<p>This application form can only be shown on the {COMPANY} careers page.</p>"
+            )
+            self._send_html(HTTPStatus.FORBIDDEN, page("Application unavailable", body))
+            return
+        self._render_single(job, {}, {}, {}, None, HTTPStatus.OK)
+
+    def _render_jazzhr(
+        self,
+        job: Job,
+        values: dict[str, list[str]],
+        errors: dict[str, str],
+        retained: dict[str, dict[str, Any]],
+        status: HTTPStatus,
+    ) -> None:
+        """A JazzHR-style application page whose only action controls are anchors. The
+        ``?sections=2`` variant splits the form into two client-side sections."""
+        sections = self._param("sections") == "2"
+        action = f"/jobs/{job.slug}/apply" + ("?sections=2" if sections else "")
+        hidden = ' style="display:none"'
+        marker = ' <span class="required" aria-hidden="true">*</span>'
+
+        def feedback(dom: str, name: str) -> tuple[str, str, str]:
+            """(group class suffix, control attributes, message) for a field's error."""
+            error = errors.get(name)
+            if not error:
+                return "", "", ""
+            note = f'<span class="help-block" id="{dom}-error" role="alert">{esc(error)}</span>'
+            return " has-error", f' aria-invalid="true" aria-describedby="{dom}-error"', note
+
+        def group(f: Field) -> str:
+            dom = f.dom_id or f.name
+            current = (values.get(f.name) or [""])[0]
+            css, aria, note = feedback(dom, f.name)
+            aria = (' aria-required="true"' if f.required else "") + aria
+            if f.kind == "select":
+                options = '<option value="">- Select One -</option>' + "".join(
+                    f'<option value="{esc(o.value)}"{" selected" if o.value == current else ""}>'
+                    f"{esc(o.label)}</option>"
+                    for o in f.options
+                )
+                control = f'<select class="form-control" id="{dom}" name="{f.name}"{aria}>{options}</select>'
+            else:
+                auto = f' autocomplete="{f.autocomplete}"' if f.autocomplete else ""
+                control = (
+                    f'<input type="{f.kind}" class="form-control" id="{dom}" name="{f.name}" '
+                    f'value="{esc(current)}"{auto}{aria}>'
+                )
+            return (
+                f'<div class="form-group{css}" id="{dom.removesuffix("-value")}">'
+                f'<label class="control-label" for="{dom}">{esc(f.label)}{marker if f.required else ""}</label>'
+                f"{control}{note}</div>"
+            )
+
+        prior = retained.get(JZ_RESUME.name)
+        pasted = (values.get(JZ_RESUME_TEXT.name) or [""])[0]
+        css, aria, note = feedback(JZ_RESUME.dom_id or "", JZ_RESUME.name)
+        attached = kept = ""
+        if prior:
+            attached = f"Currently attached: {esc(prior['filename'])} ({prior['size']} bytes)."
+            kept = f'<input type="hidden" name="resume_upload_id" value="{esc(prior["upload_id"])}">'
+        resume = (
+            f'<div class="form-group{css}" id="resumator-resume">'
+            f'<label class="control-label" for="resumator-resume-file">Resume{marker}</label>'
+            '<div class="resumator-resume-choices"><a id="resumator-choose-upload" href="#">Attach resume</a> '
+            'or <a id="resumator-choose-paste" href="#">Paste resume</a></div>'
+            f'<p class="help-block" id="resumator-resume-filename">{attached}</p>{kept}'
+            '<input type="file" id="resumator-resume-file" name="resume" accept=".pdf,.doc,.docx" '
+            f'aria-label="Resume" aria-required="true" style="display:none"{aria}>'
+            f'<div id="resumator-resume-paste"{"" if pasted else hidden}>'
+            '<label class="control-label" for="resumator-resume-value">Paste resume</label>'
+            '<textarea class="form-control" id="resumator-resume-value" name="resume_text" rows="8">'
+            f"{esc(pasted)}</textarea></div>{note}</div>"
+        )
+        contact_fields = (JZ_FIRST_NAME, JZ_LAST_NAME, JZ_EMAIL, JZ_PHONE)
+        contact = "".join(group(f) for f in contact_fields)
+        questions = group(JZ_SALARY) + group(JZ_HEARD)
+        submit = (
+            '<div id="resumator-submit" class="form-group">'
+            '<a id="resumator-submit-resume" class="btn btn-primary" href="#">Submit Application</a></div>'
+        )
+        if sections:
+            # A rejected POST reopens the section holding the first error.
+            second = bool(errors) and not any(f.name in errors for f in contact_fields)
+            fields_html = (
+                '<div class="job-form-fields">'
+                f'<div class="resumator-form-section" id="resumator-section-1"{hidden if second else ""}>'
+                "<h3>Contact information</h3>" + contact
+                + '<div class="form-group"><a class="btn" href="#">Next</a> <a class="btn" href="#">Save</a></div>'
+                '<p class="help-block" id="resumator-save-status" role="status"></p></div>'
+                f'<div class="resumator-form-section" id="resumator-section-2"{"" if second else hidden}>'
+                "<h3>Resume and questions</h3>" + resume + questions
+                + '<div class="form-group"><a class="btn" href="#">Back</a></div>' + submit + "</div></div>"
+            )
+        else:
+            fields_html = f'<div class="job-form-fields">{contact}{questions}{resume}</div>{submit}'
+        entries = [(f.dom_id or f.name, f.label, errors[f.name]) for f in job.fields if f.name in errors]
+        body = (
+            '<div id="resumator-cookie-consent" class="cookie-consent-bar" role="region" aria-label="Cookie consent">'
+            "<p>This website uses cookies to ensure you get the best experience on our website.</p>"
+            "<button>Dismiss</button> <button>ALLOW</button> <button>REJECT ALL</button></div>"
+            '<div class="job-header"><div>' + _job_heading(job) + "</div>"
+            '<a role="button" href="#" class="share">Share</a></div>'
+            '<button id="resumator-mobile-apply-button" type="button" style="display:none">Apply</button>'
+            f"<h2>Description</h2><p>{COMPANY} is hiring a {esc(job.title)} to plan and run paid search and "
+            "paid social programs across its product lines.</p>"
+            + render_error_summary(entries)
+            + '<div id="resumator-job-form"><h2>Apply for this position</h2>'
+            f'<form id="form_submit_new_resume" method="post" action="{esc(action)}" enctype="multipart/form-data">'
+            + "".join(f'<input type="hidden" name="{name}" value="{esc(value)}">' for name, value in JAZZHR_HIDDEN)
+            + fields_html
+            + "</form></div>"
+            + f"<script>{JAZZHR_JS}</script>"
+        )
+        title = f"Apply: {job.title}" if not errors else f"Error: Apply: {job.title}"
+        self._send_html(status, page(title, body, f"<style>{JAZZHR_STYLE}</style>"))
+
+    def _alert_routes(self, job: Job) -> dict[str, Any]:
+        """Configuration of DAYFORCE_JS: its client-side routes and their content."""
+        title, form_body, _ = self._single_form(job, {}, {}, {}, None, HTTPStatus.OK)
+        flow = f"/jobs/{job.slug}/apply?flowSelection=true"
+        return {
+            "delayMs": 2500,
+            "signIn": f"/login?next={quote(flow)}",
+            "routes": {
+                "flow": {"url": flow, "title": f"How would you like to apply? | {COMPANY} Careers",
+                         "html": _flow_selection_html(job)},
+                "manual": {"url": f"/jobs/{job.slug}/apply/manual", "title": f"{title} | {COMPANY} Careers",
+                           "html": form_body},
+            },
+        }
+
+    def _render_alert_posting(
+        self, job: Job, *, notice: str = "", error: str = "", email: str = "",
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
+        """The Dayforce-style posting. Legacy portal (default): the whole content is one
+        ASP.NET-style form in which Apply posts to ``/start`` and Subscribe (a ``formaction``)
+        to ``/alerts``. ``?nav=spa`` (current portal): no forms; Apply routes on the client."""
+        head = self._posting_head(job) + f"<style>{DAYFORCE_STYLE}</style>"
+        description = (
+            f"<h2>Job description</h2><p>{COMPANY} is hiring a {esc(job.title)} to plan and run "
+            "multi-channel marketing projects, from briefs and budgets to launch reviews.</p>"
+        )
+        apply_label = f"Apply for {esc(job.title)}"
+        if self._param("nav") == "spa":
+            body = (
+                _job_heading(job)
+                + '<div class="job-actions">'
+                '<button type="button" class="ant-btn ant-btn-primary" test-id="apply-button" '
+                f'aria-label="{apply_label}">Apply</button>'
+                '<button type="button" class="ant-btn ant-btn-default">Share</button></div>'
+                + description
+            )
+            after = _json_island("dayforce-config", self._alert_routes(job)) + f"<script>{DAYFORCE_JS}</script>"
+            self._send_html(status, page(job.title, body, head, after_main=after))
+            return
+        message, invalid = "", ""
+        if notice:
+            message = f'<p class="notice" role="status">{esc(notice)}</p>'
+        if error:
+            message = f'<p class="error" id="alert-email-error" role="alert">{esc(error)}</p>'
+            invalid = ' aria-invalid="true" aria-describedby="alert-email-error"'
+        body = (
+            f'<form id="aspnetForm" method="post" action="/jobs/{job.slug}/start">'
+            '<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="/wEPDwUKMTEzMzAxNjU0N2Rk">'
+            '<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="/wEdAAKBWADF133">'
+            + _job_heading(job)
+            + f'<div class="job-actions"><button type="submit" name="apply" value="1" aria-label="{apply_label}">'
+            "Apply</button></div>"
+            + description
+            + '<div class="job-alerts" role="region" aria-labelledby="job-alerts-title">'
+            '<h2 id="job-alerts-title">Get job alerts</h2>'
+            "<p>Get an email when new jobs like this one are posted.</p>"
+            + message
+            + '<div class="field"><label for="alert-email">Email address for job alerts</label>'
+            f'<input type="email" id="alert-email" name="alert_email" value="{esc(email)}"{invalid}></div>'
+            f'<button type="submit" formaction="/jobs/{job.slug}/alerts" name="subscribe" value="1">'
+            "Subscribe</button></div></form>"
+        )
+        self._send_html(status, page(job.title, body, head))
+
+    def _render_flow_selection(self, job: Job) -> None:
+        after = _json_island("dayforce-config", self._alert_routes(job)) + f"<script>{DAYFORCE_JS}</script>"
+        head = f"<style>{DAYFORCE_STYLE}</style>"
+        self._send_html(
+            HTTPStatus.OK, page("How would you like to apply?", _flow_selection_html(job), head, after_main=after)
+        )
+
+    def post_alert_start(self) -> None:
+        # The legacy portal's form target: Apply (and Enter in the alert email) posts here.
+        # A non-empty alert email is a job-alert subscription, never part of an application.
+        job = self._job(APPLY_IN_ALERT_FORM)
+        form, _ = self._read_form()
+        email = (form.get("alert_email") or [""])[0].strip()
+        if email:
+            self.store.add_alert(job, email)
+        self._redirect(f"/jobs/{job.slug}/apply?flowSelection=true")
+
+    def post_alert_subscribe(self) -> None:
+        job = self._job(APPLY_IN_ALERT_FORM)
+        form, _ = self._read_form()
+        email = (form.get("alert_email") or [""])[0].strip()
+        if not email:
+            self._render_alert_posting(
+                job, error="Enter an email address for job alerts.", status=HTTPStatus.UNPROCESSABLE_ENTITY
+            )
+            return
+        self.store.add_alert(job, email)
+        self._render_alert_posting(job, notice=f"You are subscribed to job alerts at {email}.", email=email)
+
+    def get_manual_apply(self) -> None:
+        # "Apply without an Account": the application form of apply-in-alert-form.
+        job = self._job(APPLY_IN_ALERT_FORM)
+        self._render_single(job, {}, {}, {}, None, HTTPStatus.OK)
 
     # test-only API: assertions and fixture control, never product runtime
     def test_health(self) -> None:

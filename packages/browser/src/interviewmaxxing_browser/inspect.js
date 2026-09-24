@@ -15,9 +15,32 @@
     "spinbutton", "slider", "searchbox", "menu", "tree", "grid",
   ]);
 
+  // ---- open shadow roots ------------------------------------------------------------
+  // Some sites render the application inside an open shadow root (LinkedIn's Easy Apply
+  // since 2026). Elements are collected from the document and every open shadow root,
+  // in composed order; a page without shadow roots reads exactly as before.
+  const shadowRoots = [];
+  const composedOrder = new Map();
+  const walkComposed = (root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      composedOrder.set(n, composedOrder.size);
+      if (n.shadowRoot && shadowRoots.length < 50) { shadowRoots.push(n.shadowRoot); walkComposed(n.shadowRoot); }
+    }
+  };
+  walkComposed(document);
+  const deepAll = (sel) => {
+    const found = Array.from(document.querySelectorAll(sel));
+    if (!shadowRoots.length) return found;
+    for (const root of shadowRoots) found.push(...root.querySelectorAll(sel));
+    return found.sort((a, b) => composedOrder.get(a) - composedOrder.get(b));
+  };
+  // The parent in the composed tree: a shadow root's top elements belong to its host.
+  const parentOf = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+
   const cssString = (v) => '"' + String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
   const unique = (sel) => {
-    try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; }
+    try { return deepAll(sel).length === 1; } catch (e) { return false; }
   };
   // A menu button standing in for a hidden native select (menuProxy: BambooHR's Fabric
   // select) is the control; its select only names it (label, name, required) and is
@@ -59,21 +82,30 @@
   }
   const selectorFor = (el) => {
     if (el.id && unique("#" + CSS.escape(el.id))) return "#" + CSS.escape(el.id);
+    // Inside a shadow root the selector is "<host selector> >> <selector within the
+    // root>" (Playwright chains it; the fixed read scripts resolve it the same way).
+    const root = el.getRootNode();
+    const shadow = root !== document && root.host ? root : null;
+    const scoped = (sel) => {
+      if (!shadow) return unique(sel);
+      try { return shadow.querySelectorAll(sel).length === 1; } catch (e) { return false; }
+    };
+    const within = (sel) => (shadow ? selectorFor(shadow.host) + " >> " + sel : sel);
     const tag = el.tagName.toLowerCase();
     const name = el.getAttribute("name");
     if (name) {
       let sel = tag + "[name=" + cssString(name) + "]";
-      if (unique(sel)) return sel;
+      if (scoped(sel)) return within(sel);
       if (el.type === "radio" || el.type === "checkbox") {
         sel += "[value=" + cssString(el.value) + "]";
-        if (unique(sel)) return sel;
+        if (scoped(sel)) return within(sel);
       }
     }
     const parts = [];
     for (let n = el; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
-      if (n !== el && n.id && unique("#" + CSS.escape(n.id))) { parts.unshift("#" + CSS.escape(n.id)); break; }
+      if (n !== el && n.id && scoped("#" + CSS.escape(n.id))) { parts.unshift("#" + CSS.escape(n.id)); break; }
       const t = n.tagName.toLowerCase();
-      const p = n.parentElement;
+      const p = n.parentElement || (shadow && n.parentNode === shadow ? shadow : null);
       if (!p) { parts.unshift(t); break; }
       const same = Array.from(p.children).filter((c) => c.tagName === n.tagName);
       const index = same.indexOf(n);
@@ -81,12 +113,13 @@
       const counted = same.filter((c) => c === n || !popupRoots.has(c));
       const popupBefore = same.slice(0, index).some((c) => popupRoots.has(c));
       parts.unshift(counted.length > 1 || popupBefore ? t + ":nth-of-type(" + (index + 1) + ")" : t);
+      if (p === shadow) break;
     }
-    return parts.join(" > ");
+    return within(parts.join(" > "));
   };
 
   const hiddenByAncestor = (el) => {
-    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+    for (let n = el; n && n.nodeType === 1; n = parentOf(n)) {
       if (n.getAttribute("aria-hidden") === "true" || n.hasAttribute("inert") || n.hidden) return true;
     }
     return false;
@@ -125,8 +158,10 @@
   const classOf = (el) => (el.getAttribute && el.getAttribute("class")) || "";
   const isErrorEl = (el) =>
     el.getAttribute("role") === "alert" || /error|invalid/i.test((el.id || "") + " " + classOf(el));
+  const byId = (id) => document.getElementById(id) ||
+    shadowRoots.map((root) => root.getElementById(id)).find(Boolean) || null;
   const byIds = (value) =>
-    (value || "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter(Boolean);
+    (value || "").split(/\s+/).filter(Boolean).map(byId).filter(Boolean);
   // A description the control names as its error message is an error, whatever it looks like.
   const errorFor = (el, d) => isErrorEl(d) ||
     (!!d.id && (el.getAttribute("aria-errormessage") || "").split(/\s+/).includes(d.id));
@@ -206,6 +241,12 @@
     if (el.labels && el.labels.length) {
       const t = Array.from(el.labels).map((l) => fileText(l)).join(" ").trim();
       if (t) return [t, "label"];
+      // A label that is only the uploader's button still names the question ("Upload
+      // resume"), unless the button says nothing but a verb ("Attach").
+      const whole = Array.from(el.labels).map((l) => textOf(l)).join(" ").trim();
+      if (whole && !/^(?:attach|upload|browse|choose|select|add)(?:\s+(?:a\s+)?files?)?$/i.test(whole)) {
+        return [whole, "label"];
+      }
     }
     const aria = (el.getAttribute("aria-label") || "").trim();
     if (aria) return [aria, "aria-label"];
@@ -293,8 +334,31 @@
     return box ? selectorFor(box) : "";
   };
 
+  // ---- dialogs (modal wizards, banners, picker popups) ----------------------------
+  // Python decides which dialog, if any, is the application form (a modal wizard);
+  // here every element only reports the innermost dialog-like element holding it.
+  const DIALOG_SEL = '[role="dialog"], [role="alertdialog"], dialog, [aria-modal="true"]';
+  const dialogEls = deepAll(DIALOG_SEL).slice(0, 60);
+  const dialogIndexes = new Map(dialogEls.map((d, i) => [d, i]));
+  const dialogIndexOf = (el) => {
+    for (let n = el; n && n.nodeType === 1; n = parentOf(n)) {
+      if (dialogIndexes.has(n)) return dialogIndexes.get(n);
+    }
+    return -1;
+  };
+  const stepIn = (root) => {
+    const current = root.querySelector('[aria-current="step"]');
+    if (current && current.parentElement) {
+      const items = Array.from(current.parentElement.children);
+      return { current: items.indexOf(current) + 1, total: items.length, source: "aria-current" };
+    }
+    const text = (root === document.body ? document.body.innerText : root.innerText) || "";
+    const m = text.match(/\bstep\s+(\d+)\s*(?:of|\/)\s*(\d+)\b/i);
+    return m ? { current: Number(m[1]), total: Number(m[2]), source: "text" } : null;
+  };
+
   // ---- forms and their controls --------------------------------------------------
-  const forms = Array.from(document.forms);
+  const forms = deepAll("form");
   const formIndex = (el) => (el.form ? forms.indexOf(el.form) : -1);
   // A combobox's hidden validation proxy (react-select's RequiredInput: aria-hidden,
   // tabindex -1, rendered only while the menu has no value) is part of that widget.
@@ -304,7 +368,7 @@
   // So is a menu toggle's proxy select, and the search box in a toggle's menu.
   const proxySelects = new Set(menuToggles.values());
   const inTogglePopup = (el) => { for (const p of togglePopups) if (p.contains(el)) return true; return false; };
-  const nativeControls = Array.from(document.querySelectorAll("input, select, textarea"))
+  const nativeControls = deepAll("input, select, textarea")
     .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el) &&
       !proxySelects.has(el) && !inTogglePopup(el));
 
@@ -324,7 +388,7 @@
   const CALENDAR = '[class*="datepicker__month"], [class*="datepicker-popper"], [class*="datepicker__header"], ' +
     '[class*="calendar-popup"], [class*="DayPicker"], .flatpickr-calendar';
   const customWidgets = [];
-  for (const el of document.querySelectorAll("[role], [contenteditable]")) {
+  for (const el of deepAll("[role], [contenteditable]")) {
     // A <button> with a widget role (e.g. role="combobox") is a custom control, not an action.
     if (NATIVE.has(el.tagName)) continue;
     if (inPhonePicker(el) || inTogglePopup(el)) continue;
@@ -356,7 +420,7 @@
     }
     if (menuToggles.has(w)) for (const id of comboRefs(w)) ownedIds.add(id);
   }
-  const ownedEls = new Set(Array.from(ownedIds).map((id) => document.getElementById(id)).filter(Boolean));
+  const ownedEls = new Set(Array.from(ownedIds).map(byId).filter(Boolean));
   const widgets = customWidgets.filter((w) => !(w.id && ownedIds.has(w.id)));
   const fieldEls = new Set([...nativeControls, ...widgets]);
 
@@ -527,7 +591,7 @@
     // simply labelled "Email" or "City". Only use scoped ancestor headings that
     // precede this control; never borrow a neighbouring form/section's text.
     const parts = [];
-    const boundary = el.form || el.closest("form") || document.body;
+    const boundary = el.form || el.closest("form") || el.closest(DIALOG_SEL) || document.body;
     let child = el;
     for (let parent = el.parentElement, depth = 0;
          parent && parent !== document.body && depth < 12;
@@ -695,6 +759,7 @@
       upload_trigger: !upload ? "" : trigger ? (textOf(trigger) || triggerName(trigger)).slice(0, 120)
         : uploadTriggerOf(el, container),
       upload_anchor: trigger ? triggerBoxOf(trigger) : "",
+      dialog_index: dialogIndexOf(el),
     };
   };
 
@@ -704,7 +769,7 @@
     const container = containerFor([el], el.closest("form"));
     const exclude = new Set([...byIds(el.getAttribute("aria-labelledby")), ...byIds(el.getAttribute("aria-describedby")),
       ...popupRoots]);
-    for (const id of ownedIds) { const o = document.getElementById(id); if (o) exclude.add(o); }
+    for (const id of ownedIds) { const o = byId(id); if (o) exclude.add(o); }
     if (proxy) for (const n of [...(proxy.labels || []), ...byIds(proxy.getAttribute("aria-describedby"))]) exclude.add(n);
     const [adjacent, adjacentErrors] = adjacentText(container, exclude);
     const proxyLabel = proxy ? labelOf(proxy) : ["", "none"];
@@ -762,6 +827,7 @@
       aria: ariaObserve(el) || comboFacts(el),
       phone_picker: "",
       upload_trigger: "",
+      dialog_index: dialogIndexOf(el),
     };
   };
 
@@ -769,7 +835,7 @@
   // Keep document order.
   const order = [...nativeControls, ...widgets];
   const positioned = controls.map((c, i) => [order[i], c]);
-  positioned.sort((a, b) => (a[0].compareDocumentPosition(b[0]) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+  positioned.sort((a, b) => composedOrder.get(a[0]) - composedOrder.get(b[0]));
 
   // ---- buttons, links, page text --------------------------------------------------
   // Buttons, links, headings and live text inside an open menu belong to its widget.
@@ -789,7 +855,7 @@
     return false;
   };
   const buttons = [];
-  for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
+  for (const el of deepAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
     if (!visible(el) || inPopup(el) || comboButton(el) || el.closest(CALENDAR) || pressedButtons.has(el)) continue;
     if (CUSTOM_ROLES.has(el.getAttribute("role") || "") || menuToggles.has(el)) continue; // a widget, reported as a control
     // A picker trigger (a phone widget's "Change country" button) opens a dialog or
@@ -814,17 +880,43 @@
       form_no_validate: !!el.formNoValidate,
       effective_method: method,
       effective_action: action,
+      dialog_index: dialogIndexOf(el),
+      toggle: el.hasAttribute("aria-pressed"),
+    });
+  }
+  // An anchor inside a form that goes nowhere ("#", empty, javascript:) is that form's
+  // script-driven button (JazzHR's "Submit Application"). It never submits by itself
+  // and is classified by its own wording only.
+  for (const a of deepAll("form a")) {
+    if (!visible(a) || inPopup(a) || a.getAttribute("role") === "button" || CUSTOM_ROLES.has(a.getAttribute("role") || "")) continue;
+    const href = (a.getAttribute("href") || "").trim();
+    if (href && href !== "#" && !/^javascript:/i.test(href)) continue;
+    const text = textOf(a) || a.getAttribute("aria-label") || a.title || "";
+    if (!text) continue;
+    buttons.push({
+      text: text.replace(/\s+/g, " ").trim(),
+      type: "link-button",
+      selector: selectorFor(a),
+      disabled: a.getAttribute("aria-disabled") === "true" || /\bdisabled\b/.test(classOf(a)),
+      form_index: forms.indexOf(a.closest("form")),
+      submits_form: false,
+      form_no_validate: false,
+      effective_method: "",
+      effective_action: "",
+      dialog_index: dialogIndexOf(a),
     });
   }
   const links = [];
-  for (const a of document.querySelectorAll("a[href]")) {
+  for (const a of deepAll("a[href]")) {
     if (!visible(a) || inPopup(a)) continue;
-    links.push({ text: textOf(a) || a.getAttribute("aria-label") || "", href: a.href, selector: selectorFor(a) });
+    links.push({ text: textOf(a) || a.getAttribute("aria-label") || "", href: a.href, selector: selectorFor(a),
+      dialog_index: dialogIndexOf(a) });
   }
-  const headings = Array.from(document.querySelectorAll("h1, h2, h3"))
+  const headings = deepAll("h1, h2, h3")
     .filter((h) => visible(h) && !inPopup(h)).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h) })).filter((h) => h.text);
-  const regions = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live]'))
-    .filter((r) => visible(r) && !inPopup(r)).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r) })).filter((r) => r.text);
+  const regions = deepAll('[role="alert"], [role="status"], [aria-live]')
+    .filter((r) => visible(r) && !inPopup(r)).map((r) => ({ role: r.getAttribute("role") || "live", text: textOf(r),
+      dialog_index: dialogIndexOf(r) })).filter((r) => r.text);
 
   // Record candidates: members of repeated sibling groups of block elements (cards,
   // articles, list items, rows). Python decides which groups are application records
@@ -888,19 +980,56 @@
     if (!inside) confirmationScopes.push({ heading: null, text: textOf(el).slice(0, 4000) });
   }
 
-  let step = null;
-  const current = document.querySelector('[aria-current="step"]');
-  if (current && current.parentElement) {
-    const items = Array.from(current.parentElement.children);
-    step = { current: items.indexOf(current) + 1, total: items.length, source: "aria-current" };
-  } else {
-    const m = (document.body.innerText || "").match(/\bstep\s+(\d+)\s*(?:of|\/)\s*(\d+)\b/i);
-    if (m) step = { current: Number(m[1]), total: Number(m[2]), source: "text" };
-  }
+  const step = stepIn(document.body);
 
+  // Determinate progress indicators (a wizard's "25%" bar). An indeterminate one is a
+  // loading signal instead.
+  const determinate = (el) => el.tagName === "PROGRESS" ? el.hasAttribute("value")
+    : (el.getAttribute("aria-valuenow") || "") !== "";
+  const progress = [];
+  for (const el of deepAll('progress, [role="progressbar"]')) {
+    if (progress.length >= 20 || !visible(el) || !determinate(el)) continue;
+    let value, max;
+    if (el.tagName === "PROGRESS") {
+      value = Number(el.value); max = Number(el.max);
+    } else {
+      const min = Number(el.getAttribute("aria-valuemin") || 0);
+      value = Number(el.getAttribute("aria-valuenow")) - min;
+      max = Number(el.getAttribute("aria-valuemax") || 100) - min;
+    }
+    if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) continue;
+    const text = labelOf(el)[0] || el.getAttribute("aria-valuetext") || textOf(el.parentElement);
+    const owner = el.closest("form");
+    progress.push({ value, max, text: text.slice(0, 200), form_index: owner ? forms.indexOf(owner) : -1,
+      dialog_index: dialogIndexOf(el) });
+  }
+  const dialogs = dialogEls.map((d, i) => {
+    const byLabelledby = byIds(d.getAttribute("aria-labelledby")).map((n) => textOf(n)).join(" ").trim();
+    const heading = Array.from(d.querySelectorAll('h1,h2,h3,h4,[role="heading"]')).find(visible);
+    let modal = d.getAttribute("aria-modal") === "true";
+    try { modal = modal || (d.tagName === "DIALOG" && d.matches(":modal")); } catch (e) { /* older engines */ }
+    return {
+      index: i,
+      selector: selectorFor(d),
+      label: (byLabelledby || (d.getAttribute("aria-label") || "").trim() || (heading ? textOf(heading) : "")).slice(0, 300),
+      modal,
+      visible: visible(d),
+      parent: parentOf(d) ? dialogIndexOf(parentOf(d)) : -1,
+      step: stepIn(d),
+    };
+  });
+
+  const CAPTCHA_FRAME = /recaptcha|hcaptcha|challenges\.cloudflare|turnstile|arkoselabs|funcaptcha|captcha/i;
   const captchaFrames = Array.from(document.querySelectorAll("iframe"))
-    .filter((f) => /recaptcha|hcaptcha|challenges\.cloudflare|turnstile|arkoselabs|funcaptcha|captcha/i.test(f.src || f.title || ""))
+    .filter((f) => CAPTCHA_FRAME.test(f.src || f.title || ""))
     .map((f) => ({ src: f.src || "", title: f.title || "", visible: visible(f) }));
+  const frames = Array.from(document.querySelectorAll("iframe"))
+    .filter((f) => !CAPTCHA_FRAME.test(f.src || f.title || "")).slice(0, 30)
+    .map((f) => {
+      const r = f.getBoundingClientRect();
+      return { id: f.id || "", src: f.getAttribute("src") ? f.src : "", title: f.title || f.getAttribute("aria-label") || "",
+        visible: visible(f), width: r.width, height: r.height };
+    });
   const tokens = Array.from(document.querySelectorAll('[name="g-recaptcha-response"], [name="h-captcha-response"], [name="cf-turnstile-response"]'))
     .map((t) => ({ name: t.getAttribute("name"), filled: !!t.value }));
 
@@ -908,7 +1037,8 @@
   // Loading signals only delay readiness (bounded) for a page that does not classify yet.
   const LOADING_TEXT = /\b(?:loading|fetching|please wait|one moment)\b/i;
   const loadingIndicator = LOADING_TEXT.test(bodyText) ||
-    Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"]')).some(visible);
+    deepAll('[aria-busy="true"], [role="progressbar"]')
+      .some((el) => visible(el) && !(el.getAttribute("role") === "progressbar" && determinate(el)));
 
   // Work in progress the runtime waits out (bounded) before and while filling: busy
   // regions, progress bars and short standalone status texts ("Loading...", a button
@@ -944,10 +1074,16 @@
   const prompts = promptEls.map((d) => ({
     text: textOf(d).slice(0, 600),
     modal: d.getAttribute("aria-modal") === "true" || (d.tagName === "DIALOG" && d.matches(":modal")),
+    dialog_index: dialogIndexOf(d),
     buttons: Array.from(d.querySelectorAll('button, [role="button"], a[href], input[type="button"], input[type="submit"]'))
       .filter(visible).slice(0, 12).map((b) => ({
         text: squashText((b.tagName === "INPUT" ? b.value : textOf(b)) || b.getAttribute("aria-label") || b.getAttribute("title") || "").slice(0, 120),
         selector: selectorFor(b),
+        // A submit of a form other than <form method="dialog"> (which only closes the
+        // dialog), and a link to another document: neither ever declines an offer.
+        submits: (b.tagName === "BUTTON" || b.tagName === "INPUT") && b.type === "submit" && !!b.form &&
+          String(b.getAttribute("formmethod") || b.form.getAttribute("method") || "").toLowerCase() !== "dialog",
+        navigates: b.tagName === "A" && !/^\s*(?:#|javascript:|$)/i.test(b.getAttribute("href") || ""),
       })),
   }));
 
@@ -975,7 +1111,7 @@
     buttons,
     links,
     step,
-    password_visible: Array.from(document.querySelectorAll("input[type=password]")).some(visible),
+    password_visible: deepAll("input[type=password]").some(visible),
     captcha_frames: captchaFrames,
     captcha_tokens: tokens,
     captcha_widget: !!document.querySelector(".g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]"),
@@ -983,5 +1119,8 @@
     busy,
     prompts,
     document: String(performance.timeOrigin) + " " + location.href,
+    dialogs,
+    progress,
+    frames,
   };
 }
