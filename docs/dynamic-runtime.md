@@ -226,13 +226,18 @@ without site adapters:
 - **Then settle and re-read.** The page is read until nothing is busy and two reads 0.3 s
   apart agree, values included (an autofill the upload triggered has landed; at most 20 s).
   Only values, validation messages, the attached control's own description and controls
-  (its chip or status line, a replaced input kept as approved) and upload buttons may have
-  changed; every other question and binding must be as approved. Then every other answered
-  field is filled and read back, so our verified values overwrite the site's autofill. If
-  other questions, constraints, bindings, actions or employer context changed, the fill
-  stops with a page error (the attached file stays; the runner re-inspects and resolves the
-  step again, and the next fill does not attach again). Pre-checked consent boxes the packet
-  does not answer are cleared as before.
+  (its chip or status line, a replaced input kept as approved), the buttons inside its
+  uploader's container and where the page's actions sit may have changed: actions count by
+  what they are, so a re-rendered action area is accepted while the submit control keeps
+  its text and its form. Every other question and binding must be as approved. Then every
+  other answered field is filled and read back, so our verified values overwrite the site's
+  autofill. If other questions, constraints, bindings, actions (a submit with other wording
+  or another form) or employer context changed, the fill stops with a page error (the
+  attached file stays; the runner re-inspects and resolves the step again, and the next
+  fill does not attach again). An uploader that re-renders later (Greenhouse, seconds after
+  the attach) is accepted at any later write by the same rule (see "Passing states and own
+  changes" above). Pre-checked consent boxes the packet does not answer are cleared as
+  before.
 - **Question text of upload controls** leaves out the trigger ("ATTACH RESUME/CV"), file
   chips, sizes and upload/parse status, and a label that only says "Attach" yields to the
   group's question ("Resume/CV"), so an upload does not change the field's fingerprint and a

@@ -28,7 +28,7 @@ from interviewmaxxing_browser.signals import (
 )
 from interviewmaxxing_browser.snapshot import DomSnapshot, inspector_script
 from interviewmaxxing_browser.uploads import UploadState
-from interviewmaxxing_core import BrowserOptions, ControlType, PageKind
+from interviewmaxxing_core import BrowserOptions, ControlType, FieldFillStatus, PageKind
 
 HIDDEN = ("border:0;clip:rect(0,0,0,0);clip-path:inset(50%);height:1px;margin:0 -1px -1px 0;"
           "overflow:hidden;padding:0;position:absolute;width:1px;white-space:nowrap")
@@ -255,6 +255,56 @@ def test_a_loading_indicator_that_never_clears_is_waited_for_once(
     assert 1.8 < opened < 6.0, opened  # open() waited the bounded 2 s for "Loading..."
     assert filled < 1.8, filled  # the same stuck indicator is not waited for again
     assert fill.ok, fill
+
+
+ACTIONS_RERENDER = """<!doctype html><title>Apply: Fictional Coordinator</title><h1>Fictional Coordinator</h1>
+<form id="app" method="post" action="/apply">
+<div class="field"><label for="full_name">Full name</label><input id="full_name" name="full_name" required></div>
+<div class="field" id="resume-box"><label for="resume">Resume</label>
+ <input type="file" id="resume" name="resume" accept=".pdf" required></div>
+<div class="form-actions"><div class="actions-row"><button type="submit">Submit application</button></div></div>
+</form>
+<script>
+document.getElementById('resume').addEventListener('change', () => setTimeout(() => {
+  // After the upload the page re-renders its action area: the submit button leaves its
+  // row (its path selector shifts), or comes back with other wording.
+  const renamed = new URLSearchParams(location.search).get('mode') === 'renamed';
+  document.querySelector('.form-actions').innerHTML =
+    '<button type="submit">' + (renamed ? 'Pay and submit' : 'Submit application') + '</button>';
+}, 300));
+</script>"""
+
+
+@pytest.mark.parametrize(("mode", "accepted"), [("moved", True), ("renamed", False)])
+def test_an_action_area_rerendered_by_the_upload_keeps_the_fill_only_with_the_same_submit(
+    mode: str, accepted: bool, kit: SimpleNamespace, server: Any, options: BrowserOptions
+) -> None:
+    async def scenario() -> tuple[Any, Any, str]:
+        browser = await PlaywrightSessionFactory().start(options)
+        try:
+            await browser.page.route("**/fixture-actions**", lambda route: route.fulfill(
+                content_type="text/html; charset=utf-8", body=ACTIONS_RERENDER))
+            page = await browser.open(server.url(f"/fixture-actions?mode={mode}"))
+            assert page.form is not None, page.message
+            fill = await browser.fill(page.form, kit.build(
+                page.form, {"resume": kit.RESUME, "full_name": "Avery Quill"}).packet)
+            return page.form, fill, await browser.page.input_value("#full_name")
+        finally:
+            await browser.close()
+
+    form, fill, typed = kit.run(scenario())
+    statuses = {f.field_id: f.status for f in fill.fields}
+    assert statuses["resume"] is FieldFillStatus.FILLED
+    if accepted:
+        # The same "Submit application" of the same form in a new place: our answer arriving.
+        assert fill.ok, fill
+        assert typed == "Avery Quill"
+    else:
+        # Other wording is another action: nothing else is written; the step is re-inspected.
+        assert not fill.ok and "full_name" not in statuses and typed == ""
+        assert any("actions or employer context changed" in e for e in fill.page_errors), fill
+    assert form.submit_selector is not None
+    assert server.submissions()["accepted_count"] == 0
 
 
 # --- pure rules -------------------------------------------------------------------------

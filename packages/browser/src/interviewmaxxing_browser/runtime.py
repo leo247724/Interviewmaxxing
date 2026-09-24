@@ -30,7 +30,8 @@ Safety rules enforced here:
   waits (bounded) for the upload and reads it back from the input, a file chip or an
   upload notice; then it lets the page settle and re-reads it, so an autofill the upload
   triggers lands before our values are typed and read back. Only the attached control's
-  own description may change meanwhile; any other question change stops the fill.
+  own description and uploader, and where page actions sit, may change meanwhile (the
+  submit control must keep its text and form); any other change stops the fill.
 * Overlays. Loading overlays ("Loading...", ``aria-busy``, progress bars) are waited out
   (bounded) before acting; an offer to autofill the application is declined once with
   its own "No thanks"-style control; third-party autofill and "Apply with ..." controls
@@ -1526,10 +1527,12 @@ class GenericApplicationBrowser:
         self, field_id: str, accepted: ApplicationForm
     ) -> tuple[str | None, ApplicationForm]:
         """After our upload: let the page settle (bounded; an autofill the upload
-        triggers lands, an autofill offer is declined once) and re-read it. When only
-        the attached control's own description, values and upload buttons changed, the
-        fill continues against the re-read page. Returns why it must stop instead (or
-        None) and the form the fill is now authorized against."""
+        triggers lands, an autofill offer is declined once) and re-read it. When only the
+        attached control's own description and controls, values, the buttons inside its
+        uploader's container and where page actions sit changed (the submit control keeps
+        its text and form: ``_guard_signature``), the fill continues against the re-read
+        page. Returns why it must stop instead (or None) and the form the fill is now
+        authorized against."""
         model = await self._await_quiet(min(self.settle_timeout_s, _UPLOAD_WAIT_S), values=True)
         await self._assert_fill_context()
         base = self._fill_model
