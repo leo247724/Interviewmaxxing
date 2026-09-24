@@ -1046,9 +1046,11 @@ class GenericApplicationBrowser:
         This also runs between individual checkbox-group writes. An earlier input
         handler may replace a later question without replacing the document.
 
-        A transient state is waited out (bounded) instead: a re-render that briefly
-        removes the form's controls or marks it busy, and an offer to autofill the
-        application (declined once). With ``rebind`` (the check before a write), a
+        A difference is first given ``_FLICKER_S`` to pass (a passing state after a
+        keystroke). A transient state is then waited out (bounded) instead of aborting: a
+        re-render that briefly removes the form's controls or marks it busy, and an offer
+        to autofill the application (declined once). With ``rebind`` (the check before a
+        write), a
         re-render that only regenerated selectors (the same questions, constraints,
         options, actions and context) is re-read and True is returned: the write must
         then go through the control re-resolved by its field id, never a stale selector.

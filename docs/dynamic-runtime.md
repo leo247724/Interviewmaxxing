@@ -213,19 +213,23 @@ without site adapters:
   to the file input (hidden or not; a hidden input counts as an upload field when a
   visible label, "Attach"/"Upload" button, link or focusable drop zone in its own box is
   there). The driver verifies the bytes against the pinned resume: those the input holds,
-  or, when the page moved the file into its own state and emptied the input, those it
-  delivered with its input/change event. A file is never attached twice: not when the
-  input already holds the pinned file (name, size and SHA-256), and not when this session
-  attached it in the same document and the page shows it. After attaching, a spinner or
-  "Uploading..."/"Analyzing resume..." text is waited out (at most 20 s) and the upload is
-  read back from `input.files` (name and size), a visible chip naming the file, or an
-  `aria-live`/status notice; a visible upload error is a mismatch.
+  or, when the uploader emptied or replaced its input, the bytes it was handed with its
+  input/change event (when the page can hash them) together with the uploader's own
+  container showing the file's name without an error (see "File uploaders" above). A file
+  is never attached twice: not when the input already holds the pinned file (name, size
+  and SHA-256; "already attached"), and not when this session attached it in the same
+  document and the uploader, having emptied or replaced its input, still shows it ("the
+  uploader already shows this file"). After attaching, a spinner or "Uploading..."/
+  "Analyzing resume..." text is waited out (at most 20 s) and the upload is read back from
+  `input.files` (name and size) or, once the input is emptied or replaced, a visible chip
+  naming the file or an `aria-live`/status notice; a visible upload error is a mismatch.
 - **Then settle and re-read.** The page is read until nothing is busy and two reads 0.3 s
   apart agree, values included (an autofill the upload triggered has landed; at most 20 s).
-  Only values, validation messages, the attached control's own description (its chip or
-  status line), regenerated selectors and upload buttons may have changed. Then every other
-  answered field is filled and read back, so our verified values overwrite the site's
-  autofill. If other questions, constraints, actions or employer context changed, the fill
+  Only values, validation messages, the attached control's own description and controls
+  (its chip or status line, a replaced input kept as approved) and upload buttons may have
+  changed; every other question and binding must be as approved. Then every other answered
+  field is filled and read back, so our verified values overwrite the site's autofill. If
+  other questions, constraints, bindings, actions or employer context changed, the fill
   stops with a page error (the attached file stays; the runner re-inspects and resolves the
   step again, and the next fill does not attach again). Pre-checked consent boxes the packet
   does not answer are cleared as before.
@@ -247,10 +251,11 @@ without site adapters:
   state. A mismatching readback is read once more after a settle, with the control
   re-resolved by its field id (same question fingerprint); if the re-rendered control lost
   the value it is typed once more key by key (text over 200 characters as one input event)
-  and read back; only then is it `VERIFICATION_MISMATCH`. Before each write, a transient
-  re-render (the form's controls briefly missing, a busy marker) is waited out (at most
-  3 s) instead of aborting; a re-render that regenerated only selectors re-reads the form
-  and the field is operated through its re-resolved control, never a stale selector. At the
+  and read back; only then is it `VERIFICATION_MISMATCH`. Before each write, after the
+  1 s passing-state settle above, a transient re-render (the form's controls briefly
+  missing, a busy marker) is waited out (at most 3 s more) instead of aborting; a
+  re-render that regenerated only selectors re-reads the form and the field is operated
+  through its re-resolved control, never a stale selector. At the
   end of the fill, text that the page changed after its readback (a late autofill, a
   reverting controlled input) is written once more and verified.
 

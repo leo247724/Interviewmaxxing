@@ -256,9 +256,12 @@ def test_a_second_fill_attaches_nothing_again(
         [attached] = [f for f in first.fields if f.field_id == field_id]
         [kept] = [f for f in second.fields if f.field_id == field_id]
         assert attached.status is FieldFillStatus.FILLED
-        assert "already attached" not in (attached.detail or ""), attached
+        assert "already" not in (attached.detail or ""), attached
         assert kept.status is FieldFillStatus.FILLED
-        assert "already attached" in (kept.detail or ""), kept
+        # Not attached again: the input still holds the pinned file ("already attached"),
+        # or the uploader that took it from its input still shows it ("already shows").
+        assert (kept.detail or "") in {"already attached; not attached again",
+                                       "the uploader already shows this file"}, kept
     # Nothing reached the page again: one upload (and one parse) for the whole document.
     counts = {key: after[key] for key in ("uploads", "autofills", "coverUploads") if key in after}
     assert counts == {key: before[key] for key in counts}
