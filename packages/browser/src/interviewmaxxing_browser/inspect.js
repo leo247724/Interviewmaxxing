@@ -232,10 +232,21 @@
   const nativeControls = Array.from(document.querySelectorAll("input, select, textarea"))
     .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el));
 
+  // A phone field's own country picker (an intl-tel-input flag, which may be a combobox
+  // named "Country", or a dialog button before the number) belongs to that field: its
+  // number is typed as +<code><digits>. It is never a question of its own.
+  const phonePickerNodes = new Set();
+  for (const tel of document.querySelectorAll("input[type=tel]")) {
+    const picker = phonePicker(tel);
+    if (picker && picker.kind !== "combobox") phonePickerNodes.add(picker.node);
+  }
+  const inPhonePicker = (el) => { for (const p of phonePickerNodes) if (p === el || p.contains(el)) return true; return false; };
+
   const customWidgets = [];
   for (const el of document.querySelectorAll("[role], [contenteditable]")) {
     // A <button> with a widget role (e.g. role="combobox") is a custom control, not an action.
     if (NATIVE.has(el.tagName)) continue;
+    if (inPhonePicker(el)) continue;
     const role = el.getAttribute("role");
     const editable = el.hasAttribute("contenteditable") && el.isContentEditable;
     if (!(CUSTOM_ROLES.has(role) || editable)) continue;

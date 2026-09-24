@@ -119,7 +119,11 @@ const comboLike = (el) => {
   return !el.closest('a[href]') && !el.isContentEditable;
 };
 const comboEditable = (el) => el.tagName === 'INPUT' && !el.readOnly && el.getAttribute('aria-readonly') !== 'true';
-const comboOwnText = (node) => ariaText([...node.childNodes].filter((t) => t.nodeType === 3).map((t) => t.nodeValue).join(' '));
+// Text nodes as the browser renders them: adjacent ones run together (React writes
+// "+{code}" as "+" and "1", shown "+1"); a space only where an element came between.
+const ariaJoin = (texts) => ariaText(texts.map((t, i) =>
+  (i && t.previousSibling !== texts[i - 1] ? ' ' : '') + t.nodeValue).join(''));
+const comboOwnText = (node) => ariaJoin([...node.childNodes].filter((t) => t.nodeType === 3));
 // The small box a menu input shares with its displayed value or placeholder (a React
 // select's control). It never reaches a label, heading, live region or another field.
 const comboRoot = (el) => {
@@ -164,9 +168,9 @@ const comboDisplay = (el) => {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   for (let t = walker.nextNode(); t; t = walker.nextNode()) {
     const skip = t.parentElement && t.parentElement.closest('[role=listbox],[aria-hidden=true]');
-    if (!(skip && skip !== el && el.contains(skip))) parts.push(t.nodeValue);
+    if (!(skip && skip !== el && el.contains(skip))) parts.push(t);
   }
-  const text = ariaText(parts.join(' '));
+  const text = ariaJoin(parts);
   return {text, placeholder: !text || comboPlaceholderText.test(text)};
 };
 // Stable facts of a menu control whose options are not observable yet. Only value
@@ -956,7 +960,8 @@ async def _select_probed(
     from ``aria-controls`` after opening, clicks the one matching option freshly derived
     from the owned listbox (an input menu of more than 20 options that does not render it
     is filtered by typing, see ``_filter_queries``), then reads back: the menu closed and
-    the display shows the label.
+    the display shows the label. A display that names no option is re-resolved the same
+    way as a suffix display.
     When the display only shows a suffix of it (a dial code, possibly one several
     options share), the menu is reopened once and its own selection state must name
     the chosen option (see ``_selection_names``). Returns the values read back;
@@ -1039,7 +1044,11 @@ async def _select_probed(
             await identity_check()
         return [str(wanted["value"])]
     confirmed, confirmation = False, ""
-    if closed and relation is not None:
+    # A display that names no option at all (read from decoration, or text split oddly)
+    # is not the field's value: the reopened menu's own selection decides, as it does
+    # when only a suffix is shown. A display naming another option stays a mismatch.
+    unnamed = bool(display) and relation is None and shown_index is None
+    if closed and (relation is not None or unnamed):
         # Only a suffix is shown (a dial code, possibly shared by several options): the
         # reopened menu's own selection state must name the chosen option.
         reopened, method = await _open_menu(driver, selector, read, after, method)
@@ -1053,7 +1062,7 @@ async def _select_probed(
         raise NotActionable("the menu did not close after reading back the selection")
     if identity_check is not None:
         await identity_check()
-    if closed and relation is not None and confirmed:
+    if closed and (relation is not None or unnamed) and confirmed:
         return [str(wanted["value"])]
     observed = [str(all_options[shown_index]["value"])] if shown_index is not None else []
     if relation == "shared":

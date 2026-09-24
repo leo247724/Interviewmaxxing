@@ -112,7 +112,9 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   per control. Probing runs before semantic annotation with menus closed again, so it
   never counts as a form change. `observe`/`classify` and waits for the user never probe.
   A menu's displayed value or placeholder ("Select...", "+1") is state, not question
-  wording, so fingerprints and saved-answer matching stay stable after filling. A div
+  wording, so fingerprints and saved-answer matching stay stable after filling. That
+  display is read as the browser renders it: adjacent text nodes run together, as with
+  React's "+" and "1" for Greenhouse's Country value, which shows "+1", not "+ 1". A div
   menu's `aria-label` that is its placeholder or its displayed value ("Select") names
   no question; the text around it does.
 - **Open menus are not page changes.** A menu, list or dialog that a combobox or picker
@@ -135,7 +137,9 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   the first signal the widget exposes decides: `aria-selected` (exactly one option),
   `aria-activedescendant`, or exactly one option whose class names the selection
   (react-select's `select__option--is-selected`). A confirmed choice keeps naming the
-  "+1" display in that document. Anything else is `VERIFICATION_MISMATCH`.
+  "+1" display in that document. A display that names no option at all is re-resolved
+  the same way; the reopened menu's own selection decides. A display naming another
+  option, or nothing, is `VERIFICATION_MISMATCH`.
 - **Lookups.** A `TYPEAHEAD` answer is typed (about 30 ms per character). Suggestions are
   read from the owned listbox once stable for 400 ms. The wait is at most 6 s, or 3 s
   while nothing appears: Rippling loads its place search on the first query. A shown
@@ -152,7 +156,9 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
 - **Phones.** A `tel` input whose own widget has a country picker (an `.iti` container, a
   preceding `aria-haspopup=dialog` button, or a sibling combobox showing `+<code>`) sets
   `ApplicationField.expects_international_phone`; its value is typed as given and read
-  back by digits and by the picker's dial code. The picker's text is its name, its
+  back by digits and by the picker's dial code. The picker belongs to that field: an
+  intl-tel-input flag or dialog button is never probed or reported as a question of its
+  own, even when it is named "Country" beside a form's own Country select. The picker's text is its name, its
   title and its own text, because intl-tel-input with a separate dial code (Workable)
   shows "+1" only in a child element, and "+1" is taken out of the input. A plain tel
   input keeps the exact fill-and-readback.

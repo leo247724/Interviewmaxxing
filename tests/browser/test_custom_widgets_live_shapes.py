@@ -14,15 +14,17 @@ empties its input. Fictional data, real headless Chromium, nothing submitted.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from playwright.async_api import async_playwright
 
 from interviewmaxxing_browser import PlaywrightSessionFactory
 from interviewmaxxing_browser.annotations import observation_signature
-from interviewmaxxing_browser.aria import _filter_queries
+from interviewmaxxing_browser.aria import COMBO_STATE, _filter_queries
 from interviewmaxxing_browser.normalize import build_page
 from interviewmaxxing_browser.signals import JOB_CLOSED
 from interviewmaxxing_browser.snapshot import DomSnapshot, inspector_script
@@ -42,6 +44,7 @@ from interviewmaxxing_core import (
 
 INLINE = "/jobs/react-select-inline/apply"
 INLINE_ASYNC = "/jobs/react-select-inline-async/apply"
+COLLISION = "/jobs/phone-dialcode-collision/apply"
 ORPHAN = "/jobs/div-combobox-orphan/apply"
 WORKABLE = "/jobs/workable-like/apply"
 COUNT_OPENS = """() => {
@@ -429,3 +432,133 @@ def test_a_menu_its_probe_cannot_close_stays_with_the_user(
     assert form.field("field-55").control_type is ControlType.UNSUPPORTED
     assert stopped == "the menu did not close again"
     assert form.field("field-63").control_type is ControlType.UNSUPPORTED
+
+
+# --- Greenhouse's phone fieldset: Country select beside the phone's own picker ------------
+
+# The live FirmPilot/Reunion markup (2026-09-24), trimmed, after "United States" was chosen:
+# Greenhouse renders the value as a flag and <span>{"+"}{dialCode}</span>, two text nodes.
+GREENHOUSE_PHONE_FIELDSET = """<!doctype html><title>Fictional form</title>
+<style>.select__value-container{display:grid}.select__single-value,.select__input-container{grid-area:1/1/2/3}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.iti__hide,.iti__selected-country{display:none}</style>
+<form id="application-form"><fieldset class="phone-input"><legend class="visually-hidden">Phone</legend>
+<div class="phone-input__country"><div class="select"><div class="select__container">
+<label id="country-label" for="country" class="label select__label">Country<span aria-hidden="true">*</span></label>
+<div class="select-shell"><span id="react-select-country-live-region"></span>
+<span aria-live="polite" aria-atomic="false" aria-relevant="additions text" role="log"></span>
+<div><div class="select__control"><div class="select__value-container">
+<div class="select__single-value"><div class="iti__flag iti__us"></div><span id="dial"></span></div>
+<div class="select__input-container" data-value=""><input class="select__input" autocomplete="off" id="country"
+ tabindex="0" type="text" aria-autocomplete="list" aria-expanded="false" aria-haspopup="true"
+ aria-errormessage="country-error" aria-invalid="false" aria-labelledby="country-label" aria-required="true"
+ role="combobox" aria-activedescendant="" aria-describedby="country-error" value=""></div></div>
+<div class="select__indicators"><button type="button" class="icon-button icon-button--sm" aria-label="Toggle flyout"
+ tabindex="-1"><svg></svg></button></div></div></div></div></div></div></div>
+<div class="phone-input__phone"><div class="text-input-wrapper"><div class="input-wrapper">
+<label id="phone-label" for="phone" class="label label">Phone<span aria-hidden="true">*</span></label>
+<div class="iti iti--allow-dropdown iti--show-flags iti--inline-dropdown"><div class="iti__country-container">
+<button type="button" class="iti__selected-country" aria-expanded="false" aria-label="Select country"
+ aria-haspopup="dialog" aria-controls="iti-0__dropdown-content" title="Select country">
+<div class="iti__selected-country-primary"><div class="iti__flag iti__globe"></div></div></button>
+<div id="iti-0__dropdown-content" class="iti__dropdown-content iti__hide" role="dialog" aria-modal="true">
+<input id="iti-0__search-input" type="search" class="iti__search-input" role="combobox" aria-expanded="true"
+ aria-label="Search" aria-autocomplete="list" aria-controls="iti-0__country-listbox">
+<ul id="iti-0__country-listbox" class="iti__country-list" role="listbox" aria-label="List of countries">
+<li id="iti-0__item-us" class="iti__country" role="option" data-dial-code="1" data-country-code="us"
+ aria-selected="false"><div class="iti__flag iti__us"></div><span class="iti__country-name">United States</span>
+<span class="iti__dial-code">+1</span></li></ul></div></div>
+<input id="phone" class="input input__single-line iti__tel-input" aria-label="Phone" aria-invalid="false"
+ aria-required="true" type="tel" maxlength="255" value="" autocomplete="off"></div></div></div></div></fieldset>
+<button type="submit">Submit application</button></form>
+<script>const s = document.getElementById("dial");
+s.appendChild(document.createTextNode("+")); s.appendChild(document.createTextNode("1"));</script>"""
+
+
+def test_the_live_greenhouse_phone_fieldset_reads_its_own_dial_code() -> None:
+    """The Country select's value "+1" is its own two text nodes, read as rendered; the
+    phone's hidden intl-tel-input picker belongs to the phone field."""
+    async def scenario() -> tuple[Any, Any]:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.set_content(GREENHOUSE_PHONE_FIELDSET)
+                state = await page.evaluate(COMBO_STATE, {"selector": "#country", "fields": False})
+                snapshot = DomSnapshot.model_validate(await page.evaluate(inspector_script()))
+                return state, snapshot
+            finally:
+                await browser.close()
+
+    state, snapshot = asyncio.run(scenario())
+    assert (state["display"], state["placeholder"]) == ("+1", False)
+    controls = {c.id: c for c in snapshot.controls if c.visible}
+    assert set(controls) == {"country", "phone"}
+    assert controls["country"].label == "Country" and controls["phone"].phone_picker == "iti"
+    assert [b.text for b in snapshot.buttons] == ["Submit application"]
+
+
+def test_the_country_select_and_the_phone_dial_code_do_not_collide(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions
+) -> None:
+    """Greenhouse-like: choosing Country sets the phone widget's country, and the phone's
+    flag combobox is also named "Country". There is one Country question, bound to the
+    select; it is chosen and confirmed by reopening (its "+1" is shared), and the phone
+    is typed as +1… and read back with its picker's dial code."""
+    async def scenario() -> tuple[Any, ...]:
+        browser = await PlaywrightSessionFactory().start(options)
+        try:
+            page = await browser.open(server.url(COLLISION))
+            log = [selector for selector, _, _ in browser.menus.log]
+            await browser.page.evaluate(COUNT_OPENS)
+            fill = await browser.fill(page.form, kit.build(page.form, {
+                **CONTACT, "country": "United States +1", "phone": "+1 (303) 555-0142",
+                "question_9001": "Yes"}).packet)
+            opens = await browser.page.evaluate("() => window.__opens")
+            shown = await browser.page.evaluate(
+                "() => ({value: document.querySelector('.select__single-value').textContent, "
+                "picker: document.querySelector('.iti__selected-dial-code').textContent})")
+            review = await browser.prepare_review()
+            return page, log, fill, opens, shown, review, await browser.page.evaluate(STATE)
+        finally:
+            await browser.close()
+
+    page, log, fill, opens, shown, review, state = kit.run(scenario())
+    form = page.form
+    assert [f.id for f in form.fields if f.label == "Country"] == ["country"]
+    assert form.field("country").control_type is ControlType.SELECT
+    assert len(form.field("country").options or []) == 31
+    assert form.field("phone").expects_international_phone
+    assert log == ["#country", "#question_9001"]  # the phone's picker is never probed
+    assert fill.ok and {f.status for f in fill.fields} == {FieldFillStatus.FILLED}, fill.fields
+    assert opens >= 3  # Country chosen, then reopened to confirm the shared "+1"; the other menu
+    assert shown == {"value": "+1", "picker": "+1"}
+    assert state["country"] == {"value": "us"} and state["phone_country"] == {"country": "us"}
+    assert review.form is not None and review.form.page_errors == []
+
+
+@pytest.mark.parametrize(("committed", "status"), [
+    (None, FieldFillStatus.FILLED),
+    ("ca", FieldFillStatus.VERIFICATION_MISMATCH),
+])
+def test_a_display_that_names_no_option_is_resolved_by_the_reopened_menu(
+    committed: str | None, status: FieldFillStatus,
+    kit: SimpleNamespace, server: Any, options: BrowserOptions,
+) -> None:
+    """A value display that names no option ("+ 1" as one text node) is not taken as the
+    field's value: the reopened menu's own selection decides."""
+    async def scenario() -> Any:
+        browser = await PlaywrightSessionFactory().start(options)
+        try:
+            hooks = "valueText: {country: '+ 1'}" + (f", selectValue: {{country: '{committed}'}}" if committed else "")
+            await browser.page.add_init_script(f"window.__widgetHooks = {{selectNext: {{}}, {hooks}}};")
+            page = await browser.open(server.url(COLLISION))
+            return await browser.fill_fields(page.form, kit.build(page.form, {"country": "United States +1"}).packet,
+                                             ["country"])
+        finally:
+            await browser.close()
+
+    [result] = kit.run(scenario()).fields
+    assert result.status is status, result
+    if committed:
+        assert "aria-selected on 'Canada +1'" in (result.detail or "")

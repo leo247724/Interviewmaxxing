@@ -144,6 +144,11 @@ class Field:
     clearable: bool = False
     """An inline react_select that shows a "Clear selection" button while it holds a value
     (Greenhouse's ClearIndicator)."""
+    links_phone: bool = False
+    """A dial-code react_select that sets the phone widget's country when chosen and then
+    focuses the phone number (Greenhouse's phone fieldset)."""
+    picker_label: str | None = None
+    """The accessible name of a separate-dial-code phone widget's flag combobox."""
     uploader: str | None = None
     """A file field behind a script uploader whose file lives in page state: ``greenhouse``
     (a hidden input behind "Attach", replaced by the file's name once it takes a file),
@@ -476,6 +481,14 @@ runs; 2.5 s later the block re-renders with the file's name (the input and its b
 gone) and the page's action area re-renders too (the submit button's path shifts)."""
 WK_RESUME = Field("resume", "Resume", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="dropzone")
 WK_PHONE = Field("phone", "Phone", "intl_tel", True, autocomplete="tel", display="separate")
+GH_COUNTRY = Field("country", "Country", "react_select", True, DIAL_CODES, display="dial-name",
+                   inline=True, links_phone=True)
+"""Greenhouse's phone-fieldset Country: its value shows a flag and "+" and the code as two
+text nodes; choosing one sets the phone widget's country."""
+GH_PHONE_COUNTRY_PICKER = Field("phone", "Phone", "intl_tel", True, autocomplete="tel",
+                                display="separate", picker_label="Country")
+"""A phone widget whose flag combobox is also named "Country" and shows its dial code as
+"+" and the code in two text nodes."""
 """Workable's intl-tel-input (separateDialCode, nationalMode): the dial code is shown apart
 from the number, and typing "+1…" leaves only the national digits in the input."""
 RS_INLINE_AUTHORIZATION = Field(
@@ -862,6 +875,19 @@ JOBS: dict[str, Job] = {
                     WHY_BRAMBLEWAY),
             autofill=True,
             validity=True,
+        ),
+        Job(
+            "phone-dialcode-collision",
+            "BWA-GH-129",
+            "Growth Operations Manager",
+            "Marketing",
+            "Remote (US)",
+            "Greenhouse's phone fieldset: a dial-code \"Country\" React select (its value is a "
+            "flag and \"+\" and the code as separate text nodes; choosing it sets the phone's "
+            "country) beside a phone widget whose flag combobox is also named \"Country\" and "
+            "shows the same dial code.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, GH_COUNTRY, GH_PHONE_COUNTRY_PICKER,
+                    RS_INLINE_AUTHORIZATION),
         ),
         Job(
             "workable-like",
@@ -1594,7 +1620,21 @@ WIDGETS_JS = r"""(function () {
       }
       input.removeAttribute("aria-describedby");
       if (!multi) {
-        values.insertBefore(el("div", {"class": "select__single-value"}, displayOf(st.value)), inputBox);
+        var single = el("div", {"class": "select__single-value"});
+        if (hooks.valueText && hooks.valueText[id] !== undefined) {
+          // Fixture control: the value shows this text instead.
+          single.textContent = hooks.valueText[id];
+        } else if (cfg.display === "dial-name") {
+          // Greenhouse: a flag, then <span>{"+"}{dialCode}</span>, i.e. two text nodes.
+          single.appendChild(el("div", {"class": "iti__flag iti__" + st.value}));
+          var code = el("span", {});
+          code.appendChild(document.createTextNode("+"));
+          code.appendChild(document.createTextNode(displayOf(st.value).replace(/^\+/, "")));
+          single.appendChild(code);
+        } else {
+          single.textContent = displayOf(st.value);
+        }
+        values.insertBefore(single, inputBox);
         return;
       }
       st.value.forEach(function (value) {
@@ -1700,6 +1740,12 @@ WIDGETS_JS = r"""(function () {
       if (cfg.async) cfg.options = [option];
       close();
       renderValue();
+      if (cfg.linksPhone) {
+        // Greenhouse: the chosen country becomes the phone widget's, and the number gets focus.
+        document.dispatchEvent(new CustomEvent("mock-phone-country", {detail: option[0]}));
+        var tel = document.querySelector("input[type=tel]");
+        if (tel) tel.focus();
+      }
     }
     function search() {
       clearTimeout(timer);
@@ -2004,9 +2050,13 @@ WIDGETS_JS = r"""(function () {
     cfg.countries.forEach(function (c) { byIso[c[0]] = c; });
     function select(iso) {
       var c = byIso[iso];
+      if (!c) return;
       st.country = iso;
       flagBox.querySelector(".iti__flag").className = "iti__flag iti__" + iso;
-      flagBox.querySelector(".iti__selected-dial-code").textContent = "+" + c[2];
+      var dial = flagBox.querySelector(".iti__selected-dial-code");
+      dial.textContent = "";
+      dial.appendChild(document.createTextNode("+"));
+      dial.appendChild(document.createTextNode(c[2]));
       flagBox.setAttribute("title", c[1]);
       Array.prototype.forEach.call(list.children, function (li) {
         li.setAttribute("aria-selected", String(li.getAttribute("data-country-code") === iso));
@@ -2029,6 +2079,7 @@ WIDGETS_JS = r"""(function () {
       input.value = digits.slice(match[2].length);
     });
     flagBox.addEventListener("click", function () { toggle(list.className.indexOf("iti__hide") >= 0); });
+    document.addEventListener("mock-phone-country", function (e) { select(e.detail); });
     flagBox.addEventListener("keydown", function (e) { if (e.key === "Escape") toggle(false); });
     Array.prototype.forEach.call(list.children, function (li) {
       li.addEventListener("click", function () { select(li.getAttribute("data-country-code")); toggle(false); });
@@ -2633,6 +2684,7 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
             "options": [] if f.remote else options,
             "initial": [v for v in posted if v] if multi else current,
             "inline": f.inline, "required": f.required, "clearable": f.clearable,
+            "linksPhone": f.links_phone,
         }
         if f.remote and current:
             config["options"] = [[current, current]]
@@ -2769,7 +2821,7 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
                 f'<div class="iti iti--allow-dropdown iti--separate-dial-code"{_widget_attrs("intl-tel", config)}>'
                 '<div class="iti__flag-container"><div class="iti__selected-flag" role="combobox" '
                 'aria-haspopup="listbox" aria-controls="iti-0__country-listbox" aria-expanded="false" '
-                f'aria-label="Telephone country code" tabindex="0" title="{esc(chosen[1])}">'
+                f'aria-label="{esc(f.picker_label or "Telephone country code")}" tabindex="0" title="{esc(chosen[1])}">'
                 f'<div class="iti__flag iti__{chosen[0]}"></div>'
                 f'<div class="iti__selected-dial-code">+{chosen[2]}</div><div class="iti__arrow"></div></div>'
                 f'<ul id="iti-0__country-listbox" class="iti__country-list iti__hide" role="listbox" '
