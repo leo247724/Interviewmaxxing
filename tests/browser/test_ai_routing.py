@@ -15,6 +15,7 @@ from interviewmaxxing_browser.ai import (
     DynamicPacketResolver,
 )
 from interviewmaxxing_browser.ai.providers import NarrativeDraft, NarrativeWriter
+from interviewmaxxing_browser.semantics import classify as classify_semantics
 from interviewmaxxing_core import (
     AnswerScope,
     AnswerSource,
@@ -1200,3 +1201,497 @@ def test_residence_is_not_asked_outside_its_scope(
     assert not provider.asked("residence")
     assert packet.answers == []
     assert not stage_traces(resolver, "residence_screener")
+
+
+# --- round 4, deliverable 2: select-all answers from stored answers and verified facts ----
+
+class MultiProvider(ChoiceProvider):
+    """ChoiceProvider for select-all questions: every field classifies as a literal
+    COPY_KNOWN answer under ``scope`` (custom-typed ones as CUSTOM_MULTISELECT) and
+    choices come from ``picks``; unscripted ones hold (``route`` holds, ``fact_select``
+    is UNKNOWN, ``wording`` and ``equivalent_<i>`` are NONE). ``includes_o<i>`` nouls are
+    ``option(label)``. A ``source_o<i>`` choice names the first fact whose value
+    ``fact(value)`` accepts, with probability ``option(label)`` (NONE takes the rest), so no
+    test depends on option or fact order; consistency nouls pass."""
+
+    def __init__(self, picks: dict[str, tuple[str, float]] | None = None, *,
+                 option: Any = lambda label: 0.0, fact: Any = lambda value: 0.0,
+                 scope: str = "APPLICANT_CURRENT") -> None:
+        super().__init__(dict(picks or {}), semantic="CUSTOM_MULTISELECT", scope=scope)
+        self.option, self.fact = option, fact
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        self.requests.append(request)
+        state = request["state"]
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            kind, _, key = name.partition("_")
+            if question["type"] == "noul":
+                score = self.option(state["options"][key]) if kind == "includes" else 1.0
+                answers[name] = {"type": "noul", "noul": score}
+                continue
+            criteria = list(question["criteria"])
+            confidence = self.confidence
+            if kind == "source":
+                stated = self.option(state["options"][key])
+                facts = [k for k, f in state["facts"].items() if self.fact(f["value"]) >= 0.95]
+                choice, probability = ((facts[0], stated) if facts and stated > 0
+                                       else ("NONE", 1.0 - stated if facts else 1.0))
+                rest = {k: 0.0 for k in criteria}
+                rest["NONE"] = 1.0 - probability if choice != "NONE" else probability
+                answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                                 "probabilities": rest | {choice: probability}}
+                continue
+            if name[0] in "rnusd" and name[1:].isdigit():
+                choice = {"r": "COPY_KNOWN", "n": "literal", "u": self.scope, "s": self.semantic,
+                          "d": "APPLICATION_ATTACHMENT"}[name[0]]
+                probability, confidence = 1.0, 1.0
+            elif name in self.picks:
+                choice, probability = self.picks[name]
+            else:
+                choice, probability = next(k for k in ("hold", "NONE", "UNKNOWN") if k in criteria), 1.0
+            rest = (1 - probability) / (len(criteria) - 1)
+            answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                             "probabilities": {k: probability if k == choice else rest
+                                               for k in criteria}}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def by_label(scores: dict[str, float]) -> Any:
+    """A noul source over option labels: the listed score, 0.0 for any other option."""
+    return lambda label: scores.get(label, 0.0)
+
+
+def naming(item: str) -> Any:
+    """A noul source over fact values: 1.0 for a fact whose text names ``item``."""
+    return lambda value: 1.0 if item in str(value) else 0.0
+
+
+TIME_ZONES = ("Which of the following U.S. time zones are you available to work in? "
+              "(Select all that apply)")
+SAVED_TIME_ZONES = "Which time zones are you available to work in?"
+ZONES = ("Eastern", "Central", "Mountain", "Pacific", "Other")
+
+
+def zones_field() -> ApplicationField:
+    return choice_field(TIME_ZONES, SemanticType.CUSTOM_MULTISELECT, *ZONES,
+                        control=ControlType.CHECKBOX_GROUP, field_id="zones")
+
+
+def with_zones(candidate: CandidateProfile, question: str) -> CandidateProfile:
+    """The simple-answers time-zone answer, saved as free text for ``question``."""
+    return with_saved(candidate, global_answer("sa.time_zones", question, "US Central, US Eastern"))
+
+
+@pytest.mark.parametrize("question", [SAVED_TIME_ZONES, TIME_ZONES])
+def test_a_stored_time_zone_answer_selects_exactly_the_zones_it_includes(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, question: str,
+) -> None:
+    provider = MultiProvider({"wording": ("q0", 0.98)}, scope="EXPLICIT_ANSWER",
+                             option=by_label({"Eastern": 0.98, "Central": 0.98}))
+    packet, _, resolver = resolve_choice(provider, with_zones(fictional_candidate, question),
+                                         mock_job, zones_field())
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert [(c.value, c.label) for c in answer.value.choices] == [("v0", "Eastern"),
+                                                                  ("v1", "Central")]
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.time_zones"])
+    note = answer.provenance.note or ""
+    assert note.endswith("; Jev selected every option the stored answer includes")
+    [request] = provider.asked("includes_o0")
+    # One noul per listed zone. "Other" is not an item a stored answer names: it is
+    # never asked about and never selected.
+    assert set(request["questions"]) == {"includes_o0", "includes_o1", "includes_o2",
+                                         "includes_o3"}
+    assert request["state"]["stored_answer"] == "US Central, US Eastern"
+    assert request["state"]["options"] == {f"o{i}": label for i, label in enumerate(ZONES)}
+    [trace] = stage_traces(resolver, "multi_select")
+    assert (trace["status"], trace["selected"], trace["option_count"]) == (
+        "MAPPED", ["o0", "o1"], 4)
+    assert "US Central" not in json.dumps(trace)
+    assert not provider.asked("equivalent_0") and not provider.asked("fact_select")
+    if question == TIME_ZONES:  # the exact wording: the first path, no wording decision
+        assert not provider.asked("wording")
+        assert note.startswith(f"saved answer for {TIME_ZONES!r}")
+        assert answer.confidence == pytest.approx(0.98)
+    else:
+        [wording] = provider.asked("wording")
+        assert wording["state"]["saved_questions"] == {
+            "q0": {"question": SAVED_TIME_ZONES, "variants": []}}
+        assert wording["state"]["observed_question"]["options"] == list(ZONES)
+        assert note.startswith("question wording mapped by Jev from the saved answer for "
+                               f"{SAVED_TIME_ZONES!r}")
+        assert answer.confidence == pytest.approx(0.97)  # the wording decision's confidence
+        [equivalence] = stage_traces(resolver, "question_equivalence")
+        assert (equivalence["status"], equivalence["reference_ids"]) == (
+            "MAPPED", ["sa.time_zones"])
+
+
+@pytest.mark.parametrize("scores,status,selected", [
+    ({"Eastern": 1.0, "Central": 0.5}, "UNDECIDED", ["o0"]),
+    ({}, "NONE", []),
+])
+@pytest.mark.parametrize("question", [SAVED_TIME_ZONES, TIME_ZONES])
+def test_an_undecided_or_empty_zone_selection_holds_the_field(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, question: str,
+    scores: dict[str, float], status: str, selected: list[str],
+) -> None:
+    provider = MultiProvider({"wording": ("q0", 0.98)}, scope="EXPLICIT_ANSWER",
+                             option=by_label(scores))
+    packet, _, resolver = resolve_choice(provider, with_zones(fictional_candidate, question),
+                                         mock_job, zones_field())
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert missing.field_id == "zones"
+    [trace] = stage_traces(resolver, "multi_select")
+    assert (trace["status"], trace["selected"]) == (status, selected)
+    assert not provider.asked("fact_select")
+    if question == TIME_ZONES:
+        assert "Your saved answer 'US Central, US Eastern' cannot be used here" in missing.prompt
+    else:
+        [equivalence] = stage_traces(resolver, "question_equivalence")
+        assert equivalence["status"] == "VALUE_DOES_NOT_FIT"
+
+
+PLATFORMS = "Which platforms have you managed? (select all)"
+PLATFORM_OPTIONS = ("Google Ads", "Meta Ads", "LinkedIn Ads", "TikTok Ads", "Other")
+MANAGED_PLATFORMS = "Managed Google Ads and Meta Ads campaigns at Fictional Widgets Co"
+
+
+def platform_field(*options: str, required: bool = True) -> ApplicationField:
+    return choice_field(PLATFORMS, SemanticType.CUSTOM_MULTISELECT, *(options or PLATFORM_OPTIONS),
+                        control=ControlType.MULTISELECT, required=required, field_id="platforms")
+
+
+def with_platform_facts(candidate: CandidateProfile) -> CandidateProfile:
+    """Two verified facts: one names Google Ads and Meta Ads, the other no platform."""
+    base = candidate.verified_facts()[0]
+    facts = [base.model_copy(update={"id": fact_id, "key": key, "value": value, "evidence": [value]})
+             for fact_id, key, value in (("fact.platforms", "experience", MANAGED_PLATFORMS),
+                                         ("fact.languages", "languages",
+                                          "Speaks conversational Spanish"))]
+    return candidate.model_copy(update={"facts": facts, "experience": [], "education": []})
+
+
+def platform_provider(pick: tuple[str, float], option: dict[str, float], *,
+                      names: str = "Google Ads") -> MultiProvider:
+    return MultiProvider({"fact_select": pick}, option=by_label(option), fact=naming(names),
+                         scope="HISTORICAL_OR_CONTEXTUAL")
+
+
+def test_a_select_all_experience_question_selects_the_options_verified_facts_state(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = platform_provider(("SUPPORTED", 0.98), {"Google Ads": 1.0, "Meta Ads": 1.0})
+    packet, _, resolver = resolve_choice(provider, with_platform_facts(fictional_candidate),
+                                         mock_job, platform_field())
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert [(c.value, c.label) for c in answer.value.choices] == [("v0", "Google Ads"),
+                                                                  ("v1", "Meta Ads")]
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.platforms"]  # never the unrelated fact
+    assert answer.provenance.note == "options selected by Jev from verified facts that state them"
+    assert answer.confidence == pytest.approx(0.97)  # the fact_select confidence
+    [request] = provider.asked("fact_select")
+    # One source choice per listed platform (never "Other"), over the supplied facts.
+    assert set(request["questions"]) == {"fact_select", "source_o0", "source_o1", "source_o2",
+                                         "source_o3"}
+    assert set(request["questions"]["fact_select"]["criteria"]) == {
+        "SUPPORTED", "UNKNOWN", "NOT_EXPERIENCE"}
+    assert set(request["questions"]["source_o1"]["criteria"]) == {"f0", "f1", "NONE"}
+    assert request["state"]["options"] == {f"o{i}": label
+                                           for i, label in enumerate(PLATFORM_OPTIONS)}
+    assert [fact["id"] for fact in request["state"]["facts"].values()] == [
+        "fact.platforms", "fact.languages"]
+    assert request["state"]["screener_version"] == "experience-screener-v1"
+    [trace] = stage_traces(resolver, "fact_screener")
+    assert (trace["kind"], trace["status"], trace["selected"], trace["evidence_ids"]) == (
+        "multi", "ANSWERED", ["o0", "o1"], ["fact.platforms"])
+    assert trace["sources"] == {"o0": "fact.platforms", "o1": "fact.platforms"}
+    assert not provider.asked("route") and not provider.asked("wording")
+
+
+@pytest.mark.parametrize("pick,option,names,status", [
+    (("UNKNOWN", 0.99), {}, "Google Ads", "UNKNOWN"),
+    (("SUPPORTED", 0.98), {}, "Google Ads", "UNKNOWN"),  # no listed option is stated
+    (("SUPPORTED", 0.98), {"Google Ads": 1.0, "Meta Ads": 0.5}, "Google Ads", "UNDECIDED"),
+    (("SUPPORTED", 0.98), {"Meta Ads": 0.5}, "Google Ads", "UNDECIDED"),  # nothing else chosen
+    (("SUPPORTED", 0.98), {"Google Ads": 1.0}, "Pinterest", "UNKNOWN"),  # no fact names one
+    (("SUPPORTED", 0.90), {"Google Ads": 1.0}, "Google Ads", "UNKNOWN"),  # below the gate
+    (("NOT_EXPERIENCE", 0.90), {}, "Google Ads", "UNKNOWN"),  # too weak to leave the screener
+])
+def test_an_unstated_or_undecided_platform_selection_holds_with_the_fact_prompt(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    pick: tuple[str, float], option: dict[str, float], names: str, status: str,
+) -> None:
+    provider = platform_provider(pick, option, names=names)
+    packet, _, resolver = resolve_choice(provider, with_platform_facts(fictional_candidate),
+                                         mock_job, platform_field())
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert (missing.field_id, missing.reason) == ("platforms", MissingReason.NO_ANSWER)
+    assert missing.prompt.startswith(f"Add a verified fact that states the answer to {PLATFORMS!r}")
+    assert "nothing is estimated" in missing.prompt
+    [trace] = stage_traces(resolver, "fact_screener")
+    assert (trace["kind"], trace["status"]) == ("multi", status)
+    assert not provider.asked("route")
+
+
+def test_a_select_all_question_that_is_not_about_experience_leaves_the_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = platform_provider(("NOT_EXPERIENCE", 0.99), {"Google Ads": 1.0, "Meta Ads": 1.0})
+    packet, _, resolver = resolve_choice(provider, with_platform_facts(fictional_candidate),
+                                         mock_job, platform_field())
+    assert packet.answers == []
+    [missing] = packet.missing_inputs
+    assert missing.prompt == "The question needs an explicit or unambiguous verified answer"
+    [trace] = stage_traces(resolver, "fact_screener")
+    assert (trace["kind"], trace["status"]) == ("multi", "NOT_SCREENER")
+    order = [name for request in provider.requests for name in request["questions"]
+             if name in ("fact_select", "route")]
+    assert order == ["fact_select", "route"]  # the ordinary fact route, which holds here
+
+
+RACE = "Race/ethnicity (select all that apply)"
+RACE_OPTIONS = ("Hispanic or Latino", "Asian", "Black or African American", "White",
+                "Decline to self-identify")
+SITE_RACE_OPTIONS = ("Hispanic or Latino", "Asian (Not Hispanic or Latino)",
+                     "Black or African American (Not Hispanic or Latino)",
+                     "White (Not Hispanic or Latino)", "Decline to self-identify")
+
+
+def race_field(*options: str) -> ApplicationField:
+    return choice_field(RACE, SemanticType.EEO_RACE_ETHNICITY, *(options or RACE_OPTIONS),
+                        control=ControlType.CHECKBOX_GROUP, field_id="race")
+
+
+@pytest.mark.parametrize("scope", ["APPLICANT_CURRENT", "HISTORICAL_OR_CONTEXTUAL"])
+def test_a_protected_select_all_question_is_never_answered_from_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, scope: str,
+) -> None:
+    provider = MultiProvider({"fact_select": ("SUPPORTED", 0.99)}, scope=scope,
+                             option=lambda label: 1.0, fact=lambda value: 1.0)
+    assert fictional_candidate.verified_facts()
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, race_field())
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert (missing.field_id, missing.reason) == ("race", MissingReason.EXPLICIT_ANSWER_REQUIRED)
+    assert not provider.asked("fact_select") and not provider.asked("route")
+    assert not stage_traces(resolver, "fact_screener")
+    [classification] = provider.requests  # no fact ever reaches Jev for it
+    assert "facts" not in classification["state"]
+
+
+@pytest.mark.parametrize("value,options,picks,asked,suffix", [
+    (["Asian", "White"], RACE_OPTIONS, {}, set(), ""),  # exact options: no mapping call
+    (["Asian", "White"], SITE_RACE_OPTIONS,
+     {"equivalent_0": ("o1", 0.99), "equivalent_1": ("o3", 0.99)},
+     {"equivalent_0", "equivalent_1"}, "; Jev mapped it onto the site's option wording"),
+    ("Asian; White", RACE_OPTIONS, {}, {f"includes_o{i}" for i in range(4)},
+     "; Jev selected every option the stored answer includes"),
+])
+def test_a_protected_select_all_question_maps_the_users_own_saved_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str | list[str],
+    options: tuple[str, ...], picks: dict[str, tuple[str, float]], asked: set[str],
+    suffix: str,
+) -> None:
+    saved = global_answer("sa.race", RACE, value, semantic=SemanticType.EEO_RACE_ETHNICITY)
+    provider = MultiProvider(picks, scope="EXPLICIT_ANSWER",
+                             option=by_label({"Asian": 0.99, "White": 0.99}))
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, saved), mock_job,
+                                  race_field(*options))
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert [(c.value, c.label) for c in answer.value.choices] == [("v1", options[1]),
+                                                                  ("v3", options[3])]
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.race"])
+    assert answer.provenance.note == f"saved answer for {RACE!r}{suffix}"
+    # Only the saved answer's own mapping is asked: never a fact screener or a wording
+    # decision ("Decline to self-identify" is not an item the answer can include).
+    assert {name for request in provider.requests[1:] for name in request["questions"]} == asked
+
+
+@pytest.mark.parametrize("case", ["optional", "no_items"])
+def test_a_select_all_question_outside_the_screener_scope_is_not_fact_screened(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, case: str,
+) -> None:
+    provider = MultiProvider({"fact_select": ("SUPPORTED", 0.99)}, option=lambda label: 1.0,
+                             fact=lambda value: 1.0, scope="HISTORICAL_OR_CONTEXTUAL")
+    field = (platform_field(required=False) if case == "optional"
+             else platform_field("Other", "None of the above"))
+    packet, _, resolver = resolve_choice(provider, with_platform_facts(fictional_candidate),
+                                         mock_job, field)
+    assert packet.answers == []
+    assert not provider.asked("fact_select") and not provider.asked("route")
+    assert not stage_traces(resolver, "fact_screener")
+    assert [m.field_id for m in packet.missing_inputs] == (
+        [] if case == "optional" else ["platforms"])
+
+
+def test_each_option_selected_from_facts_cites_the_fact_that_states_it(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    candidate = with_platform_facts(fictional_candidate)
+    base = candidate.verified_facts()[0]
+    tiktok = base.model_copy(update={"id": "fact.tiktok", "key": "experience",
+        "value": "Ran TikTok Ads for Example Labs", "evidence": ["Ran TikTok Ads for Example Labs"]})
+    candidate = candidate.model_copy(update={"facts": [*candidate.facts, tiktok]})
+
+    class PerOption(MultiProvider):
+        def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+            response = super().__call__(url, headers, body, timeout)
+            request = self.requests[-1]
+            payload = json.loads(response.body)
+            for name in request["questions"]:
+                kind, _, key = name.partition("_")
+                if kind != "source":
+                    continue
+                label = request["state"]["options"][key]
+                facts = [k for k, f in request["state"]["facts"].items() if label in f["value"]]
+                choice = facts[0] if facts else "NONE"
+                payload["answers"][name] = {"type": "choice", "choice": choice, "confidence": 0.97,
+                    "probabilities": {k: 1.0 if k == choice else 0.0
+                                      for k in request["questions"][name]["criteria"]}}
+            return HttpResponse(200, {}, json.dumps(payload).encode())
+
+    provider = PerOption({"fact_select": ("SUPPORTED", 0.98)}, scope="HISTORICAL_OR_CONTEXTUAL")
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, platform_field())
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == ["Google Ads", "Meta Ads", "TikTok Ads"]
+    # Every selected option cites the fact that states it; the unrelated fact never.
+    assert answer.provenance.reference_ids == ["fact.platforms", "fact.tiktok"]
+    [trace] = stage_traces(resolver, "fact_screener")
+    assert trace["sources"] == {"o0": "fact.platforms", "o1": "fact.platforms", "o3": "fact.tiktok"}
+
+
+def test_a_confirmed_reworded_answer_that_does_not_fit_holds_instead_of_a_fact_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Regression: the saved answer asks the same question, but one of its platforms is
+    # undecided. The field holds for the user; the fact screener never answers it partially.
+    saved = global_answer("sa.platforms", "Which ad platforms have you managed?",
+                          "Google Ads, Meta Ads")
+    provider = MultiProvider({"wording": ("q0", 0.98), "fact_select": ("SUPPORTED", 0.99)},
+                             option=by_label({"Google Ads": 1.0, "Meta Ads": 0.5}),
+                             fact=naming("Google Ads"), scope="HISTORICAL_OR_CONTEXTUAL")
+    candidate = with_saved(with_platform_facts(fictional_candidate), saved)
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, platform_field())
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert (missing.field_id, missing.reason) == ("platforms", MissingReason.AMBIGUOUS)
+    assert missing.prompt.startswith(
+        "Your saved answer to 'Which ad platforms have you managed?' answers this question")
+    [equivalence] = stage_traces(resolver, "question_equivalence")
+    assert equivalence["status"] == "VALUE_DOES_NOT_FIT"
+    [multi] = stage_traces(resolver, "multi_select")
+    assert multi["status"] == "UNDECIDED"
+    assert not provider.asked("fact_select") and not provider.asked("route")
+    assert not stage_traces(resolver, "fact_screener")
+
+
+def test_an_optional_field_with_a_confirmed_reworded_answer_that_does_not_fit_stays_empty(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    saved = global_answer("sa.platforms", "Which ad platforms have you managed?",
+                          "Google Ads, Meta Ads")
+    provider = MultiProvider({"wording": ("q0", 0.98), "fact_select": ("SUPPORTED", 0.99)},
+                             option=by_label({"Google Ads": 1.0, "Meta Ads": 0.5}),
+                             fact=naming("Google Ads"), scope="HISTORICAL_OR_CONTEXTUAL")
+    candidate = with_saved(with_platform_facts(fictional_candidate), saved)
+    packet, _, _ = resolve_choice(provider, candidate, mock_job, platform_field(required=False))
+    assert packet.answers == [] and packet.missing_inputs == []
+    assert not provider.asked("fact_select") and not provider.asked("route")
+
+
+
+# --- round 4 addendum B: the live Rippling state-list residence question -------------------
+
+RIPPLING_STATES = ("Do you reside in any of the following states: AL, AZ, CA, CO, CT, DC, FL, GA, "
+                   "ID, IL, KS, KY, LA, ME, MD, MA, MI, MN, MS, MO, NE, NH, NJ, NY, NC, OH, OR, "
+                   "PA, SC, SD, TN, TX, UT, VT, VA, WA, WV, WI?")
+
+
+class SemanticSplit(ChoiceProvider):
+    """ChoiceProvider whose semantic answers (``s<i>``) split their mass as ``split``."""
+
+    def __init__(self, split: dict[str, float], picks: dict[str, tuple[str, float]]) -> None:
+        super().__init__(dict(picks))
+        self.split = split
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        payload = json.loads(response.body)
+        for name, answer in payload["answers"].items():
+            if name[0] == "s" and name[1:].isdigit():
+                answer.update(choice=max(self.split, key=lambda key: self.split[key]),
+                              confidence=0.97,
+                              probabilities={key: self.split.get(key, 0.0)
+                                             for key in answer["probabilities"]})
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+def rippling_field(control: ControlType = ControlType.SELECT) -> ApplicationField:
+    """The bare label and Yes/No options, typed as the browser's heuristics type it."""
+    heuristic = classify_semantics(label=RIPPLING_STATES, control_type=control)
+    options = [FieldOption(value=v, label=v) for v in YES_NO] if control is ControlType.SELECT else None
+    return ApplicationField(id="residence", selector="#residence", label=RIPPLING_STATES,
+                            semantic_type=heuristic, control_type=control, required=True,
+                            options=options)
+
+
+STATE_OR_LOCATION = {"STATE": 0.62, "LOCATION": 0.36, "CUSTOM_BOOLEAN": 0.02}
+
+
+@pytest.mark.parametrize("region,city,pick,expected", [
+    ("OR", "Springfield", "o0", "Yes"),  # Oregon is listed
+    ("IN", "Indianapolis", "o1", "No"),  # Indiana is not
+])
+def test_the_live_rippling_state_list_question_is_answered_from_the_address(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    region: str, city: str, pick: str, expected: str,
+) -> None:
+    field = rippling_field()
+    # The label says "states": the browser's heuristics leave it custom-typed, so its
+    # type comes from Jev, who reads it as both STATE and LOCATION.
+    assert field.semantic_type is SemanticType.CUSTOM_SELECT
+    provider = SemanticSplit(STATE_OR_LOCATION, {"residence": (pick, 0.99)})
+    candidate = with_address(fictional_candidate, region=region, city=city)
+    packet, ctx, resolver = resolve_choice(provider, candidate, mock_job, field)
+    assert ctx.form.field("residence").semantic_type is SemanticType.STATE
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.label, answer.semantic_type) == (expected, SemanticType.STATE)
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert answer.confidence == pytest.approx(0.97)  # the pooled residence mass is 0.98
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert trace["status"] == "ANSWERED"
+    assert trace["state_list_member"] is (expected == "Yes")
+    [classification] = [r for r in provider.requests if "s0" in r["questions"]]
+    assert classification["state"]["version"] == "full-form-routing-v12"
+    scopes = classification["questions"]["u0"]["criteria"]
+    assert "whether they live in a named country or in one of listed states" in scopes["APPLICANT_CURRENT"]
+    assert scopes["EXPLICIT_ANSWER"].endswith("or where the applicant currently lives.")
+
+
+@pytest.mark.parametrize("split,control", [
+    ({"STATE": 0.60, "CUSTOM_BOOLEAN": 0.40}, ControlType.SELECT),  # not a residence reading
+    (STATE_OR_LOCATION, ControlType.TEXT),  # a text box copies one exact datum: never pooled
+])
+def test_a_split_that_is_not_one_residence_reading_on_a_choice_stays_unknown(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    split: dict[str, float], control: ControlType,
+) -> None:
+    provider = SemanticSplit(split, {"residence": ("o0", 0.99)})
+    packet, ctx, resolver = resolve_choice(provider, fictional_candidate, mock_job,
+                                           rippling_field(control))
+    assert ctx.form.field("residence").semantic_type is SemanticType.UNKNOWN
+    assert packet.answers == [] and not provider.asked("residence")
+    assert not stage_traces(resolver, "residence_screener")
+    [missing] = packet.missing_inputs
+    assert missing.prompt.startswith("Required:")

@@ -1326,3 +1326,144 @@ def test_prepare_batch_no_sync_closed_links_but_keeps_the_card_in_saved(store_fa
     assert "[card linked, moved to Closed]" in err
     with PipelineStore.from_paths(local) as pipeline:
         assert pipeline.get_item("default", card.id).lane == "closed"
+
+
+# --- per-application provider cost (deliverable 3) -----------------------------------------
+
+PREPARED_MESSAGE = ("Prepared to the final review step. Nothing was submitted. Submission "
+                    "remains disabled when this application is resumed.")
+
+
+def usage(calls: int, cost: float, unknown: int = 0) -> dict[str, Any]:
+    """A ``provider.budget`` event's metadata as the runner records it (fictional numbers)."""
+    bucket = {"calls": calls, "known_cost_usd": cost, "unknown_cost_calls": unknown,
+              "latency_seconds": 0.25 * calls}
+    return bucket | {"by_purpose": {"full_form_routes": dict(bucket)}}
+
+
+def application_with_runs(paths: LocalPaths, url: str, *runs: dict[str, Any]) -> str:
+    """An application for ``url`` whose runs each recorded one ``provider.budget`` event
+    under their own claim, beside an unrelated event with cost-like metadata."""
+    paths.ensure()
+    with ApplicationStore.open(paths.state_db) as store:
+        app = store.record_request("default", url).application
+        for metadata in runs:
+            claim = store.claim(app.id, "test")
+            store.append_event(claim, "form.discovered", {"calls": 9, "known_cost_usd": 9.0})
+            store.append_event(claim, "provider.budget", metadata)
+            store.release(claim)
+        return app.id
+
+
+def test_provider_cost_sums_every_run_of_one_application(paths):
+    app_id = application_with_runs(paths, f"{ORIGIN}/costly", usage(2, 0.0123),
+                                   usage(3, 0.0456, unknown=1))
+    other = application_with_runs(paths, f"{ORIGIN}/other", usage(7, 0.5))
+    assert batch_module.provider_cost(paths, app_id) == (0.0579, 5)
+    assert batch_module.provider_cost(paths, other) == (0.5, 7)
+
+
+def test_provider_cost_without_provider_events_is_none(paths):
+    assert batch_module.provider_cost(paths, "app_fictional") == (None, None)
+    assert not paths.state_db.exists()  # reading never creates the state database
+    free = stored_application(paths, f"{ORIGIN}/free")
+    assert batch_module.provider_cost(paths, free.id) == (None, None)
+    assert batch_module.provider_cost(paths, "app_unknown") == (None, None)
+    assert batch_module.provider_cost(paths, None) == (None, None)
+
+
+def test_ledger_lines_without_provider_cost_still_read(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({
+        "batch_id": "b0", "listing_id": "l1", "pipeline_id": None,
+        "application_url": f"{ORIGIN}/old", "attempt": 1, "application_id": "app_1",
+        "state": "NEEDS_INPUT", "outcome": "prepared", "missing_reasons": [],
+        "missing_labels": [], "started_at": "2026-09-01T10:00:00.000000Z",
+        "finished_at": "2026-09-01T10:01:00.000000Z", "duration_s": 60.0}) + "\n")
+    [old] = read_ledger(ledger)
+    assert (old.provider_cost_usd, old.provider_calls) == (None, None)
+    costed = old.model_copy(update={"listing_id": "l2", "provider_cost_usd": 0.0579,
+                                    "provider_calls": 5})
+    batch_module.append_ledger(ledger, costed)
+    assert [(e.listing_id, e.provider_cost_usd, e.provider_calls) for e in read_ledger(ledger)] \
+        == [("l1", None, None), ("l2", 0.0579, 5)]
+    written = json.loads(ledger.read_text().splitlines()[-1])
+    assert (written["provider_cost_usd"], written["provider_calls"]) == (0.0579, 5)
+
+
+COST_FAKE_CLI = textwrap.dedent('''\
+    """Fake ``interviewmaxxing apply`` backed by the real store that records AI provider
+    usage like the runner: one ``provider.budget`` event per run under the run's claim, and
+    the cost at the end of the outcome message. ``costly`` prepares after 2 calls, ``free``
+    prepares without a provider, ``flaky`` fails retryably after 1 call and prepares after
+    3 more on its next run."""
+    import json, sys
+
+    from interviewmaxxing_core import ApplicationState as S, ApplicationStore, LocalPaths
+
+    assert sys.argv[1] == "apply" and "--json" in sys.argv and "--headless" in sys.argv
+    url = sys.argv[2]
+    candidate = sys.argv[sys.argv.index("--candidate") + 1]
+    kind = url.rsplit("/", 1)[-1].split("?")[0]
+
+    def usage(calls, cost):
+        return {"calls": calls, "known_cost_usd": cost, "unknown_cost_calls": 0,
+                "latency_seconds": 0.1 * calls, "by_purpose": {}}
+
+    with ApplicationStore.open(LocalPaths.from_env().state_db) as store:
+        app = store.record_request(candidate, url).application
+        claim = store.claim(app.id, "cost-fake-cli")
+        earlier = sum(e.event == "provider.budget" for e in store.list_events(app.id))
+        store.transition(claim, S.INSPECTING)
+        run = {"costly": usage(2, 0.0123), "free": None,
+               "flaky": usage(3, 0.02) if earlier else usage(1, 0.004)}[kind]
+        cost = ""
+        if run is not None:
+            store.append_event(claim, "provider.budget", run)
+            cost = f" Provider cost: USD {run['known_cost_usd']:.4f} for {run['calls']} call(s)."
+        if kind == "flaky" and not earlier:
+            state = S.FAILED_RETRYABLE
+            message = "Stopped by a browser error (fictional). Nothing was submitted; resume to retry."
+            store.transition(claim, state, failure_reason=message)
+        else:
+            state, message = S.NEEDS_INPUT, @PREPARED@
+            store.transition(claim, state, metadata={"missing_inputs": [], "reason": "fictional"})
+        store.release(claim)
+    print(json.dumps({"application_id": app.id, "state": state.value, "receipt": None,
+                      "missing_inputs": [], "message": message + cost}))
+    sys.exit(3)
+''').replace("@PREPARED@", repr(PREPARED_MESSAGE))
+
+
+@pytest.fixture
+def cost_fake(tmp_path: Path) -> Path:
+    script = tmp_path / "cost_fake_cli.py"
+    script.write_text(COST_FAKE_CLI)
+    return script
+
+
+@pytest.mark.slow
+def test_batch_ledger_lines_carry_the_applications_provider_cost(cost_fake, paths):
+    rows = [row("costly"), row("free"), row("flaky")]
+    opts = options(cost_fake, paths, workers=2, retry_retryable=1)
+    _, entries = run(opts, rows)
+    assert {e.listing_id: (e.outcome, e.provider_cost_usd, e.provider_calls)
+            for e in entries} == {
+        "lst_costly": ("prepared", 0.0123, 2), "lst_free": ("prepared", None, None),
+        "lst_flaky": ("failed_retryable", 0.004, 1)}
+
+    # The retry's line carries the application's cost so far: both of its runs.
+    _, entries = run(opts, rows)
+    assert [(e.listing_id, e.attempt, e.outcome, e.provider_cost_usd, e.provider_calls)
+            for e in entries] == [("lst_flaky", 2, "prepared", 0.024, 4)]
+    ledger = read_ledger(paths.home / "batches" / "b1" / "ledger.jsonl")
+    assert {(e.listing_id, e.attempt): (e.provider_cost_usd, e.provider_calls)
+            for e in ledger} == {
+        ("lst_costly", 1): (0.0123, 2), ("lst_free", 1): (None, None),
+        ("lst_flaky", 1): (0.004, 1), ("lst_flaky", 2): (0.024, 4)}
+
+    report = batch_module.build_report(paths, ["b1"])
+    assert report.rows == 3 and report.totals == {"prepared": 3}
+    assert (report.provider_cost_usd, report.provider_calls, report.provider_cost_rows) == \
+        (0.0363, 6, 2)
+    assert report.cost_per_prepared_usd == 0.0121

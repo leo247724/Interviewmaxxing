@@ -303,6 +303,11 @@ class LedgerEntry(Contract):
     be. None otherwise: no card, not closed, ``--no-sync-closed``, or the card was
     already in Closed."""
     closed_sync_reason: str | None = None
+    provider_cost_usd: float | None = None
+    """Known AI provider cost of this application so far (every ``provider.budget`` event
+    in the store), read after the job finished; None when no provider was used."""
+    provider_calls: int | None = None
+    """AI provider calls of this application so far; None when no provider was used."""
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -831,6 +836,27 @@ def _entry(options: BatchOptions, row: BatchRow, *, attempt: int, slot: int | No
     )
 
 
+PROVIDER_EVENT = "provider.budget"
+"""The runner's per-run provider usage event (``interviewmaxxing_cli.runner``)."""
+
+
+def provider_cost(paths: LocalPaths, application_id: str | None) -> tuple[float | None, int | None]:
+    """Known provider cost and calls recorded for an application (all of its runs), or
+    ``(None, None)`` when it has no ``provider.budget`` event."""
+    if application_id is None or not paths.state_db.exists():
+        return None, None
+    with ApplicationStore.open(paths.state_db) as store:
+        try:
+            events = [e for e in store.list_events(application_id) if e.event == PROVIDER_EVENT]
+        except Exception:
+            return None, None
+    if not events:
+        return None, None
+    cost = sum(float(e.metadata.get("known_cost_usd") or 0.0) for e in events)
+    calls = sum(int(e.metadata.get("calls") or 0) for e in events)
+    return round(cost, 6), calls
+
+
 async def _terminate(proc: asyncio.subprocess.Process) -> None:
     """SIGTERM the job's process group (the CLI and its browser), then SIGKILL."""
     if proc.returncode is not None:
@@ -881,7 +907,7 @@ async def _run_one(options: BatchOptions, row: BatchRow, *, attempt: int, slot: 
             else f"the CLI printed nothing (exit {code})")
         return _entry(options, row, attempt=attempt, slot=slot, outcome="error",
                       started_at=started_at, exit_code=code, message=detail)
-    return _entry(
+    entry = _entry(
         options, row, attempt=attempt, slot=slot, outcome=classify(outcome),
         started_at=started_at, message=outcome.message, application_id=outcome.application_id,
         state=outcome.state, exit_code=code,
@@ -891,6 +917,8 @@ async def _run_one(options: BatchOptions, row: BatchRow, *, attempt: int, slot: 
                                    control_type=m.control_type.value if m.control_type else None)
                        for m in outcome.missing_inputs],
     )
+    cost, calls = await asyncio.to_thread(provider_cost, options.paths, outcome.application_id)
+    return entry.model_copy(update={"provider_cost_usd": cost, "provider_calls": calls})
 
 
 def plan(options: BatchOptions, rows: Sequence[BatchRow], history: Sequence[LedgerEntry]
@@ -1105,6 +1133,14 @@ class BatchReport(Contract):
     duration_p95_s: float | None = None
     holds: list[HoldCategory] = Field(default_factory=list)
     pipeline: PipelineCounts = Field(default_factory=PipelineCounts)
+    provider_cost_usd: float | None = None
+    """Known AI provider cost over the rows (each application's cost so far, once)."""
+    provider_calls: int = Field(default=0, ge=0)
+    provider_cost_rows: int = Field(default=0, ge=0)
+    """Listings with a ledger line that carries a provider cost (each counted at its latest
+    such line)."""
+    cost_per_prepared_usd: float | None = None
+    """``provider_cost_usd`` divided by the number of prepared rows."""
 
 
 def list_batches(paths: LocalPaths) -> list[str]:
@@ -1214,8 +1250,13 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
     link_state: dict[str, LedgerEntry] = {}
     close_state: dict[str, LedgerEntry] = {}
     with_card: set[str] = set()
+    costed_rows: dict[str, LedgerEntry] = {}
     for entry in entries:
         newest[entry.listing_id] = entry
+        if entry.provider_cost_usd is not None:
+            # Cumulative per application: the latest costed row, even when a later attempt
+            # crashed before an application id (and so a cost) was known.
+            costed_rows[entry.listing_id] = entry
         if entry.outcome != "already_recorded":
             launched[entry.listing_id] = entry
         if entry.pipeline_id:
@@ -1258,7 +1299,15 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
     ]
     holds.sort(key=lambda h: -h.holds)  # stable: ties keep HOLD_CATEGORIES order
 
+    costed = list(costed_rows.values())
+    total_cost = round(sum(e.provider_cost_usd or 0.0 for e in costed), 6) if costed else None
+    prepared_rows = totals["prepared"]
     return BatchReport(
+        provider_cost_usd=total_cost,
+        provider_calls=sum(e.provider_calls or 0 for e in costed),
+        provider_cost_rows=len(costed),
+        cost_per_prepared_usd=(round(total_cost / prepared_rows, 6)
+                               if total_cost is not None and prepared_rows else None),
         batches=ids, batches_dir=str(root), rows=len(rows),
         totals={k: totals[k] for k in OUTCOMES if totals[k]},
         by_backend={backend: {k: counts[k] for k in OUTCOMES if counts[k]}
@@ -1316,6 +1365,13 @@ def render_report_markdown(report: BatchReport) -> str:
                   for backend, d in report.durations.items()]
         lines.append(f"| **all** | {sum(d.runs for d in report.durations.values())} | "
                      f"{_seconds(report.duration_median_s)} | {_seconds(report.duration_p95_s)} |")
+    if report.provider_cost_usd is not None:
+        per_prepared = ("-" if report.cost_per_prepared_usd is None
+                        else f"USD {report.cost_per_prepared_usd:.4f}")
+        lines += ["", "## Provider cost", "",
+                  f"- known cost: USD {report.provider_cost_usd:.4f} over "
+                  f"{report.provider_calls} call(s) in {report.provider_cost_rows} application(s)",
+                  f"- per prepared application: {per_prepared}"]
     if report.holds:
         lines += ["", "## Holds by category"]
         for category in report.holds:

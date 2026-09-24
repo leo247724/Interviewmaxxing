@@ -364,11 +364,21 @@ def test_arbitrary_tool_key_false_cannot_disappear_from_counterevidence(
     assert negative.id in check["state"]["comparison_ids"]["f0"]
 
 
+SAME_EMPLOYER_BUDGET = "I managed $400,000 per month in paid media at Fictional Widgets Co."
+SAME_EMPLOYER_OTHER_BUDGET = "I managed $50,000 per month in content marketing at Fictional Widgets Co."
+
+
+def same_subject_pair(candidate: CandidateProfile) -> tuple[CandidateFact, CandidateFact]:
+    """Two ungrouped experience bullets about the same fictional employer: compared for
+    contradictions (they share its name), unlike independent bullets about other subjects."""
+    return (fact(candidate, "experience", SAME_EMPLOYER_BUDGET),
+            fact(candidate, "experience", SAME_EMPLOYER_OTHER_BUDGET, fid="fact.second"))
+
+
 def test_uncertain_consistency_uses_full_revision_review_and_invalidates_on_change(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
-    first = fact(fictional_candidate, "skills", "Paid media")
-    second = fact(fictional_candidate, "skills", "Campaign automation", fid="fact.second")
+    first, second = same_subject_pair(fictional_candidate)
     candidate = candidate_with(fictional_candidate, [first, second])
     writer = ReviewingWriter([{"text": "I have paid media experience.", "fact_ids": [first.id]}])
     ctx = context(candidate, mock_job)
@@ -381,7 +391,8 @@ def test_uncertain_consistency_uses_full_revision_review_and_invalidates_on_chan
     changed_job = mock_job.model_copy(update={"title": "Another role", "company": "Another employer"})
     resolver._narrative(replace(ctx, job=changed_job), ctx.form.fields[0])
     assert len(writer.reviews) == 1
-    changed = second.model_copy(update={"value": "Updated campaign automation", "evidence": ["Updated campaign automation"]})
+    updated = "I managed $60,000 per month in content marketing at Fictional Widgets Co."
+    changed = second.model_copy(update={"value": updated, "evidence": [updated]})
     resolver._narrative(replace(ctx, candidate=candidate_with(candidate, [first, changed])), ctx.form.fields[0])
     assert len(writer.reviews) == 2
 
@@ -401,12 +412,12 @@ def test_decisive_consistency_conflict_never_uses_strong_override(
 def test_exact_copy_never_uses_strong_consistency_override(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
-    first = fact(fictional_candidate, "skills", "Paid media")
-    second = fact(fictional_candidate, "skills", "Campaign automation", fid="fact.second")
+    first, second = same_subject_pair(fictional_candidate)
     writer = ReviewingWriter([])
-    packet, _, _ = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job), Retriever([first]),
-                           writer, DecisionsProvider(route="COPY_KNOWN", consistency=0.94))
+    packet, _, provider = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
+        Retriever([first]), writer, DecisionsProvider(route="COPY_KNOWN", consistency=0.94))
     assert not packet.is_complete and not writer.reviews
+    assert any("canonical_alternatives" in request["state"] for request in provider.requests)
 
 
 @pytest.mark.parametrize("verdict", ["SUPPORTED", "CONFLICT", "INCOMPLETE", "UNSUPPORTED", "NEEDS_INPUT"])
@@ -445,8 +456,7 @@ def test_decisive_unsupported_or_incomplete_answer_never_gets_strong_override(
 def test_middle_probability_interval_escalates_instead_of_decisive_rejection(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, score: float,
 ) -> None:
-    first = fact(fictional_candidate, "skills", "Paid media")
-    second = fact(fictional_candidate, "skills", "Campaign automation", fid="fact.second")
+    first, second = same_subject_pair(fictional_candidate)
     writer = ReviewingWriter([{"text": "I have paid media experience.", "fact_ids": [first.id]}])
     packet, _, _ = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
         Retriever([first]), writer, DecisionsProvider(consistency=score, support=score, complete=score))
@@ -553,8 +563,7 @@ def test_unknown_citation_and_writer_missing_input_do_not_trigger_corrective_rev
 def test_consistency_probability_limits_final_confidence(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, route: str,
 ) -> None:
-    first = fact(fictional_candidate, "experience", "I managed paid media.")
-    second = fact(fictional_candidate, "experience", "I also managed content marketing.", fid="fact.second")
+    first, second = same_subject_pair(fictional_candidate)
     writer = Writer([{"text": first.value, "fact_ids": [first.id]}])
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
         Retriever([first]), writer, DecisionsProvider(route=route, consistency=0.96))
@@ -917,12 +926,15 @@ def test_profile_url_with_foreign_scope_mass_still_needs_strict_clarification(
     assert resolver.narrative_traces[0]["status"] == "HELD"
 
 
-def test_non_url_identity_field_keeps_strict_clarification(
+def test_address_identity_field_keeps_strict_clarification(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
-    ctx = context(fictional_candidate, mock_job, question="Email", semantic=SemanticType.EMAIL)
+    # A previous address is a real, different datum: address fields are not
+    # timeframe-insensitive and keep the strict clarification.
+    ctx = context(with_street(fictional_candidate), mock_job, question="Street address",
+                  semantic=SemanticType.ADDRESS)
     packet, resolver, provider = resolve(ctx, Retriever([], fail=True), Writer([]),
-        _ScopeRemainder("HISTORICAL_OR_CONTEXTUAL", route="COPY_KNOWN", semantic="EMAIL",
+        _ScopeRemainder("HISTORICAL_OR_CONTEXTUAL", route="COPY_KNOWN", semantic="ADDRESS",
                         scope_probability=0.94, identity_approval=0.5))
     assert not packet.is_complete
     assert len(provider.requests) == 2
@@ -1394,13 +1406,16 @@ def test_current_address_with_foreign_scope_mass_keeps_the_strict_clarification(
 
 
 @pytest.mark.parametrize("semantic,question", [
-    (SemanticType.EMAIL, "What is your current email address?"),
-    (SemanticType.PREFERRED_NAME, "What name do you currently go by?"),
+    (SemanticType.EMAIL, "What was your previous email address?"),
+    (SemanticType.PREFERRED_NAME, "What name did you formerly go by?"),
 ])
-def test_non_address_identity_with_current_wording_keeps_the_strict_clarification(
+def test_past_identity_wording_keeps_the_strict_clarification(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType, question: str,
 ) -> None:
-    ctx = address_context(fictional_candidate, mock_job, question, semantic)
+    # Round 3 pinned current-worded email/preferred-name questions to the strict call; the
+    # contact shortcut now approves those, so the strict call is kept for past wording.
+    candidate = with_preferred_name(fictional_candidate)
+    ctx = address_context(candidate, mock_job, question, semantic)
     packet, resolver, provider = clarify(ctx, semantic, 0.92)
     assert packet.answers == [] and not packet.is_complete
     assert len(provider.requests) == 2  # a strict clarification ran and held
@@ -1773,3 +1788,355 @@ def test_option_bounds_reads_numeric_range_labels(label: str, bounds: tuple[floa
     from interviewmaxxing_browser.ai.routing import _option_bounds
 
     assert _option_bounds(label) == bounds
+
+
+# --- round 4: consistency-check precision and the verdict cache (deliverable 1) --------------
+
+WIDGETS_BUDGET = "I managed the $400,000 monthly paid media budget at Fictional Widgets Co."
+WIDGETS_OTHER_BUDGET = "I managed the $50,000 monthly paid media budget at Fictional Widgets Co."
+LABS_TEAM = "I led a team of 12 marketers at Example Labs Inc."
+LABS_OTHER_TEAM = "I led a team of 3 marketers at Example Labs Inc."
+
+
+def consistency_checks(provider: DecisionsProvider) -> list[dict[str, Any]]:
+    return [request for request in provider.requests if "canonical_alternatives" in request["state"]]
+
+
+def consistency_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
+    return [trace for trace in resolver.narrative_traces if trace["stage"] == "consistency"]
+
+
+def consistency_resolver(provider: DecisionsProvider, writer: Writer | None = None,
+                         retriever: Retriever | None = None, *, max_consistency_verdicts: int = 256,
+                         ) -> tuple[DynamicPacketResolver, AIFormRouter]:
+    """The request-body cache is off, so only the consistency verdict cache can spare a
+    repeated consistency request."""
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"),
+                                          transport=provider, max_attempts=1), max_cache_entries=0)
+    router = AIFormRouter(decisions)
+    return DynamicPacketResolver(decisions, writer, router=router, retriever=retriever,
+                                 max_consistency_verdicts=max_consistency_verdicts), router
+
+
+@pytest.mark.parametrize("key,first_value,second_value", [
+    pytest.param("experience", WIDGETS_BUDGET, "I managed the $50,000 monthly paid media budget at Example Labs Inc.",
+                 id="different-employers"),
+    pytest.param("skills", "Paid media", "Campaign automation", id="different-skills"),
+    pytest.param("experience", "I built nurture programs in HubSpot.", "I built pipeline reports in Salesforce.",
+                 id="different-tools"),
+])
+def test_compatible_subjects_make_no_consistency_request_or_opus_review(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, key: str, first_value: str, second_value: str,
+) -> None:
+    first = fact(fictional_candidate, key, first_value)
+    second = fact(fictional_candidate, key, second_value, fid="fact.second")
+    writer = ReviewingWriter([{"text": first.value, "fact_ids": [first.id]}])
+    packet, resolver, provider = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
+        Retriever([first]), writer, DecisionsProvider(consistency=0.01))
+    assert packet.is_complete and packet.answers[0].confidence == 1.0
+    assert not consistency_checks(provider) and not consistency_traces(resolver) and not writer.reviews
+
+
+@pytest.mark.parametrize("score", [0.01, 0.5])
+def test_same_subject_with_different_values_is_compared_then_held_or_escalated(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, score: float,
+) -> None:
+    first = fact(fictional_candidate, "experience", WIDGETS_BUDGET)
+    second = fact(fictional_candidate, "experience", WIDGETS_OTHER_BUDGET, fid="fact.second")
+    writer = ReviewingWriter([{"text": first.value, "fact_ids": [first.id]}])
+    packet, _, provider = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
+        Retriever([first]), writer, DecisionsProvider(consistency=score))
+    [check] = consistency_checks(provider)
+    assert check["state"]["comparison_ids"] == {"f0": [second.id]}
+    if score == 0.01:
+        assert not packet.is_complete and not writer.calls and not writer.reviews
+        assert "conflict" in packet.missing_inputs[0].prompt
+    else:
+        assert packet.is_complete and packet.answers[0].confidence == 0.5
+        assert [review["purpose"] for review in writer.reviews] == ["evidence_consistency"]
+
+
+@pytest.mark.parametrize("negative_key,negative_value", [
+    pytest.param("experience", "I have never used any account-based marketing platform.", id="global-negative"),
+    pytest.param("abm_platform_experience", False, id="false-flag"),
+])
+@pytest.mark.parametrize("retrieve_positive", [True, False])
+def test_global_negatives_and_false_flags_are_compared_across_subjects(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    negative_key: str, negative_value: Any, retrieve_positive: bool,
+) -> None:
+    from interviewmaxxing_browser.ai.routing import _subject_terms
+
+    positive = fact(fictional_candidate, "experience", "I ran ABM campaigns in Demandbase at Fictional Widgets Co.")
+    negative = fact(fictional_candidate, negative_key, negative_value, fid="fact.negative")
+    assert not _subject_terms(positive) & _subject_terms(negative)
+    selected, omitted = (positive, negative) if retrieve_positive else (negative, positive)
+    writer = Writer([{"text": "I have ABM experience.", "fact_ids": [selected.id]}])
+    packet, _, provider = resolve(context(candidate_with(fictional_candidate, [positive, negative]), mock_job),
+        Retriever([selected]), writer, DecisionsProvider(consistency=0.01))
+    assert not packet.is_complete and not writer.calls
+    assert "conflict" in packet.missing_inputs[0].prompt
+    [check] = consistency_checks(provider)
+    assert check["state"]["comparison_ids"] == {"f0": [omitted.id]}
+
+
+def test_one_non_additive_key_with_two_values_is_still_compared(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    seven = fact(fictional_candidate, "years_paid_media", 7, fid="fact.seven")
+    five = fact(fictional_candidate, "years_paid_media", 5, fid="fact.five")
+    repeated = fact(fictional_candidate, "years_paid_media", 7, fid="fact.repeated")
+    provider = DecisionsProvider(consistency=0.01)
+    resolver, _ = consistency_resolver(provider)
+    ctx = context(candidate_with(fictional_candidate, [seven, five, repeated]), mock_job)
+    with pytest.raises(AIHold, match="conflict"):
+        resolver._check_additive_consistency(ctx, [seven])
+    [check] = consistency_checks(provider)
+    assert check["state"]["comparison_ids"] == {"f0": [five.id]}
+
+
+def test_a_consistency_verdict_is_reused_by_another_narrative_field(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    first = fact(fictional_candidate, "experience", WIDGETS_BUDGET)
+    second = fact(fictional_candidate, "experience", WIDGETS_OTHER_BUDGET, fid="fact.second")
+    ctx = context(candidate_with(fictional_candidate, [first, second]), mock_job)
+    budget = ctx.form.fields[0].model_copy(update={"id": "budget", "selector": "#budget",
+        "label": "Describe a paid media budget you managed"})
+    provider = DecisionsProvider(consistency=0.96)
+    resolver, router = consistency_resolver(provider, Writer([{"text": first.value, "fact_ids": [first.id]}]),
+                                            Retriever([first]))
+    form = router.annotate(ctx.form.model_copy(update={"fields": [ctx.form.fields[0], budget]}),
+                           document_id="synthetic-verdict-cache")
+    packet = asyncio.run(resolver.resolve(replace(ctx, form=form)))
+    assert packet.is_complete
+    assert {answer.field_id: answer.confidence for answer in packet.answers} == {"response": 0.96, "budget": 0.96}
+    assert len(consistency_checks(provider)) == 1
+    traces = consistency_traces(resolver)
+    assert [trace["cached"] for trace in traces] == [[], ["f0"]]
+    assert [trace["probabilities"] for trace in traces] == [{"f0": 0.96}, {"f0": 0.96}]
+
+
+@pytest.mark.parametrize("bound,cached", [(1, []), (256, ["f0"])])
+def test_the_consistency_verdict_cache_is_bounded_and_evicts_the_oldest_verdict(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, bound: int, cached: list[str],
+) -> None:
+    widgets = fact(fictional_candidate, "experience", WIDGETS_BUDGET, fid="fact.widgets")
+    labs = fact(fictional_candidate, "experience", LABS_TEAM, fid="fact.labs")
+    ctx = context(candidate_with(fictional_candidate, [widgets, labs,
+        fact(fictional_candidate, "experience", WIDGETS_OTHER_BUDGET, fid="fact.widgets-other"),
+        fact(fictional_candidate, "experience", LABS_OTHER_TEAM, fid="fact.labs-other")]), mock_job)
+    provider = DecisionsProvider(consistency=0.96)
+    resolver, _ = consistency_resolver(provider, max_consistency_verdicts=bound)
+    for selected in (widgets, labs, widgets):
+        assert resolver._check_additive_consistency(ctx, [selected]) == 0.96
+    assert len(resolver._consistency_verdicts) == min(bound, 2)
+    assert len(consistency_checks(provider)) == (3 if bound == 1 else 2)
+    assert [trace["cached"] for trace in consistency_traces(resolver)] == [[], [], cached]
+
+
+def test_a_changed_comparison_set_or_value_is_asked_again(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    widgets = fact(fictional_candidate, "experience", WIDGETS_BUDGET, fid="fact.widgets")
+    other = fact(fictional_candidate, "experience", WIDGETS_OTHER_BUDGET, fid="fact.widgets-other")
+    hiring = fact(fictional_candidate, "experience", "I hired two paid media specialists at Fictional Widgets Co.",
+                  fid="fact.widgets-hiring")
+    updated = "I managed the $60,000 monthly paid media budget at Fictional Widgets Co."
+    changed = other.model_copy(update={"value": updated, "evidence": [updated]})
+    provider = DecisionsProvider(consistency=0.96)
+    resolver, _ = consistency_resolver(provider)
+    for facts in ([widgets, other], [widgets, other, hiring], [widgets, changed], [widgets, other]):
+        resolver._check_additive_consistency(context(candidate_with(fictional_candidate, facts), mock_job), [widgets])
+    assert len(consistency_checks(provider)) == 3
+    assert [trace["cached"] for trace in consistency_traces(resolver)] == [[], [], [], ["f0"]]
+
+
+@pytest.mark.parametrize("value,terms", [
+    ("SEO specialist at Fictional Search Agency", {"fictional", "search", "agency"}),
+    ("Fictional Widgets Co. hired me. I ran paid media at Example Labs.",
+     {"fictional", "widgets", "example", "labs"}),
+    ("Ran ABM and SEO campaigns in HubSpot at Acme Corp.", {"hubspot", "acme"}),
+    ("Promoted to Senior Manager at Acme in March 2021.", {"acme"}),
+    (["Led growth at Fictional Widgets Co.", "Ran events for Example Labs."],
+     {"fictional", "widgets", "example", "labs"}),
+    ("I managed $400,000 per month in paid media.", set()),
+    ("Acme budget: $400,000 per month", {"acme"}),
+    ("Managed paid media (e.g. Demandbase) at Fictional Widgets Inc.", {"demandbase", "fictional", "widgets"}),
+    ("Head of Growth at Example Labs", {"example", "labs"}),
+    ("Managing Director of Marketing Media Group", set()),
+    (7, set()), (False, set()),
+])
+def test_subject_terms_are_capitalized_names_without_common_words(
+    fictional_candidate: CandidateProfile, value: Any, terms: set[str],
+) -> None:
+    from interviewmaxxing_browser.ai.routing import _subject_terms
+
+    assert _subject_terms(fact(fictional_candidate, "experience", value)) == terms
+
+
+def test_a_sentence_initial_employer_name_still_marks_the_same_subject(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Regression: "Acme budget: ..." starts both bullets; they are about the same employer and
+    # must still be compared (the check holds at 0.01).
+    first = fact(fictional_candidate, "experience", "Acme budget: $400,000 per month")
+    second = fact(fictional_candidate, "experience", "Acme budget: $50,000 per month", fid="fact.acme-other")
+    writer = Writer([{"text": "I managed $400,000 per month at Acme.", "fact_ids": [first.id]}])
+    packet, _, provider = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
+                                   Retriever([first]), writer, DecisionsProvider(consistency=0.01))
+    assert consistency_checks(provider)
+    assert not packet.is_complete and not writer.calls
+
+
+def test_a_zero_verdict_bound_disables_the_cache_without_failing(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    first, second = same_subject_pair(fictional_candidate)
+    provider = DecisionsProvider(consistency=0.96)
+    resolver, _ = consistency_resolver(provider)
+    resolver.max_consistency_verdicts = 0
+    ctx = context(candidate_with(fictional_candidate, [first, second]), mock_job)
+    for _ in range(2):
+        assert resolver._check_additive_consistency(ctx, [first]) == 0.96
+    assert len(consistency_checks(provider)) == 2 and resolver._consistency_verdicts == {}
+
+
+# --- round 4 addendum A: timeframe-insensitive contact identity --------------------------
+
+def with_preferred_name(candidate: CandidateProfile) -> CandidateProfile:
+    return candidate.model_copy(update={"identity": candidate.identity.model_copy(
+        update={"preferred_name": "Ave"})})
+
+
+class _ScopeSplit(DecisionsProvider):
+    """Set the classifier's source-scope probabilities for the field exactly."""
+
+    def __init__(self, split: dict[str, float], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.split = split
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        payload = json.loads(response.body)
+        for name, answer in payload["answers"].items():
+            if name.startswith("u") and answer.get("type") == "choice" and answer["confidence"] < 1:
+                answer["choice"] = max(self.split, key=lambda scope: self.split[scope])
+                answer["probabilities"] = {option: self.split.get(option, 0.0)
+                                           for option in answer["probabilities"]}
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+CONTACT_CASES = [
+    (SemanticType.EMAIL, "Email", "avery@example.test"),
+    (SemanticType.PHONE, "Phone", "+1 555 010 0199"),
+    (SemanticType.FIRST_NAME, "First name", "Avery"),
+    (SemanticType.LAST_NAME, "Last name", "Example"),
+    (SemanticType.FULL_NAME, "Full name", "Avery Example"),
+    (SemanticType.PREFERRED_NAME, "Preferred name", "Ave"),
+]
+
+
+@pytest.mark.parametrize("semantic,question,value", CONTACT_CASES)
+def test_contact_identity_current_versus_historical_mass_copies_without_extra_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    semantic: SemanticType, question: str, value: str,
+) -> None:
+    # The live Greenhouse hold: "Email" at 0.94 current with the rest on historical.
+    ctx = context(with_preferred_name(fictional_candidate), mock_job, question=question,
+                  semantic=semantic)
+    packet, resolver, provider = resolve(ctx, Retriever([], fail=True), Writer([]),
+        _ScopeRemainder("HISTORICAL_OR_CONTEXTUAL", route="COPY_KNOWN", semantic=semantic.value,
+                        scope_probability=0.94, identity_approval=0.0))
+    assert packet.is_complete and ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value.text == value
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert answer.confidence == pytest.approx(0.94)
+    assert len(provider.requests) == 1  # no clarification round trip
+    trace = clarification_trace(resolver)
+    assert trace["status"] == "APPROVED_TIMEFRAME_INSENSITIVE_CONTACT"
+    assert trace["clarification_probability"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("semantic,question,remainder", [
+    (SemanticType.EMAIL, "Supervisor's email", "OTHER_PERSON_OR_ENTITY"),
+    (SemanticType.EMAIL, "Reference email address", "OTHER_PERSON_OR_ENTITY"),
+    (SemanticType.PHONE, "Reference phone number", "OTHER_PERSON_OR_ENTITY"),
+    (SemanticType.PHONE, "Emergency contact phone", "OTHER_PERSON_OR_ENTITY"),
+    (SemanticType.FULL_NAME, "Emergency contact name", "OTHER_PERSON_OR_ENTITY"),
+    (SemanticType.FIRST_NAME, "Manager's first name", "OTHER_PERSON_OR_ENTITY"),
+    (SemanticType.EMAIL, "Email", "EXPLICIT_ANSWER"),
+    (SemanticType.PREFERRED_NAME, "Preferred name", "UNCLEAR"),
+])
+def test_contact_identity_with_another_persons_or_foreign_mass_still_holds(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    semantic: SemanticType, question: str, remainder: str,
+) -> None:
+    ctx = context(with_preferred_name(fictional_candidate), mock_job, question=question,
+                  semantic=semantic)
+    packet, resolver, provider = resolve(ctx, Retriever([], fail=True), Writer([]),
+        _ScopeRemainder(remainder, route="COPY_KNOWN", semantic=semantic.value,
+                        scope_probability=0.94, identity_approval=0.02))
+    assert not packet.is_complete and not packet.answers
+    assert len(provider.requests) == 2  # the strict clarification ran and held
+    trace = clarification_trace(resolver)
+    assert (trace["status"], trace["clarification_threshold"]) == ("HELD", pytest.approx(0.95))
+    [missing] = packet.missing_inputs
+    assert missing.prompt == ("The field's current applicant identity source could not be "
+                              "confirmed for exact copying")
+
+
+@pytest.mark.parametrize("split,approved", [
+    ({"APPLICANT_CURRENT": 0.94, "HISTORICAL_OR_CONTEXTUAL": 0.05, "OTHER_PERSON_OR_ENTITY": 0.01},
+     True),  # 0.01 elsewhere is allowed
+    ({"APPLICANT_CURRENT": 0.94, "HISTORICAL_OR_CONTEXTUAL": 0.045, "UNCLEAR": 0.008,
+      "EXPLICIT_ANSWER": 0.007}, False),  # 0.015 elsewhere in total is not
+    ({"APPLICANT_CURRENT": 0.92, "HISTORICAL_OR_CONTEXTUAL": 0.02, "UNCLEAR": 0.06},
+     False),  # the applicant's own mass is below 0.95
+])
+def test_contact_identity_shortcut_boundaries(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    split: dict[str, float], approved: bool,
+) -> None:
+    ctx = context(fictional_candidate, mock_job, question="Email", semantic=SemanticType.EMAIL)
+    packet, resolver, provider = resolve(ctx, Retriever([], fail=True), Writer([]),
+        _ScopeSplit(split, route="COPY_KNOWN", semantic="EMAIL", scope_probability=0.94,
+                    identity_approval=0.02))
+    trace = clarification_trace(resolver)
+    if approved:
+        assert packet.is_complete and len(provider.requests) == 1
+        assert trace["status"] == "APPROVED_TIMEFRAME_INSENSITIVE_CONTACT"
+    else:
+        assert not packet.answers and len(provider.requests) == 2
+        assert trace["status"] == "HELD"
+
+
+@pytest.mark.parametrize("semantic,question,section", [
+    (SemanticType.LAST_NAME, "Previous last name", []),
+    (SemanticType.LAST_NAME, "Maiden name", []),
+    (SemanticType.FULL_NAME, "Other names you have used", []),
+    (SemanticType.EMAIL, "Former email address", []),
+    (SemanticType.FIRST_NAME, "First name", ["Previous names"]),
+])
+def test_contact_identity_worded_about_a_past_identity_keeps_the_strict_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    semantic: SemanticType, question: str, section: list[str],
+) -> None:
+    ctx = address_context(fictional_candidate, mock_job, question, semantic, section=section)
+    packet, resolver, provider = clarify(ctx, semantic, 0.02)
+    assert packet.answers == [] and len(provider.requests) == 2
+    assert clarification_trace(resolver)["status"] == "HELD"
+
+
+def test_profile_url_shortcut_keeps_its_status_and_ignores_the_past_identity_guard(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    ctx = context(fictional_candidate, mock_job, question="LinkedIn profile (other than a company page)",
+                  semantic=SemanticType.LINKEDIN)
+    packet, resolver, provider = resolve(ctx, Retriever([], fail=True), Writer([]),
+        _ScopeRemainder("HISTORICAL_OR_CONTEXTUAL", route="COPY_KNOWN", semantic="LINKEDIN",
+                        scope_probability=0.94, identity_approval=0.0))
+    assert packet.is_complete and len(provider.requests) == 1
+    assert clarification_trace(resolver)["status"] == "APPROVED_TIMEFRAME_INSENSITIVE_URL"
+

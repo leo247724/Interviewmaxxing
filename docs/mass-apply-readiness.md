@@ -201,6 +201,44 @@ context after the first fields (evidence `001-context-lost-step-0.png`), and the
 Rippling page's comboboxes were not probed at all (all ten stayed UNSUPPORTED), unlike the
 mock replica.
 
+### Live re-check after the Greenhouse/Rippling stabilization (commit bd77c28)
+
+Six applications that had failed on the widget path were resumed (prepare-only):
+
+| Backend | Result |
+| --- | --- |
+| Workable | Prepared to the final review step (phone picker and drop-zone resume now fill and read back). |
+| Rippling ×3 | One prepared to the final review; two stop only on a genuine question (a state-list residence question, a travel-level question, salary). All comboboxes probed and filled. |
+| Greenhouse (Reunion) | Every control filled including the dial-code country select, resume attach and React selects; one hold left on the Email field (near-threshold identity score, fix queued). |
+| Greenhouse (FirmPilot) | Still stopped on the sponsorship select. A per-field signature diff on the live page found the cause: Greenhouse re-renders the resume uploader a few seconds after the attach (buttons become "Remove file", the submit button's position shifts), and that late change arrives while a later field is being written, so the fill guard reports a changed page. Every field fills when written one at a time. Fix in progress (accept late uploader re-renders confined to the uploader and action controls; compare the submit control by identity, not position). |
+
+## Second wave (same day): what else the workers shipped
+
+- **Reworded reusable questions** (commit 554f715): a confirmed GLOBAL saved answer now answers a
+  differently worded question of the same semantic type when Jev judges the two identical in
+  subject, timeframe, polarity and answer type; the value still comes only from the saved answer.
+- **Yes/no experience screeners** answered from verified facts (YES only when a fact states the
+  experience, NO only when a fact denies it, otherwise a specific hold).
+- **Residence screeners and current-address fields** (commit 9403251): "do you live in the US",
+  state lists and current-location selects are answered from the verified address; the
+  near-threshold identity flake on current-address fields is gone; single-choice and numeric
+  screeners (budget ranges, counts, certifications) come from facts only.
+- **Resume with autofill** is routed as the approved attachment (Ashby); the browser-side
+  upload-first ordering is in progress.
+- **Eleven more reusable defaults** in the simple-answers map (null until you fill them):
+  previously employed here, previously interviewed here, related to an employee, willing to
+  relocate, open to other positions, willing to provide references, desired salary, English
+  proficiency, available time zones, travel willingness, earliest start date.
+- **Batch bookkeeping** (commit 83640e3): prepared applications are linked to their Saved cards,
+  closed jobs move to the Closed lane with a dated note, and `interviewmaxxing batch-report`
+  groups the remaining holds by category across batches.
+
+Batch report over the 112 real applications run so far: 7 prepared, 79 stopped for input,
+23 did not reach a form, 2 closed. Top holds: Ashby resume drag-and-drop (10), Greenhouse
+phone country picker (5), Lever resume attach (5), EEO blocks (5, explicit by design),
+state/country selects (8), pre-form CAPTCHA (4). Each of these except the CAPTCHAs is owned
+by a running worker.
+
 ## Availability of the inventory
 
 A read-only HTTP probe of the 873 resolved URLs (no browser, one request each):

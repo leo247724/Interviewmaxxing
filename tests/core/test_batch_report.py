@@ -583,6 +583,8 @@ def test_list_batches_and_empty_reports_create_nothing(tmp_path):
         "by_backend": {}, "durations": {}, "duration_median_s": None, "duration_p95_s": None,
         "holds": [], "pipeline": {"rows_with_card": 0, "linked": 0, "not_linked": 0,
                                   "closed_moved": 0, "closed_skipped": 0, "problems": []},
+        "provider_cost_usd": None, "provider_calls": 0, "provider_cost_rows": 0,
+        "cost_per_prepared_usd": None,
     }
     assert f"No batch ledgers under {batches_dir}." in text
 
@@ -704,3 +706,83 @@ def test_batch_report_command_errors_and_read_only(paths, tmp_path, capsys):
     assert capsys.readouterr().err.strip()
     assert main(["--home", str(absent), "batch-report", ".."]) == EXIT_USAGE
     assert not absent.exists()
+
+
+# --- provider cost --------------------------------------------------------------------------------
+
+B3 = "batch-20260925T020000Z"
+
+
+def test_provider_cost_totals_and_cost_per_prepared_application(paths, capsys):
+    write(paths,
+          entry(B1, "l-a", "prepared", minute=1, app="app_a", provider_cost_usd=0.10,
+                provider_calls=4),
+          entry(B1, "l-b", "prepared", minute=2, app="app_b", provider_cost_usd=0.30,
+                provider_calls=9),
+          entry(B1, "l-c", "needs_input", minute=3, app="app_c", provider_cost_usd=0.05,
+                provider_calls=2),
+          entry(B1, "l-d", "closed", minute=4, app="app_d"))  # used no provider
+    report = build_report(paths)
+    assert report.rows == 4
+    assert report.totals == {"prepared": 2, "needs_input": 1, "closed": 1}
+    assert report.provider_cost_usd == 0.45
+    assert (report.provider_calls, report.provider_cost_rows) == (15, 3)
+    assert report.cost_per_prepared_usd == 0.225
+    lines = render_report_markdown(report).splitlines()
+    assert "## Provider cost" in lines
+    assert "- known cost: USD 0.4500 over 15 call(s) in 3 application(s)" in lines
+    assert "- per prepared application: USD 0.2250" in lines
+
+    home = str(paths.home)
+    assert main(["--home", home, "batch-report", "--json"]) == EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    assert (data["provider_cost_usd"], data["provider_calls"], data["provider_cost_rows"],
+            data["cost_per_prepared_usd"]) == (0.45, 15, 3, 0.225)
+    assert main(["--home", home, "batch-report"]) == EXIT_OK
+    out = capsys.readouterr().out.splitlines()
+    assert "## Provider cost" in out and "- per prepared application: USD 0.2250" in out
+
+
+def test_a_retried_application_counts_its_cost_once(paths):
+    """Every launched line carries its application's cost so far, so only the listing's
+    reported line counts; a later already-recorded line (no cost) does not hide it."""
+    write(paths,
+          entry(B1, "l-retry", "failed_retryable", minute=1, app="app_retry",
+                provider_cost_usd=0.05, provider_calls=1),
+          entry(B2, "l-retry", "prepared", minute=60, app="app_retry", attempt=2,
+                provider_cost_usd=0.12, provider_calls=3),
+          entry(B3, "l-retry", "already_recorded", minute=120, app="app_retry"))
+    report = build_report(paths)
+    assert report.rows == 1 and report.totals == {"prepared": 1}
+    assert (report.provider_cost_usd, report.provider_calls, report.provider_cost_rows,
+            report.cost_per_prepared_usd) == (0.12, 3, 1, 0.12)
+
+    first = build_report(paths, [B1])  # the first attempt alone: nothing prepared yet
+    assert first.totals == {"failed_retryable": 1}
+    assert (first.provider_cost_usd, first.provider_calls, first.provider_cost_rows,
+            first.cost_per_prepared_usd) == (0.05, 1, 1, None)
+    assert "- per prepared application: -" in render_report_markdown(first).splitlines()
+
+
+def test_reports_without_provider_costs_have_no_cost_section(paths):
+    write_outcomes(paths)
+    append_old_line(paths, B1, "l-old", minute=6, app="app_old", reasons=[], labels=[])
+    report = build_report(paths)
+    assert report.rows == 8 and report.totals["prepared"] == 2
+    assert (report.provider_cost_usd, report.provider_calls, report.provider_cost_rows,
+            report.cost_per_prepared_usd) == (None, 0, 0, None)
+    text = render_report_markdown(report)
+    assert "## Provider cost" not in text and "per prepared application" not in text
+
+
+def test_a_crashed_retry_keeps_the_listings_earlier_cost(paths):
+    """A later attempt that crashed before an application id was known carries no cost;
+    the listing keeps the cost its application recorded so far."""
+    write(paths,
+          entry(B1, "l-crash", "needs_input", minute=1, app="app_crash",
+                provider_cost_usd=0.07, provider_calls=2),
+          entry(B2, "l-crash", "error", minute=60, attempt=2))
+    report = build_report(paths)
+    assert report.rows == 1 and report.totals == {"error": 1}
+    assert (report.provider_cost_usd, report.provider_calls, report.provider_cost_rows,
+            report.cost_per_prepared_usd) == (0.07, 2, 1, None)

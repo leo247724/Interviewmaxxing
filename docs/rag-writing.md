@@ -80,6 +80,18 @@ Runtime retrieval, writing and review share one bounded provider budget. Indexed
 facts are selected using both the actual question and the scoped job description;
 unchanged indexed sources do not require new embeddings.
 
+Before drafting, the resolver compares the selected facts only with canonical facts
+that could be about the same subject. That means a global or negative claim ("never
+used X", a false experience flag), the same single-value key with another value, the
+same experience group, or an ungrouped bullet that names the same employer, client,
+project or tool (a capitalized name, including at the start of a bullet, that is not a
+title, job function, company suffix or leading verb). Independent bullets about different employers, budgets, team sizes
+or skills are not compared, so they no longer send a narrative to the Opus
+evidence review. A real contradiction about the same subject still holds or
+escalates as before. Each Jev verdict is cached per runtime under the exact fact and
+its comparison set, so a second narrative on the same form reuses it (the
+consistency trace lists `cached` keys).
+
 ## Verification
 
 Mocked tests cover isolated retrieval, changed and revoked facts, source separation,

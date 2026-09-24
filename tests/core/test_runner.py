@@ -22,7 +22,9 @@ import pytest
 from interviewmaxxing_browser import AmbiguousAction
 from interviewmaxxing_browser.ai import AIFormRouter, BoundedDecisions, DynamicPacketResolver
 from interviewmaxxing_candidate import LocalCandidateStore
+from interviewmaxxing_cli.batch import provider_cost
 from interviewmaxxing_cli.runner import (
+    PROVIDER_EVENT,
     REJECTION_EVENT,
     SUGGESTION_EVENT,
     LocalApplicationRunner,
@@ -35,6 +37,7 @@ from interviewmaxxing_cli.runner import (
 from interviewmaxxing_core import (
     AnswerReuse,
     AnswerSource,
+    ApplicationEvent,
     ApplicationField,
     ApplicationForm,
     ApplicationPacket,
@@ -1683,3 +1686,219 @@ def test_runner_answers_a_residence_question_from_the_verified_address(
     assert (answer.value.value, answer.value.label) == ("yes", "Yes")
     assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
     assert answer.provenance.note == "verified identity address; residence question answered by Jev"
+
+
+# --- round 4: per-application provider cost (deliverable 3) --------------------------------
+
+PREPARED = ("Prepared to the final review step. Nothing was submitted. Submission remains "
+            "disabled when this application is resumed.")
+RESIDENCE = ApplicationField(
+    id="residence", label="Do you currently live in the United States?",
+    selector="#residence", semantic_type=SemanticType.COUNTRY,
+    control_type=ControlType.RADIO, required=True,
+    options=[FieldOption(value="yes", label="Yes"), FieldOption(value="no", label="No")])
+RESIDENCE_SCOPES = {0: "APPLICANT_CURRENT", 1: "APPLICANT_CURRENT"}
+RESIDENCE_CHOICES = {"residence": {"o0": 0.99, "o1": 0.0, "UNKNOWN": 0.01}}
+USAGE_KEYS = {"calls", "known_cost_usd", "unknown_cost_calls", "latency_seconds"}
+"""One usage bucket of a ``provider.budget`` event: metadata only, never prompts or values."""
+
+
+def _residence_form(*, final: bool = True) -> ApplicationForm:
+    """First name plus a residence radio: one full-form routing call and one residence
+    screener call to Jev."""
+    form = _form(final=final)
+    return form.model_copy(update={"fields": [*form.fields, RESIDENCE]})
+
+
+class UncostedJev(ScriptedJev):
+    """``ScriptedJev`` that reports no cost for requests asking the ``uncosted`` question."""
+
+    def __init__(self, *args: Any, uncosted: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.uncosted = uncosted
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        if self.uncosted not in self.requests[-1]["questions"]:
+            return response
+        payload = json.loads(response.body)
+        del payload["usage"]
+        return HttpResponse(response.status, response.headers, json.dumps(payload).encode())
+
+
+def _provider_events(paths, app_id: str) -> list[ApplicationEvent]:
+    with _store(paths) as store:
+        return [e for e in store.list_events(app_id) if e.event == PROVIDER_EVENT]
+
+
+def _cost_suffix(usage: dict[str, Any]) -> str:
+    return f" Provider cost: USD {usage['known_cost_usd']:.4f} for {usage['calls']} call(s)."
+
+
+def test_a_prepared_run_records_its_provider_cost_once_and_reports_it(
+    isolated_imx_home, fictional_candidate
+):
+    jev = ScriptedJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES)
+    runner = _dynamic_runner(isolated_imx_home, fictional_candidate,
+                             Script(pages=[_page(_residence_form())]), jev)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
+    assert result.message.startswith("Prepared to the final review step")
+    receipts = runner.resolver.decisions.budget.receipts
+    assert len(receipts) == len(jev.requests) >= 2 and jev.asked("residence")
+
+    [event] = _provider_events(isolated_imx_home, result.application_id)
+    usage = event.metadata
+    assert set(usage) == USAGE_KEYS | {"by_purpose"}
+    assert usage["calls"] == len(receipts) and usage["unknown_cost_calls"] == 0
+    assert usage["known_cost_usd"] == round(sum(r.cost_usd for r in receipts), 6) \
+        == round(0.0001 * len(receipts), 6)
+    by_purpose = usage["by_purpose"]
+    assert {"full_form_routes", "residence_screener"} <= set(by_purpose)
+    assert all(set(bucket) == USAGE_KEYS for bucket in by_purpose.values())
+    assert sum(bucket["calls"] for bucket in by_purpose.values()) == usage["calls"]
+    assert "synthetic-runner-key" not in json.dumps(usage)
+    assert result.message == PREPARED + _cost_suffix(usage)
+
+    with _store(isolated_imx_home) as store:
+        events = store.list_events(result.application_id)
+    # Recorded under the run's claim, after the preparation and before the final stop; the
+    # stored history (the NEEDS_INPUT reason included) never carries the cost text.
+    [ready] = [e for e in events if e.event == "preparation.ready"]
+    stop = [e for e in events if e.to_state is S.NEEDS_INPUT][-1]
+    assert ready.sequence < event.sequence < stop.sequence and event.actor == stop.actor
+    assert stop.metadata["reason"] == "prepared for final review; submission disabled"
+    assert not any("Provider cost" in json.dumps(e.metadata) for e in events)
+    assert provider_cost(isolated_imx_home, result.application_id) == (
+        usage["known_cost_usd"], usage["calls"])
+
+
+def test_a_run_with_the_factual_resolver_records_no_provider_cost(
+    isolated_imx_home, fictional_candidate
+):
+    runner = _runner(isolated_imx_home, fictional_candidate, Script(), prepare_only=True)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.message == PREPARED
+    assert _provider_events(isolated_imx_home, result.application_id) == []
+    assert provider_cost(isolated_imx_home, result.application_id) == (None, None)
+
+
+def test_a_provider_response_without_a_cost_is_counted_as_unknown(
+    isolated_imx_home, fictional_candidate
+):
+    jev = UncostedJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES, uncosted="residence")
+    runner = _dynamic_runner(isolated_imx_home, fictional_candidate,
+                             Script(pages=[_page(_residence_form())]), jev)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
+    [_] = jev.asked("residence")
+    calls = len(jev.requests)
+    assert [r.cost_usd for r in runner.resolver.decisions.budget.receipts].count(None) == 1
+
+    [event] = _provider_events(isolated_imx_home, result.application_id)
+    usage = event.metadata
+    assert (usage["calls"], usage["unknown_cost_calls"]) == (calls, 1)
+    assert usage["known_cost_usd"] == round(0.0001 * (calls - 1), 6)
+    screener = usage["by_purpose"]["residence_screener"]
+    assert (screener["calls"], screener["unknown_cost_calls"], screener["known_cost_usd"]) == \
+        (1, 1, 0.0)
+    assert usage["by_purpose"]["full_form_routes"]["unknown_cost_calls"] == 0
+    assert result.message == (PREPARED + f" Provider cost: USD {usage['known_cost_usd']:.4f} "
+                              f"for {calls} call(s), 1 without a reported cost.")
+
+
+def test_a_failed_run_reports_its_provider_cost_but_not_in_the_failure_reason(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_residence_form(final=False))],
+                    advance=[RuntimeError("fictional page crash")])
+    jev = ScriptedJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES)
+    runner = _dynamic_runner(isolated_imx_home, fictional_candidate, script, jev)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    reason = ("Stopped by a browser error (RuntimeError: fictional page crash). Nothing was "
+              "submitted; resume to retry.")
+    assert result.state is S.FAILED_RETRYABLE and "submit" not in script.calls
+    [event] = _provider_events(isolated_imx_home, result.application_id)
+    assert event.metadata["calls"] == len(jev.requests) >= 2
+    assert result.message == reason + _cost_suffix(event.metadata)
+    with _store(isolated_imx_home) as store:
+        assert store.get_application(result.application_id).failure_reason == reason
+
+
+def test_each_run_records_only_its_own_provider_calls(isolated_imx_home, fictional_candidate):
+    jev = ScriptedJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES)
+    runner = _dynamic_runner(isolated_imx_home, fictional_candidate,
+                             Script(pages=[_page(_residence_form())]), jev)
+    first = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    app_id, before = first.application_id, len(jev.requests)
+    assert first.message == PREPARED + _cost_suffix(
+        _provider_events(isolated_imx_home, app_id)[0].metadata)
+
+    # The same runtime on the same page: every decision comes from its cache, so this run
+    # used no provider call, records no event and reports no cost.
+    again = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert again.application_id == app_id and again.message == PREPARED
+    assert len(jev.requests) == before
+    assert len(_provider_events(isolated_imx_home, app_id)) == 1
+
+    # The same runtime on a changed page: the event counts this run's calls, not the
+    # runtime's earlier ones.
+    changed = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptedFactory(Script(pages=[_page(_form())])),
+        candidates=Candidates(fictional_candidate), resolver=runner.resolver,
+        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=True)
+    third = asyncio.run(changed.apply(URL, candidate_id="c1"))
+    new = len(jev.requests) - before
+    assert third.application_id == app_id and new >= 1
+    first_event, third_event = _provider_events(isolated_imx_home, app_id)
+    assert third_event.metadata["calls"] == new
+    assert third_event.metadata["known_cost_usd"] == round(0.0001 * new, 6)
+    assert third.message == PREPARED + _cost_suffix(third_event.metadata)
+    # The batch harness reads the application's cost over all of its runs.
+    total = len(jev.requests)
+    assert first_event.metadata["calls"] + new == total
+    assert provider_cost(isolated_imx_home, app_id) == (round(0.0001 * total, 6), total)
+
+
+def test_a_submitted_run_records_its_provider_cost_before_the_submission(
+    isolated_imx_home, fictional_candidate
+):
+    # The terminal submission outcome releases the claim, so the cost is recorded first.
+    jev = ScriptedJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES)
+    prepared = _dynamic_runner(isolated_imx_home, fictional_candidate,
+                               Script(pages=[_page(_residence_form())]), jev)
+    runner = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptedFactory(Script(pages=[_page(_residence_form())])),
+        candidates=Candidates(fictional_candidate), resolver=prepared.resolver,
+        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=False)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.SUBMITTED
+    [event] = _provider_events(isolated_imx_home, result.application_id)
+    assert event.metadata["calls"] == len(jev.requests) >= 2
+    assert result.message == ("Submitted; the site confirmed it. Receipt saved."
+                              + _cost_suffix(event.metadata))
+    with _store(isolated_imx_home) as store:
+        events = store.list_events(result.application_id)
+    submitting = next(e for e in events if e.to_state is S.SUBMITTING)
+    assert event.sequence < submitting.sequence
+
+
+def test_a_duplicate_found_after_provider_calls_still_records_the_cost(
+    isolated_imx_home, fictional_candidate
+):
+    first = asyncio.run(_runner(isolated_imx_home, fictional_candidate, Script(),
+                                prepare_only=True).apply(URL, candidate_id="c1"))
+    # Step 1 carries no job identity, so it is routed (Jev calls) before step 2 shows the
+    # identity the first application already holds.
+    script = Script(pages=[_page(_residence_form(final=False), identity=None)],
+                    advance=[NavigationResult(advanced=True, inspection=_page(_form(step=1)))])
+    jev = ScriptedJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES)
+    runner = _dynamic_runner(isolated_imx_home, fictional_candidate, script, jev)
+    result = asyncio.run(runner.apply(URL + "?source=fictional-board", candidate_id="c1"))
+    assert result.application_id != first.application_id and jev.requests
+    [event] = _provider_events(isolated_imx_home, result.application_id)
+    assert event.metadata["calls"] == len(jev.requests)
+    assert result.message == (f"This job already has application {first.application_id}; "
+                              "not applying twice." + _cost_suffix(event.metadata))

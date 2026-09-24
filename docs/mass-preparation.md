@@ -219,6 +219,11 @@ Everything lives under `$IMX_HOME/batches/<batch id>/` (directory `0700`, files 
     card, `--no-sync-closed` was given, or the card was already in Closed.
   - `closed_sync_reason`: why the card was not moved, when `closed_synced` is
     `false`.
+  - `provider_cost_usd` and `provider_calls`: the application's known AI provider
+    cost (USD) and number of provider calls so far, summed over every
+    `provider.budget` event the runner recorded for it. They are read from the state
+    database after the job finishes. `null` when no provider was used, for example
+    without `--ai-routing`, or on lines written before these fields existed.
 - `summary.json`: totals by outcome, a backend × outcome table, median and p95 job
   duration, the most frequent missing questions and reasons, application ids by
   outcome, the counts of rows skipped as already settled or for an invalid URL, and
@@ -229,6 +234,16 @@ Everything lives under `$IMX_HOME/batches/<batch id>/` (directory `0700`, files 
   the end of every run of the batch. The same summary is printed as Markdown (or
   JSON with `--json`); the Markdown has a `pipeline cards` line only when some row
   has a card.
+
+`interviewmaxxing batch-report` adds a "Provider cost" section when rows carry a cost:
+the known total over the rows (each listing once, at its latest line with a cost, so a
+retry that crashed before an application id was known does not drop it), the calls,
+and the cost per prepared application (total divided by prepared rows). Its JSON
+has `provider_cost_usd`, `provider_calls`, `provider_cost_rows` and
+`cost_per_prepared_usd`. Costs a provider did not report are not included, so the
+total is a lower bound when some calls had none; the runner's `provider.budget` event
+counts them as `unknown_cost_calls`. A job that timed out or crashed records no event
+for its unfinished run.
 
 Evidence for each application (screenshots of the filled steps and of the review
 page) is under `$IMX_HOME/artifacts/APP/`, as for a single `apply`.

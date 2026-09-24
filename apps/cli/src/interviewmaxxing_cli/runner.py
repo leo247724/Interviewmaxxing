@@ -131,6 +131,9 @@ INPUT_EVENT = "input.received"
 REJECTION_EVENT = "validation.rejected"
 """Emitted by the runner (``append_event``) when a step it acted on comes back with
 field validation messages: a rejection epoch for those questions."""
+PROVIDER_EVENT = "provider.budget"
+"""Emitted by the runner once per run when its resolver used AI providers: calls, known
+cost, unknown-cost calls and latency, in total and by purpose (``provider_usage``)."""
 SUGGESTION_EVENT = "field.suggestion_chosen"
 """Emitted by the runner when the resolver chose one of a lookup's site suggestions:
 the question, the chosen label and the chooser's decision metadata. (The store
@@ -582,6 +585,13 @@ class _Run:
         self.chosen: dict[tuple[int, str, str], tuple[str, str]] = {}
         """Suggestions chosen in this run: question -> (typed text, chosen label). A
         re-resolved packet types the stored value again; the chosen label replaces it."""
+        mark = getattr(runner.resolver, "provider_mark", None)
+        self.provider_mark: int | None = mark() if callable(mark) else None
+        """Where this run's unrecorded provider receipts start (None: the resolver uses no
+        provider)."""
+        self.provider_total: dict[str, Any] = {"calls": 0, "known_cost_usd": 0.0,
+                                               "unknown_cost_calls": 0}
+        """The provider usage this run recorded, for its outcome message."""
 
     @property
     def app_id(self) -> str:
@@ -634,8 +644,36 @@ class _Run:
         if self.app().state is not state:
             self.store.transition(self.claim, state, **kwargs)
 
+    def _provider_cost(self) -> str:
+        """Record this run's provider usage not recorded yet (``provider.budget``) while the
+        claim is still held, and return the run's recorded total for the outcome message
+        ("" without provider calls). A run usually records one event, when it stops or before
+        a submit. Two moments that can end it without holding the claim record what came
+        before them in their own event: a first job-identity binding (it may be a duplicate)
+        and a submit (the site may show the form again, and the run continues)."""
+        usage_of = getattr(self.runner.resolver, "provider_usage", None)
+        mark_of = getattr(self.runner.resolver, "provider_mark", None)
+        if self.provider_mark is not None and callable(usage_of) and callable(mark_of):
+            usage = usage_of(self.provider_mark)
+            if usage.get("calls"):
+                try:
+                    self.store.append_event(self.claim, PROVIDER_EVENT, usage)
+                except Exception:  # a lost claim is reported by what follows
+                    pass
+                else:
+                    self.provider_mark = mark_of()
+                    for key in self.provider_total:
+                        self.provider_total[key] += usage[key]
+        total = self.provider_total
+        if not total["calls"]:
+            return ""
+        unknown = total["unknown_cost_calls"]
+        return (f" Provider cost: USD {total['known_cost_usd']:.4f} for {total['calls']} call(s)"
+                + (f", {unknown} without a reported cost" if unknown else "") + ".")
+
     def _stop(self, state: ApplicationState, message: str, *, reason: str | None = None,
               missing: Sequence[MissingInput] = ()) -> _Stop:
+        cost = self._provider_cost()
         current = self.app().state
         if current is S.NEEDS_INPUT and state is not S.NEEDS_INPUT:
             self._to(S.INSPECTING)  # NEEDS_INPUT only leaves through a fresh inspection
@@ -651,7 +689,7 @@ class _Run:
                 self.store.transition(self.claim, state, failure_reason=message)
         elif state is S.DUPLICATE:
             self.store.transition(self.claim, S.DUPLICATE, reason=message)
-        return _Stop(_outcome(self.store, self.app_id, message, missing))
+        return _Stop(_outcome(self.store, self.app_id, message + cost, missing))
 
     # main loop -----------------------------------------------------------------------------
 
@@ -680,7 +718,8 @@ class _Run:
             if self.app().state in PRE_SUBMISSION_STATES:
                 return self._stop(S.FAILED_RETRYABLE, f"Stopped by a browser error ({detail}). "
                                   "Nothing was submitted; resume to retry.").outcome
-            return _outcome(self.store, self.app_id, f"Stopped by an error: {detail}")
+            return _outcome(self.store, self.app_id,
+                            f"Stopped by an error: {detail}" + self._provider_cost())
 
     async def _step(self, page: PageInspection) -> PageInspection:
         kind = page.kind
@@ -709,6 +748,10 @@ class _Run:
                                  "link and resume; nothing was submitted.")
         if page.job_identity is None:
             return
+        if self.store.get_job(self.app().job_id).identity_key != page.job_identity.identity_key:
+            # A first binding can find the job already applied to (DUPLICATE releases the
+            # claim), so the provider usage so far is recorded while the claim is held.
+            self._provider_cost()
         try:
             result = self.store.bind_job_identity(self.claim, page.job_identity)
         except IdentityConflict as exc:
@@ -716,7 +759,7 @@ class _Run:
         if result.duplicate_of is not None:
             raise _Stop(_outcome(self.store, self.app_id,
                                  f"This job already has application {result.duplicate_of}; "
-                                 "not applying twice."))
+                                 "not applying twice." + self._provider_cost()))
 
     async def _verify_expected_page(self) -> None:
         """Recheck a pinned selection after waits/fills, immediately before acting.
@@ -1088,6 +1131,7 @@ class _Run:
         if has_expected_job:
             await self.interaction.progress("Submitting the application")
             await self._verify_expected_page()
+        cost = self._provider_cost()  # a terminal submission outcome releases the claim
         attempt = self.store.begin_submission(self.claim, packet_id=packet.id)
         try:
             if not has_expected_job:
@@ -1107,14 +1151,16 @@ class _Run:
         app = self.store.record_submission_outcome(self.claim, attempt.id, observation)
         if app.state is S.SUBMITTED:
             raise _Stop(_outcome(self.store, self.app_id, "Submitted; the site confirmed it. "
-                                                          "Receipt saved."))
+                                                          "Receipt saved." + cost))
         if app.state is S.SUBMISSION_UNKNOWN:
             raise _Stop(_outcome(self.store, self.app_id,
                                  "The submit may have reached the employer, but no confirmation "
-                                 "tied to this job was seen. It will not be retried; reconcile it."))
+                                 "tied to this job was seen. It will not be retried; reconcile it."
+                                 + cost))
         if app.state in (S.FAILED_RETRYABLE, S.FAILED_PERMANENT):
             raise _Stop(_outcome(self.store, self.app_id,
-                                 f"Not submitted: {app.failure_reason or observation.detail}"))
+                                 f"Not submitted: {app.failure_reason or observation.detail}"
+                                 + cost))
         # FILLING or NEEDS_INPUT: the site showed the form again (definitely not received).
         page = await self.browser.inspect()
         if (app.state is S.NEEDS_INPUT and page.kind is PageKind.APPLICATION_FORM
@@ -1177,6 +1223,7 @@ class NoninteractiveInteraction:
 
 __all__ = [
     "NEEDS_INPUT_EVENT",
+    "PROVIDER_EVENT",
     "REJECTION_EVENT",
     "SUGGESTION_EVENT",
     "LocalApplicationRunner",
