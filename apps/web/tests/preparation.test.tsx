@@ -13,11 +13,14 @@ import {
   preparationOf,
   reviewDisplay,
   reviewOf,
+  reviewPageAddress,
   reviewSummary,
   sourceLabel,
+  withoutVersionedFields,
 } from "@/lib/preparation";
+import { isPrepared as isPreparedCard } from "@/lib/pipeline/prepared";
 import { PREPARED_PREVIEW_ID, PreviewApplicationService } from "@/lib/service/preview";
-import type { ApplicationView, InputRequestView, ReviewAnswerView } from "@/lib/service/types";
+import type { ApplicationView, InputRequestView, PreparationView, ReviewAnswerView } from "@/lib/service/types";
 import { PREPARED_HEADLINE, describe as describeState, railIndex, railStatuses } from "@/lib/state";
 
 const actions: DeskActions = {
@@ -302,5 +305,131 @@ describe("preparation helpers", () => {
     expect(reviewDisplay({ control: "file", value: "cv.pdf" })).toEqual({ kind: "file", name: "cv.pdf" });
     expect(reviewDisplay({ control: "text", value: "  " })).toEqual({ kind: "blank" });
     expect(reviewDisplay({ control: "multi_select", value: [] })).toEqual({ kind: "blank" });
+  });
+});
+
+describe("the strict prepared check (WP11 M7)", () => {
+  const malformed: unknown[] = [
+    {},
+    { ready: true },
+    { submitted: false },
+    { ready: true, submitted: true },
+    { ready: "true", submitted: false },
+    { ready: 1, submitted: 0 },
+    "prepared",
+  ];
+
+  it("counts only ready: true with submitted: false, on the desk and the board alike", async () => {
+    const view = await preparedView();
+    expect(isPrepared(view)).toBe(true);
+    expect(isPreparedCard(view)).toBe(true);
+    for (const preparation of malformed) {
+      const odd = { ...view, preparation: preparation as PreparationView };
+      expect(isPrepared(odd)).toBe(false);
+      expect(isPreparedCard(odd)).toBe(false);
+      expect(preparationOf(odd)).toBeNull();
+      expect(describeState(odd).headline).not.toBe(PREPARED_HEADLINE);
+    }
+  });
+
+  it("never says 'Prepared for your review — nothing submitted' for a malformed preparation", async () => {
+    const view = await preparedView();
+    for (const preparation of [{}, { ...view.preparation!, submitted: true }]) {
+      const html = workspace({ ...view, preparation: preparation as unknown as PreparationView });
+      expect(text(html)).not.toContain(PREPARED_HEADLINE);
+      expect(html).not.toContain("prepared__evidence");
+      expect(text(html)).toContain("Waiting for you");
+    }
+  });
+});
+
+describe("the final review page address (WP11 L8)", () => {
+  it("keeps the scheme, host and path only", () => {
+    expect(reviewPageAddress("https://jobs.example.test/fictional/apply/review?draft=tok_123&step=3#top")).toBe(
+      "https://jobs.example.test/fictional/apply/review",
+    );
+    expect(reviewPageAddress("http://avery:secret@127.0.0.1:9/apply/review?session=abc")).toBe("http://127.0.0.1:9/apply/review");
+    expect(reviewPageAddress("javascript:alert(1)")).toBeNull();
+    expect(reviewPageAddress("not an address")).toBeNull();
+    expect(reviewPageAddress(null)).toBeNull();
+  });
+
+  it("shows no draft token on the prepared panel", async () => {
+    const view = await preparedView();
+    const tokened = {
+      ...view,
+      preparation: {
+        ...view.preparation!,
+        formUrl: "https://jobs.example.test/northwind/apply/review?draft=tok_fictional#page-3",
+      },
+    };
+    const html = renderToStaticMarkup(<PreparedPanel view={tokened} actions={actions} />);
+    expect(text(html)).toContain("Final review page https://jobs.example.test/northwind/apply/review");
+    expect(html).not.toContain("tok_fictional");
+    expect(html).not.toContain("page-3");
+  });
+});
+
+describe("an unknown presentation version (WP11 M8)", () => {
+  const unknown = { version: "3", supported: false };
+
+  function render(view: ApplicationView, presentation = unknown) {
+    return renderToStaticMarkup(
+      <ApplicationWorkspace
+        view={presentation.supported ? view : withoutVersionedFields(view)}
+        presentation={presentation}
+        mode="live"
+        profile={profile}
+        actions={actions}
+        actionError={null}
+        lostContact={null}
+      />,
+    );
+  }
+
+  it("shows a prepared stop as the generic pause, with a visible notice and no review list", async () => {
+    const html = render(await preparedView());
+    const visible = text(html);
+    expect(html).toContain('data-testid="presentation-notice"');
+    expect(visible).toContain("presentation version 3");
+    expect(visible).toContain("Waiting for you");
+    expect(visible).not.toContain(PREPARED_HEADLINE);
+    expect(html).not.toContain("prepared__evidence");
+    expect(visible).not.toContain("What the desk entered");
+  });
+
+  it("asks a lookup question as a plain question", async () => {
+    const view: ApplicationView = {
+      ...(await preparedView()),
+      preparation: null,
+      review: [],
+      needs: {
+        ...QUESTIONS,
+        questions: [
+          {
+            ...QUESTIONS.questions[0],
+            id: "q_city",
+            label: "City",
+            control: "single_select",
+            options: [
+              { value: "Portland, OR, USA", label: "Portland, OR, USA" },
+              { value: "Portland, ME, USA", label: "Portland, ME, USA" },
+            ],
+            lookup: true,
+          },
+        ],
+      },
+    };
+    expect(render(view, { version: "2", supported: true })).toContain("Enter a different value…");
+    const plain = render(view);
+    expect(plain).not.toContain("Enter a different value…");
+    expect(text(plain)).toContain("Portland, OR, USA");
+  });
+
+  it("changes nothing for a version this dashboard reads", async () => {
+    const view = await preparedView();
+    const html = render(view, { version: "2", supported: true });
+    expect(text(html)).toContain(PREPARED_HEADLINE);
+    expect(html).not.toContain("presentation-notice");
   });
 });

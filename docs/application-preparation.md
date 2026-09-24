@@ -76,8 +76,9 @@ asserts these boundaries against the localhost mock ATS.
 The dashboard presents a prepared application as a review, not as a request for
 input. The application desk headlines it "Prepared for your review — nothing
 submitted" and shows the screenshot the preparing run saved of the filled review
-page, the answers that were filled in (question, value, where each came from and how
-confident the resolver was), and a CAPTCHA note when one must be solved in the browser
+page, the answers that were filled in on every page, including pages filled before a
+question round (question, value, where each came from and how confident the resolver
+was), and a CAPTCHA note when one must be solved in the browser
 before the form can be submitted. The questions form appears only when questions
 remain. Packets keep field ids rather than wording, so a question without recorded
 wording is named by its kind ("Email", "Work authorization"); the screenshot shows the
@@ -88,8 +89,11 @@ to it, and cards saved with the same application URL, as the store normalizes it
 applications prepared by `prepare-batch` are found too. **Review** opens the
 application on the desk. A lookup question lists the site's suggestions in a menu,
 with "Enter a different value…" for anything else; the chosen text is typed into the
-site's search box exactly. The service side is `ApplicationView.preparation`, `review`
-and `GET /applications` (presentation version 2, `apps/service/README.md`).
+site's search box exactly. The final review page's address is shown without its query or
+fragment, which can hold a draft token. The service side is
+`ApplicationView.preparation`, `review` and `GET /applications` (presentation version
+2, `apps/service/README.md`); facing a service whose presentation version it doesn't
+know, the dashboard turns these views off and says so.
 
 The runner can explicitly enable Jev routing and the grounded Opus writer through
 the CLI or service settings in [dynamic-runtime.md](dynamic-runtime.md). Backend

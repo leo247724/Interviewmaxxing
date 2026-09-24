@@ -22,7 +22,8 @@ import { ServiceNotice } from "./ServiceNotice";
 import { RestoreNotice } from "./RestoreNotice";
 import { AppShell, type Connection } from "./shell/AppShell";
 import { takeHandoff, applicationLinks, type DeskHandoff } from "@/lib/handoff";
-import { executionProblem } from "@/lib/service/readiness";
+import { executionProblem, presentationSupport } from "@/lib/service/readiness";
+import { withoutVersionedFields } from "@/lib/preparation";
 import { useReadiness } from "./useReadiness";
 
 const EMPTY_PROFILE: CandidateProfileInput = {
@@ -48,6 +49,8 @@ export interface DeskActions {
 
 export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "preview"; initialScenario?: string }) {
   const { readiness, refresh: refreshReadiness } = useReadiness(mode);
+  // The preview is presentation version 2; a live service says which version it speaks.
+  const presentation = presentationSupport(mode === "live" ? readiness : null);
   const service = useMemo<ApplicationService>(
     () =>
       mode === "preview"
@@ -411,7 +414,8 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
     >
       {view ? (
         <ApplicationWorkspace
-          view={view}
+          view={presentation.supported ? view : withoutVersionedFields(view)}
+          presentation={presentation}
           mode={mode}
           profile={profile}
           actions={actions}

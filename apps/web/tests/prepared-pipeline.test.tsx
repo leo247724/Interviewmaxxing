@@ -3,9 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { EntryBadges } from "@/components/pipeline/Badges";
 import { EntryCard } from "@/components/pipeline/EntryCard";
 import {
+  CLOSED_LANE,
   focusCounts,
   isPrepared,
   listedApplications,
+  markableApplications,
   loadApplicationSummaries,
   preparedByEntry,
   preparedLabel,
@@ -269,5 +271,43 @@ describe("preview fixtures", () => {
     const summaryView = prepared.get("pipe_pv_northwind")!;
     expect(summaryView.id).toBe("pv_prepared_northwind");
     expect(preparedLabel(summaryView)).toBe("Prepared for review · CAPTCHA to solve");
+  });
+});
+
+describe("closed cards (WP11 L10)", () => {
+  it("never marks a card in the Closed lane or offers it for review", () => {
+    const closedLinked = entry("closed_linked", { lane: CLOSED_LANE, application: linked("app_closed", "NEEDS_INPUT") });
+    const closedByUrl = entry("closed_url", { lane: "closed" });
+    const saved = entry("saved_url");
+    const applied = entry("applied_url", { lane: "applied" });
+    const summaries = [
+      summary("app_closed", { pipelineEntryIds: ["closed_linked"] }),
+      summary("app_url", { pipelineEntryIds: ["closed_url", "saved_url", "applied_url"] }),
+    ];
+    const map = preparedByEntry([closedLinked, closedByUrl, saved, applied], summaries);
+    expect([...map.keys()]).toEqual(["saved_url", "applied_url"]);
+    expect(focusCounts([closedLinked, closedByUrl, saved, applied], { prepared: map, upcoming: noUpcoming }).prepared).toBe(2);
+    const card = renderToStaticMarkup(
+      <EntryCard entry={closedLinked} lanes={PREVIEW_LANES} busy={false} onOpen={() => {}} onMove={() => {}} onApply={() => {}} prepared={map.get("closed_linked") ?? null} />,
+    );
+    expect(card).not.toContain("Prepared for review");
+    expect(card).not.toContain("chip-button--review");
+  });
+});
+
+describe("an unknown presentation version (WP11 M8)", () => {
+  const unknown = { version: "3", supported: false };
+  const known = { version: "2", supported: true };
+
+  it("marks no card and says why in one quiet line", () => {
+    const card = entry("linked", { application: linked("app_linked", "NEEDS_INPUT") });
+    const listed = [summary("app_linked")];
+    expect(preparedByEntry([card], markableApplications(listed, unknown)).size).toBe(0);
+    expect(preparedByEntry([card], markableApplications(listed, known)).size).toBe(1);
+    expect(preparedListNote(null, unknown)).toBe(
+      "This service reports applications in a format this dashboard doesn't read (presentation version 3), so none are marked prepared.",
+    );
+    expect(preparedListNote(null, known)).toBeNull();
+    expect(preparedListNote(new ServiceError("not_found", "No such route."), known)).toContain("doesn't report prepared");
   });
 });

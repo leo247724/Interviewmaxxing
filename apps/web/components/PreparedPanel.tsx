@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { ApplicationView } from "@/lib/service/types";
-import { preparationOf, reviewOf } from "@/lib/preparation";
+import { preparationOf, reviewOf, reviewPageAddress } from "@/lib/preparation";
 import type { DeskActions } from "./ApplicationDesk";
 import { EvidenceList } from "./Evidence";
 import { QuestionsForm } from "./QuestionsForm";
@@ -18,6 +18,8 @@ export function PreparedPanel({ view, actions }: { view: ApplicationView; action
   const preparation = preparationOf(view);
   if (!preparation) return null;
   const questions = view.needs?.kind === "questions" ? view.needs : null;
+  const evidence = Array.isArray(preparation.evidence) ? preparation.evidence : [];
+  const address = reviewPageAddress(preparation.formUrl);
 
   return (
     <div className="panel prepared">
@@ -26,7 +28,7 @@ export function PreparedPanel({ view, actions }: { view: ApplicationView; action
         <strong>Nothing was submitted</strong>: the site hasn&rsquo;t received this application.
       </p>
 
-      {preparation.captchaPending && (
+      {preparation.captchaPending === true && (
         <div className="notice notice--captcha" data-testid="captcha-note">
           <p className="notice__title">A CAPTCHA is waiting on the form</p>
           <p>
@@ -39,8 +41,8 @@ export function PreparedPanel({ view, actions }: { view: ApplicationView; action
       {questions && <QuestionsForm key={view.id} needs={questions} actions={actions} />}
 
       <div className="prepared__evidence">
-        {preparation.evidence.length > 0 ? (
-          <EvidenceList items={preparation.evidence} title="The filled review page" />
+        {evidence.length > 0 ? (
+          <EvidenceList items={evidence} title="The filled review page" />
         ) : (
           <p className="field__hint">The service saved no screenshot of the review page.</p>
         )}
@@ -48,10 +50,10 @@ export function PreparedPanel({ view, actions }: { view: ApplicationView; action
 
       <ReviewList items={reviewOf(view)} />
 
-      {preparation.formUrl && (
+      {address && (
         <p className="panel__where">
           <span className="panel__where-label">Final review page</span>
-          <span className="mono">{preparation.formUrl}</span>
+          <span className="mono">{address}</span>
         </p>
       )}
 

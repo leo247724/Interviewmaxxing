@@ -1,5 +1,6 @@
 import type {
   AnswerValue,
+  ApplicationState,
   ApplicationView,
   PreparationView,
   QuestionOption,
@@ -13,15 +14,28 @@ import type {
  * review step, nothing submitted) and for site lookup questions.
  */
 
-type PreparedFields = Pick<ApplicationView, "state"> & Partial<Pick<ApplicationView, "preparation">>;
+type PreparedFields = { state: ApplicationState; preparation?: PreparationView | null };
+
+/**
+ * A preparation as the service sends it for a prepared stop: `ready` exactly true
+ * and `submitted` exactly false. Anything else (`{}`, `submitted: true`,
+ * `ready: "true"`) is not one.
+ */
+export function isReadyPreparation(preparation: unknown): preparation is PreparationView {
+  if (typeof preparation !== "object" || preparation === null) return false;
+  const { ready, submitted } = preparation as { ready?: unknown; submitted?: unknown };
+  return ready === true && submitted === false;
+}
 
 /**
  * A prepared application: every page was filled and the run stopped at the
- * site's final review step without submitting. Services before presentation
- * version 2 omit `preparation`, which counts as not prepared.
+ * site's final review step without submitting (NEEDS_INPUT with a ready,
+ * unsubmitted preparation). The desk and the pipeline share this one check.
+ * Services before presentation version 2 omit `preparation`, which counts as
+ * not prepared.
  */
 export function isPrepared(view: PreparedFields): boolean {
-  return view.state === "NEEDS_INPUT" && Boolean(view.preparation);
+  return view.state === "NEEDS_INPUT" && isReadyPreparation(view.preparation);
 }
 
 export function preparationOf(view: PreparedFields): PreparationView | null {
@@ -31,6 +45,36 @@ export function preparationOf(view: PreparedFields): PreparationView | null {
 /** Answers the service filled in; older services omit the list. */
 export function reviewOf(view: Partial<Pick<ApplicationView, "review">>): ReviewAnswerView[] {
   return Array.isArray(view.review) ? view.review : [];
+}
+
+/**
+ * Scheme, host and path of the final review page. Its query and fragment can hold
+ * per-session draft tokens, so they are never shown, nor is a user name or
+ * password; null for anything that isn't an http(s) address.
+ */
+export function reviewPageAddress(formUrl: unknown): string | null {
+  if (typeof formUrl !== "string" || formUrl.trim() === "") return null;
+  try {
+    const url = new URL(formUrl.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The view without what presentation version 2 added (`preparation`, `review` and
+ * lookup questions), for a service whose presentation version this dashboard
+ * doesn't read. A prepared stop then shows as the generic pause and a lookup as a
+ * plain question, instead of a meaning the service may have changed.
+ */
+export function withoutVersionedFields(view: ApplicationView): ApplicationView {
+  const needs =
+    view.needs?.kind === "questions"
+      ? { ...view.needs, questions: view.needs.questions.map((question) => ({ ...question, lookup: false })) }
+      : view.needs;
+  return { ...view, needs, preparation: null, review: [] };
 }
 
 // ---- Review list ----

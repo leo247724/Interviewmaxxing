@@ -726,6 +726,11 @@ The local service (`interviewmaxxing_service`) maps canonical store state to the
 - `RequiredQuestionView.lookup` marks a `TYPEAHEAD` question; its `options` are the site's suggestions (value equals label), and any other non-blank text is also a valid answer (`answers.py` turns both into a `TextValue`).
 - `GET /applications` → `ApplicationListView` of `ApplicationSummaryView {id, state, applicationUrl, job, requestedAt, updatedAt, preparation, pipelineEntryIds}`, most recently updated first. `pipelineEntryIds` are cards linked to the application plus unlinked cards whose URL `ApplicationStore.find_application` resolves to it; they drive the dashboard's Prepared badge and filter only.
 
+**Clarifications within presentation version 2 (2026-09-24, WP11).** No field changed meaning, so the version stays `2`.
+- `preparation.formUrl` is the final review page's scheme, host and path. Its query and fragment, where sites keep per-session draft tokens, and any user name or password are dropped, in `GET /applications` too.
+- `review` of a prepared stop covers the preparing attempt: the latest packet of each step from the last REQUESTED, FAILED_* or DUPLICATE transition to `preparation.ready`, through question stops (the resumed run carries on in the draft the site kept), up to the final step. `preparation.evidence` stays the preparing run's own.
+- The dashboard reads `presentationVersion` (majors 1 and 2). For a major version it doesn't know, it turns off `preparation`, `review` and `lookup` (a prepared stop shows as the generic pause) and the board's Prepared marks, and says so.
+
 ## Change requests
 
 Send the coordinator: the contract/type, the exact field or signature change, why the current contract cannot express it, and which tests/fixtures demonstrate it. Additive optional fields are cheap; renames, removed fields, and state-machine changes require coordinator approval and a `CONTRACT_VERSION` bump.

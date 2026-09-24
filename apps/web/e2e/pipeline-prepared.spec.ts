@@ -272,4 +272,49 @@ test.describe("prepared applications in the live pipeline (routed fixtures)", ()
     expect(await page.evaluate(() => sessionStorage.getItem("imx.activeApplicationId"))).toBe(PREPARED_ID);
     expect(mutations).toEqual([]);
   });
+
+  test("a service with an unknown presentation version marks nothing, and the desk shows a plain pause", async ({ page }) => {
+    await page.route("**/api/imx/healthz", (route) =>
+      route.fulfill({
+        json: { status: "ok", executor: "idle", runner: "available", applicationMode: "TEST_ONLY", presentationVersion: "3" },
+      }),
+    );
+    await page.route("**/api/imx/pipeline", (route) =>
+      route.fulfill({ json: { lanes: LANES, entries: [liveEntry("pipe_live_prepared", "Fictional Harbor Co")] } }),
+    );
+    await page.route("**/api/imx/applications", (route) =>
+      route.fulfill({
+        json: {
+          applications: [
+            {
+              id: PREPARED_ID,
+              state: "NEEDS_INPUT",
+              applicationUrl: preparedView.applicationUrl,
+              job,
+              requestedAt: preparedView.requestedAt,
+              updatedAt: preparedView.updatedAt,
+              preparation,
+              pipelineEntryIds: ["pipe_live_prepared"],
+            },
+          ],
+        },
+      }),
+    );
+    await page.route("**/api/imx/applications/*", (route) => route.fulfill({ json: preparedView }));
+    await page.route("**/api/imx/candidate", (route) => route.fulfill({ json: candidate }));
+
+    await page.goto("/pipeline");
+    await expect(page.getByText(/presentation version 3\), so none are marked prepared/)).toBeVisible();
+    await expect(page.locator(".mark--prepared")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Review/ })).toHaveCount(0);
+    await expect(focusButton(page)).toContainText("0");
+
+    await page.evaluate((id) => sessionStorage.setItem("imx.activeApplicationId", id), PREPARED_ID);
+    await page.goto("/");
+    await expect(page.getByTestId("presentation-notice")).toContainText("presentation version 3");
+    await expect(page.locator("#case-title")).toHaveText("Waiting for you");
+    await expect(page.getByRole("region", { name: "What the desk entered" })).toHaveCount(0);
+    await expect(page.getByTestId("captcha-note")).toHaveCount(0);
+    await expect(page.locator(".prepared__evidence")).toHaveCount(0);
+  });
 });

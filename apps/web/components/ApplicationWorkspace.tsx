@@ -6,6 +6,7 @@ import { describe, isActive, type Mood } from "@/lib/state";
 import { isPrepared, preparationOf } from "@/lib/preparation";
 import { receiptAuthority } from "@/lib/receipt";
 import { formatDateTime } from "@/lib/format";
+import type { PresentationSupport } from "@/lib/service/readiness";
 import type { DeskActions } from "./ApplicationDesk";
 import { ProgressRail } from "./ProgressRail";
 import { Timeline } from "./Timeline";
@@ -33,6 +34,7 @@ export function ApplicationWorkspace({
   actions,
   actionError,
   lostContact,
+  presentation,
 }: {
   view: ApplicationView;
   mode: "live" | "preview";
@@ -40,6 +42,8 @@ export function ApplicationWorkspace({
   actions: DeskActions;
   actionError: string | null;
   lostContact: string | null;
+  /** The service's presentation version; unsupported shows why the prepared views are off. */
+  presentation?: PresentationSupport;
 }) {
   const { headline, mood } = describe(view);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -116,6 +120,18 @@ export function ApplicationWorkspace({
           </p>
         )}
 
+        {presentation && !presentation.supported && (
+          <div className="notice" role="status" data-testid="presentation-notice">
+            <p className="notice__title">Parts of this page are turned off</p>
+            <p>
+              The application service reports presentation version {presentation.version}, which this dashboard
+              doesn&rsquo;t read. Prepared reviews, the answers the desk entered and lookup suggestions are turned off
+              instead of being shown with a meaning that may have changed, so a paused application shows only as
+              paused. Update the dashboard to see them.
+            </p>
+          </div>
+        )}
+
         <StateBody view={view} mode={mode} actions={actions} />
 
         <p className="case__as">
@@ -156,7 +172,13 @@ function StateStamp({ view, mood }: { view: ApplicationView; mood: Mood }) {
       return <Stamp tone="failure" word="Not sent" date={view.updatedAt} />;
     case "NEEDS_INPUT": {
       const preparation = preparationOf(view);
-      return preparation ? <Stamp tone="neutral" word="Prepared" date={preparation.preparedAt} /> : null;
+      return preparation ? (
+        <Stamp
+          tone="neutral"
+          word="Prepared"
+          date={typeof preparation.preparedAt === "string" ? preparation.preparedAt : view.updatedAt}
+        />
+      ) : null;
     }
     default:
       return mood === "working" ? <span className="working-line" aria-hidden="true" /> : null;

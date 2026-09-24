@@ -30,6 +30,8 @@ from interviewmaxxing_core import (
     ResumeArtifact,
     SavedAnswer,
     SemanticType,
+    SubmissionObservation,
+    SubmissionOutcome,
     TextValue,
     UserInput,
 )
@@ -71,8 +73,10 @@ QUESTIONS_PAGE = make_form(QUESTIONS_URL, 1, [
     make_field("fld_rv_cover", "Cover letter", T.TEXTAREA, SemanticType.COVER_LETTER),
     make_field("fld_rv_why", "Why do you want to join Fictional Co?", T.TEXTAREA,
                SemanticType.CUSTOM_TEXT, required=True, help_text="A few sentences are enough."),
-    # A text area: since f850949 a single-line field cannot hold a line break.
-    make_field("fld_rv_summary", "Summarize a recent campaign", T.TEXTAREA, SemanticType.CUSTOM_TEXT),
+    # A text area (a single-line field refuses a typed line break, f850949) that is never
+    # asked, so only its line break makes it long text.
+    make_field("fld_rv_summary", "Summarize a recent campaign", T.TEXTAREA,
+               SemanticType.CUSTOM_TEXT),
     make_field("fld_rv_story", "Tell us a short story", T.TEXT, SemanticType.CUSTOM_LONG_TEXT),
     make_field("fld_rv_hobby", "What do you do outside work?", T.TEXTAREA,
                SemanticType.CUSTOM_TEXT),
@@ -416,9 +420,25 @@ def test_review_takes_the_latest_packet_of_each_step_of_the_run(
     ]
 
 
-def test_review_ignores_packets_of_earlier_runs(served: Harness, scenario: Scenario) -> None:
+def answer_the_motto(h: Harness, scenario: Scenario, app_id: str) -> None:
+    [motto_question] = view(h, app_id)["needs"]["questions"]
+    saved = h.client.post(f"/applications/{app_id}/answers", {
+        "answers": {motto_question["id"]: "Calm is fast."}, "attestations": {},
+    })
+    assert saved.status == 200 and saved.json["needs"]["errors"] == {}, saved.json
+    resume(h, scenario, app_id)
+
+
+def test_review_keeps_pages_filled_before_a_question_round(
+    served: Harness, scenario: Scenario
+) -> None:
+    """Page 1 is filled, the run stops for a page-2 question, and the resumed run carries
+    on in the draft the site kept, from page 2. The site still holds page 1's answers, so
+    the review lists them (WP11 M5); the evidence is still the preparing run's only."""
+
     def asks(ctx: RunContext) -> None:
         ctx.fill(STEP0, [first_name("Avery")])
+        ctx.screenshot("question-1.png", "page 2 when the run stopped for a question")
         ctx.ask(STEP1, [city("Austin, TX, USA")], [question(STEP1, "fld_rs_motto")])
 
     def resumes_on_page_two(ctx: RunContext) -> None:
@@ -432,16 +452,74 @@ def test_review_ignores_packets_of_earlier_runs(served: Harness, scenario: Scena
     started = served.start()
     app_id = str(started.json["id"])
     scenario.settle(served)
-    [motto_question] = view(served, app_id)["needs"]["questions"]
-    saved = served.client.post(f"/applications/{app_id}/answers", {
-        "answers": {motto_question["id"]: "Calm is fast."}, "attestations": {},
-    })
-    assert saved.status == 200 and saved.json["needs"]["errors"] == {}, saved.json
+    answer_the_motto(served, scenario, app_id)
+    body = view(served, app_id)
+    assert body["preparation"] is not None
+    assert pages_and_values(body["review"]) == [
+        (1, "Avery"), (2, "Austin, TX, USA"), (2, "Calm is fast."), (3, "avery@example.test"),
+    ]
+    [question_shot] = scenario.contexts[0].evidence
+    [review_shot] = scenario.contexts[1].evidence
+    assert [e["href"] for e in body["preparation"]["evidence"]] == [
+        f"/api/imx/applications/{app_id}/evidence/{review_shot.id}"
+    ]
+    assert question_shot.id not in str(body["preparation"])
+
+
+def test_review_starts_over_after_a_failure(served: Harness, scenario: Scenario) -> None:
+    """A failed run is a new start: its pages are not part of the prepared form's review."""
+
+    def fails_on_page_two(ctx: RunContext) -> None:
+        ctx.fill(STEP0, [first_name("Ashley")])
+        ctx.fail("Stopped by a fictional browser error on page 2.")
+
+    def retries_from_page_two(ctx: RunContext) -> None:
+        ctx.fill(STEP1, [city("Austin, TX, USA"), motto("Calm is fast.")])
+        ctx.prepare(STEP2, ctx.fill(STEP2, [email()]))
+
+    scenario.then(fails_on_page_two, retries_from_page_two)
+    started = served.start()
+    app_id = str(started.json["id"])
+    scenario.settle(served)
+    assert view(served, app_id)["state"] == "FAILED_RETRYABLE"
     resume(served, scenario, app_id)
     body = view(served, app_id)
     assert body["preparation"] is not None
     assert pages_and_values(body["review"]) == [
         (2, "Austin, TX, USA"), (2, "Calm is fast."), (3, "avery@example.test"),
+    ]
+
+
+def test_review_leaves_out_pages_after_the_final_step(served: Harness, scenario: Scenario) -> None:
+    """An earlier round saw a longer form; the prepared form ends at page 2, so the
+    earlier round's page 3 is not a page of it."""
+    short_final = make_form(QUESTIONS_URL, 1, list(STEP1.fields), final=True)
+    step1_open = make_form(QUESTIONS_URL, 1, list(STEP1.fields), final=False)
+
+    def asks_on_page_three(ctx: RunContext) -> None:
+        ctx.fill(STEP0, [first_name("Avery")])
+        ctx.fill(step1_open, [city("Austin, TX, USA"), motto("Calm is fast.")])
+        ctx.ask(STEP2, [], [question(STEP2, "fld_rs_email")])
+
+    def prepares_two_pages(ctx: RunContext) -> None:
+        ctx.fill(STEP0, [first_name("Avery")])
+        packet = ctx.fill(short_final, [city("Austin, TX, USA"), motto("Calm is fast.")])
+        ctx.prepare(short_final, packet)
+
+    scenario.then(asks_on_page_three, prepares_two_pages)
+    started = served.start()
+    app_id = str(started.json["id"])
+    scenario.settle(served)
+    [email_question] = view(served, app_id)["needs"]["questions"]
+    saved = served.client.post(f"/applications/{app_id}/answers", {
+        "answers": {email_question["id"]: "avery@example.test"}, "attestations": {},
+    })
+    assert saved.status == 200 and saved.json["needs"]["errors"] == {}, saved.json
+    resume(served, scenario, app_id)
+    body = view(served, app_id)
+    assert body["preparation"]["formStep"] == 1
+    assert pages_and_values(body["review"]) == [
+        (1, "Avery"), (2, "Austin, TX, USA"), (2, "Calm is fast."),
     ]
 
 
@@ -620,3 +698,122 @@ def test_recorded_wording_belongs_to_its_own_page(served: Harness, scenario: Sce
         (1, "Are you willing to relocate to Austin, TX?", True, "Yes"),
         (2, "Question on the form", False, "6"),
     ]
+
+
+# --- the profile is read only when a review needs saved-answer wording (WP11 L9) -----------------
+
+
+class CountingCandidates(FakeCandidates):
+    """``FakeCandidates`` whose profile reads (the service's ``profile_loader``) are counted."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.profile_reads = 0
+        self.fail_next_read = False
+
+    def profile(self, candidate_id: str) -> CandidateProfile | None:
+        self.profile_reads += 1
+        if self.fail_next_read:
+            self.fail_next_read = False
+            raise OSError("the fictional profile file is unreadable")
+        return self.profiles.get(candidate_id)
+
+
+@pytest.fixture
+def counted(
+    isolated_imx_home: LocalPaths, fictional_site: FictionalSite, tmp_path: Path
+) -> Iterator[tuple[Harness, CountingCandidates]]:
+    candidates = CountingCandidates(tmp_path / "private-profile")
+    with serve(isolated_imx_home, fictional_site, candidates) as h:
+        yield h, candidates
+
+
+SCHOOL = SavedAnswer(id="sa_rw_school", scope=AnswerScope.GLOBAL,
+                     semantic_type=SemanticType.UNIVERSITY, question="Where did you study?",
+                     value="Fictional State University", confirmed_at=NOW)
+
+
+def school_answer(form: ApplicationForm) -> PacketAnswer:
+    return answer(form, "fld_rw_school", TextValue(text="Fictional State University"),
+                  ST.SAVED_ANSWER, ["sa_rw_school"])
+
+
+def test_saved_wording_is_read_once_per_application_version(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with seeded(h, SEED_URL) as ctx:
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+        app_id = ctx.app_id
+    for _ in range(3):  # the desk's status reads
+        [item] = view(h, app_id)["review"]
+        assert wording(item) == ("Where did you study?", True)
+    assert candidates.profile_reads == 1
+
+    with seeded(h, SEED_URL) as ctx:  # Prepare again: a new application version
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+    view(h, app_id)
+    view(h, app_id)
+    assert candidates.profile_reads == 2
+
+
+def test_recorded_wording_never_reads_the_profile(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with seeded(h, SEED_URL) as ctx:
+        ctx.ask(form, [], [question(form, "fld_rw_school")])  # the site's wording is recorded
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+        app_id = ctx.app_id
+    [item] = view(h, app_id)["review"]
+    assert wording(item) == ("University attended", True)
+    assert candidates.profile_reads == 0
+
+
+def test_a_submitted_application_reads_saved_wording_once(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with h.store() as store:
+        app = store.record_request(h.paths.candidate_id, SEED_URL).application
+        claim = store.claim(app.id, "fictional-seed")
+        try:
+            ctx = RunContext(store=store, claim=claim, paths=h.paths,
+                             interaction=ServiceInteraction(allow_browser_action=False), index=1)
+            packet = ctx.fill(form, [school_answer(form)])
+            attempt = store.begin_submission(claim, packet_id=packet.id)
+            store.record_submission_outcome(claim, attempt.id, SubmissionObservation(
+                outcome=SubmissionOutcome.ACCEPTED, signals=["heading 'Application received'"],
+                confirmation_reference="FIC-000011", evidence=[],
+            ))
+        finally:
+            store.release(claim)
+    for _ in range(3):
+        body = view(h, app.id)
+    assert body["state"] == "SUBMITTED"
+    assert wording(body["review"][0]) == ("Where did you study?", True)
+    assert candidates.profile_reads == 1
+
+
+def test_a_failed_profile_read_is_tried_again(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with seeded(h, SEED_URL) as ctx:
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+        app_id = ctx.app_id
+    candidates.fail_next_read = True
+    [item] = view(h, app_id)["review"]
+    assert wording(item) == ("School", False)  # the plain name, not an error
+    [item] = view(h, app_id)["review"]
+    assert wording(item) == ("Where did you study?", True)
+    view(h, app_id)
+    assert candidates.profile_reads == 2
