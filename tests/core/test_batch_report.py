@@ -106,10 +106,11 @@ def entry(batch_id: str, listing: str, outcome: str, *, minute: float, duration:
     finished = T0 + timedelta(minutes=minute)
     missing = list(items)
     fields.setdefault("state", STATES.get(outcome))
+    fields.setdefault("message", SECRET)
     return LedgerEntry(
         batch_id=batch_id, listing_id=listing, company="Brambleway", title="Fictional role",
         application_url=f"{ORIGIN}/{listing}", backend=backend, status="resolved",
-        attempt=attempt, application_id=app, outcome=outcome, message=SECRET,
+        attempt=attempt, application_id=app, outcome=outcome,
         missing_items=missing, missing_reasons=sorted({i.reason for i in missing}),
         missing_labels=[i.label for i in missing],
         started_at=finished - timedelta(seconds=duration), finished_at=finished,
@@ -584,7 +585,8 @@ def test_list_batches_and_empty_reports_create_nothing(tmp_path):
         "holds": [], "pipeline": {"rows_with_card": 0, "linked": 0, "not_linked": 0,
                                   "closed_moved": 0, "closed_skipped": 0, "problems": []},
         "provider_cost_usd": None, "provider_calls": 0, "provider_cost_rows": 0,
-        "cost_per_prepared_usd": None,
+        "cost_per_prepared_usd": None, "since": None, "questions": [], "fill_failures": [],
+        "backends": [], "ledger_lines_ignored": 0,
     }
     assert f"No batch ledgers under {batches_dir}." in text
 
@@ -643,9 +645,9 @@ def test_batch_report_parser():
     parser = build_parser()
     args = parser.parse_args(["batch-report", "b1", "--top", "3", "--json"])
     assert args.command == "batch-report" and args.top == 3 and args.json is True
-    assert "b1" in vars(args).values()
+    assert args.batch_ids == ["b1"] and args.since is None
     defaults = parser.parse_args(["batch-report"])
-    assert defaults.top == 10 and not defaults.json
+    assert defaults.top == 10 and not defaults.json and defaults.batch_ids == []
     for bad in ("0", "101", "ten"):
         with pytest.raises(SystemExit) as exc:
             parser.parse_args(["batch-report", "--top", bad])
@@ -786,3 +788,317 @@ def test_a_crashed_retry_keeps_the_listings_earlier_cost(paths):
     assert report.rows == 1 and report.totals == {"error": 1}
     assert (report.provider_cost_usd, report.provider_calls, report.provider_cost_rows,
             report.cost_per_prepared_usd) == (0.07, 2, 1, None)
+
+
+# --- questions grouped by wording (WP9) -------------------------------------------------------
+
+HOME_CLI = ["interviewmaxxing", "--home", "/tmp/fictional home"]
+"""The command prefix of a report made with ``--home '/tmp/fictional home'``."""
+QUESTION_KEYS = frozenset({
+    "question", "holds", "applications", "backends", "reason", "reasons", "semantic_type",
+    "control_type", "category", "sample_application_id", "field_id", "answer", "act",
+    "application_ids",
+})
+FAILURE_KEYS = frozenset({
+    "kind", "status", "detail", "failures", "applications", "backends", "sample_application_id",
+    "labels", "application_ids",
+})
+BACKEND_KEYS = frozenset({
+    "backend", "applications", "prepared", "needs_input", "failed", "closed", "no_form",
+    "other", "prepared_rate", "median_duration_s", "provider_cost_usd",
+})
+
+
+def held(label: str, field_id: str | None, reason: str = "NO_ANSWER", control: str | None = None,
+         semantic: str | None = None) -> MissingItem:
+    return MissingItem(label=label, reason=reason, control_type=control, field_id=field_id,
+                       semantic_type=semantic)
+
+
+def write_questions(paths: LocalPaths) -> None:
+    write(paths,
+          entry(B1, "g1", "needs_input", minute=1, duration=10.0, app="app_one", items=[
+              held(SPONSOR, "question_11", "EXPLICIT_ANSWER_REQUIRED", "SELECT", "SPONSORSHIP"),
+              held("Sign in", None, "USER_ACTION")]),
+          entry(B1, "g2", "needs_input", minute=2, duration=10.0, app="app_two", backend="lever",
+                items=[held("do you require VISA sponsorship", "cards[abc][field0]",
+                            "EXPLICIT_ANSWER_REQUIRED", "RADIO", "UNKNOWN"),
+                       held(WIDGET, "start", "UNSUPPORTED_CONTROL", "UNSUPPORTED")]))
+    write(paths,
+          entry(B2, "g3", "needs_input", minute=3, duration=10.0, app="app_three", items=[
+              held("Do you require visa sponsorship? *", "question_31", "AMBIGUOUS", "SELECT",
+                   "SPONSORSHIP"),
+              held(CITY, "city", "NO_ANSWER", "TYPEAHEAD", "CITY")]))
+
+
+def test_questions_are_grouped_by_wording_with_the_line_that_answers_them(paths):
+    write_questions(paths)
+    report = build_report(paths, cli=HOME_CLI)
+    assert [q.model_dump() for q in report.questions] == [
+        {"question": SPONSOR, "holds": 3, "applications": 3, "backends": ["greenhouse", "lever"],
+         "reason": "EXPLICIT_ANSWER_REQUIRED",
+         "reasons": {"EXPLICIT_ANSWER_REQUIRED": 2, "AMBIGUOUS": 1},
+         "semantic_type": "SPONSORSHIP", "control_type": "SELECT", "category": "explicit_answer",
+         # The untyped sample saves an untyped global answer, which every field with this
+         # wording can use, whatever its semantic type.
+         "sample_application_id": "app_two", "field_id": "cards[abc][field0]",
+         "answer": "interviewmaxxing --home '/tmp/fictional home' answer app_two --set "
+                   "'cards[abc][field0]=VALUE' --reuse global",
+         "act": None, "application_ids": ["app_one", "app_two", "app_three"]},
+        {"question": "Sign in", "holds": 1, "applications": 1, "backends": ["greenhouse"],
+         "reason": "USER_ACTION", "reasons": {"USER_ACTION": 1}, "semantic_type": None,
+         "control_type": None, "category": "other", "sample_application_id": "app_one",
+         "field_id": None, "answer": None,
+         "act": "interviewmaxxing --home '/tmp/fictional home' resume app_one --act",
+         "application_ids": ["app_one"]},
+        {"question": WIDGET, "holds": 1, "applications": 1, "backends": ["lever"],
+         "reason": "UNSUPPORTED_CONTROL", "reasons": {"UNSUPPORTED_CONTROL": 1},
+         "semantic_type": None, "control_type": "UNSUPPORTED", "category": "custom_control",
+         "sample_application_id": "app_two", "field_id": "start", "answer": None,
+         "act": "interviewmaxxing --home '/tmp/fictional home' resume app_two --act",
+         "application_ids": ["app_two"]},
+        {"question": CITY, "holds": 1, "applications": 1, "backends": ["greenhouse"],
+         "reason": "NO_ANSWER", "reasons": {"NO_ANSWER": 1}, "semantic_type": "CITY",
+         "control_type": "TYPEAHEAD", "category": "lookup", "sample_application_id": "app_three",
+         "field_id": "city",
+         "answer": "interviewmaxxing --home '/tmp/fictional home' answer app_three --set "
+                   "city=VALUE --reuse global",
+         "act": None, "application_ids": ["app_three"]},
+    ]
+    plain = build_report(paths, [B2])  # the default prefix, and one batch alone
+    assert [q.answer for q in plain.questions] == [
+        "interviewmaxxing answer app_three --set question_31=VALUE --reuse global",
+        "interviewmaxxing answer app_three --set city=VALUE --reuse global"]
+
+    text = render_report_markdown(report, top=2)
+    lines = text.splitlines()
+    assert "## Questions" in lines
+    assert ("| 1 | Do you require visa sponsorship? | 3 | 3 | EXPLICIT_ANSWER_REQUIRED | SELECT | "
+            "SPONSORSHIP | greenhouse, lever |") in lines
+    assert ("1. `interviewmaxxing --home '/tmp/fictional home' answer app_two --set "
+            "'cards[abc][field0]=VALUE' --reuse global`") in lines
+    assert ("2. `interviewmaxxing --home '/tmp/fictional home' resume app_one --act`  "
+            "(complete it in the browser window)") in lines
+    assert "... and 2 more question(s) (all are in --json)" in lines
+    assert "--set city=VALUE" not in text  # beyond --top 2
+    assert SECRET not in text and SECRET not in report.model_dump_json()
+
+
+def test_long_question_wording_is_cut_and_groups_by_the_ledger_cut(paths):
+    long_a = LONG + " (first fictional variant)"
+    long_b = LONG + " (second fictional variant, which the ledger's 120 characters hide)"
+    write(paths,
+          entry(B1, "long-a", "needs_input", minute=1, app="app_a", items=[
+              held(long_a[:119] + ELLIPSIS, "why", control="TEXTAREA")]),
+          entry(B1, "long-b", "needs_input", minute=2, app="app_b", items=[
+              held(long_b[:119] + ELLIPSIS, "why", control="TEXTAREA")]))
+    [group] = build_report(paths).questions
+    assert (group.question, group.holds, group.applications) == (LONG_SHOWN, 2, 2)
+
+
+def test_older_lines_take_field_ids_from_the_store(paths):
+    url = f"{ORIGIN}/older"
+    with ApplicationStore.open(paths.state_db) as store:
+        app = store.record_request("default", url).application
+        claim = store.claim(app.id, "test")
+        store.transition(claim, S.INSPECTING)
+        store.transition(claim, S.NEEDS_INPUT, metadata={"reason": "x", "missing_inputs": [
+            missing(url, "question_77", SPONSOR, MissingReason.EXPLICIT_ANSWER_REQUIRED,
+                    ControlType.SELECT).model_dump(mode="json"),
+            missing(url, "city_lookup", CITY, MissingReason.NO_ANSWER,
+                    ControlType.TYPEAHEAD).model_dump(mode="json")]})
+        store.release(claim)
+    # A line from before field ids (missing_items without them) and one from before
+    # missing_items (labels and reasons only), both for the same stored application.
+    write(paths, entry(B1, "older", "needs_input", minute=1, app=app.id, items=[
+        item(SPONSOR, "EXPLICIT_ANSWER_REQUIRED", "SELECT")]))
+    append_old_line(paths, B2, "oldest", minute=2, app=app.id,
+                    reasons=["EXPLICIT_ANSWER_REQUIRED", "NO_ANSWER"], labels=[SPONSOR, CITY])
+    by_question = {q.question: q for q in build_report(paths, [B1]).questions}
+    assert by_question[SPONSOR].answer == \
+        f"interviewmaxxing answer {app.id} --set question_77=VALUE --reuse global"
+    by_question = {q.question: q for q in build_report(paths, [B2]).questions}
+    assert by_question[CITY].answer == \
+        f"interviewmaxxing answer {app.id} --set city_lookup=VALUE --reuse global"
+    assert by_question[CITY].control_type == "TYPEAHEAD"
+    without_store = LocalPaths.from_env({}, home=paths.home.parent / "no-store")
+    write(without_store, entry(B1, "older", "needs_input", minute=1, app="app_gone", items=[
+        item(SPONSOR, "EXPLICIT_ANSWER_REQUIRED", "SELECT")]))
+    [group] = build_report(without_store).questions
+    assert (group.sample_application_id, group.field_id, group.answer, group.act) == \
+        ("app_gone", None, None, None)
+    assert ("1. no field id recorded; `status app_gone` shows the question and its field id"
+            in render_report_markdown(build_report(without_store)).splitlines())
+
+
+# --- fill failures (WP9) ----------------------------------------------------------------------
+
+NOTICE = "What is your notice period?"
+
+
+def failed(store: ApplicationStore, url: str, reason: str, fields: Any = None) -> str:
+    app = store.record_request("default", url).application
+    claim = store.claim(app.id, "test")
+    store.transition(claim, S.INSPECTING)
+    metadata = {} if fields is None else {"failed_fields": fields}
+    store.transition(claim, S.FAILED_RETRYABLE, failure_reason=reason, metadata=metadata)
+    store.release(claim)
+    return app.id
+
+
+def test_fill_failures_are_grouped_by_failed_field_detail(paths, clock):
+    mismatch = {"field_id": "notice", "label": NOTICE, "status": "VERIFICATION_MISMATCH"}
+    with ApplicationStore.open(paths.state_db, clock=clock) as store:  # 2026-09-22, before T0
+        one = failed(store, f"{ORIGIN}/f1", "Could not fill notice, city reliably; nothing was "
+                     "submitted.", [mismatch | {"detail": "read back 'One month' instead of "
+                                                          "'Two weeks'"},
+                                    {"field_id": "city", "label": CITY, "status": "FAILED",
+                                     "detail": "no option matched \"Austin, TX\""}])
+        two = failed(store, f"{ORIGIN}/f2", "Could not fill notice reliably.",
+                     [mismatch | {"detail": "read back 'Three months' instead of 'Two weeks'"}])
+        timeout = ("Stopped by a browser error (TimeoutError: Timeout 30000ms exceeded.). "
+                   "Nothing was submitted; resume to retry.")
+        three = failed(store, f"{ORIGIN}/f3", timeout, "not a list")
+        four = failed(store, f"{ORIGIN}/f4", timeout.replace("30000", "45000"),
+                      ["not an object", {"status": "FAILED"}])
+        five = failed(store, f"{ORIGIN}/f5", "First failure.", [mismatch | {"detail": "first"}])
+        clock.advance(days=3)  # after the ledger lines: a later run's failure is not theirs
+        claim = store.claim(five, "test")
+        store.transition(claim, S.INSPECTING)
+        store.transition(claim, S.FAILED_RETRYABLE, failure_reason="Later failure.",
+                         metadata={"failed_fields": [mismatch | {"detail": "later"}]})
+        store.release(claim)
+    write(paths,
+          *(entry(B1, f"f{n}", "failed_retryable", minute=n, duration=5.0, app=app)
+            for n, app in enumerate((one, two, three, four, five), 1)),
+          entry(B1, "f6", "failed_retryable", minute=6, duration=5.0, app="app_not_stored",
+                backend="lever", message="Could not fill email for avery@example.test "
+                "reliably; nothing was submitted. Provider cost: USD 0.0100 for 2 call(s)."),
+          entry(B1, "e1", "error", minute=7, duration=900.0,
+                message="timed out after 900 s; the run was stopped (SIGTERM); nothing was "
+                        "submitted"),
+          entry(B1, "e2", "error", minute=8, duration=1.0,
+                message="Traceback: /Users/fictional/private/path.py line 1"))
+    report = build_report(paths)
+    groups = [(g.kind, g.status, g.detail, g.failures, g.applications, g.labels)
+              for g in report.fill_failures]
+    assert groups == [
+        ("field", "VERIFICATION_MISMATCH", "read back '…' instead of '…'", 2, 2, [NOTICE]),
+        ("run", None, "Stopped by a browser error (TimeoutError: Timeout #ms exceeded.). Nothing "
+                      "was submitted; resume to retry.", 2, 2, []),
+        ("field", "FAILED", "no option matched '…'", 1, 1, [CITY]),
+        ("field", "VERIFICATION_MISMATCH", "first", 1, 1, [NOTICE]),
+        ("run", None, "Could not fill email for <email> reliably; nothing was submitted.", 1, 1,
+         []),
+        ("error", None, "timed out; the job was stopped", 1, 0, []),
+        ("error", None, "the CLI printed no readable outcome", 1, 0, []),
+    ]
+    first = report.fill_failures[0]
+    assert (first.sample_application_id, first.application_ids, first.backends) == \
+        (one, [one, two], ["greenhouse"])
+    text = render_report_markdown(report)
+    assert "## Fill failures" in text.splitlines()
+    for private in ("One month", "Three months", "Austin", "avery@example.test", "fictional/private",
+                    "Later failure", "Provider cost", "30000"):
+        assert private not in text and private not in report.model_dump_json(), private
+
+
+# --- per-backend readiness (WP9) -------------------------------------------------------------
+
+
+def test_backend_readiness_table(paths):
+    write(paths,
+          entry(B1, "r1", "prepared", minute=1, duration=10.0, app="a1", provider_cost_usd=0.01,
+                provider_calls=1),
+          entry(B1, "r2", "prepared", minute=2, duration=20.0, app="a2", provider_cost_usd=0.03,
+                provider_calls=2),
+          entry(B1, "r3", "needs_input", minute=3, duration=30.0, app="a3"),
+          entry(B1, "r4", "failed_retryable", minute=4, duration=5.0, app="a4",
+                message="Could not reach the application form: the page is UNKNOWN, not an "
+                        "application form."),
+          entry(B1, "r5", "failed_retryable", minute=5, duration=7.0, app="a5",
+                message="Could not fill resume reliably; nothing was submitted."),
+          entry(B1, "r6", "error", minute=6, duration=900.0,
+                message="timed out after 900 s; the run was stopped (SIGTERM); nothing was "
+                        "submitted"),
+          entry(B1, "r7", "closed", minute=7, duration=3.0, app="a7"),
+          entry(B1, "r8", "duplicate", minute=8, duration=4.0, app="a8"),
+          entry(B1, "r9", "already_recorded", minute=9, app="a9"),
+          entry(B1, "l1", "needs_input", minute=10, duration=12.0, app="b1", backend="lever"))
+    report = build_report(paths)
+    assert [b.model_dump() for b in report.backends] == [
+        {"backend": "greenhouse", "applications": 9, "prepared": 2, "needs_input": 1,
+         "failed": 2, "closed": 1, "no_form": 1, "other": 2, "prepared_rate": 0.286,
+         "median_duration_s": 8.5, "provider_cost_usd": 0.04},
+        {"backend": "lever", "applications": 1, "prepared": 0, "needs_input": 1, "failed": 0,
+         "closed": 0, "no_form": 0, "other": 0, "prepared_rate": 0.0,
+         "median_duration_s": 12.0, "provider_cost_usd": None},
+    ]
+    lines = render_report_markdown(report).splitlines()
+    assert "## Backend readiness" in lines
+    assert "| greenhouse | 9 | 2 | 1 | 2 | 1 | 1 | 2 | 29% | 8.5 | 0.0400 |" in lines
+    assert "| lever | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0% | 12.0 | - |" in lines
+
+
+# --- several batches, --since and the JSON schema (WP9) --------------------------------------
+
+
+def write_three_batches(paths: LocalPaths) -> None:
+    write(paths, entry(B1, "x1", "prepared", minute=1, duration=5.0, app="app_x1"),
+          entry(B2, "x2", "needs_input", minute=1500, duration=5.0, app="app_x2",
+                items=[held(SPONSOR, "q", "EXPLICIT_ANSWER_REQUIRED", "SELECT")]),
+          entry(B3, "x3", "failed_retryable", minute=2900, duration=5.0, app="app_x3"),
+          entry(B3, "x1", "needs_input", minute=2901, duration=5.0, app="app_x1", attempt=2))
+
+
+def test_several_batches_or_since_combine_ledgers(paths, capsys):
+    write_three_batches(paths)
+    both = build_report(paths, [B3, B1])
+    assert both.batches == [B1, B3] and both.rows == 2 and both.totals == {
+        "needs_input": 1, "failed_retryable": 1}  # x1's latest line is B3's
+    since = build_report(paths, since=datetime(2026, 9, 24, tzinfo=UTC))
+    assert since.batches == [B2, B3] and since.rows == 3
+    assert since.since == datetime(2026, 9, 24, tzinfo=UTC)
+    naive = build_report(paths, since=datetime(2026, 9, 25))  # read as UTC
+    assert naive.batches == [B3]
+    assert build_report(paths, since=datetime(2031, 1, 1, tzinfo=UTC)).batches == []
+
+    home = str(paths.home)
+    assert main(["--home", home, "batch-report", B1, B3, "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["batches"] == [B1, B3]
+    assert main(["--home", home, "batch-report", "--since", "2026-09-24", "--json"]) == EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    assert data["batches"] == [B2, B3] and data["since"].startswith("2026-09-24T00:00:00")
+    assert main(["--home", home, "batch-report", "--since", "2026-09-25T00:30:00+02:00",
+                 "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["batches"] == [B3]
+    assert main(["--home", home, "batch-report", "--since", "2031-01-01"]) == EXIT_OK
+    assert "with a line finished since 2031-01-01" in capsys.readouterr().out
+    assert main(["--home", home, "batch-report", B1, "--since", "2026-09-24"]) == EXIT_USAGE
+    assert "not both" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        main(["--home", home, "batch-report", "--since", "yesterday"])
+    assert exc.value.code == EXIT_USAGE
+    assert main(["--home", home, "batch-report", B1, "nope"]) == EXIT_ERROR
+
+
+def test_report_json_schema(paths, capsys):
+    write_questions(paths)
+    write_three_batches(paths)
+    write(paths, entry(B1, "fx", "failed_retryable", minute=9, duration=2.0, app="app_fx",
+                       message="Could not reach the application form: HTTP 403."))
+    assert main(["--home", str(paths.home), "batch-report", "--json"]) == EXIT_OK
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert set(data) == set(BatchReport.model_fields) >= REPORT_KEYS | {
+        "since", "questions", "fill_failures", "backends", "ledger_lines_ignored"}
+    assert data["questions"] and all(set(q) == QUESTION_KEYS for q in data["questions"])
+    assert data["fill_failures"] and all(set(f) == FAILURE_KEYS for f in data["fill_failures"])
+    assert data["backends"] and all(set(b) == BACKEND_KEYS for b in data["backends"])
+    assert BatchReport.model_validate_json(out).model_dump(mode="json") == data
+    schema = BatchReport.model_json_schema()
+    assert set(schema["properties"]) == set(data)
+    definitions = schema["$defs"]
+    for name, keys in (("HoldGroup", QUESTION_KEYS), ("FailureGroup", FAILURE_KEYS),
+                       ("BackendReadiness", BACKEND_KEYS)):
+        assert set(definitions[name]["properties"]) == keys, name
