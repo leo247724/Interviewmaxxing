@@ -224,7 +224,10 @@ export interface PreparationView {
   ready: true;
   /** 0-based index of the final form step as recorded (page `formStep + 1`). */
   formStep: number | null;
-  /** Address of the final review page. */
+  /**
+   * The final review page's scheme, host and path. The service drops the query and
+   * fragment (sites keep per-session draft tokens there); the desk shows it the same way.
+   */
   formUrl: string | null;
   /** An embedded CAPTCHA must be solved in the browser before the form can be submitted. */
   captchaPending: boolean;

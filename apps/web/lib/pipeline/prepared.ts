@@ -1,4 +1,6 @@
+import { isPrepared } from "../preparation";
 import { asServiceError, type ServiceError } from "../service/errors";
+import type { PresentationSupport } from "../service/readiness";
 import type { ApplicationListView, ApplicationService, ApplicationSummaryView } from "../service/types";
 import type { PipelineEntryView } from "./types";
 
@@ -12,16 +14,24 @@ import type { PipelineEntryView } from "./types";
 /** Card id -> the prepared application it points at. */
 export type PreparedByEntry = ReadonlyMap<string, ApplicationSummaryView>;
 
-/** A prepared stop: NEEDS_INPUT with a ready, unsubmitted preparation. */
-export function isPrepared(summary: Pick<ApplicationSummaryView, "state" | "preparation">): boolean {
-  const preparation = summary.preparation;
-  return (
-    summary.state === "NEEDS_INPUT" &&
-    typeof preparation === "object" &&
-    preparation !== null &&
-    preparation.ready === true &&
-    preparation.submitted === false
-  );
+/** A prepared stop: NEEDS_INPUT with a ready, unsubmitted preparation, the desk's own check. */
+export { isPrepared };
+
+/**
+ * The Closed lane of the default board (ended, withdrawn or declined). A card there
+ * is never marked prepared or offered for review, whatever its application's state.
+ */
+export const CLOSED_LANE = "closed";
+
+/**
+ * The summaries the board may mark cards from: none when the service reports a
+ * presentation version this dashboard doesn't read.
+ */
+export function markableApplications(
+  applications: readonly ApplicationSummaryView[],
+  presentation: PresentationSupport,
+): readonly ApplicationSummaryView[] {
+  return presentation.supported ? applications : [];
 }
 
 /**
@@ -52,8 +62,14 @@ export async function loadApplicationSummaries(
   }
 }
 
-/** One quiet line for the board when the list couldn't be read; never an alarm. */
-export function preparedListNote(error: ServiceError | null): string | null {
+/**
+ * One quiet line for the board when the list couldn't be read or can't be trusted
+ * (a presentation version this dashboard doesn't read); never an alarm.
+ */
+export function preparedListNote(error: ServiceError | null, presentation?: PresentationSupport): string | null {
+  if (presentation && !presentation.supported) {
+    return `This service reports applications in a format this dashboard doesn't read (presentation version ${presentation.version}), so none are marked prepared.`;
+  }
   if (!error) return null;
   return error.code === "not_found"
     ? "This service doesn't report prepared applications yet, so none are marked."
@@ -65,7 +81,8 @@ export function preparedListNote(error: ServiceError | null): string | null {
  * it is linked to the prepared application or is listed in its `pipelineEntryIds`
  * (the service lists linked cards and unlinked cards whose application link
  * resolves to it). The card's own linked application wins when both apply. A
- * card linked to a submitted application keeps its receipt and is never marked.
+ * card linked to a submitted application keeps its receipt and is never marked,
+ * and neither is a card in the Closed lane.
  */
 export function preparedByEntry(
   entries: readonly PipelineEntryView[],
@@ -76,7 +93,7 @@ export function preparedByEntry(
   if (prepared.length === 0) return found;
   const byId = new Map(prepared.map((summary) => [summary.id, summary]));
   for (const entry of entries) {
-    if (entry.application?.state === "SUBMITTED") continue;
+    if (entry.lane === CLOSED_LANE || entry.application?.state === "SUBMITTED") continue;
     const summary =
       (entry.application ? byId.get(entry.application.applicationId) : undefined) ??
       // The service lists the most recently updated first.

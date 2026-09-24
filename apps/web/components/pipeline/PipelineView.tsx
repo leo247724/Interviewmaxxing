@@ -9,6 +9,7 @@ import { compensationSummary } from "@/lib/pipeline/fields";
 import {
   focusCounts,
   loadApplicationSummaries,
+  markableApplications,
   preparedByEntry,
   preparedListNote,
   visibleEntries,
@@ -16,6 +17,7 @@ import {
 } from "@/lib/pipeline/prepared";
 import { asServiceError, type ServiceError } from "@/lib/service/errors";
 import { HttpApplicationService } from "@/lib/service/http";
+import { presentationSupport } from "@/lib/service/readiness";
 import { PreviewApplicationService } from "@/lib/service/preview";
 import type { ApplicationService, ApplicationSummaryView } from "@/lib/service/types";
 import { writeHandoff } from "@/lib/handoff";
@@ -194,14 +196,19 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
   }
 
   const entries = useMemo(() => board?.entries ?? [], [board]);
-  const prepared = useMemo(() => preparedByEntry(entries, summaries), [entries, summaries]);
+  // A live service whose presentation version this dashboard doesn't read marks nothing.
+  const presentation = presentationSupport(mode === "live" ? readiness : null);
+  const prepared = useMemo(
+    () => preparedByEntry(entries, markableApplications(summaries, presentation)),
+    [entries, summaries, presentation.supported], // only `supported` changes the marks
+  );
   const todayCT = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const upcoming = (entry: PipelineEntryView) => Boolean(entry.fields.nextInterviewDate && entry.fields.nextInterviewDate >= todayCT);
   const focusContext = { prepared, upcoming };
   const counts = focusCounts(entries, focusContext);
   const query = filter.trim().toLowerCase();
   const visible = visibleEntries(entries, query, focus, focusContext);
-  const listNote = preparedListNote(listError);
+  const listNote = preparedListNote(listError, presentation);
   const editing =
     dialog?.kind === "edit" || dialog?.kind === "apply" ? entries.find((item) => item.id === dialog.entryId) : null;
 

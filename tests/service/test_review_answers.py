@@ -30,6 +30,8 @@ from interviewmaxxing_core import (
     ResumeArtifact,
     SavedAnswer,
     SemanticType,
+    SubmissionObservation,
+    SubmissionOutcome,
     TextValue,
     UserInput,
 )
@@ -696,3 +698,122 @@ def test_recorded_wording_belongs_to_its_own_page(served: Harness, scenario: Sce
         (1, "Are you willing to relocate to Austin, TX?", True, "Yes"),
         (2, "Question on the form", False, "6"),
     ]
+
+
+# --- the profile is read only when a review needs saved-answer wording (WP11 L9) -----------------
+
+
+class CountingCandidates(FakeCandidates):
+    """``FakeCandidates`` whose profile reads (the service's ``profile_loader``) are counted."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.profile_reads = 0
+        self.fail_next_read = False
+
+    def profile(self, candidate_id: str) -> CandidateProfile | None:
+        self.profile_reads += 1
+        if self.fail_next_read:
+            self.fail_next_read = False
+            raise OSError("the fictional profile file is unreadable")
+        return self.profiles.get(candidate_id)
+
+
+@pytest.fixture
+def counted(
+    isolated_imx_home: LocalPaths, fictional_site: FictionalSite, tmp_path: Path
+) -> Iterator[tuple[Harness, CountingCandidates]]:
+    candidates = CountingCandidates(tmp_path / "private-profile")
+    with serve(isolated_imx_home, fictional_site, candidates) as h:
+        yield h, candidates
+
+
+SCHOOL = SavedAnswer(id="sa_rw_school", scope=AnswerScope.GLOBAL,
+                     semantic_type=SemanticType.UNIVERSITY, question="Where did you study?",
+                     value="Fictional State University", confirmed_at=NOW)
+
+
+def school_answer(form: ApplicationForm) -> PacketAnswer:
+    return answer(form, "fld_rw_school", TextValue(text="Fictional State University"),
+                  ST.SAVED_ANSWER, ["sa_rw_school"])
+
+
+def test_saved_wording_is_read_once_per_application_version(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with seeded(h, SEED_URL) as ctx:
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+        app_id = ctx.app_id
+    for _ in range(3):  # the desk's status reads
+        [item] = view(h, app_id)["review"]
+        assert wording(item) == ("Where did you study?", True)
+    assert candidates.profile_reads == 1
+
+    with seeded(h, SEED_URL) as ctx:  # Prepare again: a new application version
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+    view(h, app_id)
+    view(h, app_id)
+    assert candidates.profile_reads == 2
+
+
+def test_recorded_wording_never_reads_the_profile(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with seeded(h, SEED_URL) as ctx:
+        ctx.ask(form, [], [question(form, "fld_rw_school")])  # the site's wording is recorded
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+        app_id = ctx.app_id
+    [item] = view(h, app_id)["review"]
+    assert wording(item) == ("University attended", True)
+    assert candidates.profile_reads == 0
+
+
+def test_a_submitted_application_reads_saved_wording_once(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with h.store() as store:
+        app = store.record_request(h.paths.candidate_id, SEED_URL).application
+        claim = store.claim(app.id, "fictional-seed")
+        try:
+            ctx = RunContext(store=store, claim=claim, paths=h.paths,
+                             interaction=ServiceInteraction(allow_browser_action=False), index=1)
+            packet = ctx.fill(form, [school_answer(form)])
+            attempt = store.begin_submission(claim, packet_id=packet.id)
+            store.record_submission_outcome(claim, attempt.id, SubmissionObservation(
+                outcome=SubmissionOutcome.ACCEPTED, signals=["heading 'Application received'"],
+                confirmation_reference="FIC-000011", evidence=[],
+            ))
+        finally:
+            store.release(claim)
+    for _ in range(3):
+        body = view(h, app.id)
+    assert body["state"] == "SUBMITTED"
+    assert wording(body["review"][0]) == ("Where did you study?", True)
+    assert candidates.profile_reads == 1
+
+
+def test_a_failed_profile_read_is_tried_again(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    with seeded(h, SEED_URL) as ctx:
+        ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+        app_id = ctx.app_id
+    candidates.fail_next_read = True
+    [item] = view(h, app_id)["review"]
+    assert wording(item) == ("School", False)  # the plain name, not an error
+    [item] = view(h, app_id)["review"]
+    assert wording(item) == ("Where did you study?", True)
+    view(h, app_id)
+    assert candidates.profile_reads == 2

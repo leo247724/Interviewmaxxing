@@ -148,7 +148,7 @@ Preparation is the default mode (`docs/application-preparation.md`): a complete 
 preparation: {                 // null unless the latest stop is a prepared final review
   ready: true;
   formStep: number | null;     // 0-based final step as recorded (page formStep + 1)
-  formUrl: string | null;      // the final review page
+  formUrl: string | null;      // the final review page: scheme, host and path only
   captchaPending: boolean;     // an embedded CAPTCHA must be solved before submitting
   preparedAt: string;          // the preparation.ready event
   submitted: false;
@@ -163,12 +163,12 @@ review: {                      // filled answers in form order; [] before any pa
 }[];
 ```
 
-- **Prepared.** The state is `NEEDS_INPUT` and, walking back from the latest transition, a `preparation.ready` event comes before any transition other than the runner's own re-inspection (INSPECTING -> NEEDS_INPUT). A later stop for questions, sign-in or a failure is never shown as prepared. `captchaPending`, `formStep` and `formUrl` come from the event's metadata.
+- **Prepared.** The state is `NEEDS_INPUT` and, walking back from the latest transition, a `preparation.ready` event comes before any transition other than the runner's own re-inspection (INSPECTING -> NEEDS_INPUT). A later stop for questions, sign-in or a failure is never shown as prepared. `captchaPending`, `formStep` and `formUrl` come from the event's metadata; `formUrl` keeps only the scheme, host and path (`views.page_address`), because sites put per-session draft tokens in the query or fragment.
 - **`needs` of a prepared application** is `null`, or a `questions` need when the stop still records answerable questions. The earlier fallback (an `interaction` "VERIFICATION" need from the stop's reason) no longer applies to prepared stops. `resume` works as before: it re-prepares from the site, and submission stays disabled.
 - **Evidence.** Only evidence recorded by the preparing run (from the previous stop to `preparation.ready`) is listed, so screenshots of an earlier failed run are not shown as the prepared form.
-- **Review list.** For a prepared application it covers every step of the preparing run (the latest packet per form step, from its `packet.saved` events); otherwise the latest packet. `question` is the first line of recorded wording when there is one (`wordingRecorded: true`): the user's own answer's question, a question recorded for that step and field in any NEEDS_INPUT stop, or the question a used saved answer was saved for (read through the profile loader, not while the application is running). Otherwise it is a plain name for the question's semantic type ("Email", "Resume", "Work authorization", "Question on the form"), because packets keep field ids, not wording. Provenance ids, notes, field ids and artifact paths are never included.
+- **Review list.** For a prepared application it covers every step of the preparing attempt (`views.preparing_attempt`): the latest packet per form step from the `packet.saved` events after the last REQUESTED, FAILED_* or DUPLICATE transition, through question stops (a run resumed after the user answers carries on in the draft the site kept), up to the final step. Otherwise it is the latest packet. `question` is the first line of recorded wording when there is one (`wordingRecorded: true`): the user's own answer's question, a question recorded for that step and field in any NEEDS_INPUT stop, or the question a used saved answer was saved for (read through the profile loader only when a row has no other recorded wording, at most once per application version, and not while the application is running). Otherwise it is a plain name for the question's semantic type ("Email", "Resume", "Work authorization", "Question on the form"), because packets keep field ids, not wording. Provenance ids, notes, field ids and artifact paths are never included.
 - **Docket.** The stop after `preparation.ready` reads "Paused at the final review step for you to check." (`info`) instead of "Waiting for you."
-- **`GET /applications`** returns `{"applications": ApplicationSummaryView[]}` with `{id, state, applicationUrl, job, requestedAt, updatedAt, preparation, pipelineEntryIds}`. `pipelineEntryIds` are the candidate's pipeline cards linked to the application plus unlinked cards whose `applicationUrl` the store resolves to it (`find_application`: its own URL normalization and aliases). It only helps find prepared cards; it links nothing and never implies a receipt.
+- **`GET /applications`** returns `{"applications": ApplicationSummaryView[]}` with `{id, state, applicationUrl, job, requestedAt, updatedAt, preparation, pipelineEntryIds}`. `pipelineEntryIds` are the candidate's pipeline cards linked to the application plus unlinked cards whose `applicationUrl` the store resolves to it (`find_application`: its own URL normalization and aliases). It only helps find prepared cards; it links nothing and never implies a receipt. The list reads the store in one read-only snapshot with a fixed number of queries (`summaries.py`: the applications with their requests and jobs, the prepared stops with their runs' evidence, and one alias query for all unlinked cards), not each application's history.
 
 ### Application handoff links
 
@@ -465,9 +465,9 @@ uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/ser
 - `test_listing_aliases`: real J1 canonical merges preserve cards, decisions and pollable queued tasks, including handoff to the original card.
 - WP3 prepared reviews, over runs that record exactly what the I1 runner records (`preparation_support.py`):
   - `test_preparation_view`: the `preparation` object, `needs: null`, run-scoped evidence, the docket wording, and every stop that is not a preparation.
-  - `test_review_answers`: the review list across the pages of the preparing run, values, controls, sources, the wording rules, and no ids.
+  - `test_review_answers`: the review list across the pages of the preparing attempt (pages before a question round kept, a failure starting over, no page after the final step), values, controls, sources, the wording rules, when the profile is read, and no ids.
   - `test_lookup_questions`: suggestions offered as a select, free text accepted, blanks kept as drafts.
-  - `test_application_list`: `GET /applications` order, candidate scope and `pipelineEntryIds`.
+  - `test_application_list`: `GET /applications` order, candidate scope and `pipelineEntryIds`; on a fictional board of every shape (`board_support.py`, also a benchmark: `uv run --no-sync python tests/service/board_support.py`) each row equals its detail view, and the number of statements does not grow with the board.
 - `test_prepared_acceptance` (marked `slow`): the real runner prepares the mock's standard job through HTTP; the view is a review with a served screenshot and the saved answers' wording, and nothing is submitted.
 - `test_acceptance` (marked `slow`): HTTP → real I1 runner → headless Chromium → `scripts/mock_ats.py` in its own process, with a fictional profile in a temporary `IMX_HOME`. It covers:
   - receipt, server-side acceptance count, uploaded file digest and a repeat request;
