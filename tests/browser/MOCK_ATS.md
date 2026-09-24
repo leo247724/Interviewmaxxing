@@ -60,7 +60,8 @@ finally:
 
 Each scenario is a job at `/jobs/<job_id>`, with the form at `/jobs/<job_id>/apply`.
 `GET /__test__/jobs` returns this catalog with every field's name, label, kind,
-required flag and option `value`/`label` pairs.
+required flag and option `value`/`label` pairs, and each job's flags (such as
+`fixture_identity`).
 
 | Job id | Title (Job ID) | Behavior |
 | --- | --- | --- |
@@ -87,6 +88,10 @@ required flag and option `value`/`label` pairs.
 | `workable-like` | Demand Generation Manager (BWA-WK-127) | Workable-style. An intl-tel-input 18 phone with `separateDialCode`: `div.iti__selected-flag[role=combobox][aria-haspopup=listbox][aria-label="Telephone country code"][title=<country>]` shows the code only in `div.iti__selected-dial-code` ("+1"). Typing "+1…" takes the code out of the input, leaving the national digits; "+44…" selects the United Kingdom. The résumé is a dropzone whose `input#input_files_input_resume[type=file]` (visually hidden, no `name`) is emptied once the widget takes the file. The widget then shows the name in `[data-id=filename]` (two spans; the first space a no-break space) and a "Delete" button. |
 | `div-combobox-orphan` | Brand Marketing Manager (BWA-RP-126) | Rippling-style, rendered **without a `<form>`**; a page-script "Submit application" (`type=button`) posts the named controls plus widget state as multipart. Its popover div comboboxes (`field-55` Gender, labelled by `aria-labelledby`; `field-63`, a custom question named only by its paragraph) keep their placeholder as `aria-label` ("Select..."/"Select"). Focus or a click opens them; a click on an open one, Escape and blur do nothing. Only a choice or a document `mousedown` outside the control and popover closes them. The list is `ul[role=listbox]` in a `div[role=dialog][data-testid=popper]` (with a status line) inside the question block. Options carry `aria-setsize`/`aria-selected` and wrap `div > div[data-testid=menuListLabel] > p`; a chosen label replaces the placeholder `<p>` as a bare text node. The role-less location lookup `input#field-42` (`aria-label="textbox"`, `aria-labelledby`) never gets `aria-expanded` and shows its popper only with results. Its first query answers after about 1.8 s. |
 | `multiselect-react` | Content Marketing Manager (BWA-GH-124) | A React-select-style multi-select "Which marketing channels have you managed?" (`question_8001`, required) whose listbox has `aria-multiselectable=true` and whose choices appear as chips (`div.select__multi-value` with a `role=button` "Remove …"), beside a single-choice React select (`question_8002`). The runtime must leave the multi-select to the user. |
+| `autofill-upload` | Revenue Operations Analyst (BWA-AS-130) | Ashby-style resume parsing. Fields in DOM order: first name, last name, email, phone, LinkedIn (optional) and the standard native `#f-resume` **last**, so filling in DOM order types the names before the upload. On each `change` of `#f-resume` with a file, page script inserts (once) `div#resume-parse-status[role=status][aria-live=polite][aria-busy=true]` right after the input ("Parsing your resume…" after a `span.spinner`), and `autofill_ms` (600) later overwrites `#f-first_name` = "A.", `#f-last_name` = "Quill (resume)" and `#f-email` = "a.quill@resume-parser.example.test" (value assignment plus bubbling `input` and `change`, all untrusted), then sets the status to "We filled in some fields from your resume." with `aria-busy=false` (it stays visible). The input keeps its file; another change repeats everything. `fixture_identity`. |
+| `custom-uploader` | Customer Marketing Manager (BWA-GH-131) | Greenhouse-style uploaders that page script mounts (the static HTML holds one `div[data-mount-html]` placeholder each). Resume: `div#resume-field.field.uploader[role=group][aria-labelledby=resume-label][aria-required=true]` with "Resume/CV *", a drop zone `#resume-dropzone` ("Drop or select a file", `button#resume-button` "Upload resume", which opens the file chooser), a hint, `input#resume-input[type=file][name=resume]` with `display:none` and **no label, no `aria-label`, no `required`**, `div#resume-chip.file-chip[hidden]` and `div#resume-notice.upload-notice[role=status][aria-live=polite]`. On `change` the file moves into page state and the input is **cleared at once**; the chip shows `span.file-chip__name`, `span.file-chip__size` "(N bytes)" and `button.file-chip__remove[aria-label="Remove file"]`; the notice says "Uploading…" (`aria-busy=true`), then after `upload_ms` (800) "<name> uploaded" (`aria-busy=false`). The remove button clears the page state, the chip and the notice. A `drop` on the zone goes through the input. The form's `formdata` event posts the stored file as `resume`. Cover letter (optional): `input#cover-letter-input[name=cover_letter].visually-hidden` inside `label.upload-label[data-testid=cover_letter]` ("Attach cover letter", no `for`); it keeps its file and `#cover-letter-chip` shows its name. Both are validated like `file` (kinds `custom_file` and `label_file`). A 422 re-render shows them empty with an inline error; nothing is retained. `fixture_identity`. |
+| `linkedin-autofill` | Marketing Operations Specialist (BWA-LV-132) | Lever-style: the native `#f-resume` first, then `name` ("Full name", `autocomplete=name`), `email`, `phone`, `location` ("Current location", optional) and `urls[LinkedIn]` ("LinkedIn URL", optional, id `f-urls[LinkedIn]`). Before the first field block, `div#awli` holds `button#linkedin-apply.awli-button[aria-busy=true]` "Loading…" (after `loading_ms`, 1500, "Apply with LinkedIn" without `aria-busy`) under `div#linkedin-overlay.awli-overlay[title="Apply with LinkedIn"]`, a transparent overlay covering the button exactly, so a pointer click lands on the overlay. The button's own click sets `name` = "LinkedIn Member" and `email` = "member@linkedin.example.test". An autofill prompt `div#autofill-prompt[role=dialog][aria-modal=true]` ("Autofill your application?", buttons `#autofill-prompt-accept` "Autofill with LinkedIn" and `#autofill-prompt-dismiss` "No thanks") is appended to `body`, outside `main`, after load or after the resume changes (see below); while it is shown, `main` is `inert` and `aria-hidden`. "No thanks" removes it and restores `main`; "Autofill with LinkedIn" does too and sets the LinkedIn values. A closed prompt never returns. `fixture_identity`. |
+| `react-controlled` | Retention Marketing Manager (BWA-RC-133) | React-like controlled inputs: first name, last name, email and phone (standard markup) inside `div#react-root`, the native resume outside it. Only trusted `input` events (typing: `page.fill`, `press_sequentially`) update the page state (`__mock.state`, which starts from the rendered values); every 150 ms and on `focusout` any other value, such as a value assignment followed by a synthetic `input` event, is reset to the state. The first typed change re-renders the fields once: after `rerender_ms` (0) the field blocks give way to `p#react-saving[aria-busy=true]` "Saving draft…", and `unmount_ms` (300) later **new** elements with the same ids, names, labels and attributes are mounted with the state's values (element handles taken before are disconnected). With `?lose_first=1` the first typed value never reaches the state (typing before hydration), so the re-render drops it. The form's `formdata` event posts the state. `fixture_identity`. |
 
 ### Static pages
 
@@ -128,16 +133,55 @@ the page script runs (an init script). Headless sessions of the runtime present 
 session with a Mac one (`PlaywrightSessionFactory(user_agent=...)`) to get the Apple
 behaviour.
 
+### Upload and autofill scenarios
+
+`autofill-upload`, `custom-uploader`, `linkedin-autofill` and `react-controlled` are
+single-page forms whose page scripts change or hide what a runtime fills in.
+
+**Only the candidate's own values are accepted.** These jobs have `fixture_identity: true`.
+After the shared validation, and only for a field without another error, the server
+rejects:
+
+- A resume whose bytes are not `tests/fixtures/browser/resume_avery_quill.pdf` (compared by
+  sha256; a retained `resume_upload_id` is compared by its stored sha256; if the fixture file
+  is missing, every resume is rejected): "The attached resume is not the file the candidate
+  chose." A rejected resume is not retained for the next attempt.
+- Any identity field the job has whose value is not exactly the candidate's (`first_name`
+  "Avery", `last_name` "Quill", `email` "avery.quill@example.test", `name` "Avery Quill"):
+  "This value was not entered by the candidate."
+
+Rejections are ordinary 422 re-renders. Nothing changes for other jobs.
+
+**`window.__mock`.** Each page script defines `window.__mock`: a `log` of
+`{t, event, detail?}` entries (`t` is `Math.round(performance.now())`; `detail` is an
+optional string) plus the counters below. Every trusted `input` event on a form control is
+logged as `input:<control name>`. Typing (`page.fill`, `press_sequentially`) and
+Playwright's `set_input_files` with a file **path** (the browser sets the files) are
+trusted. Script-made events are not logged: the scenarios' own writes, and
+`set_input_files` with an in-memory buffer payload, which Playwright applies by script.
+Read the object with `page.evaluate("() => JSON.parse(JSON.stringify({...window.__mock, files: undefined}))")`.
+
+| Job id | Query parameters (defaults) | Log events | Counters and state |
+| --- | --- | --- | --- |
+| `autofill-upload` | `autofill_ms` (600, after each resume change) | `upload` (detail: file name), `autofill` | `uploads`, `autofills` |
+| `custom-uploader` | `upload_ms` (800, after each resume change) | `upload` (name), `uploaded` (name), `removed`, `cover-upload` (name) | `uploads`, `coverUploads`; `files.resume` is the stored `File` (not serialisable) |
+| `linkedin-autofill` | `loading_ms` (1500, after the load event); `prompt` = `load` (default), `upload` or `none`; `prompt_ms` (400 after the load event, or 300 after the first resume upload) | `linkedin-ready`, `overlay-click`, `linkedin-click`, `upload` (name), `prompt-shown`, `prompt-dismissed`, `prompt-accepted` | `overlayClicks`, `linkedinClicks`, `promptShown`, `promptDismissed`, `promptAccepted`, `uploads` |
+| `react-controlled` | `rerender_ms` (0, after the first typed change); `unmount_ms` (300); `lose_first=1` | `revert:<name>`, `rerender` | `renders`; `state` (name to value) |
+
+The parameters belong to the apply page's own URL, for example
+`/jobs/linkedin-autofill/apply?loading_ms=300&prompt=none`. A 422 re-render is posted to
+the plain apply path, so it uses the defaults.
+
 ### Shared behavior
 
 - **Disabled options.** `missing-required` offers "3 months or more (no longer offered)" as a disabled option; posting its value is rejected.
 - **Machine values differ from labels.** Selects, radios and checkboxes post values such as `wa_authorized` and `sk_python`, while users see "Yes, I am authorized to work in the US" and "Python". Posting a label or an unknown value is rejected with "Select one of the listed options."
-- **Accessible markup.** Every control has a `<label for>`. Radio and checkbox groups are `<fieldset>`s with a `<legend>`. Required controls use `required`; the `*` marker is `aria-hidden`, and optional controls say "(optional)". Controls can be found by accessible name, for example Playwright `get_by_label("First name")`. No test IDs or product-specific hooks are needed.
+- **Accessible markup.** Every control has a `<label for>`, except where a scenario says otherwise (script widgets, and the `custom-uploader` inputs that page script mounts). Radio and checkbox groups are `<fieldset>`s with a `<legend>`. Required controls use `required`; the `*` marker is `aria-hidden`, and optional controls say "(optional)". Controls can be found by accessible name, for example Playwright `get_by_label("First name")`. No test IDs or product-specific hooks are needed.
 - **Rejection.** An invalid POST returns 422 and re-renders the form. The page gets an error summary (`role="alert"`, "There is a problem with your application", with links to the fields). Each invalid field gets an inline error, `aria-invalid="true"` and `aria-describedby`. Values are preserved. A valid resume from the rejected POST is retained as "Currently attached: …" with a hidden `resume_upload_id`, so the file input stops being required. Rejections are recorded but **never counted as submissions**.
 - **Every accepted POST counts.** Resubmitting an identical form creates another record with a new reference, so a mistaken retry is detectable.
 - **Status page.** `/jobs/<job_id>/application-status?email=…` is a public page linked from each posting ("Already applied? Check your application status"). For each matching record it shows the reference, or "still processing" while the confirmation is withheld. This page is how a runtime reconciles an uncertain outcome.
 - **Job identity.** Postings include the title, company, location and Job ID. They also carry a canonical link and a schema.org `JobPosting` JSON-LD block with `identifier.value` set to the Job ID. The apply pages repeat the same identity line.
-- **Deterministic ids.** Ids come from counters in a fresh state dir: `sub_000001`/`BWA-000001`, `dft_000001`, `upl_000001`, `cap_000001`. Captcha answers are derived from the token. Only timestamps vary. There are no artificial delays except the fixed 250 ms of `/__fixture__/cities`.
+- **Deterministic ids.** Ids come from counters in a fresh state dir: `sub_000001`/`BWA-000001`, `dft_000001`, `upl_000001`, `cap_000001`. Captcha answers are derived from the token. Only timestamps vary. The server adds no artificial delays except the fixed 250 ms of `/__fixture__/cities`. Page scripts have their own timers (`spa-loading`, and the upload and autofill scenarios).
 
 ## Test-only API — never call from product code
 

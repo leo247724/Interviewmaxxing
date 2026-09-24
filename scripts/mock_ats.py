@@ -19,6 +19,7 @@ See ``tests/browser/MOCK_ATS.md`` for scenarios, routes and how to stop it.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import html
 import ipaddress
@@ -62,6 +63,19 @@ INTERNAL_FIELDS = frozenset(
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 US_PHONE_RE = re.compile(r"^\d{10}$")
 US_PHONE_MESSAGE = "Enter a 10-digit US phone number using digits only, for example 3035550142."
+FIXTURE_RESUME = (
+    Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "browser" / "resume_avery_quill.pdf"
+)
+"""The fixture candidate's resume: ``fixture_identity`` jobs accept only these bytes."""
+FIXTURE_IDENTITY = {
+    "first_name": "Avery",
+    "last_name": "Quill",
+    "email": "avery.quill@example.test",
+    "name": "Avery Quill",
+}
+"""Identity values ``fixture_identity`` jobs accept: exactly what the candidate enters."""
+NOT_ENTERED_MESSAGE = "This value was not entered by the candidate."
+WRONG_RESUME_MESSAGE = "The attached resume is not the file the candidate chose."
 
 
 # --------------------------------------------------------------------------
@@ -86,6 +100,9 @@ class Field:
     # widgets whose value lives only in page state (see WIDGETS_JS): react_select,
     # react_multi, react_async (lookup), div_combobox, search_combobox,
     # remote_lookup (role-less lookup input), rippling_phone and intl_tel.
+    # Custom uploaders mounted by page script (see SCENARIO_JS) and validated like
+    # file: custom_file (a styled button and drop zone over a hidden, unlabeled
+    # input) and label_file (a visually hidden input wrapped in its label).
     kind: str
     required: bool = False
     options: tuple[Option, ...] = ()
@@ -167,6 +184,8 @@ WIDGET_KINDS = frozenset({
     "react_select", "react_multi", "react_async", "div_combobox", "search_combobox",
     "remote_lookup", "rippling_phone", "intl_tel",
 })
+UPLOADER_KINDS = frozenset({"custom_file", "label_file"})
+FILE_KINDS = frozenset({"file"}) | UPLOADER_KINDS
 
 
 def _options(*pairs: tuple[str, str]) -> tuple[Option, ...]:
@@ -470,6 +489,16 @@ RS_INLINE_SPONSORSHIP = Field(
 RS_INLINE_HEARD = Field("question_9003", "How did you hear about us?", "react_select",
                         options=HEARD_OPTIONS, inline=True)
 
+# --- upload and autofill scenarios (page behaviour in SCENARIO_JS) ----------------------
+
+UPLOAD_ACCEPT = ".pdf,.doc,.docx,.txt"
+CUSTOM_RESUME = Field("resume", "Resume/CV", "custom_file", True,
+                      hint="PDF, DOC, DOCX or TXT, up to 5 MB.", accept=UPLOAD_ACCEPT)
+COVER_LETTER = Field("cover_letter", "Cover letter", "label_file", accept=UPLOAD_ACCEPT)
+LEVER_NAME = Field("name", "Full name", "text", True, autocomplete="name")
+LEVER_LOCATION = Field("location", "Current location", "text")
+LEVER_LINKEDIN = Field("urls[LinkedIn]", "LinkedIn URL", "url")
+
 CORE_FIELDS = (
     FIRST_NAME,
     LAST_NAME,
@@ -519,6 +548,9 @@ class Job:
     validity: bool = False
     """The submit button stays disabled until every required question is answered, and a
     text input that loses focus gets aria-invalid="false"."""
+    fixture_identity: bool = False
+    """Accepts only the fixture candidate's own identity values and resume file, so values
+    page script wrote (a resume parser, LinkedIn) are rejected (fixture_identity_errors)."""
 
     @property
     def multistep(self) -> bool:
@@ -552,6 +584,7 @@ class Job:
             "formless": self.formless,
             "autofill": self.autofill,
             "validity": self.validity,
+            "fixture_identity": self.fixture_identity,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -856,8 +889,61 @@ JOBS: dict[str, Job] = {
             _single(FIRST_NAME, LAST_NAME, EMAIL, RP_POP_GENDER, RP_POP_AUTHORIZATION, RP_POP_LOCATION),
             formless=True,
         ),
+        Job(
+            "autofill-upload",
+            "BWA-AS-130",
+            "Revenue Operations Analyst",
+            "Operations",
+            "Remote (US)",
+            "Ashby-style resume parsing: 600 ms after a resume is chosen (the last field), page "
+            "script overwrites first name, last name and email with parsed values the candidate "
+            "never entered. Only the candidate's own values and resume are accepted.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, PHONE, LINKEDIN, RESUME),
+            fixture_identity=True,
+        ),
+        Job(
+            "custom-uploader",
+            "BWA-GH-131",
+            "Customer Marketing Manager",
+            "Marketing",
+            "Remote (US)",
+            "A styled upload button and drop zone over a hidden, unlabeled file input that page "
+            "script clears once the file moves into page state (file chip, asynchronous "
+            "\"uploaded\" notice), and an optional label-wrapped cover-letter input.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, CUSTOM_RESUME, COVER_LETTER),
+            fixture_identity=True,
+        ),
+        Job(
+            "linkedin-autofill",
+            "BWA-LV-132",
+            "Marketing Operations Specialist",
+            "Marketing",
+            "Remote (US)",
+            "Lever-style: an \"Apply with LinkedIn\" button that loads late under a transparent "
+            "overlay, and a modal autofill prompt; both fill in a LinkedIn member's name and "
+            "email, which the server rejects.",
+            _single(RESUME, LEVER_NAME, EMAIL, PHONE, LEVER_LOCATION, LEVER_LINKEDIN),
+            fixture_identity=True,
+        ),
+        Job(
+            "react-controlled",
+            "BWA-RC-133",
+            "Retention Marketing Manager",
+            "Marketing",
+            "Denver, CO (Hybrid)",
+            "React-like controlled inputs: a value set by script without a trusted input event "
+            "is reverted, and the first typed change re-renders the fields once as new elements.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, PHONE, RESUME),
+            fixture_identity=True,
+        ),
     )
 }
+SCENARIO_JOBS = frozenset(
+    {"autofill-upload", "custom-uploader", "linkedin-autofill", "react-controlled"}
+)
+"""Jobs whose apply page runs SCENARIO_JS (keyed by the job id), which defines window.__mock."""
+REACT_ROOT_FIELDS = frozenset({"first_name", "last_name", "email", "phone"})
+"""The react-controlled fields rendered inside ``<div id="react-root">``."""
 
 
 # --------------------------------------------------------------------------
@@ -1173,7 +1259,7 @@ def _required_message(f: Field) -> str:
         return "Check this box to continue."
     if f.multi:
         return "Select at least one option."
-    if f.kind == "file":
+    if f.kind in FILE_KINDS:
         return "Attach a file."
     return "This field is required."
 
@@ -1206,7 +1292,7 @@ def validate(
     for f in fields:
         if f.disabled:
             continue  # browsers never submit disabled controls
-        if f.kind == "file":
+        if f.kind in FILE_KINDS:
             attached = [u for u in uploads.get(f.name, []) if u.filename]
             if attached:
                 error = _upload_error(attached[0])
@@ -1279,6 +1365,41 @@ def _intl_phone_error(value: str, form: dict[str, list[str]]) -> str | None:
     if len(national) != 10:
         return "Enter a 10-digit US phone number."
     return None
+
+
+@functools.cache
+def fixture_resume_sha256() -> str | None:
+    """sha256 of FIXTURE_RESUME, read once; None when the file is missing."""
+    try:
+        return hashlib.sha256(FIXTURE_RESUME.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def fixture_identity_errors(
+    fields: tuple[Field, ...],
+    values: dict[str, Any],
+    files: dict[str, Upload | dict[str, Any]],
+) -> dict[str, str]:
+    """What a ``fixture_identity`` job rejects besides ``validate``: an identity field whose
+    value is not exactly the fixture candidate's, and a resume whose bytes are not the
+    fixture file (a retained upload is compared by its stored sha256)."""
+    errors: dict[str, str] = {}
+    names = {f.name for f in fields}
+    for name, expected in FIXTURE_IDENTITY.items():
+        if name in names and values.get(name) != expected:
+            errors[name] = NOT_ENTERED_MESSAGE
+    if "resume" in names:
+        resume = files.get("resume")
+        digest: str | None
+        if isinstance(resume, Upload):
+            digest = hashlib.sha256(resume.data).hexdigest()
+        else:
+            digest = (resume or {}).get("sha256")
+        expected_digest = fixture_resume_sha256()
+        if expected_digest is None or digest != expected_digest:
+            errors["resume"] = WRONG_RESUME_MESSAGE
+    return errors
 
 
 def _city_words(text: str) -> list[str]:
@@ -2166,6 +2287,294 @@ FORMLESS_JS = r"""(function () {
 })();"""
 
 
+SCENARIO_STYLE = """
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.spinner{display:inline-block;width:.8rem;height:.8rem;margin-right:.4rem;border:2px solid #8a94a6;border-top-color:transparent;border-radius:50%;vertical-align:-1px}
+#resume-parse-status{margin-top:.4rem;color:#4a5568}
+.uploader>.label{font-weight:600;margin-bottom:.3rem}
+.dropzone{border:2px dashed #8a94a6;border-radius:6px;padding:.8rem 1rem}
+.dropzone__text{margin-right:1rem;color:#4a5568}
+.file-chip{display:inline-block;margin-top:.4rem;padding:.2rem .6rem;background:#e2e8f0;border-radius:4px}
+.file-chip[hidden]{display:none}
+.file-chip__remove{background:transparent;color:#1d2330;padding:0 .3rem}
+.upload-notice{color:#4a5568;font-size:.9rem;margin-top:.3rem}
+.upload-label{display:inline-block;border:1px solid #8a94a6;border-radius:4px;padding:.45rem .9rem;cursor:pointer}
+#awli{position:relative;display:inline-block;margin:.5rem 0}
+#awli .awli-button{display:block;background:#0a66c2}
+.awli-overlay{position:absolute;inset:0;background:transparent;pointer-events:auto;cursor:pointer}
+.autofill-prompt{position:fixed;top:3rem;left:1rem;right:1rem;z-index:1000;max-width:28rem;margin:0 auto;padding:1rem 1.5rem;background:#fff;border:1px solid #8a94a6;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+"""
+
+SCENARIO_JS = r"""(function () {
+  "use strict";
+  // Fictional replicas of hosted ATS pages whose scripts change or hide what a runtime
+  // fills in. window.__mock records what happened for tests (counters and a timed log);
+  // timings come from the page's query string (?autofill_ms=250), else the defaults.
+  var scenario = document.currentScript.getAttribute("data-scenario");
+  var params = new URLSearchParams(location.search);
+  var mock = window.__mock = {log: []};
+  var byId = function (id) { return document.getElementById(id); };
+  var log = function (event, detail) {
+    var entry = {t: Math.round(performance.now()), event: event};
+    if (detail !== undefined) entry.detail = String(detail);
+    mock.log.push(entry);
+  };
+  var ms = function (name, fallback) {
+    var n = parseInt(params.get(name), 10);
+    return isNaN(n) || n < 0 ? fallback : n;
+  };
+  var counters = function (names) { names.forEach(function (name) { mock[name] = 0; }); };
+  var firstFile = function (input) { return input.files && input.files.length ? input.files[0] : null; };
+  // A value written by page script: assignment plus bubbling (untrusted) input and change.
+  var assign = function (id, value) {
+    var input = byId(id);
+    input.value = value;
+    input.dispatchEvent(new Event("input", {bubbles: true}));
+    input.dispatchEvent(new Event("change", {bubbles: true}));
+  };
+  var afterLoad = function (fn) {
+    if (document.readyState === "complete") fn(); else window.addEventListener("load", fn);
+  };
+  // Every trusted input event on a form control (typing); script-made events are not logged.
+  document.addEventListener("input", function (e) {
+    var t = e.target;
+    if (e.isTrusted && t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) log("input:" + (t.name || t.id));
+  }, true);
+
+  // Ashby-style resume parser: autofill_ms after each resume change it overwrites the
+  // contact fields with parsed values the candidate never entered.
+  function autofillUpload() {
+    counters(["uploads", "autofills"]);
+    var input = byId("f-resume");
+    input.addEventListener("change", function () {
+      var file = firstFile(input);
+      if (!file) return;
+      mock.uploads++;
+      log("upload", file.name);
+      var status = byId("resume-parse-status");
+      if (!status) {
+        status = document.createElement("div");
+        status.id = "resume-parse-status";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        input.parentNode.insertBefore(status, input.nextSibling);
+      }
+      status.setAttribute("aria-busy", "true");
+      status.innerHTML = '<span class="spinner" aria-hidden="true"></span>Parsing your resume\u2026';
+      setTimeout(function () {
+        assign("f-first_name", "A.");
+        assign("f-last_name", "Quill (resume)");
+        assign("f-email", "a.quill@resume-parser.example.test");
+        mock.autofills++;
+        log("autofill");
+        status.textContent = "We filled in some fields from your resume.";
+        status.setAttribute("aria-busy", "false");
+      }, ms("autofill_ms", 600));
+    });
+  }
+
+  // Greenhouse-style uploader: a styled button and drop zone over a hidden, unlabeled
+  // input that is cleared once the file moves into page state (a chip, then an
+  // asynchronous notice); the form's formdata event posts the file. Beside it a
+  // label-wrapped cover-letter input that keeps its file.
+  function customUploader() {
+    counters(["uploads", "coverUploads"]);
+    mock.files = {};
+    // Mounted by script like the rest of a client-rendered form.
+    Array.prototype.forEach.call(document.querySelectorAll("[data-mount-html]"), function (holder) {
+      holder.outerHTML = holder.getAttribute("data-mount-html");
+    });
+    var input = byId("resume-input"), chip = byId("resume-chip"), notice = byId("resume-notice");
+    var timer = null;
+    byId("resume-button").addEventListener("click", function () { input.click(); });
+    var zone = byId("resume-dropzone");
+    zone.addEventListener("dragover", function (e) { e.preventDefault(); });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      var dropped = e.dataTransfer ? e.dataTransfer.files : [];
+      if (!dropped.length) return;
+      var transfer = new DataTransfer();
+      Array.prototype.forEach.call(dropped, function (file) { transfer.items.add(file); });
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", {bubbles: true}));
+    });
+    input.addEventListener("change", function () {
+      var file = firstFile(input);
+      if (!file) return;
+      mock.uploads++;
+      log("upload", file.name);
+      mock.files.resume = file;
+      input.value = "";
+      chip.innerHTML = '<span class="file-chip__name"></span> <span class="file-chip__size"></span> ' +
+        '<button type="button" class="file-chip__remove" aria-label="Remove file">\u00d7</button>';
+      chip.querySelector(".file-chip__name").textContent = file.name;
+      chip.querySelector(".file-chip__size").textContent = "(" + file.size + " bytes)";
+      chip.hidden = false;
+      notice.textContent = "Uploading\u2026";
+      notice.setAttribute("aria-busy", "true");
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        notice.textContent = file.name + " uploaded";
+        notice.setAttribute("aria-busy", "false");
+        log("uploaded", file.name);
+      }, ms("upload_ms", 800));
+    });
+    chip.addEventListener("click", function (e) {
+      if (!e.target.closest(".file-chip__remove")) return;
+      clearTimeout(timer);
+      delete mock.files.resume;
+      chip.textContent = "";
+      chip.hidden = true;
+      notice.textContent = "";
+      notice.removeAttribute("aria-busy");
+      log("removed");
+    });
+    var cover = byId("cover-letter-input"), coverChip = byId("cover-letter-chip");
+    cover.addEventListener("change", function () {
+      var file = firstFile(cover);
+      coverChip.textContent = file ? file.name : "";
+      coverChip.hidden = !file;
+      if (!file) return;
+      mock.coverUploads++;
+      log("cover-upload", file.name);
+    });
+    input.form.addEventListener("formdata", function (e) {
+      var file = mock.files.resume;
+      if (file) e.formData.set("resume", file, file.name);
+    });
+  }
+
+  // Lever-style "Apply with LinkedIn": a button that finishes loading late under a
+  // transparent overlay, and a modal autofill prompt. Both fill in a LinkedIn member.
+  function linkedinAutofill() {
+    counters(["overlayClicks", "linkedinClicks", "promptShown", "promptDismissed", "promptAccepted",
+      "uploads"]);
+    var button = byId("linkedin-apply"), resume = byId("f-resume"), main = byId("main");
+    var mode = params.get("prompt") || "load";
+    var prompt = "idle";  // idle, pending, shown, closed: a closed prompt never returns
+    var fromLinkedIn = function () {
+      assign("f-name", "LinkedIn Member");
+      assign("f-email", "member@linkedin.example.test");
+    };
+    byId("linkedin-overlay").addEventListener("click", function () {
+      mock.overlayClicks++;
+      log("overlay-click");
+    });
+    button.addEventListener("click", function () {
+      mock.linkedinClicks++;
+      log("linkedin-click");
+      fromLinkedIn();
+    });
+    function closePrompt() {
+      byId("autofill-prompt").remove();
+      prompt = "closed";
+      main.removeAttribute("inert");
+      main.removeAttribute("aria-hidden");
+    }
+    function showPrompt() {
+      if (prompt !== "pending") return;
+      prompt = "shown";
+      document.body.insertAdjacentHTML("beforeend", [
+        '<div id="autofill-prompt" role="dialog" aria-modal="true" aria-labelledby="autofill-prompt-title" class="autofill-prompt">',
+        '  <h2 id="autofill-prompt-title">Autofill your application?</h2>',
+        "  <p>Import your details from LinkedIn to fill in this form faster.</p>",
+        '  <button type="button" id="autofill-prompt-accept">Autofill with LinkedIn</button>',
+        '  <button type="button" id="autofill-prompt-dismiss">No thanks</button>',
+        "</div>"
+      ].join("\n"));
+      main.setAttribute("inert", "");
+      main.setAttribute("aria-hidden", "true");
+      mock.promptShown++;
+      log("prompt-shown");
+      byId("autofill-prompt-dismiss").addEventListener("click", function () {
+        closePrompt();
+        mock.promptDismissed++;
+        log("prompt-dismissed");
+      });
+      byId("autofill-prompt-accept").addEventListener("click", function () {
+        mock.promptAccepted++;
+        log("prompt-accepted");
+        closePrompt();
+        fromLinkedIn();
+      });
+    }
+    function schedulePrompt(delay) {
+      if (prompt !== "idle") return;
+      prompt = "pending";
+      setTimeout(showPrompt, delay);
+    }
+    resume.addEventListener("change", function () {
+      var file = firstFile(resume);
+      if (!file) return;
+      mock.uploads++;
+      log("upload", file.name);
+      if (mode === "upload") schedulePrompt(ms("prompt_ms", 300));
+    });
+    afterLoad(function () {
+      setTimeout(function () {
+        button.textContent = "Apply with LinkedIn";
+        button.removeAttribute("aria-busy");
+        log("linkedin-ready");
+      }, ms("loading_ms", 1500));
+      if (mode === "load") schedulePrompt(ms("prompt_ms", 400));
+    });
+  }
+
+  // React-like controlled inputs: state changes only on trusted input events (typing), a
+  // reconcile loop puts any other value back, and the first change re-renders the fields
+  // once as new elements.
+  function reactControlled() {
+    var root = byId("react-root");
+    var blocks = Array.prototype.map.call(root.children, function (block) { return block.outerHTML; });
+    var inputs = function () { return root.querySelectorAll("input[name]"); };
+    var state = mock.state = {};
+    Array.prototype.forEach.call(inputs(), function (input) { state[input.name] = input.value; });
+    mock.renders = 0;
+    var loseFirst = params.get("lose_first") === "1";
+    var typed = false, scheduled = false;
+    root.addEventListener("input", function (e) {
+      var name = e.target.name;
+      if (!e.isTrusted || !name || !(name in state)) return;
+      if (typed || !loseFirst) state[name] = e.target.value;  // else typed before hydration: lost
+      typed = true;
+      if (!scheduled) {
+        scheduled = true;
+        setTimeout(unmount, ms("rerender_ms", 0));
+      }
+    });
+    function reconcile() {
+      Array.prototype.forEach.call(inputs(), function (input) {
+        if (input.value === state[input.name]) return;
+        input.value = state[input.name];
+        log("revert:" + input.name);
+      });
+    }
+    setInterval(reconcile, 150);
+    root.addEventListener("focusout", reconcile);
+    function unmount() {
+      root.innerHTML = '<p id="react-saving" aria-busy="true">Saving draft\u2026</p>';
+      setTimeout(function () {
+        root.innerHTML = blocks.join("");
+        Array.prototype.forEach.call(inputs(), function (input) { input.value = state[input.name]; });
+        mock.renders++;
+        log("rerender");
+      }, ms("unmount_ms", 300));
+    }
+    root.closest("form").addEventListener("formdata", function (e) {
+      Object.keys(state).forEach(function (name) { e.formData.set(name, state[name]); });
+    });
+  }
+
+  var scenarios = {
+    "autofill-upload": autofillUpload,
+    "custom-uploader": customUploader,
+    "linkedin-autofill": linkedinAutofill,
+    "react-controlled": reactControlled
+  };
+  scenarios[scenario]();
+})();"""
+
+
 def page(
     title: str, body: str, head_extra: str = "", *, main_attrs: str = "", after_main: str = ""
 ) -> str:
@@ -2392,6 +2801,82 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
     raise ValueError(f"unknown widget kind {f.kind}")
 
 
+def _uploader_key(f: Field) -> str:
+    """Id prefix of a custom uploader's elements (``resume``, ``cover-letter``)."""
+    return f.name.replace("_", "-")
+
+
+def render_uploader(f: Field, error: str | None) -> str:
+    """The custom-uploader widgets. Page script (SCENARIO_JS) mounts this markup like the
+    rest of a client-rendered form, so the static HTML holds no unlabeled control.
+
+    ``custom_file``: a styled button and drop zone over a hidden input no label names;
+    ``label_file``: a visually hidden input inside its label. A re-render after a rejected
+    POST shows them empty (the files are not retained)."""
+    key = _uploader_key(f)
+    noun = f.name.replace("_", " ")
+    marker = (' <span aria-hidden="true">*</span>' if f.required
+              else ' <span class="optional">(optional)</span>')
+    err = (f'  <p class="error" id="{key}-error"><span class="visually-hidden">Error: </span>'
+           f"{esc(error)}</p>\n") if error else ""
+    described = f' aria-describedby="{key}-error"' if error else ""
+    heading = f'  <div class="label" id="{key}-label">{esc(f.label)}{marker}</div>\n'
+    accept = f' accept="{esc(f.accept)}"' if f.accept else ""
+    if f.kind == "custom_file":
+        required = ' aria-required="true"' if f.required else ""
+        hint = f'  <p class="hint">{esc(f.hint)}</p>\n' if f.hint else ""
+        markup = (
+            f'<div class="field uploader" id="{key}-field" role="group" '
+            f'aria-labelledby="{key}-label"{required}{described}>\n'
+            f"{heading}{err}"
+            f'  <div class="dropzone" id="{key}-dropzone" data-testid="{key}-dropzone">\n'
+            '    <span class="dropzone__text">Drop or select a file</span>\n'
+            f'    <button type="button" class="upload-button" id="{key}-button">Upload {esc(noun)}</button>\n'
+            "  </div>\n"
+            f"{hint}"
+            f'  <input type="file" id="{key}-input" name="{esc(f.name)}"{accept} style="display:none">\n'
+            f'  <div class="file-chip" id="{key}-chip" hidden></div>\n'
+            f'  <div class="upload-notice" id="{key}-notice" role="status" aria-live="polite"></div>\n'
+            "</div>"
+        )
+    else:
+        markup = (
+            f'<div class="field uploader" id="{key}-field">\n'
+            f"{heading}{err}"
+            f'  <label class="upload-label" data-testid="{esc(f.name)}">\n'
+            f"    <span>Attach {esc(noun)}</span>\n"
+            f'    <input type="file" id="{key}-input" name="{esc(f.name)}"{accept} '
+            f'class="visually-hidden"{described}>\n'
+            "  </label>\n"
+            f'  <div class="file-chip" id="{key}-chip" hidden></div>\n'
+            "</div>"
+        )
+    return f'<div data-mount-html="{esc(markup)}"></div>'
+
+
+LINKEDIN_APPLY_HTML = (
+    '<div class="awli" id="awli">\n'
+    '  <button type="button" id="linkedin-apply" class="awli-button" aria-busy="true">'
+    "Loading\u2026</button>\n"
+    '  <div class="awli-overlay" id="linkedin-overlay" title="Apply with LinkedIn"></div>\n'
+    "</div>"
+)
+"""linkedin-autofill's button under a transparent overlay, before the first field block."""
+
+
+def _field_layout(job: Job, blocks: list[tuple[Field, str]]) -> str:
+    """The rendered field blocks as the job's form lays them out: after the LinkedIn button
+    (linkedin-autofill) or with the contact fields inside the React root (react-controlled)."""
+    joined = "".join(block for _, block in blocks)
+    if job.slug == "linkedin-autofill":
+        return LINKEDIN_APPLY_HTML + joined
+    if job.slug == "react-controlled":
+        inside = "".join(block for f, block in blocks if f.name in REACT_ROOT_FIELDS)
+        outside = "".join(block for f, block in blocks if f.name not in REACT_ROOT_FIELDS)
+        return f'<div id="react-root">{inside}</div>{outside}'
+    return joined
+
+
 def render_field(
     f: Field,
     values: dict[str, list[str]],
@@ -2400,6 +2885,8 @@ def render_field(
 ) -> str:
     if f.widget:
         return render_widget(f, values, error)
+    if f.kind in UPLOADER_KINDS:
+        return render_uploader(f, error)
     fid = f"f-{f.name}"
     posted = values.get(f.name, [])
     current = posted[0] if posted else ""
@@ -2590,7 +3077,12 @@ def render_error_summary(entries: list[tuple[str, str, str]]) -> str:
 
 
 def _summary_entries(fields: tuple[Field, ...], errors: dict[str, str]) -> list[tuple[str, str, str]]:
-    return [(f"f-{f.name}", f.label, errors[f.name]) for f in fields if f.name in errors]
+    return [(_anchor(f), f.label, errors[f.name]) for f in fields if f.name in errors]
+
+
+def _anchor(f: Field) -> str:
+    """What an error summary entry links to: a custom uploader's block, else the control."""
+    return f"{_uploader_key(f)}-field" if f.kind in UPLOADER_KINDS else f"f-{f.name}"
 
 
 def render_captcha(token: str, error: str | None) -> str:
@@ -2980,6 +3472,11 @@ class Handler(BaseHTTPRequestHandler):
         values, files, errors = validate(
             job.fields, form, uploads, retained, strict_phone=job.strict_phone
         )
+        if job.fixture_identity:
+            for name, message in fixture_identity_errors(job.fields, values, files).items():
+                if name not in errors:
+                    errors[name] = message
+                    files.pop(name, None)  # like an invalid upload, a wrong file is not kept
         files_meta = self._store_files(files)
         captcha_error = None
         if job.captcha:
@@ -3041,9 +3538,9 @@ class Handler(BaseHTTPRequestHandler):
             entries.append(("f-captcha_answer", "Characters shown in the image", captcha_error))
         if errors.get(CAPTCHA_WIDGET_FIELD):
             entries.append((CAPTCHA_WIDGET_FIELD, "CAPTCHA", errors[CAPTCHA_WIDGET_FIELD]))
-        fields_html = "".join(
-            render_field(f, values, errors.get(f.name), retained.get(f.name)) for f in job.fields
-        )
+        fields_html = _field_layout(job, [
+            (f, render_field(f, values, errors.get(f.name), retained.get(f.name))) for f in job.fields
+        ])
         if job.captcha:
             fields_html += render_captcha(self.store.new_captcha(), captcha_error)
         if job.honeypot:
@@ -3090,6 +3587,9 @@ class Handler(BaseHTTPRequestHandler):
                 '<div class="autofill"><button type="button" id="autofill-application">'
                 "Autofill my application</button></div>" + form_html + f"<script>{AUTOFILL_JS}</script>"
             )
+        scripted = job.slug in SCENARIO_JOBS
+        if scripted:
+            form_html += f'<script data-scenario="{esc(job.slug)}">{SCENARIO_JS}</script>'
         if job.spa_loading and status == HTTPStatus.OK:
             form_html = render_delayed(form_html)
         body = _job_heading(job) + render_error_summary(entries) + form_html
@@ -3098,6 +3598,8 @@ class Handler(BaseHTTPRequestHandler):
             main_attrs, after_main = ' inert aria-hidden="true"', render_cookie_banner()
         title = f"Apply: {job.title}" if not errors else f"Error: Apply: {job.title}"
         head = f"<style>{WIDGET_STYLE}</style>" if widgets else ""
+        if scripted:
+            head += f"<style>{SCENARIO_STYLE}</style>"
         self._send_html(status, page(title, body, head, main_attrs=main_attrs, after_main=after_main))
 
     # multistep
