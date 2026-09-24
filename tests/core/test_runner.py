@@ -32,6 +32,7 @@ from interviewmaxxing_cli.runner import (
     RunLimits,
     browser_profile_lock,
     pending_inputs,
+    redact_detail,
     rejection_epochs,
 )
 from interviewmaxxing_core import (
@@ -1749,7 +1750,9 @@ def test_a_prepared_run_records_its_provider_cost_once_and_reports_it(
 
     [event] = _provider_events(isolated_imx_home, result.application_id)
     usage = event.metadata
-    assert set(usage) == USAGE_KEYS | {"by_purpose"}
+    assert set(usage) == USAGE_KEYS | {"by_purpose", "limits"}
+    # A fixed test budget keeps its limits; production budgets scale with the form (round 6).
+    assert usage["limits"] == {"max_calls": 48, "max_usd": 0.5}
     assert usage["calls"] == len(receipts) and usage["unknown_cost_calls"] == 0
     assert usage["known_cost_usd"] == round(sum(r.cost_usd for r in receipts), 6) \
         == round(0.0001 * len(receipts), 6)
@@ -1915,7 +1918,7 @@ LOOKUP_CHOICES: dict[str, list[str]] = {
 """The suggestions each lookup offers when the text typed into it does not commit."""
 LOOKUP_ORDER = ("location", "city", "state")
 """The lookups of ``_three_lookups_form``, in form order."""
-TYPED = {"location": "Austin, TX", "city": "Austin", "state": "Texas"}
+TYPED = {"location": "Austin, TX", "city": "Austin, TX", "state": "Texas"}
 """What the resolver types into each lookup from the ``_austin`` identity."""
 RIGHT_LABELS = {"location": TEXAS, "city": "Austin, Texas", "state": "Texas, United States"}
 """For each lookup, the suggestion that denotes exactly what was typed."""
@@ -2199,13 +2202,13 @@ def test_a_batch_leaves_out_a_lookup_the_user_answered_and_each_label_stays_on_i
                          .apply(URL, candidate_id="c1"))
     assert result.state is S.NEEDS_INPUT and result.message == PREPARED
     assert chooser.batches == [[("location", "Austin, TX", LOOKUP_CHOICES["location"]),
-                                ("city", "Austin", LOOKUP_CHOICES["city"])]]
+                                ("city", "Austin, TX", LOOKUP_CHOICES["city"])]]
     assert chooser.singles == []
     first, second = interaction.asked
     assert [m.field_id for m in first] == [m.field_id for m in second] == ["school"]
     assert [o.label for o in second[0].options or []] == LOOKUP_CHOICES["school"]
     assert factory.typed == [
-        {"location": "Austin, TX", "school": "Fictional State", "city": "Austin"},
+        {"location": "Austin, TX", "school": "Fictional State", "city": "Austin, TX"},
         {"location": TEXAS, "school": "Fictional State University", "city": "Austin, Texas"}]
     events = _events(isolated_imx_home, result.application_id, SUGGESTION_EVENT)
     assert [(e.metadata["field_id"], e.metadata["chosen_label"]) for e in events] == [
@@ -2257,10 +2260,10 @@ def test_the_dynamic_resolver_decides_the_lookups_of_a_step_concurrently(
     assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
     assert result.message.startswith(PREPARED)
     lookups = jev.asked("lookup")
-    assert sorted(r["state"]["typed_value"] for r in lookups) == ["Austin", "Austin, TX"]
+    assert sorted(r["state"]["typed_value"] for r in lookups) == ["Austin, TX", "Austin, TX"]
     assert jev.peak >= 2  # both lookup decisions were in flight at the same time
     assert _refilled(script) == ["fill_fields:location,city"]
-    assert factory.typed == [{"location": "Austin, TX", "city": "Austin"},
+    assert factory.typed == [{"location": "Austin, TX", "city": "Austin, TX"},
                              {"location": TEXAS, "city": "Austin, Texas"}]
     # Events, decisions and traces keep fill order although the decisions overlapped.
     events = _events(isolated_imx_home, result.application_id, SUGGESTION_EVENT)
@@ -2419,7 +2422,8 @@ def _failed_transition(paths, app_id: str) -> tuple[ApplicationEvent, str | None
 @pytest.mark.parametrize(("status", "detail", "recorded"), [
     (FieldFillStatus.FAILED, "scripted: the fictional input was detached",
      "scripted: the fictional input was detached"),
-    (FieldFillStatus.VERIFICATION_MISMATCH, LONG_DETAIL, LONG_DETAIL[:500]),
+    # Since 0a1bac3 quoted values are redacted and the detail is cut (runner.redact_detail).
+    (FieldFillStatus.VERIFICATION_MISMATCH, LONG_DETAIL, redact_detail(LONG_DETAIL)),
     (FieldFillStatus.FAILED, "", None),
     (FieldFillStatus.FAILED, None, None),
 ], ids=["failed", "mismatch-long-detail", "empty-detail", "no-detail"])
@@ -2460,7 +2464,7 @@ def test_a_failed_fill_after_provider_calls_keeps_the_cost_out_of_the_failure_re
     assert failure_reason == event.metadata["failure_reason"] == reason
     assert event.metadata["failed_fields"] == [
         {"field_id": "residence", "label": RESIDENCE.label, "status": "VERIFICATION_MISMATCH",
-         "detail": "reads back 'No'"}]
+         "detail": "reads back '…'"}]
     assert "Provider cost" not in json.dumps(event.metadata)
 
 
@@ -2497,9 +2501,9 @@ def test_a_lookup_gets_one_batch_round_per_run_even_if_its_chosen_label_later_fa
     assert result.state is S.NEEDS_INPUT
     assert result.message == "1 required question(s) need your answer."
     assert chooser.batches == [[("location", "Austin, TX", LOOKUP_CHOICES["location"]),
-                                ("city", "Austin", LOOKUP_CHOICES["city"])]]
+                                ("city", "Austin, TX", LOOKUP_CHOICES["city"])]]
     assert chooser.singles == []
-    assert factory.typed == [{"location": "Austin, TX", "city": "Austin"},
+    assert factory.typed == [{"location": "Austin, TX", "city": "Austin, TX"},
                              {"location": TEXAS, "city": "Austin, Texas"}]
     assert [m.field_id for asked in interaction.asked for m in asked] == ["city", "location"]
     [question] = result.missing_inputs
@@ -2514,15 +2518,15 @@ def test_a_lookup_gets_one_batch_round_per_run_even_if_its_chosen_label_later_fa
 
 
 class TimeoutLookupJev(ScriptedJev):
-    """``ScriptedJev`` whose lookup decision for the typed value ``typed`` times out."""
+    """``ScriptedJev`` whose lookup decision for the lookup asking ``question`` times out."""
 
-    def __init__(self, *args: Any, typed: str, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, question: str, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.typed = typed
+        self.question = question
 
     def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
         request = json.loads(body)
-        if "lookup" in request["questions"] and request["state"]["typed_value"] == self.typed:
+        if "lookup" in request["questions"] and request["state"]["question"] == self.question:
             self.requests.append(request)
             raise TimeoutError("fictional provider timeout")
         return super().__call__(url, headers, body, timeout)
@@ -2533,12 +2537,12 @@ def test_a_timed_out_lookup_decision_in_the_dynamic_batch_leaves_only_that_looku
 ):
     script = Script(pages=[_page(_lookup_form(_lookup_field("city", semantic=SemanticType.CITY)))])
     factory = LookupFactory(script, PerLookupBrowser, commits=frozenset({TEXAS, "Austin, Texas"}))
-    jev = TimeoutLookupJev({}, {"lookup": LOOKUP_S1}, typed="Austin")
+    jev = TimeoutLookupJev({}, {"lookup": LOOKUP_S1}, question="City (search)")
     runner = _dynamic_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory, jev)
     result = asyncio.run(runner.apply(URL, candidate_id="c1"))
     assert result.state is S.NEEDS_INPUT
     assert result.message.startswith("1 required question(s) need your answer.")
-    assert sorted(r["state"]["typed_value"] for r in jev.asked("lookup")) == ["Austin", "Austin, TX"]
+    assert sorted(r["state"]["typed_value"] for r in jev.asked("lookup")) == ["Austin, TX", "Austin, TX"]
     [question] = result.missing_inputs
     assert question.field_id == "city"
     assert [o.label for o in question.options or []] == LOOKUP_CHOICES["city"]
@@ -2549,4 +2553,4 @@ def test_a_timed_out_lookup_decision_in_the_dynamic_batch_leaves_only_that_looku
         packet = store.latest_packet(result.application_id)
     assert packet.answer_for("location").value == TextValue(text=TEXAS)
     assert packet.answer_for("city") is None
-    assert factory.typed == [{"location": "Austin, TX", "city": "Austin"}]
+    assert factory.typed == [{"location": "Austin, TX", "city": "Austin, TX"}]

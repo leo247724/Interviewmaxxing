@@ -21,6 +21,7 @@ from interviewmaxxing_selection.jev import (
     DecisionResponse,
     JevClient,
     JevProviderError,
+    ProviderFailureKind,
     Transport,
     urllib_transport,
 )
@@ -71,6 +72,11 @@ def flush_receipts(buffer: list[tuple[CallBudget, CallReceipt]]) -> None:
             budget.receipts.append(receipt)
 
 
+FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
+FORM_WRITER_CALLS, FORM_WRITER_USD = 8, 0.15
+FORM_CAP_CALLS, FORM_CAP_USD = 120, 2.00
+
+
 @dataclass
 class CallBudget:
     max_calls: int = 48
@@ -79,7 +85,22 @@ class CallBudget:
     receipts: list[CallReceipt] = field(default_factory=list)
     reserved_usd: float = 0.0
     calls: int = 0
+    scales_with_form: bool = False
+    """Production budgets follow the form (``allow_form``); fixed limits otherwise."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def allow_form(self, writer_fields: int) -> None:
+        """Limits for one more form, when the budget scales with the form: what it used so
+        far plus 24 calls / USD 0.30 and 8 calls / USD 0.15 per WRITER-routed field, capped
+        at 120 calls / USD 2.00 in total."""
+        if not self.scales_with_form:
+            return
+        writers = max(0, writer_fields)
+        with self._lock:
+            self.max_calls = min(FORM_CAP_CALLS, self.calls + FORM_BASE_CALLS
+                                 + FORM_WRITER_CALLS * writers)
+            self.max_usd = min(FORM_CAP_USD, self.reserved_usd + FORM_BASE_USD
+                               + FORM_WRITER_USD * writers)
 
     def reserve(self, body: bytes, upper_cost: float) -> None:
         with self._lock:
@@ -162,6 +183,18 @@ class BoundedDecisions:
             flight.done.set()
 
     def _call(self, request: DecisionRequest, body: bytes, purpose: str) -> DecisionResponse:
+        """One budgeted call; a malformed response is retried once with the same request
+        (a second budgeted call) before the decision holds."""
+        for attempt in (1, 2):
+            try:
+                return self._attempt(request, body, purpose)
+            except JevProviderError as exc:
+                if exc.error.kind is ProviderFailureKind.MALFORMED_RESPONSE and attempt == 1:
+                    continue
+                raise AIHold(f"Jev {exc.error.kind.value}") from None
+        raise AssertionError("unreachable")
+
+    def _attempt(self, request: DecisionRequest, body: bytes, purpose: str) -> DecisionResponse:
         # UTF-8 bytes conservatively bound tokens plus framing; no output charge for Jev.
         reserve = (len(body) + 2048) * 0.042 / 1_000_000
         self.budget.reserve(body, reserve)
@@ -171,7 +204,7 @@ class BoundedDecisions:
         except JevProviderError as exc:
             self.budget.record(CallReceipt(purpose, self.model, None,
                 time.monotonic() - started, None, reserve, exc.error.kind.value))
-            raise AIHold(f"Jev {exc.error.kind.value}") from None
+            raise
         response = result.response
         # Record the resolved alias; a different family is never silently accepted.
         valid_model = response.model == self.model or response.model.startswith(self.model + "-")

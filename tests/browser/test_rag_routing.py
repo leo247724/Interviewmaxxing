@@ -2672,3 +2672,632 @@ def test_a_call_finished_after_its_pass_was_cancelled_still_leaves_a_receipt(
     asyncio.run(cancel_while_writing())  # returns once the worker threads have finished
     assert len(provider.requests) == budget.calls == 2  # the classification, then the grounding
     assert len(budget.receipts) == budget.calls
+
+
+# --- round 6: bare contact copy, screeners on route mass and range facts ---------------------
+
+Split = tuple[dict[str, float], float]
+"""One scripted classification answer: its probabilities (unlisted options 0.0) and its
+confidence. Jev's probabilities must sum to 1, so a live split's remainder is put on an option
+the rule under test ignores."""
+COPY_ROUTE: Split = ({"COPY_KNOWN": 1.0}, 1.0)
+GREENHOUSE_FIRST_NAME: Split = ({"APPLICANT_CURRENT": 0.92, "UNCLEAR": 0.08}, 0.90)
+"""Live Greenhouse "First Name" source scope, held by the strict clarification."""
+GREENHOUSE_EMAIL: Split = ({"APPLICANT_CURRENT": 0.93, "UNCLEAR": 0.07}, 0.91)
+"""Live Greenhouse "Email" source scope, held by the strict clarification."""
+RIPPLING_EMAIL: Split = ({"APPLICANT_CURRENT": 0.74, "EXPLICIT_ANSWER": 0.23, "UNCLEAR": 0.03}, 0.68)
+"""Live Rippling "Email" source scope (0.74 / 0.23; the remaining 0.03 is put on UNCLEAR)."""
+RIPPLING_ROUTE: Split = ({"COPY_KNOWN": 0.99, "HUMAN_INPUT": 0.01}, 0.99)
+LIVE_SCOPES = (GREENHOUSE_FIRST_NAME, GREENHOUSE_EMAIL, RIPPLING_EMAIL)
+LINKEDIN_URL = "https://www.linkedin.example/in/avery-example"
+GITHUB_URL = "https://github.example/avery-example"
+WEBSITE_URL = "https://avery-example.example.test"
+IDENTITY_HELD = "The field's current applicant identity source could not be confirmed for exact copying"
+NAME_TYPES = frozenset({SemanticType.FIRST_NAME, SemanticType.LAST_NAME, SemanticType.FULL_NAME,
+                        SemanticType.PREFERRED_NAME})
+
+
+def _script(answer: dict[str, Any], split: Split) -> None:
+    """Give one Jev choice answer exactly ``split``."""
+    probabilities, confidence = split
+    assert set(probabilities) <= set(answer["probabilities"]), probabilities
+    answer.update(choice=max(probabilities, key=lambda option: probabilities[option]),
+                  confidence=confidence,
+                  probabilities={option: probabilities.get(option, 0.0)
+                                 for option in answer["probabilities"]})
+
+
+def _classified(response: HttpResponse, route: Split, scope: Split) -> HttpResponse:
+    """``response`` with every full-form route (``r<i>``) and source-scope (``u<i>``) answer
+    scripted. The route label follows from the classifier's own thresholds: COPY_KNOWN below
+    0.95 is labelled AMBIGUOUS."""
+    payload = json.loads(response.body)
+    for name, answer in payload["answers"].items():
+        if answer["type"] == "choice" and name[0] in "ru" and name[1:].isdigit():
+            _script(answer, route if name[0] == "r" else scope)
+    return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+class _ContactProvider(DecisionsProvider):
+    """Classifies the form's field with exactly ``route`` and ``scope``. The strict
+    clarification answers ``identity_approval`` (0.02 holds), and an option-equivalence
+    question maps the stored value onto the option labelled ``equivalent`` (else NONE)."""
+
+    def __init__(self, scope: Split, *, route: Split = COPY_ROUTE, identity_approval: float = 0.02,
+                 equivalent: str | None = None) -> None:
+        super().__init__(route="COPY_KNOWN", identity_approval=identity_approval)
+        self.route_split, self.scope_split, self.equivalent = route, scope, equivalent
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = _classified(super().__call__(url, headers, body, timeout),
+                               self.route_split, self.scope_split)
+        state = json.loads(body)["state"]
+        payload = json.loads(response.body)
+        for name, answer in payload["answers"].items():
+            if name.startswith("equivalent_"):
+                key = next((key for key, label in state["options"].items()
+                            if label == self.equivalent), "NONE")
+                _script(answer, ({key: 1.0}, 1.0))
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+    def clarifications(self) -> list[dict[str, Any]]:
+        return [request for request in self.requests
+                if "applicant_current_identity" in request["questions"]]
+
+
+class _RoutedScreener(ScreenerProvider):
+    """``ScreenerProvider`` whose classification has exactly the ``route`` and ``scope``
+    splits (live: COPY_KNOWN 0.85-0.91 with the rest on HUMAN_INPUT, historical 0.96+)."""
+
+    def __init__(self, experience: tuple[str, float, float] = ("YES", 0.99, 0.98), *,
+                 route: Split, scope: Split, **kwargs: Any) -> None:
+        super().__init__(experience, **kwargs)
+        self.route_split, self.scope_split = route, scope
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        return _classified(super().__call__(url, headers, body, timeout),
+                           self.route_split, self.scope_split)
+
+
+class _RoutedFactScreener(FactScreenerProvider):
+    """``FactScreenerProvider`` whose classification has exactly ``route`` and ``scope``."""
+
+    def __init__(self, pick: str = "UNKNOWN", *, route: Split, scope: Split, **kwargs: Any) -> None:
+        super().__init__(pick, **kwargs)
+        self.route_split, self.scope_split = route, scope
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        return _classified(super().__call__(url, headers, body, timeout),
+                           self.route_split, self.scope_split)
+
+
+def with_contacts(candidate: CandidateProfile) -> CandidateProfile:
+    """The fixture identity plus a preferred name and GitHub and website URLs (fictional)."""
+    named = with_preferred_name(candidate)
+    return named.model_copy(update={"identity": named.identity.model_copy(update={
+        "github_url": GITHUB_URL, "website_url": WEBSITE_URL})})
+
+
+def contact_context(candidate: CandidateProfile, job: JobRecord, label: str, semantic: SemanticType,
+                    *, control: ControlType = ControlType.TEXT, input_type: str | None = None,
+                    help_text: str | None = None, placeholder: str | None = None,
+                    section: list[str] | None = None, options: list[str] | None = None,
+                    international: bool = False) -> PacketContext:
+    """One required contact field, a text input unless ``control`` says otherwise
+    (``context`` builds a text area, which is never a bare contact field)."""
+    contact = ApplicationField(id="contact", label=label, selector="#contact",
+        semantic_type=semantic, control_type=control, required=True, input_type=input_type,
+        help_text=help_text, placeholder=placeholder, section_context=section or [],
+        expects_international_phone=international,
+        options=[FieldOption(value=f"v{i}", label=o) for i, o in enumerate(options)]
+        if options else None)
+    return replace(context(candidate, job), form=ApplicationForm(
+        url="https://synthetic.test/apply", fields=[contact]))
+
+
+def bare(ctx: PacketContext, scope: Split, **kwargs: Any,
+         ) -> tuple[Any, DynamicPacketResolver, _ContactProvider]:
+    provider = _ContactProvider(scope, **kwargs)
+    packet, resolver, _ = resolve(ctx, Retriever([], fail=True), Writer([]), provider)
+    return packet, resolver, provider
+
+
+def bare_approvals(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
+    return [t for t in resolver.narrative_traces if t.get("status") == "APPROVED_BARE_CONTACT"]
+
+
+def route_of(resolver: DynamicPacketResolver, ctx: PacketContext, field_id: str) -> Any:
+    """The full-form route decision the resolver gated ``field_id`` with."""
+    assert resolver.router is not None
+    report = resolver.router.report_for(ctx.form)
+    assert report is not None
+    return report.field(field_id)
+
+
+BARE_CONTACT_CASES = [
+    (SemanticType.FIRST_NAME, "First Name", None, "Avery"),
+    (SemanticType.FIRST_NAME, "Given name", "text", "Avery"),
+    (SemanticType.FIRST_NAME, "Your first name *", None, "Avery"),
+    (SemanticType.LAST_NAME, "Last name", "text", "Example"),
+    (SemanticType.LAST_NAME, "Surname", None, "Example"),
+    (SemanticType.LAST_NAME, "Family name", "text", "Example"),
+    (SemanticType.FULL_NAME, "Full Name", None, "Avery Example"),
+    (SemanticType.FULL_NAME, "Name", "text", "Avery Example"),
+    (SemanticType.PREFERRED_NAME, "Preferred Name", None, "Ave"),
+    (SemanticType.PREFERRED_NAME, "Preferred first name", "text", "Ave"),
+    (SemanticType.EMAIL, "Email", "email", "avery@example.test"),
+    (SemanticType.EMAIL, "Email Address", "email", "avery@example.test"),
+    (SemanticType.EMAIL, "E-mail", "text", "avery@example.test"),
+    (SemanticType.EMAIL, "Personal email address", None, "avery@example.test"),
+    (SemanticType.PHONE, "Phone", "tel", "+1 555 010 0199"),
+    (SemanticType.PHONE, "Mobile number", "tel", "+1 555 010 0199"),
+    (SemanticType.PHONE, "Phone Number *", "tel", "+1 555 010 0199"),
+    (SemanticType.PHONE, "Cell phone", None, "+1 555 010 0199"),
+    (SemanticType.LINKEDIN, "LinkedIn Profile URL", "url", LINKEDIN_URL),
+    (SemanticType.LINKEDIN, "LinkedIn", "text", LINKEDIN_URL),
+    (SemanticType.GITHUB, "GitHub URL", "url", GITHUB_URL),
+    (SemanticType.GITHUB, "GitHub profile", None, GITHUB_URL),
+    (SemanticType.WEBSITE, "Website", "url", WEBSITE_URL),
+    (SemanticType.WEBSITE, "Personal website URL", "text", WEBSITE_URL),
+]
+"""Bare wordings of every bare contact type; each is run under one of the live scope splits."""
+
+
+@pytest.mark.parametrize("semantic,label,input_type,value,scope", [
+    pytest.param(*case, LIVE_SCOPES[index % 3], id=f"{case[0].value.lower()}:{case[1]}")
+    for index, case in enumerate(BARE_CONTACT_CASES)])
+def test_bare_contact_fields_copy_the_verified_identity_without_a_clarification_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType,
+    label: str, input_type: str | None, value: str, scope: Split,
+) -> None:
+    # Every live split fails the source gate (applicant-current below 0.95); a clarification
+    # call would hold the field (0.02), so an answer means none was made.
+    ctx = contact_context(with_contacts(fictional_candidate), mock_job, label, semantic,
+                          input_type=input_type)
+    packet, resolver, provider = bare(ctx, scope)
+    assert packet.is_complete and ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value == TextValue(text=value)
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert answer.confidence == pytest.approx(0.99)
+    assert len(provider.requests) == 1 and not provider.clarifications()  # the classification only
+    trace = clarification_trace(resolver)
+    assert trace["status"] == "APPROVED_BARE_CONTACT"
+    assert trace["question"] == ctx.form.fields[0].question_text
+    assert (trace["initial_source_scope"], trace["initial_source_confidence"]) == (
+        "APPLICANT_CURRENT", scope[1])
+    assert trace["initial_source_probabilities"] == {
+        option.value: scope[0].get(option.value, 0.0) for option in SourceScope}
+    assert "clarification_probability" not in trace
+
+
+@pytest.mark.parametrize("semantic,label,input_type,value,route,scope", [
+    pytest.param(SemanticType.FIRST_NAME, "First Name", "text", "Avery", COPY_ROUTE,
+                 GREENHOUSE_FIRST_NAME, id="greenhouse-first-name"),
+    pytest.param(SemanticType.EMAIL, "Email", "email", "avery@example.test", COPY_ROUTE,
+                 GREENHOUSE_EMAIL, id="greenhouse-email"),
+    pytest.param(SemanticType.EMAIL, "Email", "email", "avery@example.test", RIPPLING_ROUTE,
+                 RIPPLING_EMAIL, id="rippling-email"),
+])
+def test_live_bare_contact_holds_now_copy_while_a_text_area_twin_stays_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType,
+    label: str, input_type: str | None, value: str, route: Split, scope: Split,
+) -> None:
+    # Live strict clarifications scored 0.75-0.89: 0.80 would still hold the field.
+    candidate = with_contacts(fictional_candidate)
+    packet, resolver, provider = bare(
+        contact_context(candidate, mock_job, label, semantic, input_type=input_type), scope,
+        route=route, identity_approval=0.80)
+    [answer] = packet.answers
+    assert answer.value == TextValue(text=value) and answer.confidence == pytest.approx(0.99)
+    assert len(provider.requests) == 1 and not provider.clarifications()
+    assert clarification_trace(resolver)["status"] == "APPROVED_BARE_CONTACT"
+    # The same wording on a text area keeps today's gates: the Greenhouse splits get the
+    # strict call and hold; Rippling's (confidence 0.68) is held without one.
+    twin, twin_resolver, twin_provider = bare(
+        contact_context(candidate, mock_job, label, semantic, control=ControlType.TEXTAREA),
+        scope, route=route, identity_approval=0.80)
+    assert twin.answers == [] and not twin.is_complete and not bare_approvals(twin_resolver)
+    assert len(twin_provider.clarifications()) == (0 if scope is RIPPLING_EMAIL else 1)
+
+
+@pytest.mark.parametrize("phone,value", [
+    pytest.param("+1 555 010 0199", "+1 555 010 0199", id="already-international"),
+    pytest.param("(555) 010-0199", "+15550100199", id="national-form"),
+])
+def test_a_phone_widget_with_a_country_picker_is_a_bare_contact_field(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, phone: str, value: str,
+) -> None:
+    candidate = fictional_candidate.model_copy(update={"identity": fictional_candidate.identity
+                                                       .model_copy(update={"phone": phone})})
+    ctx = contact_context(candidate, mock_job, "Phone Number *", SemanticType.PHONE,
+                          input_type="tel", international=True)
+    packet, resolver, provider = bare(ctx, GREENHOUSE_EMAIL)
+    assert packet.is_complete and ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value == TextValue(text=value)
+    assert len(provider.requests) == 1
+    assert clarification_trace(resolver)["status"] == "APPROVED_BARE_CONTACT"
+
+
+@pytest.mark.parametrize("route,confidence", [
+    pytest.param(({"COPY_KNOWN": 1.0}, 1.0), 0.99, id="capped-at-0.99"),
+    pytest.param(({"COPY_KNOWN": 0.96, "HUMAN_INPUT": 0.04}, 0.93), 0.93, id="route-confidence"),
+    pytest.param(({"COPY_KNOWN": 0.955, "AMBIGUOUS": 0.045}, 0.97), 0.955, id="route-probability"),
+])
+def test_bare_contact_confidence_is_the_routes_own_score_capped_at_099(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, route: Split, confidence: float,
+) -> None:
+    ctx = contact_context(fictional_candidate, mock_job, "Email Address", SemanticType.EMAIL,
+                          input_type="email")
+    packet, resolver, _ = bare(ctx, GREENHOUSE_EMAIL, route=route)
+    [answer] = packet.answers
+    assert answer.confidence == pytest.approx(confidence)
+    assert clarification_trace(resolver)["status"] == "APPROVED_BARE_CONTACT"
+
+
+@pytest.mark.parametrize("other,copied", [(0.0, True), (0.01, True), (0.02, False)])
+def test_bare_contact_allows_at_most_001_source_mass_on_another_person(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, other: float, copied: bool,
+) -> None:
+    scope: Split = ({"APPLICANT_CURRENT": 0.93, "OTHER_PERSON_OR_ENTITY": other,
+                     "UNCLEAR": round(0.07 - other, 4)}, 0.91)
+    ctx = contact_context(fictional_candidate, mock_job, "Email", SemanticType.EMAIL,
+                          input_type="email")
+    packet, resolver, provider = bare(ctx, scope)
+    trace = clarification_trace(resolver)
+    if copied:
+        assert packet.answers[0].value == TextValue(text="avery@example.test")
+        assert trace["status"] == "APPROVED_BARE_CONTACT" and not provider.clarifications()
+    else:
+        assert packet.answers == [] and len(provider.clarifications()) == 1
+        assert trace["status"] == "HELD"
+        assert packet.missing_inputs[0].prompt == IDENTITY_HELD
+
+
+@pytest.mark.parametrize("semantic,label,field_kwargs", [
+    pytest.param(SemanticType.EMAIL, "Reference email", {"input_type": "email"}, id="reference-email"),
+    pytest.param(SemanticType.FULL_NAME, "Supervisor name", {}, id="supervisor-name"),
+    pytest.param(SemanticType.PHONE, "Emergency contact phone", {"input_type": "tel"},
+                 id="emergency-contact-phone"),
+    pytest.param(SemanticType.LAST_NAME, "Previous last name", {}, id="previous-last-name"),
+    pytest.param(SemanticType.EMAIL, "Email at your last employer", {"input_type": "email"},
+                 id="email-at-your-last-employer"),
+    pytest.param(SemanticType.EMAIL, "Email", {"help_text": "The address you used in your last role"},
+                 id="last-role-in-the-help-text"),
+    pytest.param(SemanticType.EMAIL, "Email", {"placeholder": "Former work email"},
+                 id="former-in-the-placeholder"),
+    pytest.param(SemanticType.FULL_NAME, "Legal name", {}, id="legal-name"),
+    pytest.param(SemanticType.FIRST_NAME, "Legal first name", {}, id="legal-first-name"),
+    pytest.param(SemanticType.PREFERRED_NAME, "Nickname", {}, id="nickname"),
+    pytest.param(SemanticType.EMAIL, "Email", {"section": ["References"]}, id="references-section"),
+    pytest.param(SemanticType.EMAIL, "Email", {"help_text": "Your manager's email"},
+                 id="managers-email-help-text"),
+    pytest.param(SemanticType.EMAIL, "Email", {"control": ControlType.TEXTAREA}, id="text-area"),
+    pytest.param(SemanticType.PHONE, "Phone", {"input_type": "search"}, id="search-input"),
+    pytest.param(SemanticType.EMAIL, "Email address",
+                 {"control": ControlType.SELECT, "options": ["avery@example.test"]},
+                 id="select-listing-the-address"),
+    pytest.param(SemanticType.EMAIL, "Preferred contact method",
+                 {"control": ControlType.SELECT, "options": ["Email", "Phone", "Text message"]},
+                 id="preferred-contact-method-select"),
+])
+def test_other_contact_wordings_and_controls_keep_the_strict_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType,
+    label: str, field_kwargs: dict[str, Any],
+) -> None:
+    # The contact-method select carries the identity value to the gate only through the
+    # option mapping (the address onto its "Email" option); a choice control is never bare.
+    ctx = contact_context(with_contacts(fictional_candidate), mock_job, label, semantic,
+                          **field_kwargs)
+    scope = GREENHOUSE_FIRST_NAME if semantic in NAME_TYPES else GREENHOUSE_EMAIL
+    packet, resolver, provider = bare(ctx, scope, equivalent="Email")
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert missing.prompt == IDENTITY_HELD
+    [clarification] = provider.clarifications()
+    assert clarification["state"]["available_source"]["semantic_type"] == semantic.value
+    trace = clarification_trace(resolver)  # the only identity trace: no bare approval
+    assert (trace["status"], trace["clarification_threshold"]) == ("HELD", pytest.approx(0.95))
+    assert trace["clarification_probability"] == pytest.approx(0.02)
+
+
+def test_a_bare_wording_needs_the_copy_known_route_label(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    ctx = contact_context(fictional_candidate, mock_job, "Email", SemanticType.EMAIL,
+                          input_type="email")
+    packet, resolver, provider = bare(ctx, GREENHOUSE_EMAIL,
+                                      route=({"COPY_KNOWN": 0.91, "HUMAN_INPUT": 0.09}, 0.95))
+    assert packet.answers == [] and len(provider.requests) == 1
+    assert not bare_approvals(resolver) and not provider.clarifications()
+    assert [missing.prompt for missing in packet.missing_inputs] == [
+        "Answer held by the full-form route gate"]
+
+
+@pytest.mark.parametrize("text,past", [
+    ("Last name", False), ("Last Name *", False), ("Your last  name", False), ("First name", False),
+    ("Email at your last employer", True), ("Phone at your last job", True),
+    ("Old email address", True), ("Earlier surname", True), ("Original first name", True),
+    ("Legal name", True), ("Nickname", True), ("Maiden name", True),
+])
+def test_past_identity_wording_includes_last_unless_it_is_last_name(text: str, past: bool) -> None:
+    from interviewmaxxing_browser.ai.routing import _PAST_IDENTITY
+
+    assert (_PAST_IDENTITY.search(text) is not None) is past
+
+
+@pytest.mark.parametrize("semantic,label,field_kwargs", [
+    pytest.param(SemanticType.FIRST_NAME, "First Name", {"section": ["Referral information"]},
+                 id="referral-section"),
+    pytest.param(SemanticType.EMAIL, "Email", {"help_text": "Email of the employee who referred you"},
+                 id="referred-you-help-text"),
+    pytest.param(SemanticType.EMAIL, "Email", {"section": ["Recommender 1"]},
+                 id="recommender-section"),
+])
+def test_a_referrers_contact_wording_keeps_the_strict_clarification(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType,
+    label: str, field_kwargs: dict[str, Any],
+) -> None:
+    ctx = contact_context(fictional_candidate, mock_job, label, semantic, **field_kwargs)
+    packet, resolver, provider = bare(ctx, GREENHOUSE_EMAIL)
+    assert not bare_approvals(resolver)
+    assert packet.answers == [] and len(provider.clarifications()) == 1
+
+
+SPLIT_ROUTE: Split = ({"COPY_KNOWN": 0.91, "HUMAN_INPUT": 0.08, "AMBIGUOUS": 0.01}, 0.95)
+"""A live screener route split (the remaining 0.01 on AMBIGUOUS): labelled AMBIGUOUS."""
+HISTORICAL_096: Split = ({"HISTORICAL_OR_CONTEXTUAL": 0.96, "APPLICANT_CURRENT": 0.04}, 0.95)
+HISTORICAL_097: Split = ({"HISTORICAL_OR_CONTEXTUAL": 0.97, "APPLICANT_CURRENT": 0.03}, 0.95)
+
+
+@pytest.mark.parametrize("label,statement,route,scope", [
+    pytest.param("Do you have hands-on experience managing paid campaigns across Meta/Instagram "
+                 "and Search?",
+                 "Managed paid campaigns across Meta, Instagram and Google Search at Fictional "
+                 "Widgets Co.", SPLIT_ROUTE, HISTORICAL_096, id="meta-instagram-search"),
+    pytest.param("Do you have in-house (not agency-side) experience managing paid media?",
+                 "In-house paid media manager at Fictional Widgets Co. (2021-present)",
+                 ({"COPY_KNOWN": 0.85, "HUMAN_INPUT": 0.14, "AMBIGUOUS": 0.01}, 0.95),
+                 HISTORICAL_097, id="in-house"),
+    pytest.param("Do you have SEO AND GEO optimization experience?",
+                 "Led SEO and GEO optimization for the Fictional Widgets Co. website",
+                 ({"COPY_KNOWN": 0.89, "HUMAN_INPUT": 0.09, "AMBIGUOUS": 0.02}, 0.95),
+                 ({"HISTORICAL_OR_CONTEXTUAL": 0.98, "APPLICANT_CURRENT": 0.02}, 0.95),
+                 id="seo-and-geo"),
+])
+def test_live_screeners_on_a_split_route_label_are_answered_from_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, statement: str,
+    route: Split, scope: Split,
+) -> None:
+    stated = fact(fictional_candidate, "experience", statement, fid="fact.stated")
+    other = fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")
+    provider = _RoutedScreener(route=route, scope=scope,
+                               has=lambda text: 1.0 if text == statement else 0.0)
+    packet, ctx, resolver = screen(candidate_with(fictional_candidate, [stated, other]), mock_job,
+                                   screener_form(label), provider)
+    gate = route_of(resolver, ctx, "screener")
+    assert (gate.route, gate.proposed_route) == (FieldRoute.AMBIGUOUS, FieldRoute.COPY_KNOWN)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.stated"]
+    # The answer keeps its gate confidence: the route's own COPY_KNOWN share.
+    assert answer.confidence == pytest.approx(route[0]["COPY_KNOWN"])
+    [trace] = screener_traces(resolver)
+    assert (trace["status"], trace["decision"], trace["supporting_ids"]) == (
+        "ANSWERED", "YES", ["fact.stated"])
+    assert not provider.asked("route")
+
+
+@pytest.mark.parametrize("route,label,confidence", [
+    pytest.param(({"HUMAN_INPUT": 0.96, "COPY_KNOWN": 0.04}, 0.95), FieldRoute.HUMAN_INPUT, 0.95,
+                 id="human-input-label"),
+    pytest.param(({"COPY_KNOWN": 0.91, "HUMAN_INPUT": 0.08, "WRITER": 0.01}, 0.95),
+                 FieldRoute.AMBIGUOUS, 0.91, id="writer-at-0.01"),
+    pytest.param(({"COPY_KNOWN": 0.93, "HUMAN_INPUT": 0.05, "UNSUPPORTED": 0.005,
+                   "APPROVED_DOCUMENT": 0.005}, 0.95), FieldRoute.AMBIGUOUS, 0.93,
+                 id="unsupported-and-document-at-0.01"),
+])
+def test_a_screener_is_admitted_with_at_most_001_route_mass_off_the_answer_routes(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, route: Split, label: FieldRoute,
+    confidence: float,
+) -> None:
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    provider = _RoutedScreener(route=route, scope=HISTORICAL_096,
+                               has=mentions("Fictional Search Agency"))
+    packet, ctx, resolver = screen(candidate_with(fictional_candidate, [agency]), mock_job,
+                                   screener_form(), provider)
+    assert route_of(resolver, ctx, "screener").route is label
+    [answer] = packet.answers
+    assert answer.value.label == "Yes" and answer.provenance.reference_ids == ["fact.agency"]
+    assert answer.confidence == pytest.approx(confidence)
+    assert screener_traces(resolver)[0]["status"] == "ANSWERED"
+
+
+@pytest.mark.parametrize("route,scope", [
+    pytest.param(({"COPY_KNOWN": 0.87, "HUMAN_INPUT": 0.08, "WRITER": 0.05}, 0.95), HISTORICAL_096,
+                 id="writer-0.05"),
+    pytest.param(({"COPY_KNOWN": 0.91, "HUMAN_INPUT": 0.07, "UNSUPPORTED": 0.01,
+                   "APPROVED_DOCUMENT": 0.01}, 0.95), HISTORICAL_096, id="off-answer-0.02-in-total"),
+    pytest.param(SPLIT_ROUTE, ({"HISTORICAL_OR_CONTEXTUAL": 0.90, "APPLICANT_CURRENT": 0.10}, 0.95),
+                 id="historical-0.90"),
+    pytest.param(SPLIT_ROUTE, ({"HISTORICAL_OR_CONTEXTUAL": 0.97, "APPLICANT_CURRENT": 0.03}, 0.85),
+                 id="scope-confidence-0.85"),
+    pytest.param(SPLIT_ROUTE, ({"APPLICANT_CURRENT": 0.97, "HISTORICAL_OR_CONTEXTUAL": 0.03}, 0.95),
+                 id="applicant-current-scope"),
+])
+def test_a_split_route_label_outside_the_mass_rule_is_never_screened(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, route: Split, scope: Split,
+) -> None:
+    from interviewmaxxing_core import MissingReason
+
+    agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
+    provider = _RoutedScreener(route=route, scope=scope, has=mentions("Fictional Search Agency"))
+    packet, ctx, resolver = screen(candidate_with(fictional_candidate, [agency]), mock_job,
+                                   screener_form(), provider)
+    assert route_of(resolver, ctx, "screener").route is FieldRoute.AMBIGUOUS
+    assert not provider.asked("experience") and not screener_traces(resolver)
+    assert not provider.asked("route") and packet.answers == []
+    [missing] = packet.missing_inputs  # the factual resolver's own hold, as before routing
+    assert missing.prompt.startswith("Required:") and missing.reason is MissingReason.NO_ANSWER
+
+
+def test_an_admitted_screener_without_a_stating_fact_holds_with_the_screener_prompt(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = _RoutedScreener(("UNKNOWN", 0.99, 0.98), route=SPLIT_ROUTE, scope=HISTORICAL_096)
+    packet, _, resolver = screen(candidate_with(fictional_candidate, [
+        fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")]), mock_job,
+        screener_form(), provider)
+    assert packet.answers == [] and not provider.asked("route")
+    [missing] = packet.missing_inputs
+    assert "absent evidence is not No" in missing.prompt
+    assert not missing.prompt.startswith("Required:")
+    assert screener_traces(resolver)[0]["status"] == "UNKNOWN"
+
+
+def test_an_admitted_field_that_is_not_an_experience_question_keeps_its_factual_hold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_core import MissingReason
+
+    label = "Are you comfortable working from a fictional office?"
+    provider = _RoutedScreener(("NOT_EXPERIENCE", 0.99, 0.98), route=SPLIT_ROUTE,
+                               scope=HISTORICAL_096)
+    packet, ctx, resolver = screen(candidate_with(fictional_candidate, [
+        fact(fictional_candidate, "skills", PAID_MEDIA, fid="fact.paid_media")]), mock_job,
+        screener_form(label), provider)
+    assert route_of(resolver, ctx, "screener").route is FieldRoute.AMBIGUOUS
+    # Admitted only as a screener: it never reaches the general fact route.
+    assert provider.asked("experience") and not provider.asked("route")
+    assert screener_traces(resolver)[0]["status"] == "NOT_SCREENER"
+    assert packet.answers == []
+    [missing] = packet.missing_inputs
+    assert missing.prompt.startswith("Required:") and label in missing.prompt
+    assert missing.reason is MissingReason.NO_ANSWER
+
+
+@pytest.mark.parametrize("scope", [
+    pytest.param(HISTORICAL_097, id="historical"),
+    pytest.param(({"APPLICANT_CURRENT": 0.97, "HISTORICAL_OR_CONTEXTUAL": 0.03}, 0.95),
+                 id="applicant-current"),
+])
+def test_a_budget_range_on_a_split_route_label_is_answered_from_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, scope: Split,
+) -> None:
+    provider = _RoutedFactScreener(
+        "$250K - $500K", route=({"COPY_KNOWN": 0.90, "HUMAN_INPUT": 0.09, "AMBIGUOUS": 0.01}, 0.95),
+        scope=scope, states=mentions("400000"))
+    packet, ctx, resolver = screen_facts(
+        candidate_with(fictional_candidate, [budget_fact(fictional_candidate)]), mock_job,
+        fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    assert route_of(resolver, ctx, "fact_screener").route is FieldRoute.AMBIGUOUS
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v2", "$250K - $500K")
+    assert answer.provenance.reference_ids == ["fact.budget"]
+    assert answer.confidence == pytest.approx(0.90)  # the route's own COPY_KNOWN share
+    [trace] = fact_traces(resolver)
+    assert (trace["status"], trace["evidence_ids"]) == ("ANSWERED", ["fact.budget"])
+    assert not provider.asked("route") and not provider.asked("experience")
+
+
+@pytest.mark.parametrize("pick,route,scope,asked", [
+    pytest.param("$250K - $500K", ({"COPY_KNOWN": 0.90, "HUMAN_INPUT": 0.08, "WRITER": 0.02}, 0.95),
+                 HISTORICAL_097, False, id="writer-0.02"),
+    pytest.param("$250K - $500K", SPLIT_ROUTE,
+                 ({"HISTORICAL_OR_CONTEXTUAL": 0.90, "APPLICANT_CURRENT": 0.10}, 0.95), False,
+                 id="historical-0.90"),
+    pytest.param("NOT_EXPERIENCE", SPLIT_ROUTE, HISTORICAL_097, True, id="not-experience"),
+])
+def test_a_split_route_choice_that_is_not_fact_screened_keeps_its_factual_hold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, pick: str, route: Split,
+    scope: Split, asked: bool,
+) -> None:
+    provider = _RoutedFactScreener(pick, route=route, scope=scope, states=mentions("400000"))
+    packet, _, resolver = screen_facts(
+        candidate_with(fictional_candidate, [budget_fact(fictional_candidate)]), mock_job,
+        fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    assert bool(provider.asked("fact_choice")) is asked
+    assert [trace["status"] for trace in fact_traces(resolver)] == (["NOT_SCREENER"] if asked else [])
+    assert packet.answers == [] and not provider.asked("route")
+    [missing] = packet.missing_inputs
+    assert missing.prompt.startswith("Required:") and BUDGET_QUESTION in missing.prompt
+
+
+RANGE_FACT = "$400K\u2013$500K per month"
+DATED_RANGE_FACT = "In 2021 I managed $400K\u2013$500K per month"
+CONTAINING_OPTIONS = ["Under $250K", "$250K\u2013$500K", "Over $500K"]
+LOWER_OPTIONS = ["Under $200K", "$200K\u2013$300K", "Over $300K"]
+
+
+@pytest.mark.parametrize("value,options,pick,answered", [
+    pytest.param(RANGE_FACT, CONTAINING_OPTIONS, "$250K\u2013$500K", True, id="range-inside-the-option"),
+    pytest.param(RANGE_FACT, LOWER_OPTIONS, "$200K\u2013$300K", False, id="option-below-the-range"),
+    pytest.param(RANGE_FACT, ["Under $450K", "$450K\u2013$600K", "Over $600K"], "$450K\u2013$600K",
+                 False, id="range-straddles-the-lower-bound"),
+    pytest.param(RANGE_FACT, ["Under $250K", "$250K\u2013$450K", "Over $450K"], "$250K\u2013$450K",
+                 False, id="range-straddles-the-upper-bound"),
+    pytest.param(RANGE_FACT, ["Under $600K", "$600K\u2013$700K", "Over $700K"], "$600K\u2013$700K",
+                 False, id="option-above-the-range"),
+    pytest.param(RANGE_FACT, BUDGET_OPTIONS, "$500K+", False, id="open-ended-option"),
+    pytest.param(DATED_RANGE_FACT, CONTAINING_OPTIONS, "$250K\u2013$500K", True,
+                 id="a-year-is-not-an-amount"),
+    pytest.param(DATED_RANGE_FACT, LOWER_OPTIONS, "$200K\u2013$300K", False, id="dated-range-below"),
+    pytest.param("I managed $450K per month", CONTAINING_OPTIONS, "$250K\u2013$500K", True,
+                 id="one-exact-amount"),
+    pytest.param("I managed $450K per month", BUDGET_OPTIONS, "$500K+", False,
+                 id="one-exact-amount-outside"),
+    pytest.param(400000, CONTAINING_OPTIONS, "$250K\u2013$500K", True, id="a-number"),
+])
+def test_every_amount_a_budget_fact_states_must_lie_in_the_chosen_range(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: Any, options: list[str],
+    pick: str, answered: bool,
+) -> None:
+    # Jev picks ``pick`` confidently every time: only the code's range check can hold it.
+    budget = fact(fictional_candidate, "monthly_paid_media_budget", value, fid="fact.range")
+    provider = FactScreenerProvider(pick, states=lambda text: 1.0)
+    packet, ctx, resolver = screen_facts(candidate_with(fictional_candidate, [budget]), mock_job,
+                                         fact_form(BUDGET_QUESTION, options), provider)
+    [trace] = fact_traces(resolver)
+    if answered:
+        assert ctx.problems(packet) == [] and packet.is_complete
+        [answer] = packet.answers
+        assert answer.value.label == pick and answer.provenance.reference_ids == ["fact.range"]
+        assert trace["status"] == "ANSWERED"
+    else:
+        assert packet.answers == [] and not packet.is_complete
+        assert (trace["status"], trace["evidence_ids"]) == ("RANGE_MISMATCH", ["fact.range"])
+        assert "Add a verified fact that states the answer to" in packet.missing_inputs[0].prompt
+
+
+@pytest.mark.parametrize("value,amounts", [
+    (RANGE_FACT, [400000.0, 500000.0]),
+    (DATED_RANGE_FACT, [400000.0, 500000.0]),
+    ("Managed $400,000 - $500,000 per month", [400000.0, 500000.0]),
+    ("$1.5M to $2M a year", [1500000.0, 2000000.0]),
+    ("1,950 to 2,050 leads a month", [1950.0, 2050.0]),
+    ("$2000 to $2500 per month", [2000.0, 2500.0]),
+    ("I managed $450K per month", [450000.0]),
+    (400000, [400000.0]),
+    (True, []),
+])
+def test_stated_amounts_reads_every_amount_but_bare_years(value: Any, amounts: list[float]) -> None:
+    from interviewmaxxing_browser.ai.routing import _stated_amounts
+
+    assert _stated_amounts(value) == amounts
+
+
+def test_a_dated_single_amount_is_still_range_checked(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    budget = fact(fictional_candidate, "monthly_paid_media_budget",
+                  "In 2021 I managed $400K per month", fid="fact.range")
+    provider = FactScreenerProvider("$500K+", states=lambda text: 1.0)
+    packet, _, resolver = screen_facts(candidate_with(fictional_candidate, [budget]), mock_job,
+                                       fact_form(BUDGET_QUESTION, BUDGET_OPTIONS), provider)
+    [trace] = fact_traces(resolver)
+    assert (trace["status"], trace["evidence_ids"]) == ("RANGE_MISMATCH", ["fact.range"])
+    assert packet.answers == []

@@ -144,6 +144,12 @@ these types are rejected if their provenance is anything else (see
 ``interviewmaxxing_core.packets.PacketAnswer``)."""
 
 
+ADDRESS_DERIVED_TYPES: frozenset[SemanticType] = frozenset({SemanticType.RELOCATION})
+"""Types whose single-choice answer may be derived from the verified current address and
+carry ``PROFILE_IDENTITY``: "Do you live in or will you relocate to Texas?" is Yes for an
+applicant who already lives there. Text answers of these types never copy identity."""
+
+
 PROFILE_IDENTITY_TYPES: frozenset[SemanticType] = frozenset(
     {
         SemanticType.FIRST_NAME,

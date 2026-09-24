@@ -31,6 +31,7 @@ from ._base import Confidence, Contract, NonEmptyStr, UtcDatetime, new_id, utc_n
 from .artifacts import ArtifactRef
 from .candidate import AnswerScope, CandidateProfile, SavedAnswer, SavedAnswerValue
 from .forms import (
+    ADDRESS_DERIVED_TYPES,
     EXPLICIT_ANSWER_REQUIRED,
     MULTI_CHOICE_CONTROLS,
     PROFILE_IDENTITY_TYPES,
@@ -576,6 +577,8 @@ class ApplicationPacket(Contract):
             if (
                 answer.provenance.source is AnswerSource.PROFILE_IDENTITY
                 and field.semantic_type not in PROFILE_IDENTITY_TYPES
+                and not (field.semantic_type in ADDRESS_DERIVED_TYPES
+                         and isinstance(answer.value, ChoiceValue))
             ):
                 problems.append(f"{field.id!r} ({field.semantic_type}) is not an identity field")
             problems.extend(answer_problems(field, answer.value))

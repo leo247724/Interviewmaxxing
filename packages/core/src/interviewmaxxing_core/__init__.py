@@ -101,6 +101,7 @@ from .execution import (
     SubmitActionResult,
 )
 from .forms import (
+    ADDRESS_DERIVED_TYPES,
     EXPLICIT_ANSWER_REQUIRED,
     PROFILE_IDENTITY_TYPES,
     PROTECTED_ATTRIBUTE_TYPES,
@@ -154,6 +155,7 @@ from .store import ApplicationStore, BindResult, RequestResult
 from .urls import InvalidApplicationUrl, normalize_application_url
 
 __all__ = [
+    "ADDRESS_DERIVED_TYPES",
     "CONTRACT_VERSION",
     "DEFAULT_JEV_MODEL",
     "DEFAULT_ONSITE_LOCATION",

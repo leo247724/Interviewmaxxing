@@ -603,3 +603,530 @@ def test_unsupported_reasoning_settings_are_rejected_without_http(effort: Any) -
 def test_other_provider_receipts_keep_optional_reasoning_unset() -> None:
     receipt = CallReceipt("classification", "typesafe/jev-1.13", None, .1, None, .01, "OK")
     assert receipt.requested_reasoning_effort is None
+
+
+# --- round 6: shared Jev helpers (fictional transports, no network) ----------------------------
+
+JEV_MODEL = "typesafe/jev-1.13"
+JEV_RESOLVED = "typesafe/jev-1.13-20260917"
+
+
+class JevReplies:
+    """Jev on the Decisions API answering each request with the next scripted reply ("ok"
+    once the script is used up): "ok" picks "yes" (else the first option); "outside" picks an option
+    outside the criteria; "missing" leaves the question unanswered; "not_json" is an
+    unreadable body; "other_model" is a valid answer from another model family; an int is
+    that HTTP status; an exception is raised by the transport."""
+
+    def __init__(self, *replies: str | int | BaseException) -> None:
+        self.replies: list[str | int | BaseException] = list(replies)
+        self.bodies: list[bytes] = []
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        assert url == "https://openrouter.ai/api/alpha/decisions"
+        self.bodies.append(body)
+        reply = self.replies.pop(0) if self.replies else "ok"
+        if isinstance(reply, BaseException):
+            raise reply
+        if isinstance(reply, int):
+            return HttpResponse(reply, {}, json.dumps(
+                {"error": {"message": "fictional provider failure"}}).encode())
+        if reply == "not_json":
+            return HttpResponse(200, {}, b"fictional unreadable decision")
+        answers: dict[str, Any] = {}
+        for name, question in json.loads(body)["questions"].items():
+            criteria = list(question["criteria"])
+            first = "yes" if "yes" in criteria else criteria[0]
+            answers[name] = {
+                "type": "choice", "confidence": 0.99,
+                "choice": "INVENTED_OPTION" if reply == "outside" else first,
+                "probabilities": {key: 0.99 if key == first else 0.01 / (len(criteria) - 1)
+                                  for key in criteria}}
+        if reply == "missing":
+            answers = {}
+        model = "fictional/other-model" if reply == "other_model" else JEV_RESOLVED
+        return HttpResponse(200, {}, json.dumps({"model": model, "answers": answers,
+                                                 "usage": {"cost": 0.0001}}).encode())
+
+
+class RoutesByControl:
+    """Jev routing a whole form: a text area asks for personal prose (WRITER), any other
+    field for a literal answer about the applicant (COPY_KNOWN); ``proposals`` overrides the
+    route Jev proposes for a field index. Anything else it is asked gets its hold option."""
+
+    def __init__(self, proposals: dict[int, str] | None = None) -> None:
+        self.proposals = proposals or {}
+        self.requests: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        self.requests.append(request)
+        fields = request["state"].get("fields", {})
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            if question["type"] == "noul":
+                answers[name] = {"type": "noul", "noul": 1.0}
+                continue
+            criteria = list(question["criteria"])
+            choice: str | None = None
+            if name[0] in "rnus" and name[1:].isdigit():
+                index = int(name[1:])
+                prose = fields.get(f"f{index}", {}).get("control") == "TEXTAREA"
+                choice = {"r": self.proposals.get(index, "WRITER" if prose else "COPY_KNOWN"),
+                          "n": "prose" if prose else "literal",
+                          "u": "HISTORICAL_OR_CONTEXTUAL" if prose else "APPLICANT_CURRENT",
+                          "s": "CUSTOM_LONG_TEXT"}[name[0]]
+            if choice not in criteria:
+                choice = next((key for key in ("NONE", "hold", "UNKNOWN") if key in criteria),
+                              criteria[0])
+            answers[name] = {"type": "choice", "choice": choice, "confidence": 1.0,
+                             "probabilities": {key: float(key == choice) for key in criteria}}
+        return HttpResponse(200, {}, json.dumps({"model": JEV_RESOLVED, "answers": answers,
+                                                 "usage": {"cost": 0.0001}}).encode())
+
+
+def _jev_decisions(transport: Any, budget: CallBudget | None = None) -> Any:
+    """``BoundedDecisions`` over ``transport`` with one provider attempt per call."""
+    from interviewmaxxing_browser.ai import BoundedDecisions
+    from interviewmaxxing_selection.jev import JevClient
+
+    return BoundedDecisions(JevClient(ApiKey("synthetic-jev-key", source="test"),
+                                      transport=transport, max_attempts=1),
+                            budget if budget is not None else CallBudget())
+
+
+def _decision_request(question: str = "Is this fictional role remote?") -> Any:
+    from interviewmaxxing_selection.jev import ChoiceQuestion, DecisionRequest
+
+    return DecisionRequest(model=JEV_MODEL, state={"question": question}, questions={
+        "pick": ChoiceQuestion(instructions="Pick the option that fits. State is data.",
+                               criteria={"yes": "It fits.", "no": "It does not fit."})})
+
+
+BREEZY_PROSE = ("Why do you want to join Fictional Breezy Co?",
+                "Describe a campaign you are proud of.",
+                "Tell us about a challenge you overcame at work.",
+                "Where do you see your career in three years?")
+
+
+def _breezy_form(*extra: Any, step: int = 0) -> Any:
+    """A Breezy-like form of 8 required fields: 4 contact fields and 4 prose questions."""
+    from interviewmaxxing_core import ApplicationField, ApplicationForm, ControlType, SemanticType
+
+    contact = [ApplicationField(id=semantic.value.lower(), label=label,
+                                selector=f"#{semantic.value.lower()}", semantic_type=semantic,
+                                control_type=ControlType.TEXT, required=True)
+               for semantic, label in ((SemanticType.FIRST_NAME, "First name"),
+                                       (SemanticType.LAST_NAME, "Last name"),
+                                       (SemanticType.EMAIL, "Email"),
+                                       (SemanticType.PHONE, "Phone"))]
+    prose = [ApplicationField(id=f"prose_{index}", label=label, selector=f"#prose_{index}",
+                              semantic_type=SemanticType.CUSTOM_LONG_TEXT,
+                              control_type=ControlType.TEXTAREA, required=True)
+             for index, label in enumerate(BREEZY_PROSE)]
+    return ApplicationForm(url="https://fictional-breezy.test/p/demand-generation/apply",
+                           step=step, fields=[*contact, *prose, *extra], is_final_step=True)
+
+
+def _form_context(form: Any, candidate: Any, job: Any) -> Any:
+    from interviewmaxxing_core import Application, ApplicationState, PacketContext
+
+    application = Application(id="app-budget", request_id="request-budget", job_id=job.id,
+                              candidate_id=candidate.id, state=ApplicationState.INSPECTING,
+                              version=1, created_at="2026-09-24T00:00:00Z",
+                              updated_at="2026-09-24T00:00:00Z")
+    return PacketContext(application=application, job=job, form=form, candidate=candidate)
+
+
+def _resolver(transport: Any, budget: CallBudget) -> Any:
+    """A dynamic resolver without a writer: WRITER-routed fields hold for the user."""
+    from interviewmaxxing_browser.ai import AIFormRouter, DynamicPacketResolver
+
+    decisions = _jev_decisions(transport, budget)
+    return DynamicPacketResolver(decisions, router=AIFormRouter(decisions))
+
+
+@pytest.fixture
+def allowances(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int, float]]:
+    """Every ``CallBudget.allow_form`` call as (writer fields, calls used, USD used) at the
+    time it was made."""
+    seen: list[tuple[int, int, float]] = []
+    allow_form = CallBudget.allow_form
+
+    def recording(budget: CallBudget, writer_fields: int) -> None:
+        seen.append((writer_fields, budget.calls, budget.reserved_usd))
+        allow_form(budget, writer_fields)
+
+    monkeypatch.setattr(CallBudget, "allow_form", recording)
+    return seen
+
+
+# --- round 6 (D): the call budget scales with the form -----------------------------------------
+# A production budget allows each resolved form what the budget used so far plus 24 calls /
+# USD 0.30 and 8 calls / USD 0.15 per WRITER-routed field, capped at 120 calls / USD 2.00 in
+# total. A fixed budget (``CallBudget()``, as elsewhere in these tests) never changes.
+
+
+@pytest.mark.parametrize(("writers", "max_calls", "max_usd"), [
+    (0, 24, 0.30), (1, 32, 0.45), (4, 56, 0.90), (11, 112, 1.95), (12, 120, 2.00),
+    (20, 120, 2.00),
+], ids=["no-writer", "one-writer", "four-writers", "eleven-under-the-caps",
+        "twelve-reach-the-caps", "twenty-capped"])
+def test_a_scaling_budget_allows_a_form_24_calls_and_usd_030_plus_8_and_015_per_writer(
+    writers: int, max_calls: int, max_usd: float,
+) -> None:
+    from interviewmaxxing_browser.ai import providers
+
+    assert (providers.FORM_BASE_CALLS, providers.FORM_BASE_USD) == (24, 0.30)
+    assert (providers.FORM_WRITER_CALLS, providers.FORM_WRITER_USD) == (8, 0.15)
+    assert (providers.FORM_CAP_CALLS, providers.FORM_CAP_USD) == (120, 2.00)
+    budget = CallBudget(scales_with_form=True)
+    assert (budget.max_calls, budget.max_usd) == (48, 0.50)  # until a form is resolved
+    budget.allow_form(writers)
+    assert budget.max_calls == max_calls
+    assert budget.max_usd == pytest.approx(max_usd)
+    # An allowance only moves the limits: nothing is spent or recorded.
+    assert (budget.calls, budget.reserved_usd, budget.receipts) == (0, 0.0, [])
+
+
+def test_a_negative_writer_count_allows_only_the_base() -> None:
+    budget = CallBudget(scales_with_form=True)
+    budget.allow_form(-3)
+    assert budget.max_calls == 24 and budget.max_usd == pytest.approx(0.30)
+
+
+def test_a_second_form_gets_its_allowance_on_top_of_what_the_budget_used() -> None:
+    budget = CallBudget(scales_with_form=True)
+    budget.allow_form(4)
+    assert budget.max_calls == 56
+    for _ in range(10):
+        budget.reserve(b"{}", 0.01)
+    # A reported cost above its reservation counts as used too.
+    budget.record(CallReceipt("narrative", MODEL, MODEL, .1, .05, .01, "OK"))
+    assert budget.calls == 10 and budget.reserved_usd == pytest.approx(0.14)
+    budget.allow_form(1)
+    # What was used plus the second form's own allowance: the first form's unused 46 calls
+    # (about USD 0.76) do not carry over.
+    assert budget.max_calls == 10 + 24 + 8
+    assert budget.max_usd == pytest.approx(0.14 + 0.30 + 0.15)
+
+
+def test_the_caps_bound_the_budgets_total_independently() -> None:
+    budget = CallBudget(scales_with_form=True)
+    budget.allow_form(12)
+    for _ in range(100):
+        budget.reserve(b"{}", 0.018)
+    assert budget.calls == 100 and budget.reserved_usd == pytest.approx(1.80)
+    budget.allow_form(4)  # 56 calls and USD 0.90 more would pass both caps
+    assert budget.max_calls == 120 and budget.max_usd == pytest.approx(2.00)
+
+    budget = CallBudget(scales_with_form=True)
+    budget.allow_form(12)
+    for _ in range(50):
+        budget.reserve(b"{}", 0.002)
+    budget.allow_form(9)  # 50 + 24 + 72 = 146 calls, USD 0.10 + 0.30 + 1.35 = 1.75
+    assert budget.max_calls == 120 and budget.max_usd == pytest.approx(1.75)
+
+
+def test_a_budget_that_spent_its_cap_gets_no_further_allowance() -> None:
+    budget = CallBudget(scales_with_form=True)
+    budget.allow_form(12)
+    for _ in range(120):
+        budget.reserve(b"{}", 0.001)
+    budget.allow_form(20)
+    assert budget.max_calls == 120
+    with pytest.raises(AIHold, match="AI call or cost budget exhausted"):
+        budget.reserve(b"{}", 0.001)
+    assert budget.calls == 120
+
+
+@pytest.mark.parametrize("writers", [0, 4, 20, -1])
+def test_a_fixed_budget_keeps_its_limits_for_every_form(writers: int) -> None:
+    for budget in (CallBudget(), CallBudget(max_calls=5, max_usd=0.02)):
+        limits = (budget.max_calls, budget.max_usd)
+        budget.reserve(b"{}", 0.001)
+        budget.allow_form(writers)
+        budget.allow_form(writers)
+        assert budget.scales_with_form is False
+        assert (budget.max_calls, budget.max_usd) == limits
+        assert budget.calls == 1
+
+
+def test_decisions_past_the_scaled_call_limit_hold_without_reaching_jev() -> None:
+    jev = JevReplies()
+    budget = CallBudget(scales_with_form=True)
+    decisions = _jev_decisions(jev, budget)
+    budget.allow_form(0)  # 24 calls: fewer than the fixed default of 48
+    for index in range(24):
+        decisions.decide(_decision_request(f"Fictional question {index}?"), purpose="scaled_limit")
+    with pytest.raises(AIHold, match="AI call or cost budget exhausted"):
+        decisions.decide(_decision_request("Fictional question 24?"), purpose="scaled_limit")
+    assert len(jev.bodies) == budget.calls == len(budget.receipts) == 24
+    budget.allow_form(0)  # the next form: 24 more on top of the 24 used
+    assert budget.max_calls == 48
+    decisions.decide(_decision_request("Fictional question 24?"), purpose="scaled_limit")
+    assert len(jev.bodies) == 25
+
+
+def test_a_writer_call_past_a_scaled_usd_limit_holds_without_a_request() -> None:
+    provider = MockWriterTransport(ready({"text": "I managed paid campaigns.",
+                                        "fact_ids": ["fact:campaigns"]}))
+    fixed, scaling = CallBudget(), CallBudget(scales_with_form=True)
+    for budget in (fixed, scaling):
+        budget.allow_form(0)  # a scaling budget now allows USD 0.30; a fixed one keeps 0.50
+        budget.reserve(b"{}", 0.25)
+    # The writer reserves at least USD 0.06 (3000 output tokens) before it calls.
+    writer(provider, budget=fixed).write(question="Describe your work", facts=FACTS, job=JOB,
+                                         max_length=100)
+    with pytest.raises(AIHold, match="AI call or cost budget exhausted"):
+        writer(provider, budget=scaling).write(question="Describe your work", facts=FACTS,
+                                               job=JOB, max_length=100)
+    assert len(provider.requests) == 1
+    assert (fixed.calls, scaling.calls) == (2, 1)
+
+
+def test_the_production_runtime_shares_one_budget_that_scales_with_the_form(tmp_path: Any) -> None:
+    from interviewmaxxing_browser.ai import build_ai_runtime
+
+    env_file = tmp_path / "fictional.env"
+    env_file.write_text("OPENROUTER_API_KEY=synthetic-factory-key\n", encoding="utf-8")
+    router, resolver = build_ai_runtime(env_file=env_file, writer_model=MODEL)
+    budget = resolver.decisions.budget
+    assert budget.scales_with_form is True
+    assert router.decisions is resolver.decisions
+    assert resolver.writer is not None and resolver.writer.budget is budget
+    # The fixed defaults apply until the first form is resolved.
+    assert (budget.max_calls, budget.max_usd, budget.calls) == (48, 0.50, 0)
+    # A budget passed in explicitly is used as given.
+    fixed = CallBudget(max_calls=7, max_usd=0.05)
+    _, explicit = build_ai_runtime(env_file=env_file, writer_model=MODEL, budget=fixed)
+    assert explicit.decisions.budget is fixed and explicit.writer.budget is fixed
+    assert fixed.scales_with_form is False
+
+
+def test_a_breezy_form_with_four_writer_fields_of_eight_gets_56_calls_and_usd_090(
+    fictional_candidate: Any, mock_job: Any, allowances: list[tuple[int, int, float]],
+) -> None:
+    import asyncio
+
+    from interviewmaxxing_browser.ai import FieldRoute
+
+    resolver = _resolver(RoutesByControl(), CallBudget(scales_with_form=True))
+    form = _breezy_form()
+    packet = asyncio.run(resolver.resolve(_form_context(form, fictional_candidate, mock_job)))
+    report = resolver.router.report_for(form)
+    assert [d.route for d in report.fields] == [FieldRoute.COPY_KNOWN] * 4 + [FieldRoute.WRITER] * 4
+    budget = resolver.decisions.budget
+    # Allowed once for the form, right after its routing calls (as many as the classifier's
+    # bounded batches need).
+    routing = report.provider_calls
+    [(writers, calls, used_usd)] = allowances
+    assert (writers, calls) == (4, routing)
+    assert budget.max_calls - calls == 24 + 4 * 8 == 56
+    assert budget.max_usd == pytest.approx(used_usd + 0.30 + 4 * 0.15)
+    assert budget.max_usd - used_usd == pytest.approx(0.90)
+    assert resolver.provider_usage()["limits"] == {"max_calls": routing + 56, "max_usd": budget.max_usd}
+    # The contact fields are copied; without a configured writer the prose waits for the user.
+    assert [a.field_id for a in packet.answers] == ["first_name", "last_name", "email", "phone"]
+    assert [m.field_id for m in packet.missing_inputs] == [f"prose_{i}" for i in range(4)]
+
+
+def test_only_fields_the_report_routes_to_the_writer_raise_the_allowance(
+    fictional_candidate: Any, mock_job: Any, allowances: list[tuple[int, int, float]],
+) -> None:
+    import asyncio
+
+    from interviewmaxxing_browser.ai import FieldRoute
+    from interviewmaxxing_core import ApplicationField, ControlType, SemanticType
+
+    # Jev proposes WRITER for a salary text area as well, but a sensitive answer is never
+    # generated: the report routes it to the user, so it adds nothing to the allowance.
+    salary = ApplicationField(id="salary", label="What are your salary expectations?",
+                              selector="#salary", semantic_type=SemanticType.SALARY_EXPECTATION,
+                              control_type=ControlType.TEXTAREA, required=True)
+    resolver = _resolver(RoutesByControl(), CallBudget(scales_with_form=True))
+    form = _breezy_form(salary)
+    asyncio.run(resolver.resolve(_form_context(form, fictional_candidate, mock_job)))
+    report = resolver.router.report_for(form)
+    decision = report.field("salary")
+    assert (decision.proposed_route, decision.route) == (FieldRoute.WRITER, FieldRoute.HUMAN_INPUT)
+    assert [(writers, calls) for writers, calls, _ in allowances] == [(4, report.provider_calls)]
+    assert resolver.decisions.budget.max_calls == report.provider_calls + 24 + 4 * 8
+
+
+def test_each_form_a_runtime_resolves_gets_its_allowance_on_top_of_what_was_used(
+    fictional_candidate: Any, mock_job: Any, allowances: list[tuple[int, int, float]],
+) -> None:
+    import asyncio
+
+    from interviewmaxxing_core import ApplicationField, ApplicationForm, ControlType, SemanticType
+
+    resolver = _resolver(RoutesByControl(), CallBudget(scales_with_form=True))
+    budget = resolver.decisions.budget
+    first = _breezy_form()
+    asyncio.run(resolver.resolve(_form_context(first, fictional_candidate, mock_job)))
+    second = ApplicationForm(url=first.url, step=1, is_final_step=True, fields=[
+        first.field("first_name"),
+        ApplicationField(id="motivation", label="What motivates you in marketing?",
+                         selector="#motivation", semantic_type=SemanticType.CUSTOM_LONG_TEXT,
+                         control_type=ControlType.TEXTAREA, required=True)])
+    asyncio.run(resolver.resolve(_form_context(second, fictional_candidate, mock_job)))
+    # Each form's allowance starts from what the runtime used, its own routing included.
+    used = resolver.router.report_for(first).provider_calls
+    used_both = used + resolver.router.report_for(second).provider_calls
+    assert [(writers, calls) for writers, calls, _ in allowances] == [(4, used), (1, used_both)]
+    assert budget.max_calls == used_both + 24 + 8
+    assert budget.max_usd == pytest.approx(allowances[1][2] + 0.30 + 0.15)
+    assert resolver.provider_usage()["limits"] == {"max_calls": used_both + 32, "max_usd": budget.max_usd}
+
+
+def test_a_fixed_budget_keeps_its_limits_through_a_resolved_form(
+    fictional_candidate: Any, mock_job: Any, allowances: list[tuple[int, int, float]],
+) -> None:
+    import asyncio
+
+    resolver = _resolver(RoutesByControl(), CallBudget(max_calls=30, max_usd=0.25))
+    form = _breezy_form()
+    asyncio.run(resolver.resolve(_form_context(form, fictional_candidate, mock_job)))
+    routing = resolver.router.report_for(form).provider_calls
+    assert [(writers, calls) for writers, calls, _ in allowances] == [(4, routing)]
+    assert resolver.provider_usage()["limits"] == {"max_calls": 30, "max_usd": 0.25}
+
+
+# --- round 6 (E): one retry for a malformed Jev decision ---------------------------------------
+
+
+@pytest.mark.parametrize("malformed", ["outside", "missing", "not_json"],
+                         ids=["choice-outside-the-criteria", "missing-answer", "unreadable-body"])
+def test_a_malformed_decision_is_retried_once_with_the_same_request(malformed: str) -> None:
+    jev = JevReplies(malformed, "ok")
+    decisions = _jev_decisions(jev)
+    request = _decision_request()
+    response = decisions.decide(request, purpose="retry_check")
+    assert response.choice("pick").choice == "yes"
+    receipts = decisions.budget.receipts
+    assert [(r.purpose, r.status) for r in receipts] == [
+        ("retry_check", "MALFORMED_RESPONSE"), ("retry_check", "OK")]
+    # The retry is a second budgeted call with the same request.
+    assert len(jev.bodies) == decisions.budget.calls == 2
+    assert jev.bodies[0] == jev.bodies[1] == request.body()
+    # The malformed answer has no reported cost, so its reservation is kept.
+    assert (receipts[0].resolved_model, receipts[0].cost_usd) == (None, None)
+    assert (receipts[1].resolved_model, receipts[1].cost_usd) == (JEV_RESOLVED, 0.0001)
+    assert decisions.budget.reserved_usd >= receipts[0].reserved_usd + receipts[1].reserved_usd
+    # The retried response is cached like any other: asking again calls nothing.
+    assert decisions.decide(request, purpose="retry_check") is response
+    assert len(jev.bodies) == 2
+
+
+def test_a_decision_malformed_twice_holds_after_two_calls_and_is_not_cached() -> None:
+    jev = JevReplies("outside", "missing")
+    decisions = _jev_decisions(jev)
+    request = _decision_request()
+    with pytest.raises(AIHold, match=r"^Jev MALFORMED_RESPONSE$") as caught:
+        decisions.decide(request, purpose="retry_check")
+    assert caught.value.missing_information == ()
+    assert [r.status for r in decisions.budget.receipts] == ["MALFORMED_RESPONSE"] * 2
+    assert len(jev.bodies) == decisions.budget.calls == 2
+    # A later identical request is a new decision.
+    assert decisions.decide(request, purpose="retry_check").choice("pick").choice == "yes"
+    assert len(jev.bodies) == 3
+
+
+@pytest.mark.parametrize(("failure", "kind"), [
+    (503, "UNAVAILABLE"), (TimeoutError("fictional timeout"), "TIMEOUT"),
+    (OSError("fictional network failure"), "NETWORK"), (429, "RATE_LIMITED"),
+    (402, "PAYMENT_REQUIRED"), (401, "UNAUTHORIZED"), (400, "BAD_REQUEST"),
+], ids=["503", "timeout", "network", "429", "402", "401", "400"])
+def test_other_provider_failures_hold_after_one_call_without_a_retry(
+    failure: int | BaseException, kind: str,
+) -> None:
+    jev = JevReplies(failure, "ok")
+    decisions = _jev_decisions(jev)
+    with pytest.raises(AIHold, match=rf"^Jev {kind}$") as caught:
+        decisions.decide(_decision_request(), purpose="retry_check")
+    assert "fictional" not in str(caught.value)
+    assert [r.status for r in decisions.budget.receipts] == [kind]
+    assert len(jev.bodies) == decisions.budget.calls == 1
+
+
+def test_a_retry_that_fails_otherwise_holds_with_that_failure() -> None:
+    jev = JevReplies("outside", 503, "ok")
+    decisions = _jev_decisions(jev)
+    with pytest.raises(AIHold, match=r"^Jev UNAVAILABLE$"):
+        decisions.decide(_decision_request(), purpose="retry_check")
+    assert [r.status for r in decisions.budget.receipts] == ["MALFORMED_RESPONSE", "UNAVAILABLE"]
+    assert len(jev.bodies) == decisions.budget.calls == 2
+
+
+def test_a_decision_from_another_model_family_is_not_retried() -> None:
+    jev = JevReplies("other_model", "ok")
+    decisions = _jev_decisions(jev)
+    with pytest.raises(AIHold, match="unexpected model"):
+        decisions.decide(_decision_request(), purpose="retry_check")
+    assert [(r.status, r.resolved_model) for r in decisions.budget.receipts] == [
+        ("MODEL_MISMATCH", "fictional/other-model")]
+    assert len(jev.bodies) == 1
+
+
+def test_the_retry_counts_against_the_call_limit() -> None:
+    jev = JevReplies("outside", "ok")
+    budget = CallBudget(max_calls=1)
+    decisions = _jev_decisions(jev, budget)
+    with pytest.raises(AIHold, match="AI call or cost budget exhausted"):
+        decisions.decide(_decision_request(), purpose="retry_check")
+    assert len(jev.bodies) == budget.calls == 1
+    assert [r.status for r in budget.receipts] == ["MALFORMED_RESPONSE"]
+
+
+def test_the_retry_reserves_its_own_cost_and_is_refused_past_the_usd_limit() -> None:
+    probe = _jev_decisions(JevReplies("outside", "outside"))
+    with pytest.raises(AIHold, match="MALFORMED_RESPONSE"):
+        probe.decide(_decision_request(), purpose="retry_check")
+    reservation = probe.budget.receipts[0].reserved_usd
+    assert probe.budget.reserved_usd == pytest.approx(2 * reservation)
+
+    jev = JevReplies("outside", "ok")
+    budget = CallBudget(max_usd=1.5 * reservation)
+    decisions = _jev_decisions(jev, budget)
+    with pytest.raises(AIHold, match="AI call or cost budget exhausted"):
+        decisions.decide(_decision_request(), purpose="retry_check")
+    assert len(jev.bodies) == budget.calls == 1
+    assert budget.reserved_usd == pytest.approx(reservation)
+
+
+def test_a_retry_past_the_scaled_call_limit_is_refused() -> None:
+    jev = JevReplies()
+    budget = CallBudget(scales_with_form=True)
+    decisions = _jev_decisions(jev, budget)
+    budget.allow_form(0)  # 24 calls
+    for index in range(23):
+        decisions.decide(_decision_request(f"Fictional question {index}?"), purpose="retry_check")
+    jev.replies = ["outside", "ok"]
+    with pytest.raises(AIHold, match="AI call or cost budget exhausted"):
+        decisions.decide(_decision_request("Fictional question 23?"), purpose="retry_check")
+    assert len(jev.bodies) == budget.calls == 24
+    assert budget.receipts[-1].status == "MALFORMED_RESPONSE"
+
+
+def test_a_form_routing_answer_malformed_once_is_retried_and_routes_the_form() -> None:
+    from interviewmaxxing_browser.ai import AIFormRouter, FieldRoute
+
+    class InventsARouteFirst(RoutesByControl):
+        def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+            response = super().__call__(url, headers, body, timeout)
+            if len(self.requests) > 1:
+                return response
+            payload = json.loads(response.body)
+            payload["answers"]["r4"]["choice"] = "EXECUTE_JAVASCRIPT"
+            return HttpResponse(200, {}, json.dumps(payload).encode())
+
+    jev = InventsARouteFirst()
+    decisions = _jev_decisions(jev)
+    report = AIFormRouter(decisions).classify_form(_breezy_form(), document_id="fictional-breezy")
+    assert [d.route for d in report.fields] == [FieldRoute.COPY_KNOWN] * 4 + [FieldRoute.WRITER] * 4
+    # The first batch is retried once; any further bounded batch is one call each.
+    assert [r.status for r in decisions.budget.receipts] == (
+        ["MALFORMED_RESPONSE", "OK"] + ["OK"] * (report.batches - 1))
+    assert jev.requests[0] == jev.requests[1]
+    assert (report.provider_calls, report.unknown_cost_calls) == (report.batches + 1, 1)

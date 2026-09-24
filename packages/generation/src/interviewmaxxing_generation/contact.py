@@ -38,13 +38,16 @@ def lookup_text(identity: CandidateIdentity, semantic_type: SemanticType) -> str
     """What to type into a lookup asking for the candidate's own location.
 
     LOCATION is "City, Region", plus ", Country" outside the United States (a city is
-    required); CITY is the city; STATE is the region, a two-letter US abbreviation
-    spelled out ("TX" -> "Texas"); COUNTRY is the country as stored. None for any
-    other type or a missing value."""
+    required); CITY is "City, Region" when the region is known, so the site's suggestions
+    for a same-named city elsewhere do not come first; STATE is the region, a two-letter
+    US abbreviation spelled out ("TX" -> "Texas"); COUNTRY is the country as stored.
+    None for any other type or a missing value."""
     address = identity.address
     country = _clean(address.country)
     if semantic_type is SemanticType.CITY:
-        return _clean(address.city)
+        city = _clean(address.city)
+        region = _clean(address.region)
+        return f"{city}, {region}" if city is not None and region is not None else city
     if semantic_type is SemanticType.COUNTRY:
         return country
     if semantic_type is SemanticType.STATE:

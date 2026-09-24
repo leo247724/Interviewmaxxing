@@ -79,7 +79,9 @@ def test_typeahead_location_fields_are_typed_from_the_verified_address(
     packet = resolve(context)
     assert context.problems(packet) == [] and packet.is_complete
     typed = {a.field_id: a.value.text for a in packet.answers if isinstance(a.value, TextValue)}
-    assert typed == {"location": "Austin, TX", "city": "Austin", "state": "Texas",
+    # A city lookup types "City, Region" (round 6, M3): a same-named city elsewhere is not
+    # the first suggestion, and the decision can tell the applicant's own one apart.
+    assert typed == {"location": "Austin, TX", "city": "Austin, TX", "state": "Texas",
                      "country": "United States"}
     for answer in packet.answers:
         assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
@@ -294,3 +296,80 @@ def test_stored_value_yields_to_user_input_and_disagreeing_saved_answers(fiction
     candidate = fictional_candidate.model_copy(update={
         "saved_answers": [*fictional_candidate.saved_answers, disagreeing]})
     assert stored_value(make_context(form, candidate), work) is None
+
+
+# --- round 6 (M3): a city lookup types "City, Region" ------------------------------------------
+
+
+@pytest.mark.parametrize(("city", "region", "country", "expected"), [
+    ("Austin", "TX", "United States", "Austin, TX"),
+    ("Austin", "TX", None, "Austin, TX"),
+    ("Toronto", "ON", "Canada", "Toronto, ON"),
+    ("Austin", "Texas", "United States", "Austin, Texas"),
+    ("  San   Antonio ", " TX ", "United States", "San Antonio, TX"),
+    ("London", None, "United Kingdom", "London"),
+    ("London", "   ", "United Kingdom", "London"),
+    (None, "TX", "United States", None),
+    ("  ", "TX", "United States", None),
+], ids=["us", "no-country", "outside-the-us", "region-as-stored", "whitespace-collapsed",
+        "no-region", "blank-region", "no-city", "blank-city"])
+def test_a_city_lookup_types_the_city_with_its_region_when_both_are_known(
+    fictional_candidate, city, region, country, expected
+):
+    # The region is typed as stored (never spelled out or abbreviated) and the country is
+    # never appended; without a region the bare city is typed, without a city nothing.
+    identity = _with_address(fictional_candidate, city=city, region=region,
+                             country=country).identity
+    assert lookup_text(identity, SemanticType.CITY) == expected
+
+
+def test_city_and_location_lookups_outside_the_us_are_typed_from_the_verified_address(
+    fictional_candidate, make_context, resolve
+):
+    candidate = _with_address(fictional_candidate, city="Toronto", region="ON", country="Canada")
+    form = _form(_lookup("city", SemanticType.CITY, label="City"),
+                 _lookup("location", SemanticType.LOCATION, label="Location"))
+    context = make_context(form, candidate)
+    packet = resolve(context)
+    assert context.problems(packet) == [] and packet.is_complete
+    assert {a.field_id: a.value for a in packet.answers} == {
+        "city": TextValue(text="Toronto, ON"), "location": TextValue(text="Toronto, ON, Canada")}
+    assert all(a.provenance.source is AnswerSource.PROFILE_IDENTITY for a in packet.answers)
+
+
+def test_a_city_lookup_without_a_region_types_the_bare_city(fictional_candidate, make_context,
+                                                             resolve):
+    candidate = _with_address(fictional_candidate, city="London", region=None,
+                              country="United Kingdom")
+    context = make_context(_form(_lookup("city", SemanticType.CITY, label="City")), candidate)
+    packet = resolve(context)
+    assert context.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="London")
+    assert answer.provenance.note == "verified identity: city"
+
+
+def test_a_city_lookup_without_a_city_is_asked_even_with_a_region(fictional_candidate,
+                                                                   make_context, resolve):
+    candidate = _with_address(fictional_candidate, city=None, region="TX")
+    packet = resolve(make_context(_form(_lookup("city", SemanticType.CITY, label="City")),
+                                  candidate))
+    assert packet.answers == []
+    [missing] = packet.missing_inputs
+    assert missing.field_id == "city" and missing.reason is MissingReason.NO_ANSWER
+    assert "typed into the site's search" in missing.prompt
+
+
+def test_a_plain_text_city_field_still_gets_the_bare_city(fictional_candidate, make_context,
+                                                          resolve):
+    # Only a lookup, which searches for a place, types the region with the city.
+    candidate = _with_address(fictional_candidate)
+    city = ApplicationField(id="city", label="City", selector="#city",
+                            semantic_type=SemanticType.CITY, control_type=ControlType.TEXT,
+                            required=True)
+    context = make_context(_form(city), candidate)
+    packet = resolve(context)
+    assert context.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="Austin")
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY

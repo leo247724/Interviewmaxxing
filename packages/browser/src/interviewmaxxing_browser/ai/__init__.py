@@ -20,7 +20,7 @@ def build_ai_runtime(*, env_file: Path, writer_model: str,
                      budget: CallBudget | None = None,
                      rag_connection_file: Path | None = None) -> tuple[AIFormRouter, DynamicPacketResolver]:
     key = load_api_key(env_file=env_file)
-    shared = budget if budget is not None else CallBudget()
+    shared = budget if budget is not None else CallBudget(scales_with_form=True)
     decisions = BoundedDecisions(JevClient(key, timeout_seconds=15, max_attempts=1), shared)
     writer = NarrativeWriter(key, model=writer_model, budget=shared)
     router = AIFormRouter(decisions)

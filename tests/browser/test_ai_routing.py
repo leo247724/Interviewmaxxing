@@ -14,6 +14,7 @@ from interviewmaxxing_browser.ai import (
     CallBudget,
     DynamicPacketResolver,
 )
+from interviewmaxxing_browser.ai.classification import PROMPT_VERSION, FieldRoute
 from interviewmaxxing_browser.ai.providers import NarrativeDraft, NarrativeWriter
 from interviewmaxxing_browser.semantics import classify as classify_semantics
 from interviewmaxxing_core import (
@@ -278,11 +279,12 @@ def test_failing_provider_holds_without_retry() -> None:
 
 
 def test_unoffered_model_choice_cannot_become_a_field_type() -> None:
-    p = Provider(["EXECUTE_JAVASCRIPT"])
+    # Round 6 retries a malformed decision once; an unoffered choice both times stays UNKNOWN.
+    p = Provider(["EXECUTE_JAVASCRIPT", "EXECUTE_JAVASCRIPT"])
     d = decisions(p)
     result = AIFormRouter(d).annotate(form(semantic=SemanticType.UNKNOWN), document_id="d")
     assert result.fields[0].semantic_type is SemanticType.UNKNOWN
-    assert d.budget.receipts[0].status == "MALFORMED_RESPONSE"
+    assert [r.status for r in d.budget.receipts] == ["MALFORMED_RESPONSE", "MALFORMED_RESPONSE"]
 
 
 def test_writer_reservation_prevents_call_exceeding_budget() -> None:
@@ -1673,7 +1675,7 @@ def test_the_live_rippling_state_list_question_is_answered_from_the_address(
     assert trace["status"] == "ANSWERED"
     assert trace["state_list_member"] is (expected == "Yes")
     [classification] = [r for r in provider.requests if "s0" in r["questions"]]
-    assert classification["state"]["version"] == "full-form-routing-v12"
+    assert classification["state"]["version"] == PROMPT_VERSION
     scopes = classification["questions"]["u0"]["criteria"]
     assert "whether they live in a named country or in one of listed states" in scopes["APPLICANT_CURRENT"]
     assert scopes["EXPLICIT_ANSWER"].endswith("or where the applicant currently lives.")
@@ -2287,3 +2289,363 @@ def test_a_cancelled_pass_still_records_the_receipt_of_a_call_that_finishes_afte
     # Every call made has its receipt, as when the passes ran in one worker thread.
     assert [r.purpose for r in budget.receipts] == ["full_form_routes", "option_equivalence"]
     assert resolver.provider_usage()["calls"] == budget.calls
+
+
+# --- round 6: route mass, relocation, typed candidates, city lookups, select-all referral ------
+
+class RouteSplit(ChoiceProvider):
+    """ChoiceProvider whose classification answers use explicit shares: ``route`` (r<i>),
+    ``scope`` (u<i>) and ``semantic`` (s<i>); each choice is its map's top key."""
+
+    def __init__(self, picks: dict[str, tuple[str, float]], *, route: dict[str, float] | None = None,
+                 scope: dict[str, float] | None = None,
+                 semantic: dict[str, float] | None = None) -> None:
+        super().__init__(dict(picks))
+        self.shares = {"r": route, "u": scope, "s": semantic}
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        payload = json.loads(response.body)
+        for name, answer in payload["answers"].items():
+            shares = self.shares.get(name[0]) if name[1:].isdigit() else None
+            if shares:
+                answer.update(choice=max(shares, key=lambda key: shares[key]), confidence=0.97,
+                              probabilities={key: shares.get(key, 0.0) for key in answer["probabilities"]})
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+LIVE_ROUTE = {"COPY_KNOWN": 0.94, "HUMAN_INPUT": 0.06}
+LIVE_SCOPE = {"APPLICANT_CURRENT": 0.99, "HISTORICAL_OR_CONTEXTUAL": 0.01}
+
+
+@pytest.mark.parametrize("region,city,pick,expected", [
+    ("OR", "Springfield", "o0", "Yes"),
+    ("IN", "Indianapolis", "o1", "No"),
+])
+def test_the_live_split_route_label_no_longer_hides_the_rippling_residence_question(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    region: str, city: str, pick: str, expected: str,
+) -> None:
+    provider = RouteSplit({"residence": (pick, 0.99)}, route=LIVE_ROUTE, scope=LIVE_SCOPE,
+                          semantic={"STATE": 0.98, "LOCATION": 0.02})
+    candidate = with_address(fictional_candidate, region=region, city=city)
+    packet, ctx, resolver = resolve_choice(provider, candidate, mock_job, rippling_field())
+    assert resolver.router is not None
+    report = resolver.router.report_for(ctx.form)
+    assert report is not None and report.field("residence").route is FieldRoute.AMBIGUOUS
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert answer.value.label == expected
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    [trace] = stage_traces(resolver, "residence_screener")
+    assert trace["status"] == "ANSWERED" and trace["state_list_member"] is (expected == "Yes")
+
+
+@pytest.mark.parametrize("route,asked", [
+    ({"HUMAN_INPUT": 0.97, "COPY_KNOWN": 0.03}, True),  # a HUMAN_INPUT label with no other mass
+    ({"COPY_KNOWN": 0.90, "WRITER": 0.05, "HUMAN_INPUT": 0.05}, False),  # WRITER mass 0.05
+    ({"COPY_KNOWN": 0.93, "UNSUPPORTED": 0.02, "HUMAN_INPUT": 0.05}, False),
+])
+def test_the_residence_screener_follows_route_mass_not_the_label(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    route: dict[str, float], asked: bool,
+) -> None:
+    provider = RouteSplit({"residence": ("o0", 0.99)}, route=route, scope=LIVE_SCOPE,
+                          semantic={"STATE": 0.98, "LOCATION": 0.02})
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, rippling_field())
+    assert bool(provider.asked("residence")) is asked
+    assert packet.is_complete is asked
+    if not asked:
+        [missing] = packet.missing_inputs
+        assert missing.prompt.startswith("Required:")  # the factual hold stays
+
+
+def test_a_residence_question_whose_scope_misses_its_own_gate_is_not_screened_on_a_split_label(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = RouteSplit({"residence": ("o0", 0.99)}, route=LIVE_ROUTE,
+                          scope={"APPLICANT_CURRENT": 0.93, "HISTORICAL_OR_CONTEXTUAL": 0.07},
+                          semantic={"STATE": 0.98, "LOCATION": 0.02})
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, rippling_field())
+    assert not provider.asked("residence") and not packet.is_complete
+
+
+RELOCATE_STATES = "Do you currently reside in or will you be relocating to any of the following states?"
+AUSTIN_RELOCATION = ("This position is located in Austin, Texas. Are you currently located in "
+                     "Austin or plan to relocate to Austin?")
+WILLING = global_answer("sa.relocate", "Are you willing to relocate?", "Yes",
+                        semantic=SemanticType.RELOCATION)
+
+
+def relocation_field(label: str = RELOCATE_STATES, *options: str, help_text: str | None = "AZ, CA, OR, TX, WA",
+                     control: ControlType = ControlType.SELECT) -> ApplicationField:
+    field = choice_field(label, SemanticType.RELOCATION, *(options or YES_NO), control=control,
+                         field_id="relocate")
+    return field.model_copy(update={"help_text": help_text})
+
+
+@pytest.mark.parametrize("region,city,pick,saved,expected,source", [
+    ("OR", "Springfield", ("o0", 0.99), False, "Yes", AnswerSource.PROFILE_IDENTITY),  # lives there
+    ("IN", "Indianapolis", ("UNKNOWN", 0.99), True, "Yes", AnswerSource.SAVED_ANSWER),  # willing
+    ("IN", "Indianapolis", ("UNKNOWN", 0.99), False, None, None),  # nothing settles it: held
+    ("OR", "Springfield", ("o1", 0.99), False, None, None),  # "No" from an address: never
+    ("IN", "Indianapolis", ("o0", 0.99), False, None, None),  # "Yes" but not a listed state
+])
+def test_a_relocation_question_naming_states_uses_the_address_then_the_saved_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, region: str, city: str,
+    pick: tuple[str, float], saved: bool, expected: str | None, source: AnswerSource | None,
+) -> None:
+    provider = RouteSplit({"relocation": pick})
+    candidate = with_address(fictional_candidate, region=region, city=city)
+    if saved:
+        candidate = with_saved(candidate, WILLING)
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, relocation_field())
+    [request] = provider.asked("relocation")
+    assert request["state"]["applicant_address"]["region"] == region
+    assert set(request["questions"]["relocation"]["criteria"]) == {"o0", "o1", "UNKNOWN", "NOT_PLACE"}
+    assert not provider.asked("wording")  # never the generic reworded path
+    if expected is None:
+        assert packet.answers == [] and not packet.is_complete
+        return
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.source) == (expected, source)
+    if source is AnswerSource.SAVED_ANSWER:
+        assert answer.provenance.reference_ids == ["sa.relocate"]
+        assert [t["status"] for t in stage_traces(resolver, "relocation_default")] == ["MAPPED"]
+
+
+@pytest.mark.parametrize("pick,expected", [("o1", "Oregon"), ("o2", None)])
+def test_a_relocation_select_of_states_picks_only_the_applicants_own_state(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, pick: str, expected: str | None,
+) -> None:
+    provider = RouteSplit({"relocation": (pick, 0.99)})
+    field = relocation_field(RELOCATE_STATES, "Arizona", "Oregon", "Texas", "None of these",
+                             help_text=None)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    if expected is None:
+        assert packet.answers == []
+        assert stage_traces(resolver, "relocation_screener")[0]["status"] == "ADDRESS_MISMATCH"
+        return
+    [answer] = packet.answers
+    assert answer.value.label == expected and answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+
+
+def test_the_live_austin_relocation_radio_is_yes_for_an_applicant_in_austin(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # The source scope reads the question as a preference (EXPLICIT_ANSWER); the address
+    # decision and the state check are the gate.
+    provider = RouteSplit({"relocation": ("o0", 0.99)},
+                          scope={"EXPLICIT_ANSWER": 0.8, "APPLICANT_CURRENT": 0.2})
+    candidate = with_address(fictional_candidate, city="Austin", region="TX")
+    packet, _, _ = resolve_choice(provider, candidate, mock_job,
+                                  relocation_field(AUSTIN_RELOCATION, help_text=None,
+                                                   control=ControlType.RADIO))
+    [answer] = packet.answers
+    assert answer.value.label == "Yes" and answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+
+
+def test_a_relocation_question_about_another_person_is_not_answered_from_the_address(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = RouteSplit({"relocation": ("o0", 0.99)},
+                          scope={"APPLICANT_CURRENT": 0.98, "OTHER_PERSON_OR_ENTITY": 0.02})
+    packet, _, _ = resolve_choice(provider, fictional_candidate, mock_job, relocation_field())
+    assert not provider.asked("relocation") and packet.answers == []
+
+
+class WordingPick(ChoiceProvider):
+    """ChoiceProvider whose ``wording`` pick is the saved question containing ``contains``."""
+
+    def __init__(self, contains: str, picks: dict[str, tuple[str, float]] | None = None,
+                 **kwargs: Any) -> None:
+        super().__init__(dict(picks or {}), **kwargs)
+        self.contains = contains
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        if "wording" in request["questions"]:
+            saved = request["state"]["saved_questions"]
+            self.picks["wording"] = (next(key for key, item in saved.items()
+                                          if self.contains in item["question"]), 0.98)
+        return super().__call__(url, headers, body, timeout)
+
+
+UNTYPED_NOISE = (
+    global_answer("sa.age", "Are you above the age of 18?", "Yes"),
+    global_answer("sa.edu_start", "Education start date", "2014-09"),
+    global_answer("sa.referred", "Were you referred to this position by a current employee?", "No"),
+    global_answer("sa.interviewed", "Have you previously interviewed with this company?", "Yes"),
+    global_answer("sa.english", "What is your level of proficiency in English?", "Fluent"),
+)
+
+
+def text_field(label: str, semantic: SemanticType) -> ApplicationField:
+    return ApplicationField(id="answer", selector="#answer", label=label, semantic_type=semantic,
+                            control_type=ControlType.TEXT, required=True)
+
+
+@pytest.mark.parametrize("label", [
+    "What is your desired base salary?",
+    "What are your target compensation expectations (base and/or OTE, if applicable)?",
+])
+def test_a_typed_salary_question_is_offered_only_the_saved_salary_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+) -> None:
+    salary = global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
+                           semantic=SemanticType.SALARY_EXPECTATION)
+    provider = WordingPick("desired salary")
+    candidate = with_saved(fictional_candidate, salary, *UNTYPED_NOISE)
+    packet, _, _ = resolve_choice(provider, candidate, mock_job,
+                                  text_field(label, SemanticType.SALARY_EXPECTATION))
+    [wording] = provider.asked("wording")
+    assert list(wording["state"]["saved_questions"]) == ["q0"]  # the untyped answers stay out
+    assert wording["state"]["prompt_version"] == "option-choice-v2"
+    instructions = wording["questions"]["wording"]["instructions"]
+    assert "desired salary, base salary, compensation or pay expectations" in instructions
+    [answer] = packet.answers
+    assert answer.value.text == "USD 95,000 per year"
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.salary"])
+
+
+START_OPTIONS = ("ASAP", "One week after offer acceptance", "Two weeks after offer acceptance",
+                 "Three weeks after offer acceptance", "Other")
+
+
+def test_a_saved_start_date_maps_onto_the_live_start_date_select(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    start = global_answer("sa.start", "What is your earliest start date?",
+                          "Two weeks after an offer is accepted", semantic=SemanticType.START_DATE)
+    provider = WordingPick("earliest start date", {"equivalent_0": ("o2", 0.98)})
+    field = choice_field("Earliest Start Date?", SemanticType.START_DATE, *START_OPTIONS,
+                         control=ControlType.SELECT)
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, start, *UNTYPED_NOISE),
+                                  mock_job, field)
+    [wording] = provider.asked("wording")
+    assert list(wording["state"]["saved_questions"]) == ["q0"]
+    [answer] = packet.answers
+    assert answer.value.label == "Two weeks after offer acceptance"
+    assert answer.provenance.reference_ids == ["sa.start"]
+
+
+def test_a_typed_field_without_a_same_type_answer_is_offered_the_untyped_ones(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)})
+    field = choice_field("Earliest Start Date?", SemanticType.START_DATE, *START_OPTIONS,
+                         control=ControlType.SELECT)
+    resolve_choice(provider, with_saved(fictional_candidate, *UNTYPED_NOISE), mock_job, field)
+    [wording] = provider.asked("wording")
+    offered = {item["question"] for item in wording["state"]["saved_questions"].values()}
+    assert offered == {answer.question for answer in UNTYPED_NOISE}
+
+
+TRAVEL = ("This role may require occasional business travel. What level of travel are you "
+          "comfortable with? Select one")
+TRAVEL_OPTIONS = ("No travel (0%)", "Up to 10%", "11-20%", "21-30%", "More than 30%")
+
+
+def test_an_untyped_saved_travel_answer_maps_onto_the_live_travel_select(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    travel = global_answer("sa.travel", "How much are you willing to travel for work?",
+                           "Up to 10% of the time")
+    provider = WordingPick("travel", {"equivalent_0": ("o1", 0.98)})
+    field = choice_field(TRAVEL, SemanticType.CUSTOM_SELECT, *TRAVEL_OPTIONS, control=ControlType.SELECT)
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, travel, *UNTYPED_NOISE),
+                                  mock_job, field)
+    [answer] = packet.answers
+    assert answer.value.label == "Up to 10%"
+    assert answer.provenance.reference_ids == ["sa.travel"]
+
+
+def test_an_untyped_saved_employment_answer_maps_onto_a_question_naming_the_employer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    employed = global_answer("sa.employed", "Have you previously been employed by this company?", "No")
+    provider = WordingPick("employed by this company")
+    field = choice_field("Have you been employed by Upstart before?", SemanticType.CUSTOM_SELECT,
+                         *YES_NO)
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, employed, *UNTYPED_NOISE),
+                                  mock_job, field)
+    [wording] = provider.asked("wording")
+    assert "'This company' in a saved question means" in wording["questions"]["wording"]["instructions"]
+    [answer] = packet.answers
+    assert answer.value.label == "No" and answer.provenance.reference_ids == ["sa.employed"]
+
+
+class NamedLookup(ChoiceProvider):
+    """ChoiceProvider whose ``lookup`` pick is the suggestion containing ``name`` (else NONE)."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        if "lookup" in request["questions"]:
+            suggestions = request["state"]["suggestions"]
+            self.picks["lookup"] = (next((key for key, label in suggestions.items()
+                                          if self.name in label), "NONE"), 0.99)
+        return super().__call__(url, headers, body, timeout)
+
+
+def city_lookup(candidate: CandidateProfile, job: JobRecord, *,
+                semantic: SemanticType = SemanticType.CITY) -> PacketContext:
+    return context(ApplicationForm(url="https://example.test/apply", fields=[ApplicationField(
+        id="city", selector="#city", label="City", semantic_type=semantic,
+        control_type=ControlType.TYPEAHEAD, required=True)]), candidate, job)
+
+
+@pytest.mark.parametrize("suggestions,expected", [
+    (["Paris, France", "Paris, Texas, United States"], "Paris, Texas, United States"),
+    (["Paris, France", "Paris, Ontario, Canada"], None),  # none in the applicant's region
+])
+def test_a_city_lookup_decision_sees_the_applicants_region_and_country(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    suggestions: list[str], expected: str | None,
+) -> None:
+    provider = NamedLookup("Texas")
+    resolver = DynamicPacketResolver(decisions(provider))
+    ctx = city_lookup(with_address(fictional_candidate, city="Paris", region="TX"), mock_job)
+    chosen = asyncio.run(resolver.choose_suggestion(ctx, ctx.form.fields[0], "Paris, TX", suggestions))
+    assert chosen == expected
+    [request] = provider.asked("lookup")
+    assert request["state"]["applicant_address"] == {"city": "Paris", "region": "TX",
+                                                     "country": "United States"}
+    criteria = request["questions"]["lookup"]["criteria"]
+    assert all("applicant's own region and country" in criteria[key] for key in criteria if key != "NONE")
+    assert "same-named place elsewhere is NONE" in request["questions"]["lookup"]["instructions"]
+
+
+def test_a_lookup_that_is_not_a_place_gets_no_address(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = NamedLookup("Fictional State")
+    resolver = DynamicPacketResolver(decisions(provider))
+    ctx = city_lookup(fictional_candidate, mock_job, semantic=SemanticType.UNIVERSITY)
+    asyncio.run(resolver.choose_suggestion(ctx, ctx.form.fields[0], "Fictional State",
+                                           ["Fictional State University", "Fictional State"]))
+    [request] = provider.asked("lookup")
+    assert "applicant_address" not in request["state"]
+
+
+REFERRAL_OPTIONS = ("LinkedIn", "Indeed", "Glassdoor", "Company careers page", "Employee referral",
+                    "Recruiter outreach", "Conference", "Meetup", "Podcast", "Newsletter",
+                    "University career fair", "Built In", "AngelList", "Twitter", "Friend", "Other")
+
+
+def test_a_select_all_referral_question_gets_exactly_one_option(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    careers = f"careers_o{REFERRAL_OPTIONS.index('Company careers page')}"
+    provider = ChoiceProvider({"referral": (careers, 0.98)})
+    field = choice_field("How did you learn about us? Select ALL that apply.",
+                         SemanticType.REFERRAL_SOURCE, *REFERRAL_OPTIONS,
+                         control=ControlType.CHECKBOX_GROUP)
+    packet, _, _ = resolve_choice(provider, with_referral(fictional_candidate), mock_job, field)
+    [answer] = packet.answers
+    assert [choice.label for choice in answer.value.choices] == ["Company careers page"]
+    assert "referral policy rule 1" in (answer.provenance.note or "")
