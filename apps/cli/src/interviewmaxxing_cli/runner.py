@@ -1675,6 +1675,11 @@ def create_runner(
                                   prepare_only=True)
 
 
+ALLOW_SUBMISSION_ENV = "IMX_ALLOW_SUBMISSION"
+"""The CLI submits only while this variable is ``1`` (and ``--yes`` is given, and the
+application is approved). ``apply``, ``resume`` and ``prepare-batch`` never read it."""
+
+
 def create_submission_runner(
     paths: LocalPaths,
     *,
@@ -1716,6 +1721,7 @@ class NoninteractiveInteraction:
 
 
 __all__ = [
+    "ALLOW_SUBMISSION_ENV",
     "MISMATCH_MESSAGE",
     "NEEDS_INPUT_EVENT",
     "NOT_AUTHORIZED_MESSAGE",

@@ -38,9 +38,22 @@ Guarantees:
 ``build_report`` reads the ledgers back (``interviewmaxxing batch-report``): outcomes,
 holds grouped into categories and by question wording (with the ``answer`` line that
 clears each question), fill failures grouped by detail, a per-backend readiness table,
-durations and pipeline links. ``prepare-batch --retry`` (``interviewmaxxing_cli.retry``)
+durations, pipeline links and
+submissions. ``prepare-batch --retry`` (``interviewmaxxing_cli.retry``)
 runs the held and failed applications of a ledger again through ``resume`` with the same
 harness; its ledger lines carry ``retry_of``.
+
+Submitting approved applications (``run_submissions``, ``interviewmaxxing
+submit-approved``) is a separate entry point with its own gates: it runs only
+applications the user approved, one ``interviewmaxxing submit APP --yes --json``
+subprocess each, on the same slot harness (per-slot ``IMX_BROWSER_DIR``, bounded
+parallelism, timeouts, process-group kills). It passes ``IMX_ALLOW_SUBMISSION=1`` to
+those subprocesses only because its own caller was already gated by it and ``--yes``.
+Each finished submission appends a ``kind: "submission"`` line (``SubmissionEntry``)
+to ``<batch dir>/ledger.jsonl``; prepare lines and submission lines never parse as
+each other, so both kinds can share a batch's ledger. The outcome of a submission is
+taken from the store after the subprocess ends: an application whose submit may have
+reached the employer is always ``uncertain``, whatever the subprocess printed.
 """
 
 from __future__ import annotations
@@ -61,6 +74,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from pydantic import Field, ValidationError, model_validator
 
 from interviewmaxxing_core import (
+    PRE_SUBMISSION_STATES,
     Application,
     ApplicationState,
     ApplicationStore,
@@ -74,6 +88,7 @@ from interviewmaxxing_core import (
 )
 
 from .dynamic import DynamicOptions
+from .runner import ALLOW_SUBMISSION_ENV
 from .triage import (
     HOLD_CATEGORIES,
     LEDGER_LABEL_LIMIT,
@@ -1448,6 +1463,413 @@ def format_entry(entry: LedgerEntry) -> str:
     return line
 
 
+# --- submitting approved applications -------------------------------------------------
+
+SubmissionOutcomeName = Literal["submitted", "uncertain", "blocked", "needs_input", "error"]
+"""How one ``submit`` ended in ``submit-approved``:
+
+``submitted``    SUBMITTED: the site confirmed it; ``receipt_id`` names the receipt.
+``uncertain``    SUBMITTING or SUBMISSION_UNKNOWN: the submit may have reached the
+                 employer. Never retried; ``interviewmaxxing reconcile APP``.
+``blocked``      nothing was done or can be: not approved or authorized any more, a
+                 duplicate, withdrawn, or the job no longer accepts applications.
+``needs_input``  NEEDS_INPUT: the form no longer matches the approval (withdrawn:
+                 prepare, review and approve again), or a sign-in, CAPTCHA or custom
+                 control needs the user.
+``error``        FAILED_RETRYABLE (e.g. a browser error before any submit; the approval
+                 stands), or the subprocess printed no outcome or timed out.
+"""
+SUBMISSION_OUTCOMES: tuple[SubmissionOutcomeName, ...] = (
+    "submitted", "uncertain", "blocked", "needs_input", "error",
+)
+SUBMISSION_SUMMARY_NAME = "submission-summary.json"
+EXIT_BLOCKED_CODE = 4
+"""``interviewmaxxing submit`` exit status for a refusal (``main.EXIT_BLOCKED``)."""
+
+
+def default_submission_batch_id(now: datetime | None = None) -> str:
+    return (now or _now()).astimezone(UTC).strftime("approved-%Y%m%dT%H%M%SZ")
+
+
+class SubmissionTarget(Contract):
+    """An approved application ``submit-approved`` will submit."""
+
+    application_id: str
+    approved_packet_id: str
+    listing_id: str | None = None
+    company: str = ""
+    title: str = ""
+    application_url: str = ""
+
+
+class SubmissionEntry(Contract):
+    """One ``submit`` of ``submit-approved``, as appended to ``ledger.jsonl``. The
+    required ``kind`` keeps it apart from prepare lines (``LedgerEntry``), which never
+    parse as this model, nor this as theirs."""
+
+    kind: Literal["submission"]
+    batch_id: str
+    source_batch_id: str | None = None
+    """The prepare batch whose approved applications were submitted (``--batch``)."""
+    application_id: str
+    approved_packet_id: str | None = None
+    listing_id: str | None = None
+    company: str = ""
+    title: str = ""
+    application_url: str = ""
+    attempt: int = Field(ge=1)
+    worker_slot: int | None = None
+    state: ApplicationState | None = None
+    """The application's stored state after the subprocess ended."""
+    outcome: SubmissionOutcomeName
+    receipt_id: str | None = None
+    """The receipt's id (``Receipt.attempt_id``, the confirmed submission attempt)."""
+    confirmation_reference: str | None = None
+    message: str = ""
+    exit_code: int | None = None
+    started_at: datetime
+    finished_at: datetime
+    duration_s: float = Field(ge=0.0)
+
+
+def read_submissions(path: Path) -> list[SubmissionEntry]:
+    """Every submission line of a ledger, in file order (other lines are skipped)."""
+    if not path.exists():
+        return []
+    entries: list[SubmissionEntry] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entries.append(SubmissionEntry.model_validate_json(line))
+        except ValidationError:
+            continue
+    return entries
+
+
+def _append_line(path: Path, data: dict[str, Any]) -> None:
+    line = json.dumps(data, sort_keys=True) + "\n"
+    fd = _open_private_append(path)
+    try:
+        os.write(fd, line.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+class SubmitBatchOptions(BatchOptions):
+    """``BatchOptions`` for ``submit-approved``: the same slots (``workers``), per-slot
+    browser directories, timeouts and runtime flags. Each job runs ``submit APP --yes
+    --json`` with ``IMX_ALLOW_SUBMISSION=1``; the prepare-only fields are not used."""
+
+    def submit_argv(self, application_id: str) -> list[str]:
+        return [*(self.command or default_command()), "submit", application_id, "--yes",
+                "--json", *self.dynamic_argv()]
+
+    def submit_environment(self, slot: int) -> dict[str, str]:
+        env = self.environment(slot)
+        env[ALLOW_SUBMISSION_ENV] = "1"
+        return env
+
+
+def approved_targets(paths: LocalPaths, candidate_id: str, *,
+                     source_batch: str | None = None) -> list[SubmissionTarget]:
+    """The candidate's applications with a valid approval and nothing dispatched yet:
+    those of one prepare batch's ledger (``source_batch``, in ledger order), else every
+    approved application (``ApplicationStore.list_approved``). Raises
+    ``FileNotFoundError`` for a named batch without a ledger."""
+    rows: dict[str, LedgerEntry] = {}
+    if source_batch is not None:
+        ledger = paths.home / "batches" / _plain_batch_id(source_batch) / LEDGER_NAME
+        if not ledger.is_file():
+            raise FileNotFoundError(f"no ledger for batch {source_batch!r} under {ledger.parent.parent}")
+        for entry in latest_entries(read_ledger(ledger)).values():
+            if entry.application_id:
+                rows.setdefault(entry.application_id, entry)
+    if not paths.state_db.is_file():
+        return []
+    targets: list[SubmissionTarget] = []
+    with ApplicationStore.open(paths.state_db) as store:
+        ids = (list(rows) if source_batch is not None
+               else [a.id for a in store.list_approved(candidate_id=candidate_id)])
+        for app_id in ids:
+            try:
+                app = store.get_application(app_id)
+            except NotFound:
+                continue
+            if app.candidate_id != candidate_id or app.state not in PRE_SUBMISSION_STATES:
+                continue
+            approval = store.submission_approval(app_id)
+            if approval is None:
+                continue
+            job = store.get_job(app.job_id)
+            row = rows.get(app_id)
+            requests = store.list_requests(app_id)
+            targets.append(SubmissionTarget(
+                application_id=app_id, approved_packet_id=approval.packet_id,
+                listing_id=row.listing_id if row else None,
+                company=job.company or (row.company if row else ""),
+                title=job.title or (row.title if row else ""),
+                application_url=requests[0].application_url if requests else job.application_url,
+            ))
+    return targets
+
+
+def classify_submission(outcome: ApplyOutcome, exit_code: int | None) -> SubmissionOutcomeName:
+    """Map a ``submit`` outcome (and exit status) to a submission outcome."""
+    state = outcome.state
+    if state is S.SUBMITTED and exit_code != EXIT_BLOCKED_CODE:
+        return "submitted"
+    if state in (S.SUBMITTING, S.SUBMISSION_UNKNOWN):
+        return "uncertain"
+    if exit_code == EXIT_BLOCKED_CODE or state in (S.SUBMITTED, S.DUPLICATE, S.WITHDRAWN,
+                                                   S.FAILED_PERMANENT):
+        return "blocked"
+    if state is S.NEEDS_INPUT:
+        return "needs_input"
+    return "error"
+
+
+def _stored_outcome(paths: LocalPaths, entry: SubmissionEntry) -> SubmissionEntry:
+    """The entry as the store has it now: a SUBMITTED application is ``submitted``
+    with its receipt, one whose submit may have reached the employer is ``uncertain``,
+    whatever the subprocess printed (it may have been killed mid-submit)."""
+    if not paths.state_db.is_file():
+        return entry
+    try:
+        with ApplicationStore.open(paths.state_db) as store:
+            app = store.get_application(entry.application_id)
+            receipt = store.get_receipt(app.id)
+    except Exception:  # the ledger line must still be written
+        return entry
+    update: dict[str, Any] = {"state": app.state}
+    if app.state is S.SUBMITTED and receipt is not None:
+        if entry.outcome != "blocked":  # already submitted before this run: not this one
+            update.update(outcome="submitted", receipt_id=receipt.attempt_id,
+                          confirmation_reference=receipt.confirmation_reference)
+    elif app.state in (S.SUBMITTING, S.SUBMISSION_UNKNOWN):
+        update["outcome"] = "uncertain"
+    return entry.model_copy(update=update)
+
+
+async def _submit_one(options: SubmitBatchOptions, target: SubmissionTarget, *, attempt: int,
+                      slot: int, source_batch: str | None) -> SubmissionEntry:
+    started_at = _now()
+
+    def entry(outcome: SubmissionOutcomeName, message: str, **extra: Any) -> SubmissionEntry:
+        finished_at = _now()
+        return SubmissionEntry(
+            kind="submission", batch_id=options.batch_id, source_batch_id=source_batch,
+            application_id=target.application_id, approved_packet_id=target.approved_packet_id,
+            listing_id=target.listing_id, company=target.company, title=target.title,
+            application_url=target.application_url, attempt=attempt, worker_slot=slot,
+            outcome=outcome, message=_truncate(message, MESSAGE_LIMIT), started_at=started_at,
+            finished_at=finished_at, duration_s=max((finished_at - started_at).total_seconds(), 0.0),
+            **extra)
+
+    browser_dir = options.worker_browser_dir(slot)
+    browser_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *options.submit_argv(target.application_id), env=options.submit_environment(slot),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, start_new_session=True,
+        )
+    except OSError as exc:
+        return entry("error", f"could not start the CLI: {exc}")
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), options.per_job_timeout_s)
+    except TimeoutError:
+        await _terminate(proc)
+        return await asyncio.to_thread(_stored_outcome, options.paths, entry(
+            "error", f"timed out after {options.per_job_timeout_s:g} s; the run was stopped",
+            exit_code=proc.returncode))
+    except asyncio.CancelledError:
+        await _terminate(proc)
+        raise
+    code = proc.returncode
+    printed = stdout.decode("utf-8", "replace").strip()
+    try:
+        outcome = ApplyOutcome.model_validate_json(printed)
+    except (ValidationError, ValueError):
+        detail = stderr.decode("utf-8", "replace").strip() or (
+            f"the CLI printed no readable outcome (exit {code})" if printed
+            else f"the CLI printed nothing (exit {code})")
+        return await asyncio.to_thread(_stored_outcome, options.paths, entry(
+            "blocked" if code == EXIT_BLOCKED_CODE else "error", detail, exit_code=code))
+    receipt = outcome.receipt
+    done = entry(classify_submission(outcome, code), outcome.message, exit_code=code,
+                 state=outcome.state,
+                 receipt_id=receipt.attempt_id if receipt is not None else None,
+                 confirmation_reference=receipt.confirmation_reference if receipt else None)
+    return await asyncio.to_thread(_stored_outcome, options.paths, done)
+
+
+class SubmissionReceiptRow(Contract):
+    application_id: str
+    receipt_id: str | None = None
+    confirmation_reference: str | None = None
+    company: str = ""
+    title: str = ""
+
+
+class SubmissionSummary(Contract):
+    batch_id: str
+    source_batch_id: str | None = None
+    started_at: datetime
+    finished_at: datetime
+    targets: int = Field(ge=0)
+    """Approved applications selected for this run."""
+    launched: int = Field(ge=0)
+    skipped_settled: int = Field(ge=0)
+    """Selected applications this ledger already records as submitted or uncertain."""
+    totals: dict[str, int] = Field(default_factory=dict)
+    """Latest outcome per application in this ledger, counted."""
+    application_ids: dict[str, list[str]] = Field(default_factory=dict)
+    receipts: list[SubmissionReceiptRow] = Field(default_factory=list)
+    ledger_path: str
+
+
+def latest_submissions(entries: Iterable[SubmissionEntry]) -> dict[str, SubmissionEntry]:
+    latest: dict[str, SubmissionEntry] = {}
+    for entry in entries:
+        latest[entry.application_id] = entry
+    return latest
+
+
+def summarize_submissions(batch_id: str, entries: Sequence[SubmissionEntry], *,
+                          source_batch_id: str | None, started_at: datetime,
+                          finished_at: datetime, targets: int, launched: int,
+                          skipped_settled: int, ledger_path: Path) -> SubmissionSummary:
+    latest = latest_submissions(entries)
+    totals: Counter[str] = Counter(e.outcome for e in latest.values())
+    ids: dict[str, list[str]] = defaultdict(list)
+    for entry in latest.values():
+        ids[entry.outcome].append(entry.application_id)
+    return SubmissionSummary(
+        batch_id=batch_id, source_batch_id=source_batch_id, started_at=started_at,
+        finished_at=finished_at, targets=targets, launched=launched,
+        skipped_settled=skipped_settled,
+        totals={k: totals[k] for k in SUBMISSION_OUTCOMES if totals[k]},
+        application_ids={k: ids[k] for k in SUBMISSION_OUTCOMES if ids[k]},
+        receipts=[SubmissionReceiptRow(application_id=e.application_id, receipt_id=e.receipt_id,
+                                       confirmation_reference=e.confirmation_reference,
+                                       company=e.company, title=e.title)
+                  for e in latest.values() if e.outcome == "submitted"],
+        ledger_path=str(ledger_path),
+    )
+
+
+async def run_submissions(options: SubmitBatchOptions, targets: Sequence[SubmissionTarget], *,
+                          source_batch: str | None = None,
+                          on_entry: Callable[[SubmissionEntry], None] | None = None,
+                          ) -> SubmissionSummary:
+    """Submit ``targets`` with at most ``options.workers`` concurrent ``submit``
+    subprocesses (one slot, one browser directory each), appending a submission line to
+    ``<batch dir>/ledger.jsonl`` as each finishes. Applications this ledger already
+    records as submitted or uncertain are skipped; the store refuses the rest anyway
+    unless they are still approved and nothing was dispatched for them."""
+    started_at = _now()
+    batch_dir = default_batch_dir(options.paths, options.batch_id)
+    options.paths.ensure()
+    ledger_path = batch_dir / LEDGER_NAME
+    history = read_submissions(ledger_path)
+    attempts: Counter[str] = Counter(e.application_id for e in history)
+    settled = {e.application_id for e in latest_submissions(history).values()
+               if e.outcome in ("submitted", "uncertain")}
+    queue = [t for t in dict((t.application_id, t) for t in targets).values()
+             if t.application_id not in settled]
+    skipped = len({t.application_id for t in targets}) - len(queue)
+    launched = 0
+    slots: asyncio.Queue[int] = asyncio.Queue()
+    for slot in range(options.workers):
+        slots.put_nowait(slot)
+
+    def record(entry: SubmissionEntry) -> None:
+        _append_line(ledger_path, entry.model_dump(mode="json"))
+        history.append(entry)
+        if on_entry is not None:
+            on_entry(entry)
+
+    async def worker() -> None:
+        nonlocal launched
+        while queue:
+            target = queue.pop(0)
+            launched += 1
+            slot = await slots.get()
+            try:
+                entry = await _submit_one(options, target, attempt=attempts[target.application_id] + 1,
+                                          slot=slot, source_batch=source_batch)
+            finally:
+                slots.put_nowait(slot)
+            record(entry)
+
+    workers = [asyncio.create_task(worker()) for _ in range(max(1, min(options.workers, len(queue))))]
+    try:
+        await asyncio.gather(*workers)
+    except BaseException:
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        raise
+    summary = summarize_submissions(
+        options.batch_id, history, source_batch_id=source_batch, started_at=started_at,
+        finished_at=_now(), targets=len({t.application_id for t in targets}), launched=launched,
+        skipped_settled=skipped, ledger_path=ledger_path)
+    path = batch_dir / SUBMISSION_SUMMARY_NAME
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, (json.dumps(summary.model_dump(mode="json"), indent=2, sort_keys=True)
+                      + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    tmp.replace(path)
+    return summary
+
+
+def format_submission(entry: SubmissionEntry) -> str:
+    """One compact progress line; never includes answers or messages."""
+    job = " — ".join(x for x in (entry.company, entry.title) if x) or entry.application_id
+    line = f"{entry.outcome:<12} {job} ({entry.duration_s:.1f}s) [{entry.application_id}]"
+    if entry.receipt_id:
+        line += f" [receipt {entry.receipt_id}"
+        line += f", reference {entry.confirmation_reference}]" if entry.confirmation_reference else "]"
+    return line
+
+
+def render_submissions_markdown(summary: SubmissionSummary) -> str:
+    source = f" from batch {summary.source_batch_id}" if summary.source_batch_id else ""
+    lines = [
+        f"# Submissions {summary.batch_id}",
+        "",
+        f"- started: {_iso(summary.started_at)}",
+        f"- finished: {_iso(summary.finished_at)}",
+        f"- approved applications selected{source}: {summary.targets}; submitted this run: "
+        f"{summary.launched}; already settled in this ledger: {summary.skipped_settled}",
+        "- only approved applications were submitted, each exactly as approved",
+        "",
+        "| outcome | count |",
+        "| --- | --- |",
+    ]
+    lines += [f"| {k} | {v} |" for k, v in summary.totals.items()]
+    lines.append(f"| **all** | {sum(summary.totals.values())} |")
+    if summary.receipts:
+        lines += ["", "receipts: " + ", ".join(
+            f"{r.application_id} ({r.receipt_id}"
+            + (f"; {r.confirmation_reference})" if r.confirmation_reference else ")")
+            for r in summary.receipts)]
+    for outcome, advice in (("uncertain", "never resubmitted; interviewmaxxing reconcile APP"),
+                            ("needs_input", "interviewmaxxing status APP; prepare, review and "
+                                            "approve again if the form changed")):
+        ids = summary.application_ids.get(outcome)
+        if ids:
+            lines += ["", f"{outcome} ({advice}): " + ", ".join(ids)]
+    lines += ["", f"ledger: {summary.ledger_path}"]
+    return "\n".join(lines) + "\n"
+
+
 # --- report -------------------------------------------------------------------------------
 
 
@@ -1511,6 +1933,16 @@ class BackendReadiness(Contract):
     """Known AI provider cost of these listings (each at its latest line with a cost)."""
 
 
+class SubmissionReport(Contract):
+    """The submission lines of the ledgers read: each application once, at its latest
+    submission line."""
+
+    applications: int = Field(ge=0)
+    totals: dict[str, int] = Field(default_factory=dict)
+    application_ids: dict[str, list[str]] = Field(default_factory=dict)
+    receipts: list[SubmissionReceiptRow] = Field(default_factory=list)
+
+
 class BatchReport(Contract):
     """``batch-report``: what one or more batch ledgers say, without CLI messages, with
     question wording truncated to ``REPORT_LABEL_LIMIT`` and failure details masked."""
@@ -1548,6 +1980,9 @@ class BatchReport(Contract):
     stored failure), else by failure reason, plus ``error`` rows by kind of error."""
     backends: list[BackendReadiness] = Field(default_factory=list)
     """The per-backend readiness table."""
+    submissions: SubmissionReport | None = None
+    """Submissions of approved applications (``submit-approved``) recorded in these
+    ledgers; None when there are none."""
 
 
 def list_batches(paths: LocalPaths) -> list[str]:
@@ -1831,7 +2266,23 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
     costed = list(costed_rows.values())
     total_cost = round(sum(e.provider_cost_usd or 0.0 for e in costed), 6) if costed else None
     prepared_rows = totals["prepared"]
+    submitted = latest_submissions(sorted(
+        (s for batch_id in ids for s in read_submissions(root / batch_id / LEDGER_NAME)),
+        key=lambda s: s.finished_at))
+    submission_totals: Counter[str] = Counter(s.outcome for s in submitted.values())
+    submission_ids: dict[str, list[str]] = defaultdict(list)
+    for sub in submitted.values():
+        submission_ids[sub.outcome].append(sub.application_id)
     return BatchReport(
+        submissions=SubmissionReport(
+            applications=len(submitted),
+            totals={k: submission_totals[k] for k in SUBMISSION_OUTCOMES if submission_totals[k]},
+            application_ids={k: submission_ids[k] for k in SUBMISSION_OUTCOMES if submission_ids[k]},
+            receipts=[SubmissionReceiptRow(application_id=e.application_id, receipt_id=e.receipt_id,
+                                           confirmation_reference=e.confirmation_reference,
+                                           company=e.company, title=e.title)
+                      for e in submitted.values() if e.outcome == "submitted"],
+        ) if submitted else None,
         provider_cost_usd=total_cost,
         provider_calls=sum(e.provider_calls or 0 for e in costed),
         provider_cost_rows=len(costed),
@@ -1889,6 +2340,9 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
         if report.since is not None:
             where += f" with a line finished since {_iso(report.since)}"
         return "\n".join([*lines, where + "."]) + "\n"
+    submissions = report.submissions
+    reached = (sum(submissions.totals.get(k, 0) for k in ("submitted", "uncertain"))
+               if submissions is not None else 0)
     lines += [
         f"- batches: {', '.join(report.batches)} (in {report.batches_dir})",
         *([f"- since: {_iso(report.since)}"] if report.since is not None else []),
@@ -1896,7 +2350,9 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
         "already_recorded)",
         *([f"- unreadable ledger lines ignored: {report.ledger_lines_ignored}"]
           if report.ledger_lines_ignored else []),
-        "- nothing was submitted (preparation only)",
+        "- nothing was submitted (preparation only)" if not reached else
+        f"- {reached} approved application(s) submitted or possibly submitted (see "
+        "Submissions); everything else was prepared only",
         "",
         "## Totals",
         "",
@@ -1905,6 +2361,22 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
     ]
     lines += [f"| {k} | {v} |" for k, v in report.totals.items()]
     lines.append(f"| **all** | {sum(report.totals.values())} |")
+    if submissions is not None:
+        lines += ["", "## Submissions", "",
+                  f"Approved applications submitted with submit-approved: {submissions.applications} "
+                  "(each once, at its latest submission).", "",
+                  "| outcome | count |", "| --- | --- |"]
+        lines += [f"| {k} | {v} |" for k, v in submissions.totals.items()]
+        lines.append(f"| **all** | {sum(submissions.totals.values())} |")
+        if submissions.receipts:
+            lines += ["", "| application | receipt | reference | job |", "| --- | --- | --- | --- |"]
+            lines += [f"| {r.application_id} | {r.receipt_id or '-'} | "
+                      f"{_cell(r.confirmation_reference or '-')} | "
+                      f"{_cell(' — '.join(x for x in (r.company, r.title) if x) or '-')} |"
+                      for r in submissions.receipts]
+        uncertain = submissions.application_ids.get("uncertain")
+        if uncertain:
+            lines += ["", "uncertain (never resubmitted; reconcile each): " + ", ".join(uncertain)]
     if report.by_backend:
         columns = [k for k in OUTCOMES if any(k in c for c in report.by_backend.values())]
         lines += ["", "## By backend", "", "| backend | " + " | ".join(columns) + " |",
@@ -1964,6 +2436,7 @@ __all__ = [
     "PREPARED_PREFIX",
     "READINESS_COLUMNS",
     "REPORT_LABEL_LIMIT",
+    "SUBMISSION_OUTCOMES",
     "BackendDurations",
     "BackendReadiness",
     "BatchOptions",
@@ -1978,14 +2451,26 @@ __all__ = [
     "PipelineCounts",
     "RetryStats",
     "StateReader",
+    "SubmissionEntry",
+    "SubmissionOutcomeName",
+    "SubmissionReceiptRow",
+    "SubmissionReport",
+    "SubmissionSummary",
+    "SubmissionTarget",
+    "SubmitBatchOptions",
     "append_ledger",
+    "approved_targets",
     "build_report",
     "categorize_hold",
     "classify",
+    "classify_submission",
     "default_batch_dir",
     "default_batch_id",
     "default_command",
+    "default_submission_batch_id",
     "format_entry",
+    "format_submission",
+    "latest_submissions",
     "list_batches",
     "load_inventory",
     "plan",
@@ -1993,13 +2478,17 @@ __all__ = [
     "read_inventory",
     "read_ledger",
     "read_ledger_lines",
+    "read_submissions",
     "read_summary",
     "render_report_markdown",
     "render_retry_markdown",
+    "render_submissions_markdown",
     "render_summary_markdown",
     "retry_stats",
     "run_batch",
+    "run_submissions",
     "summarize",
+    "summarize_submissions",
     "sync_pipeline_card",
     "write_summary",
 ]
