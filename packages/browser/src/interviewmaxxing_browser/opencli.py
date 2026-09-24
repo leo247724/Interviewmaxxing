@@ -55,6 +55,7 @@ from .driver import (
     PageContextLost,
     file_anchor,
     file_shown,
+    reject_control_characters,
 )
 from .driver import CapabilityUnsupported as CapabilityUnsupported  # public name kept here
 from .runtime import (
@@ -529,6 +530,7 @@ class OpenCliDriver:
         await self._control(selector)
 
     async def type_text(self, selector: str, text: str, *, delay_s: float = 0.03) -> None:
+        reject_control_characters(text, selector)
         self._check_match(await self._keyboard("type", [selector, text], f"type into {selector}"),
                           f"type {selector}")
         await self._control(selector)

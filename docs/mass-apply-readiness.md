@@ -271,6 +271,51 @@ with one cover letter and two narrative questions is therefore USD 0.25–0.45 a
 60–90 s of provider time, before browser time. Eight hundred such forms would cost
 roughly USD 200–360 in provider fees.
 
+## Scope change (evening, September 24): LinkedIn Easy Apply is out
+
+LinkedIn flagged the person's account for unusual profile-data access, so nothing in this
+system may open linkedin.com any more: the 78 LinkedIn Easy Apply jobs are applied to by
+hand, the finder's LinkedIn source stays off, and sign-in-gated work (WP6) ships on mocks
+only. Bottleneck 2 below now covers Wellfound, Indeed, Workday and iCIMS only.
+
+## Pilot 7 (evening): 40 fresh jobs, prepare-only, and what every hold turned out to be
+
+Run against j-workspace during the WP5 merge (ce7c0ce → 855dd2b), four browser slots, nothing
+submitted. The runner now records a `routing.trace` event per resolved step (every field's route,
+source scope, semantic type and their probabilities plus the resolver's decision traces) and
+`failed_fields` on `application.failed_retryable`, so each hold below was read from the store.
+
+| outcome | count |
+| --- | --- |
+| prepared (Lever) | 1 |
+| needs_input | 33 |
+| failed_retryable (Jobvite apply page not recognised; Teamtailor hidden import input) | 2 |
+| already recorded | 4 |
+
+Median 11 s per form; provider cost USD 1.46 over 34 applications, almost all of it narratives.
+The 149 holds by cause and owner:
+
+| cause | holds | evidence | owner |
+| --- | --- | --- | --- |
+| Saved answer of the same type not applied (work authorization, sponsorship, veteran, race) | 12 | `question_equivalence` offered the one typed answer plus nine untyped ones; NONE 0.60, BELOW_GATE 0.83–0.94 | WP2 round 6 (type-filtered candidates) |
+| Whole form lost to the 60 KB request bound (Appspace, 13 fields including First Name) | 13 | a 240-option dial-code select serialised in full | WP10 (option caps, batched requests) |
+| Ashby required resume "purpose is not a verified attachment" with APPROVED_DOCUMENT 0.99 | 5 | the override needs document confidence ≥ 0.90; a split purpose lowers it | WP10 (pooled gates) |
+| Residence questions typed UNKNOWN (COUNTRY/LOCATION split) or routed AMBIGUOUS (COPY 0.94 / HUMAN 0.06) | 6 | pooling needs confidence ≥ 0.90; screeners need the COPY_KNOWN label | WP10 + WP2 round 6 |
+| Bare First Name / Last Name / Email / LinkedIn held on Jev's hedge (UNCLEAR 0.06–0.08, EXPLICIT 0.23 once) | 6 | strict clarification 0.75–0.89 | WP2 round 6 (deterministic bare contact) |
+| Yes/no experience screeners not run | 5 | route AMBIGUOUS at COPY 0.85–0.91 | WP2 round 6 (route mass) |
+| Labels lost to placeholders or ids (Ashby "Type here…", "Pick date…"; Breezy `section_…_question_N`; Lever), a radio group labelled by its first option, BambooHR pre-filled custom selects, Teamtailor hidden import input, Jobvite apply | 14 | browser normaliser and runtime | WP1 round 7 |
+| Consent and attestation statements (privacy notice, "information is true", contact consent, no AI tools in interviews) | 6 | explicit by design today | WP2 round 7 (reusable statements, strict coverage) |
+| One-time answers with null defaults (salary ×6, earliest start ×4, previously employed here ×3, AI tools ×2, county ×2, pronouns, non-compete, government official, familiarity) | 22 | the person's data | simple-answers import; `holds` + `answer --reuse global` (WP9) |
+| Budget exhausted on an 8-question Breezy form (4 narratives) | 4 | 48 calls / USD 0.50 per run | WP2 round 6 (budget scales with the form) |
+| Jev MALFORMED_RESPONSE (16-option referral multi-select, Gem attestation) | 2 | no retry | WP2 round 6 (one retry) |
+| Narratives without grounding facts (2), CAPTCHA (1), RELOCATION questions naming a place (2) | 5 | correct holds; bottleneck 6; residence-first rule | WP2 round 6 for RELOCATION |
+
+Pilot 6's six held applications, rerun after ce7c0ce: Workable and Rippling (GoFish) reach the
+final review; the two Greenhouse forms fail only on the Country react-select, which reads back
+the phone widget's "+ 1" dial code (WP1 round 6); the Rippling state-list question is typed STATE
+but routed AMBIGUOUS (WP2 round 6); the other Rippling form needs the person's answers (work
+authorization "Permanent / Temporary", desired salary, travel level).
+
 ## Bottlenecks to debug next (ordered by jobs affected)
 
 1. **Sign-in-gated backends need the user's Chrome.** LinkedIn Easy Apply (78),

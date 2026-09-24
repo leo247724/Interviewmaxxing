@@ -120,6 +120,23 @@ _CONTEXT_LOST = re.compile(
     re.IGNORECASE,
 )
 
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def reject_control_characters(text: str, selector: str) -> None:
+    """Refuse to type control characters key by key.
+
+    ``type_text`` presses every character as a key. A newline is the Enter key: pressed
+    inside an application form it submits or advances the form (implicit submission),
+    outside every submission guard. Tabs move the focus, other control keys are never a
+    value. Values reach the drivers through the packet contract, which rejects them too;
+    this is the last line of defence. Raises ``NotActionable``."""
+    match = _CONTROL_CHARACTERS.search(text)
+    if match is not None:
+        raise NotActionable(
+            f"refusing to type the control character U+{ord(match.group(0)):04X} into "
+            f"{selector}: a newline or control key inside a form is an action, not a value")
+
 
 
 # Read-only SHA-256 of the first file attached to a control (null when the page cannot
@@ -458,6 +475,7 @@ class PlaywrightDriver:
         self._guard(before, f"pressing {key} in {selector}")
 
     async def type_text(self, selector: str, text: str, *, delay_s: float = 0.03) -> None:
+        reject_control_characters(text, selector)
         before = self._doc_mark()
         try:
             await self.page.locator(selector).press_sequentially(

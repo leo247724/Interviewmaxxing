@@ -20,6 +20,7 @@ answer claims about itself:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -127,6 +128,32 @@ def _accepts(accept: list[str], artifact: ArtifactRef) -> bool:
     return False
 
 
+_SINGLE_LINE_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+"""Control characters, including newline: typed key by key into a single-line input, a
+newline is an Enter key and submits the form (implicit submission)."""
+_MULTILINE_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+"""Control characters other than newline, carriage return and tab, which a text area
+legitimately holds."""
+
+
+def text_control_problems(field: ApplicationField, text: str) -> list[str]:
+    """Control characters that must never reach ``field`` (empty when the text is clean).
+
+    Everything except a TEXTAREA is a single-line control: a newline typed into it presses
+    Enter inside the application form, which can submit or advance it outside the
+    submission guards. Text areas keep newlines, carriage returns and tabs only."""
+    pattern = (_MULTILINE_CONTROL_CHARACTERS if field.control_type is ControlType.TEXTAREA
+               else _SINGLE_LINE_CONTROL_CHARACTERS)
+    match = pattern.search(text)
+    if match is None:
+        return []
+    code = f"U+{ord(match.group(0)):04X}"
+    if field.control_type is ControlType.TEXTAREA:
+        return [f"text for {field.id!r} contains the control character {code}"]
+    return [f"text for {field.id!r} contains the control character {code}; a newline or "
+            "other control key cannot be typed into a single-line field"]
+
+
 def answer_problems(field: ApplicationField, value: AnswerValue) -> list[str]:
     """Why ``value`` cannot be applied to ``field`` (empty when compatible)."""
     accepted = _ACCEPTED_VALUES[field.control_type]
@@ -149,6 +176,7 @@ def answer_problems(field: ApplicationField, value: AnswerValue) -> list[str]:
             problems.append(f"text for {field.id!r} exceeds max_length {field.max_length}")
         if field.required and not value.text.strip():
             problems.append(f"required field {field.id!r} has an empty answer")
+        problems.extend(text_control_problems(field, value.text))
     elif isinstance(value, BooleanValue):
         if field.required and not value.checked:
             problems.append(f"required checkbox {field.id!r} is left unchecked")
