@@ -147,8 +147,10 @@ def log_lines(tmp_path: Path) -> list[dict]:
 
 
 def row(kind: str, *, backend: str = "mock", listing: str | None = None) -> BatchRow:
+    """A row whose URL ends in ``kind``; a named listing gets a job (URL) of its own."""
+    url = f"{ORIGIN}/{listing}/{kind}" if listing else f"{ORIGIN}/{kind}"
     return BatchRow(listing_id=listing or f"lst_{kind}", pipeline_id=None, company="Brambleway",
-                    title=kind.title(), application_url=f"{ORIGIN}/{kind}", backend=backend,
+                    title=kind.title(), application_url=url, backend=backend,
                     status="resolved")
 
 
@@ -852,18 +854,19 @@ def test_closed_job_moves_its_saved_card_to_closed_with_a_dated_note(paths, pipe
     assert len(pipeline.history("default", card.id)) == 2
 
 
-def test_closed_note_falls_back_and_truncates_the_reason(paths, pipeline):
+def test_closed_note_keeps_the_runner_wording_without_the_cost_and_truncates_it(paths, pipeline):
     app = stored_application(paths, state=S.FAILED_PERMANENT)
     card = saved_card(pipeline)
-    assert synced(paths, closed_entry(card.id, app.id, message="")).closed_synced is True
+    costed = CLOSED_REASON + " Provider cost: USD 0.0100 for 2 call(s)."
+    assert synced(paths, closed_entry(card.id, app.id, message=costed)).closed_synced is True
     assert pipeline.history("default", card.id)[-1].note == (
-        "Observed closed on 2026-09-23 (UTC) by prepare-batch b1: The job no longer accepts "
-        f"applications. (application {app.id})")
+        f"Observed closed on 2026-09-23 (UTC) by prepare-batch b1: {CLOSED_REASON} "
+        f"(application {app.id})")
 
     url = f"{ORIGIN}/long"
     app = stored_application(paths, url, state=S.FAILED_PERMANENT)
     card = saved_card(pipeline, url=url)
-    message = "Brambleway closed this fictional posting after a hiring freeze. " * 5
+    message = CLOSED_REASON + " " + "Brambleway closed this fictional posting after a hiring freeze. " * 5
     entry = closed_entry(card.id, app.id, application_url=url, message=message)
     assert synced(paths, entry).closed_synced is True
     note = pipeline.history("default", card.id)[-1].note
@@ -872,6 +875,25 @@ def test_closed_note_falls_back_and_truncates_the_reason(paths, pipeline):
     assert note.startswith(prefix) and note.endswith(suffix)
     reason = note[len(prefix):-len(suffix)]
     assert len(reason) <= 200 and reason[:150] == message[:150]
+
+
+@pytest.mark.parametrize("message", [
+    "",
+    "The application cannot be completed.",
+    "Brambleway rejected this fictional application permanently.",
+    "Stopped: " + CLOSED_REASON,  # the wording must open the reason
+])
+def test_a_permanent_failure_that_is_not_a_closed_job_leaves_the_card(paths, pipeline, message):
+    """L15: only the runner's closed wording moves a card; any other FAILED_PERMANENT
+    (outcome ``closed`` all the same) is linked but stays in Saved, with no note."""
+    app = stored_application(paths, state=S.FAILED_PERMANENT, failure_reason=message or "x")
+    card = saved_card(pipeline)
+    result = synced(paths, closed_entry(card.id, app.id, message=message))
+    assert link_fields(result) == (True, None, app.id, None, None)
+    after = pipeline.get_item("default", card.id)
+    assert (after.lane, after.application_id) == ("saved", app.id)
+    assert lane_moves(pipeline, card.id) == [] and not any(
+        h.note for h in pipeline.history("default", card.id))
 
 
 def test_closed_sync_leaves_a_card_the_user_moved_on(paths, pipeline):
@@ -931,8 +953,8 @@ def test_closed_sync_finds_the_saved_and_closed_lanes_by_label(paths, pipeline):
 
 
 def test_already_recorded_closed_application_moves_its_card(paths, pipeline):
-    app = stored_application(paths, state=S.FAILED_PERMANENT,
-                             failure_reason="Brambleway took the fictional posting down.")
+    reason = f"{CLOSED_REASON} Brambleway took the fictional posting down."
+    app = stored_application(paths, state=S.FAILED_PERMANENT, failure_reason=reason)
     card = saved_card(pipeline)
     entry = card_entry(card.id, app.id, outcome="already_recorded", state=S.FAILED_PERMANENT,
                        message="an application already exists (FAILED_PERMANENT)",
@@ -942,7 +964,17 @@ def test_already_recorded_closed_application_moves_its_card(paths, pipeline):
     assert pipeline.get_item("default", card.id).lane == "closed"
     assert pipeline.history("default", card.id)[-1].note == (
         f"Observed closed on {app.updated_at.astimezone(UTC):%Y-%m-%d} (UTC) by prepare-batch "
-        f"b2: Brambleway took the fictional posting down. (application {app.id})")
+        f"b2: {reason} (application {app.id})")
+
+    # L15: a stored permanent failure for another reason is not a closed job.
+    url = f"{ORIGIN}/withdrawn"
+    other = stored_application(paths, url, state=S.FAILED_PERMANENT,
+                               failure_reason="Brambleway took the fictional posting down.")
+    kept = saved_card(pipeline, url=url)
+    entry = entry.model_copy(update={"pipeline_id": kept.id, "application_id": other.id,
+                                     "application_url": url})
+    assert link_fields(synced(paths, entry)) == (True, None, other.id, None, None)
+    assert pipeline.get_item("default", kept.id).lane == "saved"
 
 
 @pytest.mark.parametrize("outcome, state", [
@@ -1205,9 +1237,9 @@ def test_batch_links_cards_moves_closed_ones_and_backfills_later_batches(store_f
     needs = by_id["lst_needs"]
     assert [item.model_dump() for item in needs.missing_items] == [
         {"label": "Current location Start typing your city", "reason": "NO_ANSWER",
-         "control_type": "TYPEAHEAD"},
+         "control_type": "TYPEAHEAD", "field_id": "city", "semantic_type": "UNKNOWN"},
         {"label": collapsed[:119] + "…", "reason": "EXPLICIT_ANSWER_REQUIRED",
-         "control_type": None}]
+         "control_type": None, "field_id": "why", "semantic_type": "UNKNOWN"}]
     assert needs.missing_labels == [item.label for item in needs.missing_items]
     assert needs.missing_reasons == ["EXPLICIT_ANSWER_REQUIRED", "NO_ANSWER"]
     assert by_id["lst_prepared"].missing_items == by_id["lst_closed"].missing_items == []
