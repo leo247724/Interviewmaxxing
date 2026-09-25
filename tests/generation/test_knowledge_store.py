@@ -771,3 +771,15 @@ def test_story_hits_are_validated_and_deduplicated(knowledge, profile, mock_job)
     assert unlabelled_body not in texts and not any("tampered" in t for t in texts)
     assert result.receipt["rejected_count"] >= 3
     assert len(result.story_chunks) <= 4
+
+
+def test_motivation_questions_rank_facts_by_the_job_context(knowledge, profile, mock_job):
+    store, _, _ = knowledge
+    store.index_candidate(profile)
+    store.index_job(profile.id, mock_job, "Own paid search and report orders to the owner.",
+                    "https://example.invalid/job")
+    for query in ("What interests you about Synthetic Co?", "Why do you want to work here?", "Cover letter"):
+        result = store.retrieve(candidate=profile, job=mock_job, query=query)
+        assert result.receipt["candidate_ranking_uses_job_context"] is True, query
+    plain = store.retrieve(candidate=profile, job=mock_job, query="Describe a campaign you led")
+    assert plain.receipt["candidate_ranking_uses_job_context"] is False

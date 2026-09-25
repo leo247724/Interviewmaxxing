@@ -64,9 +64,12 @@ class Jev:
     consistency and story-consistency nouls with the configured scores."""
 
     def __init__(self, *, semantic: str = "CUSTOM_LONG_TEXT", support: Any = 1.0,
-                 complete: float = 1.0, consistency: float = 1.0, story: float = 1.0) -> None:
+                 complete: float = 1.0, consistency: float = 1.0, story: float = 1.0,
+                 scope: str = "HISTORICAL_OR_CONTEXTUAL", scope_probability: float = 1.0,
+                 link: tuple[str, float, float] | None = None) -> None:
         self.semantic, self.support, self.complete = semantic, support, complete
         self.consistency, self.story = consistency, story
+        self.scope, self.scope_probability, self.link = scope, scope_probability, link
         self.requests: list[dict[str, Any]] = []
 
     def grounding_requests(self) -> list[dict[str, Any]]:
@@ -81,12 +84,14 @@ class Jev:
         answers: dict[str, Any] = {}
         for name, question in request["questions"].items():
             if question["type"] == "choice":
-                if name.startswith("r") and name != "route":
+                if name == "role" and self.link is not None:
+                    choice = self.link[0]
+                elif name.startswith("r") and name != "route":
                     choice = "WRITER"
                 elif name.startswith("n"):
                     choice = "prose"
                 elif name.startswith("u"):
-                    choice = "HISTORICAL_OR_CONTEXTUAL"
+                    choice = self.scope
                 elif name.startswith("s"):
                     choice = self.semantic
                 elif name.startswith("d"):
@@ -95,6 +100,19 @@ class Jev:
                     choice = next(iter(question["criteria"]))
                 answers[name] = {"type": "choice", "choice": choice, "confidence": 1,
                     "probabilities": {option: float(option == choice) for option in question["criteria"]}}
+                if name.startswith("u") and self.scope_probability < 1:
+                    others = max(len(question["criteria"]) - 1, 1)
+                    answers[name]["confidence"] = self.scope_probability
+                    answers[name]["probabilities"] = {
+                        option: self.scope_probability if option == choice
+                        else (1 - self.scope_probability) / others for option in question["criteria"]}
+                if name == "role" and self.link is not None:
+                    _, confidence, probability = self.link
+                    others = max(len(question["criteria"]) - 1, 1)
+                    answers[name]["confidence"] = confidence
+                    answers[name]["probabilities"] = {
+                        option: probability if option == choice else (1 - probability) / others
+                        for option in question["criteria"]}
             else:
                 state = request["state"]
                 if "sentences" in state:
@@ -513,3 +531,111 @@ def test_effort_follows_the_purpose_and_is_recorded(candidate, mock_job, monkeyp
     with pytest.raises(ValueError, match="narrative effort"):
         NarrativeWriter(ApiKey("synthetic-key", source="test"), MODEL, CallBudget(), transport=transport,
                         narrative_effort="extreme")  # type: ignore[arg-type]
+
+
+# --- round 2: resume role links and motivation narratives -------------------------------------
+
+
+def _story_and_analysis() -> tuple[Any, Any]:
+    from interviewmaxxing_generation.knowledge import stories as st
+
+    runs = (st.Run("Stories 01 - Paid search for a regional bakery chain", True),
+            st.Run("I managed a $120,000 annual paid search budget for a regional bakery chain in 2024 "
+                   "and grew online orders by 35%. As the marketing manager I set up conversion tracking "
+                   "in Google Ads. My team of 2 coordinators reported to me.", False))
+    story = st.parse_stories([st.Paragraph(runs)])[0]
+    return story, st.analyse_story(story)
+
+
+def _roles() -> list[Any]:
+    from interviewmaxxing_generation.knowledge.stories import ResumeRole
+
+    return [ResumeRole("exp_old", "Glaze Agency", "PPC Specialist", "2021-01", "2023-03", False,
+                       ("Ran paid search for auto repair shops.",)),
+            ResumeRole("exp_bakery", "Crumb & Co. Bakeries", "Marketing Manager", "2023-04", "2024-09",
+                       False, ("Managed paid search for twelve stores; online orders up 35%.",))]
+
+
+def _decide(jev: Jev) -> Any:
+    return BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"), transport=jev, max_attempts=1))
+
+
+def test_a_story_links_to_a_resume_role_only_through_the_gates() -> None:
+    from interviewmaxxing_browser.ai.stories import link_story_to_role
+
+    story, analysis = _story_and_analysis()
+    jev = Jev(link=("r1", 0.93, 0.97))
+    decisions = _decide(jev)
+    link, trace = link_story_to_role(story=story, analysis=analysis, roles=_roles(),
+                                     decide=decisions.decide, model=decisions.model)
+    assert link is not None and (link.resume_role_id, link.method) == ("exp_bakery", "jev_match")
+    assert (link.company, link.start, link.end, link.confidence, link.probability) == (
+        "Crumb & Co. Bakeries", "2023-04", "2024-09", 0.93, 0.97)
+    assert trace["status"] == "LINKED" and trace["resume_role_id"] == "exp_bakery"
+    assert trace["choice"] == "r1" and trace["role_ids"] == ["exp_old", "exp_bakery"]
+    assert "Crumb" not in json.dumps(trace) and "regional bakery chain" not in json.dumps(trace)
+    [request] = jev.requests
+    assert request["state"]["prompt_version"] == "story-role-link-v1"
+    assert set(request["questions"]["role"]["criteria"]) == {"r0", "r1", "NONE"}
+    assert request["state"]["resume_roles"]["r1"]["company"] == "Crumb & Co. Bakeries"
+    assert request["state"]["story"]["years_stated"] == ["2024"]
+    for scores, status in ((("r1", 0.93, 0.9), "UNLINKED"), (("r1", 0.8, 0.99), "UNLINKED"),
+                           (("NONE", 1.0, 1.0), "UNLINKED")):
+        decisions = _decide(Jev(link=scores))
+        link, trace = link_story_to_role(story=story, analysis=analysis, roles=_roles(),
+                                         decide=decisions.decide, model=decisions.model)
+        assert link is None and trace["status"] == status
+    link, trace = link_story_to_role(story=story, analysis=analysis, roles=[],
+                                     decide=decisions.decide, model=decisions.model)
+    assert link is None and trace["status"] == "NO_ROLES"
+
+    class Refusing:
+        def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+            return HttpResponse(500, {}, b"{}")
+
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"), transport=Refusing(), max_attempts=1))
+    link, trace = link_story_to_role(story=story, analysis=analysis, roles=_roles(),
+                                     decide=decisions.decide, model=decisions.model)
+    assert link is None and trace["status"] == "HELD"
+
+
+INTEREST = "What interests you about Pacvue?"
+JOB_EVIDENCE = {"id": "job:" + "a" * 64, "source_url": "https://synthetic.test/jobs/1", "source_version": "b" * 64,
+                "text": "Own paid search and retail media strategy for enterprise brands and report results to the sales team."}
+
+
+def test_interest_questions_are_cover_letter_narratives_despite_an_explicit_scope(candidate, mock_job):
+    chunk = story_chunk()
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    retriever = Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE])
+    writer = Writer([
+        {"text": "Your description puts paid search at the center of the role.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+        {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.", "fact_ids": ["fact.bakery"]},
+        {"text": "I set up conversion tracking so the owner could see which campaigns paid off.", "fact_ids": [chunk["id"]]},
+    ])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST), retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert writer.calls[0]["purpose"] == "cover_letter"
+    assert [e["id"] for e in writer.calls[0]["job_evidence"]] == [JOB_EVIDENCE["id"]]
+    assert retriever.calls[0]["narrative"] is True and retriever.calls[0]["query"] == INTEREST
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "motivation_narrative")
+    assert trace["status"] == "COVER_LETTER_PURPOSE" and trace["source_scope"] == "EXPLICIT_ANSWER"
+    assert trace["source_scope_probabilities"]["EXPLICIT_ANSWER"] == 0.78
+    assert not any("candidate_narrative" in r["questions"] for r in jev.requests)  # no writer-scope call
+    answer = packet.answers[0]
+    assert answer.provenance.reference_ids == ["fact.bakery"] and 0.9 <= answer.confidence <= 1.0
+    assert "story evidence" in answer.provenance.note and "job context" in answer.provenance.note
+
+
+@pytest.mark.parametrize(("question", "semantic"), [
+    ("What are your salary expectations?", SemanticType.SALARY_EXPECTATION),
+    ("Why do you want to relocate to Austin?", SemanticType.CUSTOM_LONG_TEXT),
+    ("Describe a campaign you led and what it achieved.", SemanticType.CUSTOM_LONG_TEXT),
+])
+def test_preferences_and_ordinary_narratives_keep_the_explicit_scope_hold(candidate, mock_job, question, semantic):
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=question, semantic=semantic),
+                                    Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    assert not any(t["stage"] == "motivation_narrative" for t in resolver.narrative_traces)

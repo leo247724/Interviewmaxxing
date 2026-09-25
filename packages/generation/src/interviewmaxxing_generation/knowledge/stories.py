@@ -16,7 +16,7 @@ import itertools
 import json
 import re
 import zipfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +25,7 @@ from xml.etree import ElementTree as ET
 
 from interviewmaxxing_core import (
     CandidateFact,
+    CandidateProfile,
     FactVerification,
     VerificationMethod,
     VerificationStatus,
@@ -41,6 +42,11 @@ MAX_STORIES = 64
 DEFAULT_STORY_SOURCE = "candidate-stories"
 """The one current stories source of a candidate; a new document version replaces it."""
 STORY_CHUNK_ID = re.compile(r"^story:[0-9a-f]{64}$")
+_COMPANY_GENERIC_WORDS = frozenset({
+    "inc", "llc", "ltd", "corp", "co", "company", "corporation", "consulting", "solutions",
+    "group", "agency", "agencies", "law", "firm", "the", "and", "of", "marketing", "media",
+    "digital", "partners", "services", "labs", "studio", "global", "international", "holdings",
+    "limited", "plc", "gmbh", "team", "office", "practice", "clinic", "shop", "store"})
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _HEADING = re.compile(r"^\s*(?:stor(?:y|ies))\s*#?\s*(\d{1,3})\s*[-\u2013\u2014:.]\s*(.+?)\s*$",
@@ -233,6 +239,18 @@ _SKILLS: tuple[tuple[str, str], ...] = (
     ("data analysis", r"\bdata\s+analysis\b|\banaly[sz]e[sd]?\b"),
     ("account management", r"\baccount\s+management\b|\bclient\s+accounts?\b|\b\d+\+?\s+clients\b"),
     ("intake automation", r"\bintake\b"),
+    ("paid media", r"\bpaid\s+media\b"),
+    ("programmatic advertising", r"\bprogrammatic\b"),
+    ("SEO", r"\bseo\b|\bsearch\s+engine\s+optimi[sz]ation\b"),
+    ("PPC", r"\bppc\b|\bpay[- ]per[- ]click\b"),
+    ("performance marketing", r"\bperformance\s+marketing\b"),
+    ("demand generation", r"\bdemand\s+generation\b"),
+    ("growth marketing", r"\bgrowth\s+marketing\b"),
+    ("digital marketing", r"\bdigital\s+marketing\b"),
+    ("email marketing", r"\bemail\s+marketing\b"),
+    ("content marketing", r"\bcontent\s+marketing\b"),
+    ("social media marketing", r"\bsocial\s+media\s+marketing\b"),
+    ("project management", r"\bproject\s+manag\w+\b"),
 )
 
 _THEMES: tuple[tuple[str, str], ...] = (
@@ -330,6 +348,54 @@ class StoryAnalysis:
 
 
 @dataclass(frozen=True)
+class ResumeRole:
+    """A resume experience group as the linking and dating reference for a story."""
+    id: str
+    company: str
+    title: str
+    start: str | None
+    end: str | None
+    current: bool
+    bullets: tuple[str, ...]
+
+    @property
+    def period(self) -> str | None:
+        if not self.start:
+            return None
+        return f"{self.start} to {self.end or ('present' if self.current else '?')}"
+
+
+@dataclass(frozen=True)
+class StoryRoleLink:
+    """A story linked to one resume role, by employer name or by a gated decision."""
+    story_id: str
+    resume_role_id: str
+    company: str
+    title: str
+    start: str | None
+    end: str | None
+    current: bool
+    method: str
+    """``employer_name`` (a distinctive company token in the story) or ``jev_match``."""
+    confidence: float = 1.0
+    probability: float = 1.0
+
+    @property
+    def period(self) -> str | None:
+        if not self.start:
+            return None
+        return f"{self.start} to {self.end or ('present' if self.current else '?')}"
+
+    def contains_year(self, year: str) -> bool:
+        """Whether a stated year falls within the role's dates (an open end counts)."""
+        if not self.start:
+            return True
+        first = int(self.start[:4])
+        last = int(self.end[:4]) if self.end else 9999
+        return first <= int(year) <= last
+
+
+@dataclass(frozen=True)
 class StoryChunk:
     id: str
     story_id: str
@@ -340,10 +406,19 @@ class StoryChunk:
     period: str | None
     themes: tuple[str, ...]
     text: str
+    resume_role_id: str | None = None
 
     @property
     def word_count(self) -> int:
         return len(self.text.split())
+
+
+@dataclass(frozen=True)
+class StoryDocument:
+    file_sha256: str
+    file_bytes: int
+    stories: tuple[Story, ...]
+    analyses: tuple[StoryAnalysis, ...]
 
 
 @dataclass(frozen=True)
@@ -355,6 +430,11 @@ class StoryIndex:
     chunks: tuple[StoryChunk, ...]
     facts: tuple[CandidateFact, ...]
     skipped: tuple[dict[str, Any], ...]
+    links: Mapping[str, StoryRoleLink] | None = None
+    """Resume role links by story id (``resolve_period`` dates the facts and headers)."""
+
+    def link_for(self, story_id: str) -> StoryRoleLink | None:
+        return (self.links or {}).get(story_id)
 
 
 def _normalize(text: str) -> str:
@@ -554,6 +634,62 @@ def analyse_story(story: Story) -> StoryAnalysis:
         skills=tuple(find_skills(body)), themes=tuple(find_themes(body, outcomes=bool(outcomes))))
 
 
+# --- resume roles, links and periods -----------------------------------------------------
+
+
+def resume_roles(profile: CandidateProfile) -> list[ResumeRole]:
+    """The profile's experience groups with their verified bullet texts."""
+    by_id = {fact.id: fact for fact in profile.verified_facts()}
+    roles = []
+    for group in profile.experience:
+        bullets = tuple(str(by_id[fid].value) for fid in group.fact_ids
+                        if fid in by_id and isinstance(by_id[fid].value, str))
+        roles.append(ResumeRole(group.id, group.company, group.title, group.start, group.end,
+                                group.current, bullets))
+    return roles
+
+
+def company_tokens(company: str) -> set[str]:
+    """Distinctive words of a company name (no suffixes or generic industry words)."""
+    words = {w for w in re.findall(r"[a-z0-9]+", company.casefold()) if len(w) >= 3}
+    return {w for w in words if w not in _COMPANY_GENERIC_WORDS}
+
+
+def match_role_by_name(story: Story, analysis: StoryAnalysis,
+                       roles: Sequence[ResumeRole]) -> StoryRoleLink | None:
+    """The one resume role whose distinctive company token the story names (in its
+    text, employer phrase or product name); several or none match: no link."""
+    haystack = " ".join([story.body, analysis.employer or "", analysis.project or "",
+                         analysis.title]).casefold()
+    words = set(re.findall(r"[a-z0-9]+", haystack))
+    matches = [role for role in roles if company_tokens(role.company) & words]
+    if len(matches) != 1:
+        return None
+    role = matches[0]
+    return StoryRoleLink(analysis.story_id, role.id, role.company, role.title, role.start,
+                         role.end, role.current, "employer_name")
+
+
+def stated_years(story: Story) -> list[str]:
+    return sorted(set(_YEAR.findall(story.body)))
+
+
+def resolve_period(story: Story, link: StoryRoleLink | None) -> tuple[str | None, str, bool]:
+    """The period a story's facts and headers carry, where it comes from, and whether
+    the story states a year outside the linked role's dates.
+
+    A linked story carries the resume role's dates (the canonical profile is
+    authoritative); an unlinked story carries a year only when it states one; otherwise
+    none. Never a default year."""
+    years = stated_years(story)
+    if link is not None and link.period:
+        discrepancy = any(not link.contains_year(year) for year in years)
+        return link.period, "resume_role", discrepancy
+    if years:
+        return (years[0] if len(years) == 1 else f"{years[0]}\u2013{years[-1]}"), "story", False
+    return None, "none", False
+
+
 # --- chunks -------------------------------------------------------------------------------
 
 
@@ -561,22 +697,28 @@ def _clean_field(value: str) -> str:
     return _normalize(value).replace("|", "/")
 
 
-def chunk_header(analysis: StoryAnalysis) -> str:
+def chunk_header(analysis: StoryAnalysis, link: StoryRoleLink | None = None,
+                 period: str | None = None) -> str:
+    """The first line of every chunk: title, employer or project, resume role when
+    linked, the resolved period (``period``; the story's own when None) and themes."""
     parts = [f"Story {analysis.number:02d}: {_clean_field(analysis.title)}"]
     if analysis.employer:
         parts.append("employer: " + _clean_field(analysis.employer))
     elif analysis.project:
         parts.append("project: " + _clean_field(analysis.project))
+    if link is not None:
+        parts.append("resume role: " + _clean_field(f"{link.title}, {link.company}"))
     if analysis.role:
         parts.append("role: " + _clean_field(analysis.role))
-    if analysis.period:
-        parts.append("period: " + _clean_field(analysis.period))
+    resolved = period if period is not None else analysis.period
+    if resolved:
+        parts.append("period: " + _clean_field(resolved))
     if analysis.themes:
         parts.append("themes: " + ", ".join(analysis.themes))
     return " | ".join(parts)
 
 
-_HEADER = re.compile(r"^Story (\d{1,3}): (?P<title>[^|\n]*?)(?P<rest>(?: \| [a-z]+: [^|\n]*)*)$")
+_HEADER = re.compile(r"^Story (\d{1,3}): (?P<title>[^|\n]*?)(?P<rest>(?: \| [a-z ]+: [^|\n]*)*)$")
 
 
 def parse_chunk_header(text: str) -> dict[str, Any] | None:
@@ -587,9 +729,11 @@ def parse_chunk_header(text: str) -> dict[str, Any] | None:
         return None
     fields: dict[str, Any] = {
         "number": int(match.group(1)), "title": match.group("title").strip(),
-        "employer": None, "project": None, "role": None, "period": None, "themes": []}
+        "employer": None, "project": None, "resume_role": None, "role": None, "period": None,
+        "themes": []}
     for item in match.group("rest").split(" | ")[1:]:
         name, _, value = item.partition(": ")
+        name = name.replace(" ", "_")
         if name == "themes":
             fields["themes"] = [theme.strip() for theme in value.split(",") if theme.strip()]
         elif name in fields:
@@ -637,29 +781,39 @@ def _pack(sentences: Iterable[str], *, max_words: int, max_chars: int) -> list[l
     return groups
 
 
-def _chunk(analysis: StoryAnalysis, number: int, kind: str, text: str) -> StoryChunk:
+def _chunk(analysis: StoryAnalysis, number: int, kind: str, text: str, *,
+           period: str | None, link: StoryRoleLink | None) -> StoryChunk:
     text = text.strip()
     if len(text) > MAX_CHUNK_CHARS + 50:
         raise StoryParseError("A story chunk exceeds the store's size bound")
     return StoryChunk(id="story:" + _sha256(text), story_id=analysis.story_id, number=number,
                       kind=kind, title=analysis.title, employer=analysis.context_label,
-                      period=analysis.period, themes=analysis.themes, text=text)
+                      period=period, themes=analysis.themes, text=text,
+                      resume_role_id=link.resume_role_id if link else None)
 
 
-def chunk_story(story: Story, analysis: StoryAnalysis) -> list[StoryChunk]:
+def chunk_story(story: Story, analysis: StoryAnalysis,
+                link: StoryRoleLink | None = None) -> list[StoryChunk]:
     """One summary chunk, then sections of about 120-300 words, each prefixed with the
-    story's header line so it stands alone. Chunk ids are content hashes."""
-    header = chunk_header(analysis)
+    story's header line so it stands alone. Chunk ids are content hashes. A linked story
+    carries the resume role and its dates in the header and the summary."""
+    period, _, _ = resolve_period(story, link)
+    header = chunk_header(analysis, link, period)
     header_words, header_chars = len(header.split()), len(header) + 1
     max_words = max(MAX_CHUNK_WORDS - header_words, 60)
     max_chars = MAX_CHUNK_CHARS - header_chars
     summary_parts = [f"Summary of story {analysis.number:02d}."]
-    if analysis.role and analysis.context_label:
-        summary_parts.append(f"Role: {analysis.role} at {analysis.context_label}"
-                             + (f" ({analysis.period})." if analysis.period else "."))
-    elif analysis.context_label:
-        summary_parts.append(f"Context: {analysis.context_label}"
-                             + (f" ({analysis.period})." if analysis.period else "."))
+    where = analysis.context_label
+    if link is not None:
+        where = f"{where} ({link.company})" if where else link.company
+    dated = f" ({period})." if period else "."
+    if analysis.role and where:
+        summary_parts.append(f"Role: {analysis.role} at {where}" + dated)
+    elif where:
+        summary_parts.append(f"Context: {where}" + dated)
+    if link is not None:
+        summary_parts.append(f"The resume lists this role as {link.title} at {link.company}"
+                             + (f", {link.period}." if link.period else "."))
     if analysis.situation:
         summary_parts.append("Situation: " + analysis.situation[0])
     outcomes = list(analysis.outcomes[:3])
@@ -673,9 +827,10 @@ def chunk_story(story: Story, analysis: StoryAnalysis) -> list[StoryChunk]:
         outcomes.pop()
     if len(summary) > max_chars:
         summary = " ".join(_hard_split(summary, max_chars)[:1])
-    chunks = [_chunk(analysis, 0, "summary", header + "\n" + summary)]
+    chunks = [_chunk(analysis, 0, "summary", header + "\n" + summary, period=period, link=link)]
     for index, group in enumerate(_pack(story.sentences, max_words=max_words, max_chars=max_chars), 1):
-        chunks.append(_chunk(analysis, index, "section", header + "\n" + " ".join(group)))
+        chunks.append(_chunk(analysis, index, "section", header + "\n" + " ".join(group),
+                             period=period, link=link))
     return chunks
 
 
@@ -704,19 +859,43 @@ def _fact_key(sentence: str, tools: list[str]) -> str | None:
     return None
 
 
+def fact_context(analysis: StoryAnalysis, period: str | None,
+                 link: StoryRoleLink | None) -> str | None:
+    """What a story fact's value ends with, in parentheses: the story's employer phrase,
+    the linked resume role and the resolved period; nothing invented."""
+    parts: list[str] = []
+    if analysis.employer:
+        parts.append(analysis.employer)
+    if link is not None:
+        parts.append(f"resume: {link.company}" + (f", {period}" if period else ""))
+    elif period:
+        if parts:
+            parts[-1] += ", " + period
+        else:
+            parts.append(period)
+    return "; ".join(parts) if parts else None
+
+
 def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[StoryChunk], *,
-                        verified_at: datetime) -> tuple[list[CandidateFact], list[dict[str, Any]]]:
+                        verified_at: datetime,
+                        link: StoryRoleLink | None = None) -> tuple[list[CandidateFact], list[dict[str, Any]]]:
     """Atomic, user-authored facts from a story's concrete first-person sentences, each
     with ``story:<chunk id>`` provenance. Values are the sentences as written (numbers
-    are never changed); a vague sentence yields nothing. Returns the facts and the
-    sentences skipped for length."""
+    are never changed) plus the story's employer and resolved period; a vague sentence
+    yields nothing. A linked story's facts carry the resume role's dates and record
+    ``resume_role_id`` in their evidence; an unlinked story's facts carry a year only
+    when the story states one. Returns the facts and the sentences skipped for length."""
     facts: list[CandidateFact] = []
     skipped: list[dict[str, Any]] = []
     body = story.body
     body_numbers = numbers_in(body)
-    context = analysis.employer
-    if context and analysis.period:
-        context += ", " + analysis.period
+    period, period_source, discrepancy = resolve_period(story, link)
+    conflicting_years = ([year for year in stated_years(story) if link is not None and not link.contains_year(year)]
+                         if discrepancy else [])
+    context = fact_context(analysis, period, link)
+    provenance_lines = [f"period_source: {period_source}"]
+    if link is not None:
+        provenance_lines.append(f"resume_role_id: {link.resume_role_id}")
     verification = FactVerification(status=VerificationStatus.VERIFIED,
                                     method=VerificationMethod.USER_STATED, verified_at=verified_at)
     sections = [chunk for chunk in chunks if chunk.kind == "section"]
@@ -739,8 +918,11 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
         role_sentence = next((s for s in story.sentences
                               if re.search(re.escape(analysis.role), s, re.IGNORECASE)), story.sentences[0])
         value = f"{analysis.role[0].upper()}{analysis.role[1:]}, {analysis.employer}"
-        value += f" ({analysis.period})" if analysis.period else ""
-        add("employment", value, provenance(role_sentence), [label, role_sentence])
+        if link is not None:
+            value += f" ({link.company}" + (f", {period})" if period else ")")
+        elif period:
+            value += f" ({period})"
+        add("employment", value, provenance(role_sentence), [label, *provenance_lines, role_sentence])
     for sentence in story.sentences:
         tools = find_tools(sentence)
         key = _fact_key(sentence, tools)
@@ -750,8 +932,15 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
             skipped.append({"story": analysis.number, "reason": "sentence_too_long",
                             "chars": len(sentence), "key": key})
             continue
+        if any(re.search(rf"\b{year}\b", sentence) for year in conflicting_years):
+            # The sentence dates the work to a year the linked resume role contradicts: a
+            # fact quoting it next to the resume dates would contradict itself. The story
+            # chunk keeps the sentence; the review names it for the person to correct.
+            skipped.append({"story": analysis.number, "reason": "stated_year_conflicts_with_resume_role",
+                            "chars": len(sentence), "key": key})
+            continue
         value = sentence if not context else f"{sentence} ({context})"
-        evidence = [label] + (["Tools: " + ", ".join(tools)] if tools else [])
+        evidence = [label, *provenance_lines] + (["Tools: " + ", ".join(tools)] if tools else [])
         add(key, value, provenance(sentence), evidence)
     return facts, skipped
 
@@ -759,28 +948,35 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
 # --- whole document -----------------------------------------------------------------------
 
 
-def build_story_index(path: Path, *, verified_at: datetime) -> StoryIndex:
-    """Stories, analyses, chunks and facts of one document; no text leaves in receipts."""
+def read_stories(path: Path) -> StoryDocument:
+    """The document's stories and their analyses: the first phase, before any linking."""
     data = path.read_bytes()
-    paragraphs = read_docx(path)
-    stories = parse_stories(paragraphs)
-    analyses: list[StoryAnalysis] = []
+    stories = parse_stories(read_docx(path))
+    return StoryDocument(hashlib.sha256(data).hexdigest(), len(data), tuple(stories),
+                         tuple(analyse_story(story) for story in stories))
+
+
+def build_story_index(source: Path | StoryDocument, *, verified_at: datetime,
+                      links: Mapping[str, StoryRoleLink] | None = None) -> StoryIndex:
+    """Stories, analyses, chunks and facts of one document; no text leaves in receipts.
+    ``links`` (by story id) date the linked stories' chunks and facts with the resume."""
+    document = read_stories(source) if isinstance(source, Path) else source
     chunks: list[StoryChunk] = []
     facts: list[CandidateFact] = []
     skipped: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for story in stories:
-        analysis = analyse_story(story)
-        story_chunks = chunk_story(story, analysis)
+    for story, analysis in zip(document.stories, document.analyses, strict=True):
+        link = (links or {}).get(analysis.story_id)
+        story_chunks = chunk_story(story, analysis, link)
         story_facts, story_skipped = extract_story_facts(story, analysis, story_chunks,
-                                                         verified_at=verified_at)
-        analyses.append(analysis)
+                                                         verified_at=verified_at, link=link)
         chunks.extend(chunk for chunk in story_chunks if chunk.id not in seen)
         seen.update(chunk.id for chunk in story_chunks)
         facts.extend(fact for fact in story_facts if fact.id not in {f.id for f in facts})
         skipped.extend(story_skipped)
-    return StoryIndex(hashlib.sha256(data).hexdigest(), len(data), tuple(stories),
-                      tuple(analyses), tuple(chunks), tuple(facts), tuple(skipped))
+    return StoryIndex(document.file_sha256, document.file_bytes, document.stories,
+                      document.analyses, tuple(chunks), tuple(facts), tuple(skipped),
+                      dict(links or {}))
 
 
 def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
@@ -788,21 +984,39 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
     by_key: dict[str, int] = {}
     for fact in index.facts:
         by_key[fact.key] = by_key.get(fact.key, 0) + 1
-    return {
-        "file_sha256": index.file_sha256, "file_bytes": index.file_bytes,
-        "story_count": len(index.stories),
-        "stories": [{
+    periods: dict[str, int] = {}
+    discrepancies = 0
+    story_rows = []
+    for story, analysis in zip(index.stories, index.analyses, strict=True):
+        link = index.link_for(analysis.story_id)
+        period, period_source, discrepancy = resolve_period(story, link)
+        discrepancies += int(discrepancy)
+        fact_count = sum(1 for f in index.facts if f.id.startswith(f"sf_{analysis.story_id}_"))
+        periods[period_source] = periods.get(period_source, 0) + fact_count
+        story_rows.append({
             "story_id": analysis.story_id, "number": analysis.number,
             "title_sha256": _sha256(story.title), "word_count": story.word_count,
             "sentence_count": len(story.sentences),
             "chunk_count": sum(1 for c in index.chunks if c.story_id == analysis.story_id),
-            "fact_count": sum(1 for f in index.facts if f.id.startswith(f"sf_{analysis.story_id}_")),
+            "fact_count": fact_count,
             "has_employer": analysis.employer is not None, "has_project": analysis.project is not None,
-            "has_role": analysis.role is not None, "has_period": analysis.period is not None,
+            "has_role": analysis.role is not None,
+            "stated_years": stated_years(story), "period_source": period_source,
+            "period_set": period is not None, "stated_year_outside_resume_role": discrepancy,
+            "link": ({"method": link.method, "resume_role_id": link.resume_role_id,
+                      "confidence": link.confidence, "probability": link.probability}
+                     if link else None),
             "situation_count": len(analysis.situation), "action_count": len(analysis.actions),
             "outcome_count": len(analysis.outcomes), "tool_count": len(analysis.tools),
             "skill_count": len(analysis.skills), "themes": list(analysis.themes),
-        } for story, analysis in zip(index.stories, index.analyses, strict=True)],
+        })
+    return {
+        "file_sha256": index.file_sha256, "file_bytes": index.file_bytes,
+        "story_count": len(index.stories),
+        "stories": story_rows,
+        "facts_by_period_source": dict(sorted(periods.items())),
+        "stated_year_discrepancies": discrepancies,
+        "linked_stories": sum(1 for row in story_rows if row["link"]),
         "chunk_count": len(index.chunks),
         "chunk_ids": [chunk.id for chunk in index.chunks],
         "chunk_words": [chunk.word_count for chunk in index.chunks],
@@ -814,19 +1028,67 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
 
 def facts_review(index: StoryIndex, *, candidate_id: str) -> dict[str, Any]:
     """The full fact list for the user's private review (contains story text)."""
+    stories = []
+    for story, a in zip(index.stories, index.analyses, strict=True):
+        link = index.link_for(a.story_id)
+        period, period_source, discrepancy = resolve_period(story, link)
+        stories.append({
+            "number": a.number, "story_id": a.story_id, "title": a.title,
+            "employer": a.employer, "project": a.project, "role": a.role,
+            "stated_years": stated_years(story), "period": period, "period_source": period_source,
+            "resume_role": ({"id": link.resume_role_id, "company": link.company, "title": link.title,
+                             "start": link.start, "end": link.end, "current": link.current,
+                             "method": link.method, "confidence": link.confidence,
+                             "probability": link.probability} if link else None),
+            "stated_year_outside_resume_role": discrepancy,
+            "note": ("The story states a year outside the linked resume role's dates; the resume "
+                     "dates were used. Correct the story or the resume if one is wrong."
+                     if discrepancy else None),
+            "tools": list(a.tools), "skills": list(a.skills),
+            "themes": list(a.themes), "outcomes": list(a.outcomes)})
     return {
         "candidate_sha256": _sha256(candidate_id), "file_sha256": index.file_sha256,
         "facts": [{"id": fact.id, "key": fact.key, "value": fact.value, "source": fact.source,
                    "evidence": list(fact.evidence),
                    "verification": fact.verification.model_dump(mode="json")}
                   for fact in index.facts],
-        "stories": [{"number": a.number, "story_id": a.story_id, "title": a.title,
-                     "employer": a.employer, "project": a.project, "role": a.role,
-                     "period": a.period, "tools": list(a.tools), "skills": list(a.skills),
-                     "themes": list(a.themes), "outcomes": list(a.outcomes)}
-                    for a in index.analyses],
+        "stories": stories,
         "skipped": list(index.skipped),
     }
+
+
+def facts_review_markdown(review: Mapping[str, Any],
+                          derived: Sequence[CandidateFact] = ()) -> str:
+    """A readable version of the review for the person: stories with their link and
+    period, then every fact, then the derived years facts."""
+    lines = ["# Story facts for review", ""]
+    for story in review["stories"]:
+        role = story["resume_role"]
+        lines.append(f"## Story {story['number']:02d}: {story['title']}")
+        lines.append(f"- employer/project: {story['employer'] or story['project'] or 'not stated'}"
+                     f"; role: {story['role'] or 'not stated'}; years the story states: "
+                     f"{', '.join(story['stated_years']) or 'none'}")
+        if role:
+            lines.append(f"- resume role: {role['title']} at {role['company']}, "
+                         f"{role['start'] or '?'} to {role['end'] or ('present' if role['current'] else '?')}"
+                         f" (link by {role['method']}, confidence {role['confidence']:.2f}, "
+                         f"probability {role['probability']:.2f})")
+        lines.append(f"- period used: {story['period'] or 'none'} ({story['period_source']})")
+        if story.get("note"):
+            lines.append(f"- **check:** {story['note']}")
+        lines.append("")
+    lines += ["## Facts", "", "| id | key | value | provenance |", "|---|---|---|---|"]
+    for fact in review["facts"]:
+        value = str(fact["value"]).replace("|", "/")
+        lines.append(f"| `{fact['id']}` | {fact['key']} | {value} | `{fact['source']}` |")
+    if derived:
+        lines += ["", "## Derived years of experience (resume timeline)", "",
+                  "| id | key | years | basis |", "|---|---|---|---|"]
+        for fact in derived:
+            basis = "; ".join(fact.evidence).replace("|", "/")
+            lines.append(f"| `{fact.id}` | {fact.key} | {fact.value} | {basis} |")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def chunk_metadata(chunk: StoryChunk) -> dict[str, Any]:
@@ -840,9 +1102,11 @@ def dumps_receipt(receipt: dict[str, Any]) -> str:
 
 __all__ = [
     "DEFAULT_STORY_SOURCE", "MAX_CHUNK_CHARS", "MAX_CHUNK_WORDS", "MIN_CHUNK_WORDS",
-    "STORY_CHUNK_ID", "Paragraph", "Run", "Story", "StoryAnalysis", "StoryChunk", "StoryIndex",
-    "StoryParseError", "analyse_story", "build_story_index", "chunk_header", "chunk_metadata",
-    "chunk_story", "extract_story_facts", "facts_review", "find_skills", "find_themes",
-    "find_tools", "numbers_in", "parse_chunk_header", "parse_stories", "read_docx",
-    "split_sentences", "story_index_receipt",
+    "STORY_CHUNK_ID", "Paragraph", "ResumeRole", "Run", "Story", "StoryAnalysis", "StoryChunk",
+    "StoryDocument", "StoryIndex", "StoryParseError", "StoryRoleLink", "analyse_story",
+    "build_story_index", "chunk_header", "chunk_metadata", "chunk_story", "company_tokens",
+    "extract_story_facts", "fact_context", "facts_review", "facts_review_markdown",
+    "find_skills", "find_themes", "find_tools", "match_role_by_name", "numbers_in",
+    "parse_chunk_header", "parse_stories", "read_docx", "read_stories", "resolve_period",
+    "resume_roles", "split_sentences", "stated_years", "story_index_receipt",
 ]

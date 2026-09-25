@@ -45,6 +45,7 @@ from interviewmaxxing_core import (
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
 from interviewmaxxing_generation.questions import (
     QuestionText,
+    motivation_question,
     question_key,
     saved_answer_matches,
     wording_key,
@@ -1171,7 +1172,8 @@ class DynamicPacketResolver:
                 DynamicPacketResolver._is_screener(field, gate)
                 or DynamicPacketResolver._is_fact_screener(field, gate)):
             return False
-        if gate.source_scope in (SourceScope.UNCLEAR, SourceScope.EXPLICIT_ANSWER):
+        if (gate.source_scope in (SourceScope.UNCLEAR, SourceScope.EXPLICIT_ANSWER)
+                and not DynamicPacketResolver._motivation_narrative(field, gate)):
             return False
         if gate.route is FieldRoute.WRITER and gate.source_scope is SourceScope.OTHER_PERSON_OR_ENTITY:
             return False
@@ -1193,12 +1195,33 @@ class DynamicPacketResolver:
         prior = next((m for m in missing if m.field_id == field.id), None)
         return prior is None or prior.reason is not MissingReason.AMBIGUOUS
 
+    @staticmethod
+    def _motivation_narrative(field: ApplicationField, gate: FieldRouteDecision) -> bool:
+        """A WRITER-routed text question about the applicant's interest, motivation or fit
+        ("What interests you about Acme?", "Why do you want to work here?"): a cover-letter
+        narrative grounded in the job description and the candidate's own account, written
+        whatever the explicit-answer share of its source scope. Salary, relocation,
+        availability, hours and travel preferences stay explicit answers."""
+        return (gate.route is FieldRoute.WRITER
+                and field.control_type in (ControlType.TEXT, ControlType.TEXTAREA)
+                and field.input_type in (None, "text")
+                and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
+                and gate.semantic_type not in EXPLICIT_ANSWER_REQUIRED
+                and motivation_question(field.question_text))
+
     def _generate(self, context: PacketContext, field: ApplicationField,
                   gate: FieldRouteDecision) -> PacketAnswer:
         """A generative answer for one open field (screener, fact screener, exact fact or
         grounded narrative), capped by its gate confidence; ``AIHold`` holds it."""
         writer_scope = None
-        if ((gate.source_scope_confidence or 0.0) < MIN_CONFIDENCE
+        motivation = self._motivation_narrative(field, gate)
+        if motivation:
+            self._trace({"stage": "motivation_narrative", "field_id": field.id,
+                "field_fingerprint": field.fingerprint, "question": field.question_text,
+                "source_scope": gate.source_scope.value,
+                "source_scope_probabilities": gate.source_scope_probabilities,
+                "status": "COVER_LETTER_PURPOSE"})
+        elif ((gate.source_scope_confidence or 0.0) < MIN_CONFIDENCE
                 or gate.source_scope_probabilities.get(gate.source_scope.value, 0.0) < MIN_PROBABILITY):
             if gate.route is FieldRoute.COPY_KNOWN:
                 raise AIHold("The field's current-candidate source is not confirmed for exact copying")
@@ -1211,9 +1234,13 @@ class DynamicPacketResolver:
             raise _Unrouted()
         answer = screened if screened is not None else self._route(
             context, field, require_writer=gate.route is FieldRoute.WRITER,
-            purpose="cover_letter" if gate.semantic_type is SemanticType.COVER_LETTER else "answer")
-        return answer.model_copy(update={"confidence": min(answer.confidence,
-            self._gate_confidence(gate, source_approval=writer_scope))})
+            purpose=("cover_letter" if gate.semantic_type is SemanticType.COVER_LETTER or motivation
+                     else "answer"))
+        # A motivation narrative is admitted by its wording, so its confidence is the
+        # route's own (its source scope was not approved), like an address-derived answer.
+        confidence = (_route_confidence(gate) if motivation
+                      else self._gate_confidence(gate, source_approval=writer_scope))
+        return answer.model_copy(update={"confidence": min(answer.confidence, confidence)})
 
     # --- stored answers onto a site's own option wording -----------------------------
 

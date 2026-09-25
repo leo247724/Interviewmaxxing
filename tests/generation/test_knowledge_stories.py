@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -234,3 +235,121 @@ def test_receipt_carries_counts_ids_and_hashes_only(stories_docx: Path) -> None:
     review = st.facts_review(index, candidate_id="default")
     assert len(review["facts"]) == len(index.facts) and review["facts"][0]["verification"]["status"] == "VERIFIED"
     assert review["stories"][0]["employer"] == "regional bakery chain"
+
+
+# --- round 2: resume role links and periods ---------------------------------------------------
+
+
+def _roles() -> list[st.ResumeRole]:
+    return [
+        st.ResumeRole("exp_bakery", "Crumb & Co. Bakeries", "Marketing Manager", "2023-04", "2024-09",
+                      False, ("Managed paid search for twelve stores.",)),
+        st.ResumeRole("exp_tool", "Ovenboard Labs", "Founder", "2024-10", None, True,
+                      ("Built a reporting tool.",)),
+        st.ResumeRole("exp_old", "Glaze Agency", "PPC Specialist", "2021-01", "2023-03", False, ()),
+    ]
+
+
+def test_a_name_link_needs_exactly_one_distinctive_company_token(stories_docx: Path) -> None:
+    bakery, ovenboard, _quiet = st.parse_stories(st.read_docx(stories_docx))
+    roles = _roles()
+    link = st.match_role_by_name(ovenboard, st.analyse_story(ovenboard), roles)
+    assert link is not None and (link.resume_role_id, link.method) == ("exp_tool", "employer_name")
+    assert (link.company, link.title, link.start, link.end, link.current) == (
+        "Ovenboard Labs", "Founder", "2024-10", None, True)
+    assert link.period == "2024-10 to present" and link.contains_year("2026")
+    # "bakery" in the story is not "Bakeries", and generic words never link.
+    assert st.company_tokens("Crumb & Co. Bakeries") == {"crumb", "bakeries"}
+    assert st.company_tokens("The Marketing Agency LLC") == set()
+    assert st.match_role_by_name(bakery, st.analyse_story(bakery), roles) is None
+    twins = [*roles, st.ResumeRole("exp_tool2", "Ovenboard Studio", "Advisor", "2020-01", "2020-06", False, ())]
+    assert st.match_role_by_name(ovenboard, st.analyse_story(ovenboard), twins) is None
+
+
+def test_period_precedence_is_resume_link_then_stated_year_then_none(stories_docx: Path) -> None:
+    bakery, _ovenboard, quiet = st.parse_stories(st.read_docx(stories_docx))
+    link = st.StoryRoleLink(bakery.story_id, "exp_bakery", "Crumb & Co. Bakeries", "Marketing Manager",
+                            "2023-04", "2024-09", False, "jev_match", 0.93, 0.97)
+    assert st.stated_years(bakery) == ["2024"]
+    assert st.resolve_period(bakery, link) == ("2023-04 to 2024-09", "resume_role", False)
+    older = replace(link, start="2021-01", end="2022-12")
+    assert st.resolve_period(bakery, older) == ("2021-01 to 2022-12", "resume_role", True)
+    assert st.resolve_period(bakery, None) == ("2024", "story", False)
+    assert st.resolve_period(quiet, None) == (None, "none", False)
+    current = replace(link, end=None, current=True)
+    assert st.resolve_period(bakery, current) == ("2023-04 to present", "resume_role", False)
+    undated = replace(link, start=None, end=None)
+    assert st.resolve_period(bakery, undated) == ("2024", "story", False)
+
+
+def test_linked_stories_carry_the_resume_dates_in_headers_facts_and_receipts(stories_docx: Path) -> None:
+    document = st.read_stories(stories_docx)
+    bakery, ovenboard, quiet = document.stories
+    link = st.StoryRoleLink(bakery.story_id, "exp_bakery", "Crumb & Co. Bakeries", "Marketing Manager",
+                            "2023-04", "2024-09", False, "jev_match", 0.93, 0.97)
+    index = st.build_story_index(document, verified_at=NOW, links={bakery.story_id: link})
+    chunks = [c for c in index.chunks if c.story_id == bakery.story_id]
+    header = chunks[1].text.split("\n")[0]
+    assert " | resume role: Marketing Manager, Crumb & Co. Bakeries | " in header
+    assert " | period: 2023-04 to 2024-09 | " in header and "2024 |" not in header.replace("2024-09", "")
+    parsed = st.parse_chunk_header(chunks[1].text)
+    assert parsed is not None and parsed["resume_role"] == "Marketing Manager, Crumb & Co. Bakeries"
+    assert parsed["period"] == "2023-04 to 2024-09"
+    assert all(c.resume_role_id == "exp_bakery" and c.period == "2023-04 to 2024-09" for c in chunks)
+    assert "The resume lists this role as Marketing Manager at Crumb & Co. Bakeries, 2023-04 to 2024-09." in chunks[0].text
+    facts = [f for f in index.facts if f.id.startswith(f"sf_{bakery.story_id}_")]
+    assert facts
+    for fact in facts:
+        assert "period_source: resume_role" in fact.evidence and "resume_role_id: exp_bakery" in fact.evidence
+        assert fact.source in {c.id for c in chunks}
+    employment = next(f for f in facts if f.key == "employment")
+    assert employment.value == "Marketing manager, regional bakery chain (Crumb & Co. Bakeries, 2023-04 to 2024-09)"
+    assert all(str(f.value).endswith("(regional bakery chain; resume: Crumb & Co. Bakeries, 2023-04 to 2024-09)")
+               for f in facts if f.key != "employment")
+    # Unlinked and undated: no period at all, no year anywhere in the value suffix.
+    tool_facts = [f for f in index.facts if f.id.startswith(f"sf_{ovenboard.story_id}_")]
+    assert tool_facts and all("period_source: none" in f.evidence and str(f.value).endswith(" (bakery chain)")
+                              for f in tool_facts)
+    assert not any(f.id.startswith(f"sf_{quiet.story_id}_") for f in index.facts)
+    # Unlinked with a stated year: the story's own year, marked as such.
+    plain = st.build_story_index(document, verified_at=NOW)
+    plain_facts = [f for f in plain.facts if f.id.startswith(f"sf_{bakery.story_id}_")]
+    assert all("period_source: story" in f.evidence and str(f.value).endswith("(regional bakery chain, 2024)")
+               for f in plain_facts if f.key != "employment")
+    assert plain.chunks[1].period == "2024" and plain.chunks[1].resume_role_id is None
+    # Linking changes the chunk text, so the ids differ; the facts' ids differ with their values.
+    assert {c.id for c in chunks}.isdisjoint({c.id for c in plain.chunks})
+    receipt = st.story_index_receipt(index)
+    row = receipt["stories"][0]
+    assert row["link"] == {"method": "jev_match", "resume_role_id": "exp_bakery", "confidence": 0.93, "probability": 0.97}
+    assert (row["period_source"], row["stated_years"], row["stated_year_outside_resume_role"]) == ("resume_role", ["2024"], False)
+    assert receipt["stories"][1]["link"] is None and receipt["stories"][1]["period_source"] == "none"
+    assert receipt["facts_by_period_source"] == {"none": len(tool_facts), "resume_role": len(facts)}
+    assert receipt["linked_stories"] == 1 and receipt["stated_year_discrepancies"] == 0
+    assert "Crumb" not in json.dumps(receipt) and "regional bakery chain" not in json.dumps(receipt)
+    review = st.facts_review(index, candidate_id="default")
+    assert review["stories"][0]["resume_role"]["company"] == "Crumb & Co. Bakeries"
+    assert review["stories"][0]["note"] is None
+    markdown = st.facts_review_markdown(review)
+    assert "resume role: Marketing Manager at Crumb & Co. Bakeries, 2023-04 to 2024-09 (link by jev_match, confidence 0.93, probability 0.97)" in markdown
+    assert "| `" + facts[0].id + "` |" in markdown and "**check:**" not in markdown
+
+
+def test_a_stated_year_outside_the_linked_role_is_flagged_and_the_resume_dates_win(stories_docx: Path) -> None:
+    document = st.read_stories(stories_docx)
+    bakery = document.stories[0]
+    link = st.StoryRoleLink(bakery.story_id, "exp_old", "Glaze Agency", "PPC Specialist",
+                            "2021-01", "2022-12", False, "jev_match", 0.91, 0.96)
+    index = st.build_story_index(document, verified_at=NOW, links={bakery.story_id: link})
+    facts = [f for f in index.facts if f.id.startswith(f"sf_{bakery.story_id}_")]
+    assert facts and all("2021-01 to 2022-12" in str(f.value) and "2024" not in str(f.value) for f in facts)
+    # The sentence that states the conflicting year yields no fact; it stays in the chunks.
+    assert not any("$120,000" in str(f.value) for f in facts)
+    assert [(entry["reason"], entry["story"]) for entry in index.skipped] == [("stated_year_conflicts_with_resume_role", 1)]
+    assert any("in 2024" in c.text for c in index.chunks if c.story_id == bakery.story_id)
+    receipt = st.story_index_receipt(index)
+    assert receipt["stated_year_discrepancies"] == 1
+    assert receipt["stories"][0]["stated_year_outside_resume_role"] is True
+    review = st.facts_review(index, candidate_id="default")
+    assert review["stories"][0]["note"] and "outside the linked resume role" in review["stories"][0]["note"]
+    assert "**check:**" in st.facts_review_markdown(review)

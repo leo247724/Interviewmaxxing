@@ -23,6 +23,7 @@ from typing import Any, Protocol
 from interviewmaxxing_core import CandidateFact, CandidateProfile, JobRecord
 from interviewmaxxing_core.urls import normalize_application_url
 
+from ..questions import motivation_question
 from .embeddings import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_MODEL,
@@ -200,10 +201,13 @@ def _fact_relevance_query(query: str, job: JobRecord, evidence: list[dict[str, s
 
 
 def _cover_letter_request(query: str) -> bool:
+    """A cover letter, or an interest, motivation or fit question (a cover-letter
+    narrative): candidate facts are then ranked by the job's own description."""
     normalized = query.strip().lower()
     return bool(re.fullmatch(r"(?:optional\s+)?cover[\s-]*letter(?:\s*\(optional\))?[.:?!]*", normalized)
                 or re.match(r"^(?:please\s+)?(?:write|draft|create|compose)\b.{0,80}\bcover[\s-]*letter\b",
-                            normalized))
+                            normalized)
+                or motivation_question(query))
 
 
 _IDENTITY_QUERY = re.compile(
