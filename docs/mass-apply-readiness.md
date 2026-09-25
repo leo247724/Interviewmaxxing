@@ -413,6 +413,17 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Retry seven (16:11, fourth wave with the standing policies imported).** 14 run, 2 more prepared:
+**22 of 40 prepared**, 9 held, 3 failed; 6 skipped as needing only the person (CAPTCHA, consent
+clicks). 13 holds remain: two Greenhouse EEO blocks and a Teamtailor LinkedIn field that appear
+mid-fill and are now named but not yet resolved in the same run, Paylocity's address line and
+work-history dates, two Greenhouse checkbox groups whose options were never observed, the
+data-processing consent and "double-check" attestation controls, the case-study question, two
+narratives the corpus does not cover, one experience multi-select. WP1 round 14 takes the runtime
+items and adds CAPTCHA solving through the person's 2Captcha account behind a flag and a spend cap;
+WP2 round 13 decides work arrangement by the job's metro (Austin area: on-site or hybrid as the
+posting requires; elsewhere: remote).
+
 **Fourth merge wave (16:10, j-workspace fbcd23f).** WP11 round 3 (the dashboard review-and-submit
 lane: a Prepared queue, every answer with its provenance badge and RAG citations, approve and the
 gated submit from the page, edit and re-prepare), WP1 round 13 (forms that re-render mid-fill:
