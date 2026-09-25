@@ -469,6 +469,33 @@ def assert_kept(result: Run, baseline: Run, field_id: str = "q") -> None:
     assert (kept.reason, kept.prompt) == (before.reason, before.prompt)
 
 
+def settled_by_years(result: Run, field_id: str = "q") -> bool:
+    """Round 11 (WP2, merged together with this round) settles a yes/no years threshold
+    from the years facts before any policy: its experience_screener trace answers via
+    "years", or supports Jev's bare YES with an area years fact ("years_fact"). The brief
+    puts the fact paths first, so that answer stands. On this branch no screener trace
+    carries either key: this is always False here and every policy assertion runs."""
+    return any(t.get("field_id") == field_id and t.get("status") == "ANSWERED"
+               and (t.get("via") == "years" or t.get("support") == "years_fact")
+               for t in traces(result.resolver, "experience_screener"))
+
+
+def assert_settled_by_years(result: Run, expected: str | bool, field_id: str = "q") -> None:
+    """Round 11's years answer: the value the policy would give, from the facts, and no
+    policy request (a different value fails here: it is never hidden)."""
+    answer = result.answer(field_id)
+    assert answer is not None and rendered(answer) == expected
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert result.requests() == [] and traces(result.resolver) == []
+
+
+def text_box(label: str, policy: str, **case: Any) -> Case:
+    """A yes/no text box the classifier reads as an explicit answer: no fact screener takes
+    it (round 11's years screener admits choices only), so a case about how the policy reads
+    the wording tests the policy's own reading, with or without round 11."""
+    return Case(label, ControlType.TEXT, (), explicit(policy=policy), **case)
+
+
 R, S, TA, T, CB, MS = (ControlType.RADIO, ControlType.SELECT, ControlType.TEXTAREA, ControlType.TEXT,
                        ControlType.CHECKBOX, ControlType.MULTISELECT)
 CLAIM_Q = "Have you managed Google Ads campaigns?"
@@ -485,6 +512,11 @@ SMS_CONSENT = "I consent to receive SMS text messages from Mock Co about my appl
 SFMC_Q = "Do you have experience with Salesforce Marketing Cloud?"
 SFMC_OPTIONS = ("No experience yet", "Yes, some experience", "Yes, extensive experience")
 YEARS_TYPED_Q = "Years of paid media experience (5+ years)"
+YEARS_COUNT_Q = "Five or more years in paid media?"
+"""A yes/no years threshold Jev reads as a years count (YEARS_EXPERIENCE). It names no
+experience, so round 11's classifier keeps that type (it turns a years count on Yes/No
+options with experience wording into CUSTOM_BOOLEAN) and round 11's years screener does not
+take it: the typed class rule is tested the same way with or without round 11."""
 MARKETING_5 = "Do you have 5+ years of experience in marketing?"
 EMPLOYED_HERE, INTERVIEWED_HERE = POLICY_CONTRADICTIONS[NOT_EMPLOYEE]
 EVIDENCE_ID = "user_years_experience.google_ads"
@@ -821,15 +853,15 @@ HOLD_UNCHANGED = [
     # A class the field may not take.
     pytest.param(Case(CERTIFY_Q, CB, (), explicit(policy=CLAIMS)), "NOT_ALLOWED",
                  id="attestation-read-as-claims"),
-    pytest.param(Case(YEARS_TYPED_Q, script=Script(policy=CLAIMS)), "NOT_ALLOWED",
-                 id="years-type-read-as-claims"),
+    pytest.param(Case(YEARS_COUNT_Q, script=explicit(semantic="YEARS_EXPERIENCE", policy=CLAIMS)),
+                 "NOT_ALLOWED", id="years-type-read-as-claims"),
     pytest.param(Case(COUNTRY_Q, script=explicit(policy=NOT_EMPLOYEE)), "NOT_ALLOWED",
                  id="country-type-read-as-employee"),
     pytest.param(Case(SMS_CONSENT, CB, (), explicit(policy=NOT_EMPLOYEE)), "NOT_ALLOWED",
                  id="consent-read-as-employee"),
     # The rule's policy is null.
-    pytest.param(Case("Do you have 10+ years of experience with Google Ads?",
-                      script=Script(policy=CLAIMS), policies={CLAIMS: "Yes"}), "NO_POLICY",
+    pytest.param(text_box("Do you have 10+ years of experience with Google Ads?", CLAIMS,
+                          policies={CLAIMS: "Yes"}), "NO_POLICY",
                  id="claim-naming-years-without-a-threshold-policy"),
     pytest.param(Case(EMPLOYEE_Q, script=explicit(policy=NOT_EMPLOYEE), policies={CLAIMS: "Yes"}),
                  "NO_POLICY", id="employee-question-with-only-claims-stated"),
@@ -1052,22 +1084,20 @@ def test_legal_and_eeo_fields_never_take_a_policy(
 
 
 HOLD_WITH_PROMPT = [
-    # Thresholds with policy Yes: an unreadable minimum or no stated years.
-    pytest.param(Case("Do you have 3-5 years of experience in paid media?",
-                      script=Script(policy=THRESHOLDS)), "YEARS_UNREADABLE", THRESHOLDS, id="range"),
-    pytest.param(Case("Do you have less than 2 years of experience?", script=Script(policy=THRESHOLDS)),
+    # Thresholds with policy Yes: an unreadable minimum (how the policy reads the wording, on
+    # a text box) or no stated years.
+    pytest.param(text_box("Do you have 3-5 years of experience in paid media?", THRESHOLDS),
+                 "YEARS_UNREADABLE", THRESHOLDS, id="range"),
+    pytest.param(text_box("Do you have less than 2 years of experience?", THRESHOLDS),
                  "YEARS_UNREADABLE", THRESHOLDS, id="upper-bound"),
-    pytest.param(Case("Do you have 5+ years of experience, including 2 years in paid social?",
-                      script=Script(policy=THRESHOLDS)), "YEARS_UNREADABLE", THRESHOLDS,
-                 id="two-different-numbers"),
+    pytest.param(text_box("Do you have 5+ years of experience, including 2 years in paid social?",
+                          THRESHOLDS), "YEARS_UNREADABLE", THRESHOLDS, id="two-different-numbers"),
     # A bare number beside the years mention makes the minimum unreadable too.
-    pytest.param(Case("Do you have 5+ years of experience, including 2 in paid social?",
-                      script=Script(policy=THRESHOLDS)), "YEARS_UNREADABLE", THRESHOLDS,
-                 id="a-second-bare-number"),
-    pytest.param(Case("Do you have 5+ years of experience managing teams of 10 or more?",
-                      script=Script(policy=THRESHOLDS)), "YEARS_UNREADABLE", THRESHOLDS,
-                 id="a-bare-team-size"),
-    pytest.param(Case("Are you at least 18 years of age?", script=Script(policy=CLAIMS)),
+    pytest.param(text_box("Do you have 5+ years of experience, including 2 in paid social?",
+                          THRESHOLDS), "YEARS_UNREADABLE", THRESHOLDS, id="a-second-bare-number"),
+    pytest.param(text_box("Do you have 5+ years of experience managing teams of 10 or more?",
+                          THRESHOLDS), "YEARS_UNREADABLE", THRESHOLDS, id="a-bare-team-size"),
+    pytest.param(text_box("Are you at least 18 years of age?", CLAIMS),
                  "YEARS_UNREADABLE", THRESHOLDS, id="age-read-as-a-claim"),
     pytest.param(Case(MARKETING_5, script=Script(policy=THRESHOLDS), years={}), "NO_STATED_YEARS",
                  THRESHOLDS, id="no-stated-years"),
@@ -1215,8 +1245,8 @@ ANSWERED = [
     pytest.param(Case("I certify that the information I gave Mock Marketing Co is true and complete.",
                       CB, (), explicit(policy=CERTIFIES)), True, CERTIFIES, frozenset({CERTIFIES}),
                  id="consent-typed-certification-naming-mock-marketing-co"),
-    pytest.param(Case(YEARS_TYPED_Q, script=Script(policy=THRESHOLDS)), "Yes", THRESHOLDS,
-                 frozenset({THRESHOLDS}), id="years-type"),
+    pytest.param(Case(YEARS_COUNT_Q, script=explicit(semantic="YEARS_EXPERIENCE", policy=THRESHOLDS)),
+                 "Yes", THRESHOLDS, frozenset({THRESHOLDS}), id="years-type"),
     pytest.param(Case(COUNTRY_Q, script=explicit(policy=SANCTIONS)), "No", SANCTIONS,
                  frozenset({SANCTIONS}), id="country-type"),
     pytest.param(Case("Current location: are you in Cuba, Iran, North Korea or Syria?",
@@ -1307,12 +1337,11 @@ THRESHOLD_CASES = [
     pytest.param(Case("Do you have at least 9 years of experience in marketing?",
                       script=Script(policy=THRESHOLDS)), "No", ["user_years_experience"], (9.0, False),
                  id="minimum-above-the-total"),
-    pytest.param(Case("Do you have more than 8 years of experience in marketing?",
-                      script=Script(policy=THRESHOLDS)), "No", ["user_years_experience"], (8.0, True),
-                 id="more-than-is-strict"),
-    pytest.param(Case("Do you have over 7 years of experience in marketing?",
-                      script=Script(policy=THRESHOLDS)), "Yes", ["user_years_experience"], (7.0, True),
-                 id="over-is-strict"),
+    # How the policy reads the wording ("more than" and "over" are strict), on a text box.
+    pytest.param(text_box("Do you have more than 8 years of experience in marketing?", THRESHOLDS),
+                 "No.", ["user_years_experience"], (8.0, True), id="more-than-is-strict"),
+    pytest.param(text_box("Do you have over 7 years of experience in marketing?", THRESHOLDS),
+                 "Yes.", ["user_years_experience"], (7.0, True), id="over-is-strict"),
     pytest.param(Case("Do you have 6+ years of SEO experience?", script=Script(policy=THRESHOLDS),
                       years={"years_experience": 5, "years_experience.seo": 6}),
                  "Yes", ["user_years_experience", "user_years_experience.seo"], (6.0, False),
@@ -1324,27 +1353,24 @@ THRESHOLD_CASES = [
     pytest.param(Case("Do you have 6+ years of paid social experience?", script=Script(policy=THRESHOLDS),
                       years={"years_experience": 5, "years_experience.seo": 6}),
                  "No", ["user_years_experience"], (6.0, False), id="another-areas-fact-never-counts"),
-    # A claim naming a number of years follows the threshold rule.
-    pytest.param(Case("Do you have 10+ years of experience with Google Ads?", script=Script(policy=CLAIMS)),
-                 "No", ["user_years_experience", EVIDENCE_ID], (10.0, False),
+    # A claim naming a number of years follows the threshold rule (text box).
+    pytest.param(text_box("Do you have 10+ years of experience with Google Ads?", CLAIMS),
+                 "No.", ["user_years_experience", EVIDENCE_ID], (10.0, False),
                  id="claim-naming-10-years"),
-    pytest.param(Case("Do you have 5+ years of experience with Google Ads?", script=Script(policy=CLAIMS)),
-                 "Yes", ["user_years_experience", EVIDENCE_ID], (5.0, False),
+    pytest.param(text_box("Do you have 5+ years of experience with Google Ads?", CLAIMS),
+                 "Yes.", ["user_years_experience", EVIDENCE_ID], (5.0, False),
                  id="claim-naming-5-years"),
-    # Numbers that set no second minimum: inside a word, an amount, a timeframe's years.
-    pytest.param(Case("Do you have 5+ years of B2B marketing experience?", script=Script(policy=THRESHOLDS)),
-                 "Yes", ["user_years_experience"], (5.0, False), id="number-inside-a-word-b2b"),
-    pytest.param(Case("Do you have 5+ years of experience with GA4?", script=Script(policy=THRESHOLDS)),
-                 "Yes", ["user_years_experience"], (5.0, False), id="number-inside-a-word-ga4"),
-    pytest.param(Case("Do you have 5+ years of experience managing budgets over $1M?",
-                      script=Script(policy=THRESHOLDS)),
-                 "Yes", ["user_years_experience"], (5.0, False), id="an-amount"),
-    pytest.param(Case("Do you have 5+ years of experience growing revenue by 50%?",
-                      script=Script(policy=THRESHOLDS)),
-                 "Yes", ["user_years_experience"], (5.0, False), id="a-percentage"),
-    pytest.param(Case("Do you have 5+ years of SEO experience in the past 10 years?",
-                      script=Script(policy=THRESHOLDS)),
-                 "Yes", ["user_years_experience", "user_years_experience.seo"], (5.0, False),
+    # Numbers that set no second minimum (text box): inside a word, an amount, a timeframe.
+    pytest.param(text_box("Do you have 5+ years of B2B marketing experience?", THRESHOLDS),
+                 "Yes.", ["user_years_experience"], (5.0, False), id="number-inside-a-word-b2b"),
+    pytest.param(text_box("Do you have 5+ years of experience with GA4?", THRESHOLDS),
+                 "Yes.", ["user_years_experience"], (5.0, False), id="number-inside-a-word-ga4"),
+    pytest.param(text_box("Do you have 5+ years of experience managing budgets over $1M?", THRESHOLDS),
+                 "Yes.", ["user_years_experience"], (5.0, False), id="an-amount"),
+    pytest.param(text_box("Do you have 5+ years of experience growing revenue by 50%?", THRESHOLDS),
+                 "Yes.", ["user_years_experience"], (5.0, False), id="a-percentage"),
+    pytest.param(text_box("Do you have 5+ years of SEO experience in the past 10 years?", THRESHOLDS),
+                 "Yes.", ["user_years_experience", "user_years_experience.seo"], (5.0, False),
                  id="a-timeframe-years-mention"),
     # A fact the person stated replaces a derived one for the same key.
     pytest.param(Case("Do you have at least 10 years of experience in marketing?",
@@ -1369,8 +1395,12 @@ def test_a_threshold_is_compared_with_the_stated_years(
 ) -> None:
     """Thresholds: Yes iff the minimum is within the larger of the stated total and the
     area facts the question names ("more than" / "over" strict); a claim naming years
-    follows this rule; the trace and note carry the facts compared."""
+    follows this rule; the trace and note carry the facts compared. With round 11 merged,
+    its years screener answers some radios first, with the same value."""
     result = run_case(case, fictional_candidate, mock_job)
+    if settled_by_years(result):  # never on this branch
+        assert_settled_by_years(result, expected)
+        return
     answer = result.answer()
     assert answer is not None and rendered(answer) == expected
     assert answer.provenance.reference_ids == [policy_id(result.ctx.candidate, THRESHOLDS)]
@@ -1403,11 +1433,16 @@ def test_the_experience_screeners_own_answer_comes_before_any_policy(
 ) -> None:
     """Priority: the experience screener's YES or NO with a supporting / negating fact noul
     >= 0.95 settles the field and no policy request follows (a verified No beats the claims
-    policy's Yes); below 0.95 the screener holds and the policy answers."""
+    policy's Yes); below 0.95 the screener holds and the policy answers. With round 11
+    merged, a bare YES is supported by the Google Ads years fact (7 years) instead: the
+    same Yes, from the facts."""
     script = Script(policy=CLAIMS, decisions={"experience": (decision, 0.99)},
                     supports={EVIDENCE_ID: noul} if decision == "YES" else {},
                     negates={IN_HOUSE.id: noul} if decision == "NO" else {})
     result = run_case(Case(CLAIM_Q, script=script, facts=(IN_HOUSE,)), fictional_candidate, mock_job)
+    if settled_by_years(result):  # never on this branch
+        assert_settled_by_years(result, expected)
+        return
     answer = result.answer()
     assert answer is not None and (answer.provenance.source, rendered(answer)) == (source, expected)
     settled = source is AnswerSource.GENERATED_FROM_FACTS

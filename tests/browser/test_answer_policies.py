@@ -274,6 +274,17 @@ def traces(resolver: DynamicPacketResolver, stage: str = "answer_policy") -> lis
     return [t for t in resolver.narrative_traces if t["stage"] == stage]
 
 
+def settled_by_years_facts(resolver: DynamicPacketResolver) -> bool:
+    """WP2 round 11's deterministic years screener, merged after this round, settles some
+    years thresholds from the years facts before any policy (the fact paths come first): its
+    trace is ``experience_screener`` with ``via: years`` (or ``support: years_fact``) and
+    status ANSWERED. On this round's own base it never runs, so the policy path is asserted
+    in full here."""
+    return any(t["stage"] == "experience_screener" and t.get("status") == "ANSWERED"
+               and (t.get("via") == "years" or t.get("support") == "years_fact")
+               for t in resolver.narrative_traces)
+
+
 def rendered(answer: Any) -> str | bool:
     value = answer.value
     if isinstance(value, ChoiceValue):
@@ -389,6 +400,11 @@ def test_a_live_wording_takes_its_class_policy(
     assert packet.is_complete, packet.missing_inputs
     [answer] = packet.answers
     assert rendered(answer) == expected
+    if settled_by_years_facts(resolver):
+        # With round 11 merged, the years facts settle this threshold first: the same answer.
+        assert applied == THRESHOLDS and not traces(resolver)
+        assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+        return
     assert answer.provenance.source is AnswerSource.SAVED_ANSWER
     assert answer.provenance.reference_ids == [policy_id(candidate, applied)]
     assert answer.provenance.reference_ids[0].startswith(f"answer_policy_{applied}_")  # names the key
