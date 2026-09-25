@@ -7,7 +7,7 @@ import json
 import re
 import zipfile
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -429,3 +429,49 @@ def test_a_second_source_links_by_name_and_flags_a_team_size_difference(tmp_path
     assert "Source: `candidate-stories-seo`" in markdown and "**check:**" in markdown
     # The story's own figure stays in its facts; nothing is resolved here.
     assert any("team of 4" in str(f.value) for f in index.facts)
+
+
+# --- round 2b: durations against the linked role's tenure -----------------------------------------
+
+
+def test_duration_claims_state_their_minimum_months() -> None:
+    assert st.duration_claims("almost 2 years") == [("almost 2 years", 15)]
+    assert st.duration_claims("over 3 years") == [("over 3 years", 37)]
+    assert st.duration_claims("2 years") == [("2 years", 21)]
+    assert st.duration_claims("about 18 months") == [("about 18 months", 17)]
+    assert st.duration_claims("6 months") == [("6 months", 5)]
+    assert st.duration_claims("under a year") == [("under a year", 0)]
+    assert st.duration_claims("a little less than two years") == [("a little less than two years", 15)]
+    assert st.duration_claims("saves 25 hours per week") == []
+    assert st.duration_claims("giving a 26 year old kid the budget") == []
+    assert st.duration_claims("a 30-year-old brand with 3 years of ads") == [("3 years", 33)]
+    link = st.StoryRoleLink("s", "exp", "Crumb & Co.", "Manager", "2022-10", "2023-09", False, "jev_match", 0.95, 0.98)
+    assert st.role_tenure_months(link, date(2026, 9, 25)) == 12
+    assert st.role_tenure_months(replace(link, end=None, current=True), date(2026, 9, 25)) == 48
+    assert st.role_tenure_months(replace(link, start=None), date(2026, 9, 25)) is None
+    conflicts = st.tenure_conflicts("Over the course of almost 2 years we generated 7 figures.", link, date(2026, 9, 25))
+    assert conflicts == [{"phrase": "almost 2 years", "minimum_months": 15, "tenure_months": 12, "resume_role_id": "exp"}]
+    assert st.tenure_conflicts("After 6 months of testing we doubled leads.", link, date(2026, 9, 25)) == []
+    assert st.tenure_conflicts("Over the course of almost 2 years we won.", None, date(2026, 9, 25)) == []
+
+
+def test_a_sentence_claiming_more_tenure_than_the_resume_yields_no_fact(tmp_path: Path) -> None:
+    body = ("I managed a $40,000 paid search budget for a florist in 2023 and grew orders by 20%. "
+            "Over the course of almost 2 years my team and I generated 7 figures in revenue. "
+            "After 6 months of testing we doubled the lead volume.")
+    path = docx(tmp_path / "tenure.docx", [[("Stories 01 - Paid search for a florist", True), (body, False)]])
+    document = st.read_stories(path)
+    [story] = document.stories
+    link = st.StoryRoleLink(story.story_id, "exp_florist", "Petal & Stem", "Marketing Manager", "2022-10", "2023-09",
+                            False, "jev_match", 0.95, 0.98)
+    index = st.build_story_index(document, verified_at=NOW, links={story.story_id: link})
+    values = [str(f.value) for f in index.facts]
+    assert not any("almost 2 years" in v for v in values)
+    assert any("6 months of testing" in v for v in values) and any("$40,000" in v for v in values)
+    assert [(entry["reason"], entry["story"]) for entry in index.skipped] == [("stated_duration_conflicts_with_resume_role", 1)]
+    review = st.facts_review(index, candidate_id="default", today=date(2026, 9, 25))
+    assert review["stories"][0]["duration_conflicts"][0]["phrase"] == "almost 2 years"
+    assert "almost 2 years" in review["stories"][0]["note"] and "lasted 12 months" in review["stories"][0]["note"]
+    assert "**check:**" in st.facts_review_markdown(review)
+    unlinked = st.build_story_index(document, verified_at=NOW)
+    assert any("almost 2 years" in str(f.value) for f in unlinked.facts) and not unlinked.skipped
