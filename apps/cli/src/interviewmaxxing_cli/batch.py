@@ -88,7 +88,7 @@ from interviewmaxxing_core import (
 )
 
 from .dynamic import DynamicOptions
-from .runner import ALLOW_SUBMISSION_ENV
+from .runner import ALLOW_SUBMISSION_ENV, BUSY_MESSAGE, CLAIMED_MESSAGE
 from .triage import (
     HOLD_CATEGORIES,
     LEDGER_LABEL_LIMIT,
@@ -173,8 +173,7 @@ stop with this reason moves a Saved card to Closed; any other permanent failure 
 the card where it is."""
 REPORT_LABEL_LIMIT = QUESTION_LIMIT
 """Question wording in ``batch-report`` output; the ledger keeps ``LABEL_LIMIT``."""
-BUSY_MESSAGES = ("Another run is working on this application.",
-                 "another run is using the browser profile")
+BUSY_MESSAGES = (CLAIMED_MESSAGE, BUSY_MESSAGE)
 """Outcome messages of a job that did not run because another run held the application
 (a lapsing claim, e.g. after a timeout) or the slot's browser profile."""
 
@@ -421,7 +420,8 @@ def read_ledger_lines(path: Path) -> tuple[list[LedgerEntry], int]:
     """Every readable entry in file order, and the number of non-blank lines that could
     not be read: a truncated last line (a crash mid-write), a hand edit, or a line written
     by a newer version with fields this one does not know. Their rows look unrecorded, so
-    a rerun launches them again and ``--max-prepared`` does not count them."""
+    a rerun launches them again and ``--max-prepared`` does not count them. Submission
+    lines (``kind: "submission"``, ``SubmissionEntry``) share the file and are neither."""
     if not path.exists():
         return [], 0
     entries: list[LedgerEntry] = []
@@ -432,8 +432,17 @@ def read_ledger_lines(path: Path) -> tuple[list[LedgerEntry], int]:
         try:
             entries.append(LedgerEntry.model_validate_json(line))
         except ValidationError:
-            ignored += 1
+            if not _is_submission_line(line):
+                ignored += 1
     return entries, ignored
+
+
+def _is_submission_line(line: str) -> bool:
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("kind") == "submission"
 
 
 def read_ledger(path: Path) -> list[LedgerEntry]:

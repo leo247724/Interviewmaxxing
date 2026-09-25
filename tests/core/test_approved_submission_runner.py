@@ -478,6 +478,9 @@ def test_a_failed_fill_keeps_the_approval_for_a_retry(isolated_imx_home, candida
     assert result.state is S.FAILED_RETRYABLE and "The approval stands" in result.message
     with ApplicationStore.open(isolated_imx_home.state_db) as store:
         assert store.approved_packet(app_id) == packet_id and store.list_attempts(app_id) == []
+        [failure] = [e for e in store.list_events(app_id) if e.to_state is S.FAILED_RETRYABLE]
+    assert failure.metadata["failed_fields"] == [
+        {"field_id": "email", "label": "Email", "status": "FAILED", "detail": None}]
 
     site.fill_status = {}
     retried, _ = _submit(isolated_imx_home, candidates, site, app_id)

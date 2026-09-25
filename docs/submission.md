@@ -173,7 +173,9 @@ submission stopped by the timeout while submitting is `uncertain`, never `error`
 lines and submission lines share the file without being mistaken for each other. Running the
 same ledger id again never launches an application it records as submitted or uncertain.
 `submission-summary.json` holds the run's summary (prepare-batch's `summary.json` is left
-alone). `batch-report` adds a Submissions table (counts by outcome, receipts, uncertain
+alone). `prepare-batch --retry` never re-prepares an application that still has a valid
+approval (skipped as `approved (left to submit-approved)`), and its ledger reader does not
+count submission lines as unreadable. `batch-report` adds a Submissions table (counts by outcome, receipts, uncertain
 applications) and no longer says "nothing was submitted" once one was.
 
 ## Limitations

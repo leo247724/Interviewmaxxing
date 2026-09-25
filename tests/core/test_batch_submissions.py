@@ -31,6 +31,7 @@ from interviewmaxxing_cli.batch import (
     build_report,
     classify_submission,
     read_ledger,
+    read_ledger_lines,
     read_submissions,
     render_report_markdown,
     run_submissions,
@@ -316,6 +317,9 @@ def test_each_submission_is_recorded_from_the_store(paths, fake, tmp_path):
     assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
     assert [e.application_id for e in read_submissions(ledger)] == [e.application_id for e in seen]
     assert len(read_ledger(ledger)) == len(kinds)  # the prepare lines, unchanged
+    # Submission lines are not unreadable prepare lines.
+    assert read_ledger_lines(ledger) == (read_ledger(ledger), 0)
+    assert build_report(paths, ["b1"]).ledger_lines_ignored == 0
     assert summary.totals == {"submitted": 1, "uncertain": 1, "blocked": 2, "needs_input": 1,
                               "error": 2}
     assert summary.launched == len(kinds) and summary.skipped_settled == 0
@@ -416,3 +420,31 @@ def test_submit_approved_exit_status(paths, fake, tmp_path, monkeypatch, capsys,
     ledger = paths.home / "batches" / "run-1" / "ledger.jsonl"
     [entry] = read_submissions(ledger)
     assert entry.source_batch_id is None and os.path.exists(ledger)
+
+
+def test_a_retry_leaves_approved_applications_to_submit_approved(paths):
+    """``prepare-batch --retry`` re-prepares held and failed applications. One the batch
+    held, that was prepared and approved later and whose submission run then stopped,
+    keeps its approval: ``submit-approved`` submits it, the retry leaves it alone."""
+    from interviewmaxxing_cli.retry import plan_retry
+
+    with ApplicationStore.open(paths.state_db) as store:
+        approved, packet_id = _prepare(store, f"{ORIGIN}/approved")
+        _approve(store, approved, packet_id)
+        plain, _ = _prepare(store, f"{ORIGIN}/plain")
+        for app_id in (approved, plain):  # a later run that failed
+            claim = store.claim(app_id, "runner")
+            store.transition(claim, S.INSPECTING)
+            store.transition(claim, S.FAILED_RETRYABLE, failure_reason="Stopped by a browser error.")
+            store.release(claim)
+        assert store.approved_packet(approved) is not None
+    ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
+    for name, app_id in (("approved", approved), ("plain", plain)):  # both held in the batch
+        append_ledger(ledger, _ledger_line("b1", name, app_id, "needs_input"))
+
+    plan = plan_retry(paths, "b1", candidate_id="default")
+
+    assert [item.row.application_id for item in plan.items] == [plain]
+    assert plan.stats.skipped == {"approved (left to submit-approved)": 1}
+    assert [t.application_id for t in approved_targets(paths, "default", source_batch="b1")] == [
+        approved]

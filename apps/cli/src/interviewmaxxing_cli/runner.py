@@ -1530,9 +1530,15 @@ class _Run:
             return await self.browser.inspect()
         failed = fill.failed_field_ids()
         if failed:
+            labels = {fld.id: fld.label for fld in form.fields}
             raise self._stop(S.FAILED_RETRYABLE, "Could not fill " + ", ".join(failed)
                              + " reliably; nothing was submitted. The approval stands; submit "
-                               "again to retry.")
+                               "again to retry.",
+                             metadata={"failed_fields": [
+                                 {"field_id": result.field_id, "label": labels.get(result.field_id),
+                                  "status": result.status.value,
+                                  "detail": redact_detail(result.detail)}
+                                 for result in fill.fields if result.field_id in failed]})
         if form.is_final_step is True:
             return await self._submit(packet)
         await self._verify_expected_page()
