@@ -501,7 +501,7 @@ class OpenCliDriver:
             if digest == pinned:
                 return True
             raise CapabilityUnsupported(
-                f"the file attached to {selector} is not the pinned {path.name} "
+                f"the file attached to {selector} is not the pinned {path.name!r} "
                 f"({'different contents' if digest else 'contents could not be verified'}); "
                 "replace it with the exact pinned file in the browser window, then continue"
             )
@@ -513,7 +513,7 @@ class OpenCliDriver:
         except OpenCliError as exc:
             if await self._files(selector) == []:
                 raise CapabilityUnsupported(
-                    f"Browser Bridge could not attach files here ({exc}). Attach {path.name} to "
+                    f"Browser Bridge could not attach files here ({exc}). Attach {path.name!r} to "
                     "the upload field yourself in the browser window, then continue so its "
                     "actual bytes can be verified against the pinned file"
                 ) from exc

@@ -1356,7 +1356,9 @@ async def fill_phone(driver: PageDriver, selector: str, text: str) -> tuple[bool
     digits_ok = got == typed or bool(international and code and typed.startswith(code)
                                      and got == typed[len(code):])
     code_ok = not international or bool(code and typed.startswith(code))
-    return digits_ok and code_ok, f"{value} ({picker_text or 'no country picker'})"
+    # Quoted, so a failure's redaction removes the number and the picker's text.
+    picker_shown = repr(picker_text) if picker_text else "no country picker"
+    return digits_ok and code_ok, f"{value!r} ({picker_shown})"
 
 
 # --- opt-in single-menu observation ------------------------------------------------------------

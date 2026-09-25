@@ -2574,7 +2574,10 @@ WIDGETS_JS = r"""(function () {
       if (!(hooks.keepFile && hooks.keepFile[cfg.name])) input.value = "";
       preview.textContent = "";
       if (hooks.uploadError && hooks.uploadError[cfg.name]) {
-        preview.appendChild(el("p", {role: "alert"}, "Something went wrong. Please try again."));
+        // A string is the site's own message, "{file}" standing for the file's name.
+        var message = hooks.uploadError[cfg.name];
+        preview.appendChild(el("p", {role: "alert"}, typeof message === "string"
+          ? message.replace("{file}", file.name) : "Something went wrong. Please try again."));
         return;
       }
       st.value = file;

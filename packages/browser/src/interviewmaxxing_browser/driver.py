@@ -555,16 +555,16 @@ class PlaywrightDriver:
                 # The input still holds a file: its own bytes decide.
                 if held.get("sha256") == pinned:
                     return True
-                raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+                raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name!r}")
             if isinstance(delivered, dict) and delivered.get("sha256") != pinned:
-                raise DriverError(f"the bytes delivered to {selector} are not {path.name}")
+                raise DriverError(f"the bytes delivered to {selector} are not {path.name!r}")
             if held is None and await file_shown(self, selector, path.name, anchor=anchor, attached=attached):
                 # The uploader took the file (the bytes it was handed are this exact path's,
                 # verified above when the page could hash them) and emptied or replaced its
                 # input; it shows the file's name and no error.
                 self._guard(before, f"verifying the file attached to {selector}")
                 return isinstance(delivered, dict)
-            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name!r}")
         finally:
             if attached is not None:
                 with contextlib.suppress(PlaywrightError):

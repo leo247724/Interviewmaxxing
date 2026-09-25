@@ -309,7 +309,7 @@ def test_upload_unavailable_is_actionable_and_user_attachment_is_accepted(
     fake = FakeOpenCli()
     fake.control("#resume")
     driver = _opened(fake, kit)
-    with pytest.raises(CapabilityUnsupported, match=r"Attach resume_fixture\.pdf"):
+    with pytest.raises(CapabilityUnsupported, match=r"Attach 'resume_fixture\.pdf'"):
         kit.run(driver.set_files("#resume", resume))
     # The person attaches the same file in the visible browser: nothing more is sent.
     fake.controls["#resume"]["files"] = [{"name": resume.name, "size": resume.stat().st_size}]
@@ -415,7 +415,7 @@ def test_runtime_semantics_are_identical_over_opencli(
     assert out["form"].fingerprint == playwright_form.fingerprint
     results = {r.field_id: r for r in out["fill"].fields}
     assert results["resume"].status is FieldFillStatus.FAILED
-    assert "Attach resume_avery_quill.pdf" in (results["resume"].detail or "")
+    assert "Attach 'resume_avery_quill.pdf'" in (results["resume"].detail or "")
     assert all(r.status is FieldFillStatus.FILLED for k, r in results.items() if k != "resume")
     assert not out["fill"].ok
     assert not out["action"].dispatched

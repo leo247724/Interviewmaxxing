@@ -135,7 +135,8 @@ or make it expose none of the three selection signals (`aria-selected`,
 `window.__widgetHooks.hideSelection["<element id>"] = true`; each provokes a readback
 mismatch. `window.__widgetHooks.stuck["<element id>"] = true` makes a Rippling popover
 that nothing outside it closes. `window.__widgetHooks.uploadError["resume"] = true` makes
-the Workable dropzone show an error alert instead of the file, and
+the Workable dropzone show an error alert instead of the file (a string is the alert's
+own text, `{file}` standing for the file's name), and
 `window.__widgetHooks.keepFile["resume"] = true` makes it keep the file in its input.
 `window.__widgetHooks.uploadDelayMs = <ms>` changes the async Greenhouse uploader's delay
 and how long the Teamtailor-style uploader shows "Uploading…".

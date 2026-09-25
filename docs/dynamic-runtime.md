@@ -389,6 +389,12 @@ without site adapters:
   through its re-resolved control, never a stale selector. At the
   end of the fill, text that the page changed after its readback (a late autofill, a
   reverting controlled input) is written once more and verified.
+- **Details quote values.** A fill result's detail quotes every value typed or read back
+  (`'…'`). That covers a phone's number and its picker's text, the pinned file's name,
+  and an uploader's own error text. The runner's redaction (`redact_detail`) therefore
+  removes them before a failure's metadata is stored.
+  `tests/browser/test_custom_widgets_round10.py` also checks the source: in the browser
+  modules, no f-string interpolates a typed or read-back value unquoted.
 
 Mock scenarios `autofill-upload`, `custom-uploader`, `linkedin-autofill` and
 `react-controlled` (`tests/browser/MOCK_ATS.md`) reproduce these pages; the tests are

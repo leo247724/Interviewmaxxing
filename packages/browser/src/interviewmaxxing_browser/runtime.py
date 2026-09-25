@@ -1922,7 +1922,7 @@ class GenericApplicationBrowser:
         if not artifact.verify():
             return FieldFillResult(
                 field_id=fid, status=FieldFillStatus.FAILED,
-                detail=f"{artifact.filename} is missing or changed since it was verified"), False
+                detail=f"{artifact.filename!r} is missing or changed since it was verified"), False
         if binding.resume_choices:
             # The site keeps uploaded resumes: use the pinned file's own card (or the
             # only one) instead of uploading it again.
@@ -1956,7 +1956,7 @@ class GenericApplicationBrowser:
         state = await self._await_upload(binding.selector, name, artifact.size_bytes, anchor)
         if state.error:
             return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
-                                   detail=f"the site reports: {state.error}"), True
+                                   detail=f"the site reports: {state.error!r}"), True
         if state.busy:
             return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
                                    detail="the upload was still in progress when the wait ended"), True
@@ -1977,7 +1977,7 @@ class GenericApplicationBrowser:
             return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED, detail=detail), True
         return FieldFillResult(
             field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
-            detail=f"reads back {state.files!r} and the page shows no chip or notice for {name}"), True
+            detail=f"reads back {state.files!r} and the page shows no chip or notice for {name!r}"), True
 
     async def _await_upload(self, selector: str, name: str, size: int,
                             anchor: str | None) -> UploadState:
