@@ -460,7 +460,8 @@ def test_a_click_that_did_not_take_is_not_confirmed_by_a_highlight(ignored: bool
 # --- item 17: a lookup's own suggestion portal is not a page change -------------------------
 
 ASHBY_LOOKUP = "_systemfield_location"
-ASHBY_AFTER = {"bad815aa-0000-4000-8000-00000000a005": "$120,000", "c60ace77-0000-4000-8000-00000000a004": "Yes"}
+ASHBY_AFTER = {"bad815aa-0000-4000-8000-00000000a005": "$120,000", "c60ace77-0000-4000-8000-00000000a004": "Yes",
+               "5249543b-0000-4000-8000-00000000a007": "https://www.linkedin.com/in/avery-quill-example"}
 
 
 def _with_lookup(kit: SimpleNamespace, form: ApplicationForm, answers: dict[str, Any], lookup: dict[str, str]) -> Any:
@@ -479,8 +480,8 @@ def _with_lookup(kit: SimpleNamespace, form: ApplicationForm, answers: dict[str,
     })
 
 
-@pytest.mark.parametrize("query", ["", "?owns=listbox", "?portal=inline", "?portal=inline&owns=listbox"],
-                         ids=["portal-wrapper", "portal-listbox", "inline-wrapper", "inline-listbox"])
+@pytest.mark.parametrize("query", ["", "?owns=listbox", "?portal=inline", "?portal=inline&owns=listbox", "?ui=floating"],
+                         ids=["portal-wrapper", "portal-listbox", "inline-wrapper", "inline-listbox", "floating-hide-others"])
 def test_a_lookup_whose_suggestions_mount_a_portal_is_filled_and_the_fill_goes_on(
     query: str, kit: SimpleNamespace, server: Any, options: BrowserOptions
 ) -> None:

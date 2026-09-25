@@ -2782,33 +2782,76 @@ ASHBY_LIKE_JS = r"""(function () {
   // writes the suggestion into the input and removes the portal, as do Escape and blur.
   var params = new URLSearchParams(location.search);
   var lookup = document.querySelector(".ashby-application-form-input-autocomplete");
+  // ?ui=floating is Ashby as it renders live (Sanity): a Floating UI portal
+  // (data-floating-ui-portal) holding the listbox that aria-controls names and a focus guard;
+  // while suggestions show, everything else is marked aria-hidden with data-aria-hidden
+  // ("hide others"); a chosen suggestion is saved first, so the input stays empty until the
+  // save returns (?save_ms, 400 ms).
+  var floating = params.get("ui") === "floating";
+  var saveMs = parseInt(params.get("save_ms") || "400", 10);
   var portal = null;
+  var marked = [];
+  function markOthers() {
+    if (!floating || marked.length || !portal) return;
+    var keep = [lookup, portal];
+    var walk = function (parent) {
+      Array.prototype.forEach.call(parent.children, function (child) {
+        if (keep.some(function (k) { return child === k || child.contains(k); })) {
+          if (keep.indexOf(child) < 0) walk(child);
+        } else if (child.getAttribute("aria-hidden") !== "true") {
+          child.setAttribute("aria-hidden", "true");
+          child.setAttribute("data-aria-hidden", "true");
+          marked.push(child);
+        }
+      });
+    };
+    walk(document.body);
+  }
+  function unmarkOthers() {
+    marked.forEach(function (n) { n.removeAttribute("aria-hidden"); n.removeAttribute("data-aria-hidden"); });
+    marked = [];
+  }
   function unmount() {
+    unmarkOthers();
     if (portal) { portal.remove(); portal = null; }
     lookup.setAttribute("aria-expanded", "false");
     lookup.removeAttribute("aria-controls");
   }
+  function choose(text) {
+    if (!floating) { lookup.value = text; return; }
+    lookup.value = "";
+    setTimeout(function () { lookup.value = text; }, saveMs);
+  }
   function mount() {
     if (portal) return;
     portal = document.createElement("div");
-    portal.id = "ashby-location-portal";
-    portal.className = "ashby-autocomplete-portal";
-    portal.innerHTML = '<div class="ashby-autocomplete-menu"><div role="listbox" id="ashby-location-listbox"></div>' +
-      '<div class="ashby-autocomplete-footer"><a href="https://maps.example.test/attribution" target="_blank">Powered by Google</a></div></div>';
+    if (floating) {
+      portal.id = ":r2:";
+      portal.setAttribute("data-floating-ui-portal", "");
+      portal.innerHTML = '<div role="listbox" id=":r0:" tabindex="-1" style="position:absolute;z-index:5;background:#fff"></div>' +
+        '<button type="button" tabindex="-1" style="position:fixed;opacity:0;width:1px;height:1px"></button>';
+    } else {
+      portal.id = "ashby-location-portal";
+      portal.className = "ashby-autocomplete-portal";
+      portal.innerHTML = '<div class="ashby-autocomplete-menu"><div role="listbox" id="ashby-location-listbox"></div>' +
+        '<div class="ashby-autocomplete-footer"><a href="https://maps.example.test/attribution" target="_blank">Powered by Google</a></div></div>';
+    }
     portal.addEventListener("mousedown", function (e) { e.preventDefault(); });
     portal.addEventListener("click", function (e) {
       var option = e.target.closest("[role=option]");
       if (!option) return;
       e.preventDefault();
-      lookup.value = option.textContent;
+      var text = option.textContent;
       unmount();
+      choose(text);
     });
     if (params.get("portal") === "inline") {
       lookup.closest(".ashby-application-form-field-entry").after(portal);
     } else {
       document.body.appendChild(portal);
     }
-    lookup.setAttribute("aria-controls", params.get("owns") === "listbox" ? "ashby-location-listbox" : portal.id);
+    var list = portal.querySelector("[role=listbox]");
+    lookup.setAttribute("aria-controls", floating || params.get("owns") === "listbox" ? list.id : portal.id);
   }
   var pending = 0;
   lookup.addEventListener("focus", mount);
@@ -2817,13 +2860,14 @@ ASHBY_LIKE_JS = r"""(function () {
     var query = lookup.value.trim();
     var ticket = ++pending;
     var list = portal.querySelector("[role=listbox]");
-    if (query.length < 2) { list.innerHTML = ""; lookup.setAttribute("aria-expanded", "false"); return; }
+    if (query.length < 2) { list.innerHTML = ""; lookup.setAttribute("aria-expanded", "false"); unmarkOthers(); return; }
     fetch("/__fixture__/cities?style=long&q=" + encodeURIComponent(query)).then(function (r) { return r.json(); }).then(function (cities) {
       if (ticket !== pending || !portal) return;
       list.innerHTML = cities.map(function (c, i) {
         return '<div role="option" id="ashby-location-option-' + i + '" aria-selected="false">' + c + "</div>";
       }).join("");
       lookup.setAttribute("aria-expanded", cities.length ? "true" : "false");
+      if (cities.length) markOthers(); else unmarkOthers();
     });
   });
   lookup.addEventListener("keydown", function (e) { if (e.key === "Escape") unmount(); });
@@ -4873,7 +4917,9 @@ class Handler(BaseHTTPRequestHandler):
             '<button type="submit" aria-pressed="false" data-option="yes">Yes</button>'
             '<button type="submit" aria-pressed="false" data-option="no">No</button>'
             f'<input type="checkbox" tabindex="-1" name="{relocate}" style="display:none"></div></div>'
-            '<button type="button" class="ashby-application-form-submit-button">Submit Application</button>'
+            # A question after the yes/no: its write follows a pressed option (Sanity).
+            + text("5249543b-0000-4000-8000-00000000a007", "LinkedIn Profile")
+            + '<button type="button" class="ashby-application-form-submit-button">Submit Application</button>'
             "</div><script>" + ASHBY_LIKE_JS + "</script>"
         )
         self._send_html(HTTPStatus.OK, page("Apply: Performance Marketing Manager", body,

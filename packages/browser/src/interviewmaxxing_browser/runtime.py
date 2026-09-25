@@ -333,6 +333,11 @@ def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
     buttons = [b.model_copy(update={"disabled": False, "selector": identity[b.selector]})
                for b in model.snapshot.buttons if b.selector not in skip_buttons]
     controls = [c for c in model.snapshot.controls if c.selector not in skip_controls]
+    # A toggle-button option's pressed state is the answer, like a checkbox's checked (our
+    # own write), never structure.
+    controls = [c.model_copy(update={"pressed_options": [o.model_copy(update={"pressed": False})
+                                                         for o in c.pressed_options]})
+                if c.pressed_options else c for c in controls]
     if stable:
         # Element paths this inspector reports beyond the ones observation_signature
         # leaves out: an option group's box, toggle-button options, an uploader's box.

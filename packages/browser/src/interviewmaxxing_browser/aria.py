@@ -28,10 +28,30 @@ if TYPE_CHECKING:
 # Shared by inspect.js and the action/readback helpers. No DOM or global writes.
 ARIA_HELPERS = r"""
 const ariaText = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+// aria-hidden as the page authored it. While a popup is open, an overlay manager (Floating
+// UI, the aria-hidden package behind Radix) marks everything else aria-hidden, with
+// data-aria-hidden: Ashby's location lookup hides the whole form that way while its
+// suggestions show. That hides nothing on screen, so such a mark counts only while a modal
+// dialog is open.
+let ariaModal = null;
+const ariaModalShown = () => {
+  if (ariaModal === null) {
+    ariaModal = [...document.querySelectorAll('[aria-modal="true"],dialog,[role="dialog"],[role="alertdialog"]')]
+      .some((d) => (d.tagName !== 'DIALOG' || d.open) && d.getClientRects().length > 0 && getComputedStyle(d).visibility !== 'hidden');
+  }
+  return ariaModal;
+};
+const ariaHiddenAttr = (n) => n.getAttribute('aria-hidden') === 'true'
+  && !(n.getAttribute('data-aria-hidden') === 'true' && !ariaModalShown());
+// The nearest element from n up that is aria-hidden as authored (ariaHiddenAttr), or null.
+const ariaMarked = (n) => {
+  for (let x = n; x && x.nodeType === 1; x = x.parentElement) if (ariaHiddenAttr(x)) return x;
+  return null;
+};
 const ariaVisible = (el) => {
   if (!el || !el.isConnected) return false;
   for (let n = el; n; n = n.parentElement) {
-    if (n.hidden || n.hasAttribute('inert') || n.getAttribute('aria-hidden') === 'true') return false;
+    if (n.hidden || n.hasAttribute('inert') || ariaHiddenAttr(n)) return false;
     const s = getComputedStyle(n);
     if (s.display === 'none' || s.visibility === 'hidden') return false;
   }
@@ -178,7 +198,7 @@ const comboDisplayNodes = (el) => {
   const box = el.getBoundingClientRect(), mid = box.top + box.height / 2;
   return [...root.querySelectorAll('*')].filter((n) => {
     if (n === el || n.contains(el) || !comboOwnText(n)) return false;
-    if (n.closest('[role=listbox],[role=option],[role=button],button,[aria-hidden=true],svg')) return false;
+    if (n.closest('[role=listbox],[role=option],[role=button],button,svg') || ariaMarked(n)) return false;
     const r = n.getBoundingClientRect();
     return ariaVisible(n) && r.top - 1 <= mid && mid <= r.bottom + 1;
   });
@@ -198,8 +218,9 @@ const comboDisplay = (el) => {
   const parts = [];
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   for (let t = walker.nextNode(); t; t = walker.nextNode()) {
-    const skip = t.parentElement && t.parentElement.closest('[role=listbox],[aria-hidden=true]');
-    if (!(skip && skip !== el && el.contains(skip))) parts.push(t);
+    const p = t.parentElement;
+    const skips = p ? [p.closest('[role=listbox]'), ariaMarked(p)] : [];
+    if (!skips.some((skip) => skip && skip !== el && el.contains(skip))) parts.push(t);
   }
   const text = ariaJoin(parts);
   // Text shown by an element the widget names a placeholder (Fabric's
@@ -446,6 +467,9 @@ _OPEN_WAIT_S = 1.5
 """Per opening attempt (click, then ArrowDown)."""
 _CLOSE_WAIT_S = 1.0
 """For a menu to close after an option was clicked."""
+_COMMIT_WAIT_S = 3.0
+"""For a lookup to show its chosen suggestion again: a site that saves the choice first
+(Ashby) empties the input until its save returns, then writes the suggestion back."""
 _CLOSE_STEP_S = 0.5
 """Per closing step (Escape, toggle click, outside press)."""
 _CLOSE_STEPS = ("escape", "toggle", "outside")
@@ -1105,6 +1129,10 @@ async def _select_probed(
         await _close_menu(driver, selector, read, method, closer)
         after = await read()
         _check_probed(after, binding)
+    if (not after.get("expanded") or not after.get("menu")) and (after.get("placeholder") or not after.get("display")):
+        # A site that saves the choice first (Ashby) shows nothing until its save returns.
+        after = await _poll(read, lambda s: bool(s.get("display")) and not s.get("placeholder"), _COMMIT_WAIT_S)
+        _check_probed(after, binding)
     closed = not after.get("expanded") or not after.get("menu")
     display = "" if after.get("placeholder") else str(after.get("display") or "")
     shown_index = display_option(display, labels)
@@ -1283,6 +1311,8 @@ async def fill_lookup(
                              detail="the chosen suggestion is no longer shown")
     await driver.click(str(target[0]["selector"]))
     after = await _poll(read, lambda s: not s.get("expanded") or not s.get("menu"), _CLOSE_WAIT_S)
+    if not after.get("expanded") or not after.get("menu"):
+        after = await _poll(read, lambda s: bool(s.get("display")) and not s.get("placeholder"), _COMMIT_WAIT_S)
     _check_probed(after, binding)
     display = str(after.get("display") or "")
     typed = str(after.get("input") or "")

@@ -132,6 +132,11 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   the popup the widget owns at that moment is not a page change. That covers what its
   `aria-controls`/`aria-owns` names, up to that popup's own container, and the element
   paths the mounted popup shifts in later questions. The rest of the guard is unchanged.
+  While a popup is open, an overlay manager (Floating UI, the `aria-hidden` package behind
+  Radix) marks everything else `aria-hidden`, with `data-aria-hidden`: Ashby's location
+  lookup (Sanity) hides the whole form that way while its suggestions show. Such marks
+  hide nothing on screen. They count only while a modal dialog is open; otherwise the
+  questions, their titles and the page's actions read as they are shown.
 - **Selecting.** A probed menu is opened the recorded way, its listbox re-resolved after
   opening, and the one matching option (freshly derived from the owned listbox) clicked.
   A menu that already shows exactly the chosen option (pre-filled, like BambooHR's
@@ -140,7 +145,9 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   typed text is cleared again if nothing matches. The label is tried first, then its name without a trailing code or
   parenthetical ("United States" of "United States +1": Greenhouse filters on the
   country's name), then its first word. A menu still open after the choice is closed the
-  way the probe closed it. Readback:
+  way the probe closed it. A site that saves a choice before showing it (Ashby empties the
+  input until its save returns, then shows the choice) is read back once the display
+  returns, at most 3 s; lookups wait the same way. Readback:
   the menu closed and the control displays the chosen label. When it displays only a
   suffix of it (a dial-code select shows "+1", which "United States +1" and "Canada +1"
   share), the menu is reopened once and its own selection must name the chosen option;
@@ -283,7 +290,8 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
 - **Yes/no toggle buttons.** A question drawn as buttons with `aria-pressed` over a
   checkbox that only mirrors "yes" (Ashby's yes/no, the checkbox `display:none`) is a
   `RADIO` whose options are the buttons, clicked (unless already pressed) and read back
-  by `aria-pressed`. The buttons are not page buttons. Only buttons that cannot submit a
+  by `aria-pressed`. The pressed state is the answer, like a checkbox's checked state,
+  never page structure. The buttons are not page buttons. Only buttons that cannot submit a
   form by themselves count (no form owner, or `type=button`): Ashby's are
   `type=submit` outside any `<form>`. Before this, such a required question was not in
   the model at all.

@@ -37,6 +37,7 @@ ASHBY_REFERRAL = "7c1e2a90-5b3d-4f6e-8a1b-2c3d4e5f6a7b_25b7ff0a-0000-4000-8000-0
 ASHBY_WORK = "0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f"
 ASHBY_VISA = "cc031c31-0000-4000-8000-00000000a003"
 ASHBY_RELOCATE = "c60ace77-0000-4000-8000-00000000a004"
+ASHBY_LINKEDIN = "5249543b-0000-4000-8000-00000000a007"
 
 
 async def _open(options: BrowserOptions, url: str | None = None, html: str = "") -> tuple[Any, Any]:
@@ -148,6 +149,7 @@ def test_ashby_like_date_choices_and_yes_no_are_filled(
                 "_systemfield_name": "Avery Quill", "_systemfield_email": "avery.quill@example.test",
                 ASHBY_SALARY: "$120,000", ASHBY_DATE: "10/15/2026", ASHBY_REFERRAL: "LinkedIn",
                 ASHBY_WORK: "Hybrid", ASHBY_VISA: ["No"], ASHBY_RELOCATE: "Yes",
+                ASHBY_LINKEDIN: "https://www.linkedin.com/in/avery-quill-example",
             }
             packet = kit.build(form, answers).packet
             first = await browser.fill(form, packet)

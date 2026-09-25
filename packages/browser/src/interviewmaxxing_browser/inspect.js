@@ -87,7 +87,8 @@
 
   const hiddenByAncestor = (el) => {
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
-      if (n.getAttribute("aria-hidden") === "true" || n.hasAttribute("inert") || n.hidden) return true;
+      // ariaHiddenAttr: aria-hidden as authored, not an open popup's overlay marks.
+      if (ariaHiddenAttr(n) || n.hasAttribute("inert") || n.hidden) return true;
     }
     return false;
   };
@@ -113,7 +114,7 @@
       if (exclude && exclude.has(el)) return;
       const tag = el.tagName;
       if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "SELECT", "TEXTAREA", "INPUT", "OPTION"].includes(tag)) return;
-      if (el.getAttribute("aria-hidden") === "true" || el.hidden) return;
+      if (ariaHiddenAttr(el) || el.hidden) return;
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return;
       for (const c of el.childNodes) walk(c);
@@ -191,7 +192,7 @@
       const tag = el.tagName;
       if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "SELECT", "TEXTAREA", "INPUT", "OPTION", "A", "BUTTON"].includes(tag)) return;
       if (el.matches('[role="button"],[role="progressbar"],[role="status"],[role="alert"],[aria-live]')) return;
-      if (el.getAttribute("aria-hidden") === "true" || el.hidden) return;
+      if (ariaHiddenAttr(el) || el.hidden) return;
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return;
       for (const c of el.childNodes) walk(c);
@@ -495,7 +496,7 @@
       if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "SELECT", "TEXTAREA", "INPUT", "OPTION", "BUTTON", "LEGEND", "LABEL"].includes(el.tagName)) return;
       // Headings are section context (sectionContextOf), not the control's description.
       if (el.matches('h1,h2,h3,h4,h5,h6,[role="heading"]')) return;
-      if (el.getAttribute("aria-hidden") === "true" || el.hidden) return;
+      if (ariaHiddenAttr(el) || el.hidden) return;
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return;
       if (fieldEls.has(el)) return;
