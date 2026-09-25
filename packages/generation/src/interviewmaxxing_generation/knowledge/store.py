@@ -273,7 +273,7 @@ def _requirement_lines(evidence: list[dict[str, str]]) -> list[str]:
     size = 0
     for item in evidence:
         for sentence in _SENTENCE_BREAK.split(item["text"]):
-            sentence = " ".join(sentence.split())
+            sentence = re.sub(r"^[\u2022\u00b7\-\u2013*]+\s*", "", " ".join(sentence.split()))
             if len(sentence) < 20 or not _REQUIREMENT_CUE.search(sentence) or sentence.casefold() in seen:
                 continue
             if size + len(sentence) + 1 > MAX_REQUIREMENT_CHARS:
@@ -400,22 +400,24 @@ def select_requirement_facts(pools: list[list[CandidateFact]], fill: list[Candid
     skipped: dict[str, list[str]] = {"same_claim": [], "years_below_ask": [], "second_years": []}
     years_chosen = False
 
+    left_out: set[str] = set()
+
     def take(fact: CandidateFact) -> bool:
+        """Choose the fact unless it is chosen already or left out: a fact left out once
+        stays out under its first reason (chosen facts never leave)."""
         nonlocal years_chosen
-        if any(fact.id == other.id for other in chosen):
-            return False
-        if any(same_claim(fact, other) for other in chosen):
-            if fact.id not in skipped["same_claim"]:
-                skipped["same_claim"].append(fact.id)
+        if fact.id in left_out or any(fact.id == other.id for other in chosen):
             return False
         years = _years_count(fact)
-        if years is not None:
-            reason = "second_years" if years_chosen else "years_below_ask" if _below_ask(fact, years, asks) else None
-            if reason is not None:
-                if fact.id not in skipped[reason]:
-                    skipped[reason].append(fact.id)
-                return False
-            years_chosen = True
+        reason = ("same_claim" if any(same_claim(fact, other) for other in chosen)
+                  else None if years is None
+                  else "years_below_ask" if _below_ask(fact, years, asks)
+                  else "second_years" if years_chosen else None)
+        if reason is not None:
+            skipped[reason].append(fact.id)
+            left_out.add(fact.id)
+            return False
+        years_chosen = years_chosen or years is not None
         chosen.append(fact)
         return True
 
