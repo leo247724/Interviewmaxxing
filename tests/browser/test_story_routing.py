@@ -502,6 +502,29 @@ def test_a_residual_pattern_triggers_one_more_rewrite_at_most(candidate, mock_jo
     assert second["attempt"] == 2 and second["draft"]["text"] == NarrativeDraft.model_validate(ready(residual)).text
 
 
+def test_a_rewrite_reuses_the_reviewed_consistency_verdict(candidate, mock_job):
+    """An uncertain consistency verdict that the Opus evidence review cleared before writing
+    does not hold the rewrite: the re-check reuses that review instead of discarding every
+    rewrite (live 2026-09-25: three cover letters kept their un-humanized drafts)."""
+    rival = fact(candidate, "Grew repeat orders by 12% for a regional bakery chain (2023).", fid="fact.repeat")
+    profile = candidate.model_copy(update={"facts": [*candidate.facts, rival]})
+    transport = Transport(write=[ready(SLOPPY)], humanize=[ready(CLEAN)], review=[REVIEW_OK])
+    jev = Jev(consistency=0.9)  # uncertain: the evidence goes to the Opus review once
+    packet, resolver, _ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]]),
+                                     real_writer(transport), jev, humanize=True)
+    assert packet.is_complete
+    value = packet.answers[0].value
+    assert isinstance(value, TextValue) and value.text == NarrativeDraft.model_validate(ready(CLEAN)).text
+    purposes = [json.loads(r["messages"][1]["content"])["purpose"]
+                for role, r in zip(transport.roles, transport.requests, strict=True) if role == "review"]
+    assert transport.roles == ["review", "write", "humanize", "review"]
+    assert purposes == ["evidence_consistency", "draft_grounding"]  # one evidence review, reused
+    assert len([r for r in jev.requests if "canonical_alternatives" in r["state"]]) == 1
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
+    assert trace["status"] == "REWRITTEN" and trace["attempts"][0]["status"] == "REWRITTEN"
+    assert any(t["stage"] == "consistency_cache" for t in resolver.narrative_traces)
+
+
 def test_rewrite_checks_are_deterministic() -> None:
     original = NarrativeDraft.model_validate(ready(SLOPPY))
     clean = NarrativeDraft.model_validate(ready(CLEAN))

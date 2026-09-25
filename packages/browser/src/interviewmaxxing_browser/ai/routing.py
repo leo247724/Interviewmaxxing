@@ -3869,7 +3869,10 @@ class DynamicPacketResolver:
             rewrite_attempt=rewrite_attempt)
         if self.humanize and isinstance(self.writer, NarrativeWriter):
             def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
-                self._check_additive_consistency(context, relevant)  # cached; same evidence
+                # Cached; same evidence. The first check allowed the Opus evidence review, so
+                # this one must too: without it an uncertain Jev verdict that review already
+                # cleared holds, and every rewrite is discarded.
+                self._check_additive_consistency(context, relevant, allow_strong_review=True)
                 # Every humanized draft gets the independent review, not only an uncertain
                 # score: the rewrite is new prose over the same citations.
                 self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
