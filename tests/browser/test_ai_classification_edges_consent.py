@@ -210,9 +210,23 @@ def test_the_fold_accepts_pooled_consent_mass_at_its_boundaries(
     assert decision.semantic_confidence == 0.40
 
 
+@pytest.mark.parametrize("split,demoted", [
+    # Round 6: on an experience question a reading that names nothing and the Yes/No select
+    # shape are custom yes/no readings too.
+    ({"CONSENT": 0.56, "CUSTOM_BOOLEAN": 0.40, "UNKNOWN": 0.04}, SemanticType.CONSENT),
+    ({"CUSTOM_SELECT": 0.50, "CUSTOM_BOOLEAN": 0.30, "CONSENT": 0.20}, None),
+])
+def test_on_an_experience_question_unknown_and_select_readings_join_the_fold(
+    split: dict[str, float], demoted: SemanticType | None,
+) -> None:
+    annotated, decision = decide(question(EXPERIENCE, SemanticType.CUSTOM_SELECT, "Yes", "No"),
+                                 Jev({"s": (split, 0.40)}))
+    assert annotated.fields[0].semantic_type is SemanticType.CUSTOM_BOOLEAN
+    assert decision.demoted_from is demoted
+
+
 @pytest.mark.parametrize("label,split", [
-    (EXPERIENCE, {"CONSENT": 0.56, "CUSTOM_BOOLEAN": 0.40, "UNKNOWN": 0.04}),  # outside 0.04
-    (EXPERIENCE, {"CUSTOM_SELECT": 0.50, "CUSTOM_BOOLEAN": 0.30, "CONSENT": 0.20}),
+    (EXPERIENCE, {"CONSENT": 0.56, "CUSTOM_BOOLEAN": 0.40, "RELOCATION": 0.04}),  # outside 0.04
     (EXPERIENCE, {"CONSENT": 0.60, "RELOCATION": 0.40}),
     # Consent wording: the split is not folded, it stays unknown and holds.
     ("Do you consent to a background check?", {"CONSENT": 0.60, "CUSTOM_BOOLEAN": 0.40}),

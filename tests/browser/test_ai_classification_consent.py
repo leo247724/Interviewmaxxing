@@ -123,10 +123,11 @@ def test_a_consent_typed_yes_no_experience_question_is_a_custom_boolean(
 
 @pytest.mark.parametrize("label", [AGENCY, DIRECT_RESPONSE])
 def test_whatever_the_heuristics_say_the_question_comes_out_a_custom_boolean(label: str) -> None:
-    # The live heuristics type these CONSENT; a fixed heuristic types them CUSTOM_SELECT and
-    # Jev reads a custom boolean. Either way the classifier's type is CUSTOM_BOOLEAN.
+    # The live heuristics type these CONSENT; a fixed heuristic types them CUSTOM_SELECT (and,
+    # since round 6, a minimum-years question CUSTOM_BOOLEAN) and Jev reads a custom boolean.
+    # Either way the classifier's type is CUSTOM_BOOLEAN.
     heuristic = classify_semantics(label=label, control_type=ControlType.SELECT)
-    assert heuristic in (SemanticType.CONSENT, SemanticType.CUSTOM_SELECT)
+    assert heuristic in (SemanticType.CONSENT, SemanticType.CUSTOM_SELECT, SemanticType.CUSTOM_BOOLEAN)
     _, decision = classify(Jev(), question(label, heuristic, "Yes", "No"))
     assert decision.semantic_type is SemanticType.CUSTOM_BOOLEAN
 

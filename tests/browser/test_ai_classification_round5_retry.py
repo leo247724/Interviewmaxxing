@@ -188,9 +188,10 @@ AD_SPEND_SPLIT = {"WEBSITE": 0.90, "CUSTOM_TEXT": 0.08, "UNKNOWN": 0.02}
     (PAID_MEDIA_YEARS, ControlType.RADIO, SemanticType.YEARS_EXPERIENCE),
     (PROGRAMMATIC_YEARS, ControlType.RADIO, SemanticType.YEARS_EXPERIENCE),
     ("Total years of experience", ControlType.SELECT, SemanticType.YEARS_EXPERIENCE),
-    # A yes/no about a minimum is not a count of years; nor is a count of something else.
+    # A yes/no about a minimum is not a count of years (round 6: it is the yes/no experience
+    # screener, CUSTOM_BOOLEAN); nor is a count of something else.
     ("Do you have at least 8 years of total experience in direct response marketing?",
-     ControlType.RADIO, SemanticType.CUSTOM_SELECT),
+     ControlType.RADIO, SemanticType.CUSTOM_BOOLEAN),
     ("How many years have you lived at your current address?", ControlType.TEXT,
      SemanticType.CUSTOM_TEXT),
 ])

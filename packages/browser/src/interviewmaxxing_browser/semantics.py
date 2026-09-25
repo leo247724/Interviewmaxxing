@@ -40,6 +40,26 @@ def _rx(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
 
 
+_COUNT = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty)"
+YEARS_THRESHOLD = _rx(
+    r"^\s*(?:do|does|did|have|has|had|are|is|was|were|can|could|will|would)\b"
+    r"(?=.*\bexperience\b).*?"
+    rf"(?:\b{_COUNT}\s*\+|\b{_COUNT}\s+or\s+more|\b{_COUNT}\s+plus|\bat\s+least\s+{_COUNT}|"
+    rf"\bover\s+{_COUNT}|\bmore\s+than\s+{_COUNT}|\b(?:a\s+)?minimum\s+(?:of\s+)?{_COUNT}|"
+    rf"\b{_COUNT}(?=\s+(?:full[- ]time\s+)?(?:years?|yrs?)\b))"
+    r"\s*\+?\s*(?:full[- ]time\s+)?(?:years?|yrs?)\b")
+"""A yes/no question whether the applicant has a minimum number of years of an area's
+experience: "Do you have 5+ years of hands-on paid media experience …?", "at least 8
+years", "5 or more years", "over 5 years", "3 years". It asks whether a minimum is met,
+never for a count, so it is a yes/no experience screener (round 6)."""
+_HISTORY_DATE = _rx(r"\b(?:mm|month)\s*[/-]\s*(?:yyyy|yy|year)\b")
+"""A month-and-year date ("End Date MM/YYYY"): a work or education history date, never the
+applicant's availability to start."""
+_INDEXED_START = _rx(r"\bstart\s+date\s+\d{1,2}\b")
+"""The identifiers of a repeated block's start date ("start-date-0"): a history entry's date,
+not a question id that merely ends in digits ("question_32145678")."""
+
+
 # Order matters: the first matching rule wins.
 _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"\bgender\b|\bsex\b"), SemanticType.EEO_GENDER),
@@ -92,7 +112,12 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"current (?:company|employer)|most recent (?:company|employer)|\bcompany name\b|"
          r"\bemployer name\b|\bname of (?:the )?(?:company|employer)\b|^\s*employer\s*[:*]?\s*$"),
      SemanticType.CURRENT_COMPANY),
-    (_rx(r"current (?:job )?title|current position|most recent title"), SemanticType.CURRENT_TITLE),
+    # A work-history block's bare "Position" or "Job title" (Paylocity) is the job title; the
+    # route gate holds a past role's entry (its source is historical).
+    (_rx(r"current (?:job )?title|current position|most recent title|"
+         r"^\s*(?:job title|position title|position held|title of position|job position|position)"
+         r"\s*[:*]?\s*$"),
+     SemanticType.CURRENT_TITLE),
     (_rx(r"highest (?:level of )?education|education level|degree level"), SemanticType.EDUCATION_LEVEL),
     (_rx(r"universit|college|school"), SemanticType.UNIVERSITY),
     (_rx(r"\bdegree\b|field of study|\bmajor\b"), SemanticType.DEGREE),
@@ -240,10 +265,18 @@ def classify(
         return SemanticType.EMAIL
     if control_type is ControlType.TEXT and input_type == "tel":
         return SemanticType.PHONE
+    # "Do you have 5+ years of hands-on paid media experience …?" (Lever, Yes/No) asks
+    # whether a minimum is met: a yes/no experience screener, which routing answers from
+    # the years_experience facts, not a count of years and not a custom select.
+    if control_type in (ControlType.SELECT, ControlType.RADIO) and YEARS_THRESHOLD.search(label):
+        return SemanticType.CUSTOM_BOOLEAN
 
     for pattern, semantic in _RULES:
         if semantic in _PROFILE_URLS and control_type is not ControlType.TEXT:
             continue  # a profile URL is typed into one text input, never chosen
+        if semantic is SemanticType.START_DATE and (
+                _HISTORY_DATE.search(label) or _INDEXED_START.search(identifiers)):
+            continue  # a work-history "Start Date MM/YYYY" is not the availability date
         if pattern.search(label) or pattern.search(identifiers):
             if semantic is SemanticType.RESUME or semantic is SemanticType.COVER_LETTER:
                 if control_type is ControlType.TEXTAREA and semantic is SemanticType.COVER_LETTER:

@@ -314,7 +314,8 @@ def test_a_lookup_list_with_an_attribution_link_still_commits(
 
 @pytest.mark.parametrize(("label", "expected"), [
     ("Have you worked in a performance marketing agency environment?", SemanticType.CUSTOM_SELECT),
-    ("Do you have at least 8 years of total experience in performance marketing?", SemanticType.CUSTOM_SELECT),
+    # Not a consent; since WP10 round 6 a minimum-years question is the yes/no screener.
+    ("Do you have at least 8 years of total experience in performance marketing?", SemanticType.CUSTOM_BOOLEAN),
     ("Do you consent to a background check?", SemanticType.CONSENT),
     ("Do you agree to our privacy policy?", SemanticType.CONSENT),
     ("Would you like to receive marketing emails?", SemanticType.CONSENT),
