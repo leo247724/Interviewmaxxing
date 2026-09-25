@@ -2051,3 +2051,43 @@ def test_a_draft_with_a_clean_lint_is_kept_without_a_rewrite(candidate, mock_job
     assert trace["status"] == "CLEAN" and trace["lint_before"] == [] and trace["attempts"] == []
     assert trace["citations"] == [{"fact_ids": ["fact.bakery"], "job_evidence_ids": [], "paragraph": 0}] * 3
     assert "rewrite discarded" not in packet.answers[0].provenance.note
+
+
+# --- round 6, addendum 3: the owner's voice samples are style only ---------------------------
+
+BLOG_A = ("Fictional 2017 post. Let's be honest: most bakery sites waste their search budget. It's no secret that "
+          "an awesome landing page can skyrocket your orders. Here's the kicker: I once grew a bakery's traffic "
+          "400% in a month. Think of paid search like a delivery van, not a sports car.")
+BLOG_B = ("Fictional 2017 post two. You might be wondering: what the hell is a negative keyword? Trust me when I say "
+          "this, it is the cheapest fix you will ever make. The bottom line: cut the waste first.")
+
+
+def test_voice_passages_reach_the_writer_and_the_rewrite_as_style_only(candidate, mock_job):
+    from interviewmaxxing_browser.ai.providers import VOICE_RULE
+
+    clean = rubric_letter("fact.bakery", POSTING["id"])
+    sloppy = [dict(sentence) for sentence in clean]
+    sloppy[4] = {**sloppy[4], "text": SLOP_LETTER_EDIT}
+    transport = Transport(write=[ready(sloppy)], humanize=[ready(clean)], review=[REVIEW_OK])
+    jev = Jev(semantic="COVER_LETTER")
+    retriever = Retriever(list(candidate.facts), job_evidence=[POSTING], voice_samples=[BLOG_A, BLOG_B])
+    packet, _resolver, _ctx = resolve(letter_context(candidate, mock_job), retriever,
+                                      real_writer(transport, budget=CallBudget(max_usd=3.0)), jev, humanize=True)
+    assert packet.is_complete and transport.roles == ["write", "review", "humanize", "review"]
+    write, rewrite = transport.requests[0], transport.requests[2]
+    for request in (write, rewrite):
+        system, user = request["messages"][0]["content"], json.loads(request["messages"][1]["content"])
+        assert user["voice_samples"] == [BLOG_A, BLOG_B]  # two passages per letter, as retrieved
+        assert VOICE_RULE in system and "style only" in system
+        assert "never their content, claims, numbers or phrases" in system and "'Here's the kicker:'" in system
+    # Never evidence: not among the writer's facts or job evidence, never sent to Jev or the review.
+    user = json.loads(write["messages"][1]["content"])
+    assert not any(BLOG_A[:40] in json.dumps(item) for item in [*user["facts"], *user["job_evidence"]])
+    reviews = [r for role, r in zip(transport.roles, transport.requests, strict=True) if role == "review"]
+    assert reviews and not any(BLOG_A[:40] in json.dumps(r) or BLOG_B[:40] in json.dumps(r) for r in reviews)
+    assert not any(BLOG_A[:40] in json.dumps(r) for r in jev.requests)
+    # The blog's tics are lint findings the rewrite must cut.
+    patterns = {f.pattern for f in lint("It's no secret that paid search works. Here's the kicker: CPA fell 31%. "
+                                        "The bottom line is cost. The bottom line is also speed.")}
+    assert "blog_tic" in patterns
+    assert "blog_tic" not in {f.pattern for f in lint("I cut cost per order 31% at a bakery chain in 2024.")}

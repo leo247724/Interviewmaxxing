@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .providers import (
+    VOICE_RULE,
     AIHold,
     CallReceipt,
     NarrativeDraft,
@@ -259,6 +260,10 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"perfect fit|uniquely (?:qualified|positioned)|dream (?:job|role|company)|"
         r"i would be honou?red|drawn to|i am confident that i)\b", re.IGNORECASE)),
     ("emoji", re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")),
+    ("blog_tic", re.compile(
+        r"\b(?:awesome|insanely|skyrocket(?:s|ed|ing)?|explosive|it'?s\s+no\s+secret\s+that|you\s+might\s+be\s+"
+        r"wondering)\b|(?:^|(?<=[.!?])\s+)(?:Here'?s\s+the\s+kicker|Now|But\s+it\s+gets\s+better|Here'?s\s+the\s+deal|"
+        r"The\s+best\s+part)\s*:", re.IGNORECASE)),
     ("fit_commentary", _FIT_COMMENTARY),
     ("connective_tic", re.compile(
         r"(?:^|(?<=[.!?])\s+)(?:In\s+(?:that|the|this)\s+same\s+(?:role|practice|work|position|job|capacity|"
@@ -410,6 +415,8 @@ def lint(text: str, *, statements: Sequence[str] = (), job_only: Sequence[str] =
     restated_dates = [date for date in dict.fromkeys(d.casefold() for d in dates) if dates_count(dates, date) > 2]
     if restated_dates:
         findings.append(Finding("repeated_dates", len(restated_dates), tuple(restated_dates[:4])))
+    if text.casefold().count("the bottom line") > 1:
+        findings.append(Finding("blog_tic", text.casefold().count("the bottom line"), ("the bottom line",)))
     names = {" ".join(match.group(1).casefold().split()) for match in _POSTING_NAME.finditer(text)}
     if company.strip() and re.search(rf"\b{re.escape(company.strip())}(?:'s\s+\w+)?\s+(?:wants|needs|is\s+hiring|"
                                      r"is\s+looking|seeks|asks|expects)\b", text, re.IGNORECASE):
@@ -585,7 +592,8 @@ _RULES = (
     "('decided', not 'made a decision'). Keep the specific numbers, names, tools, dates and "
     "results exactly as the draft states them. Keep first person and plain words. Match the "
     "vocabulary and cadence of voice_samples, which are the applicant's own writing; they are "
-    "style only, never a source of claims. Make the minimum effective edit: leave sentences "
+    "style only, never a source of claims. " + VOICE_RULE + "Cut any blog_tic finding. "
+    "Make the minimum effective edit: leave sentences "
     "that are already plain alone. "
     "Hard constraints: (0) Keep each fact-citing sentence's exact set of fact_ids together on "
     "the one rewritten sentence that carries its claims, with at least its job_evidence_ids; "

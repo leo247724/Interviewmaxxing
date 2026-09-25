@@ -188,6 +188,15 @@ LETTER_RUBRIC_LINES = (
     "not state; a fix may only cut, move, reword or use supplied content. ")
 """The owner's HARD lines (RUBRIC.md, 2026-09-25) as the independent letter review grades them
 (WP12 round 6, addendum), together with the grounding, in one review per draft."""
+VOICE_RULE = (
+    "voice_samples are the applicant's own writing, style only: adopt their register (plain "
+    "first person, direct address, short declarative sentences, concrete numbers, a homely "
+    "analogy now and then, a blunt aside, confidence without puffery, 'the bottom line' at most "
+    "once) but never their content, claims, numbers or phrases, and never their old blog tics: "
+    "no bucket brigades ('Here's the kicker:', 'Now:', 'But it gets better:'), no 'awesome', "
+    "'insanely', 'skyrocket' or 'explosive', no 'It's no secret that...' opener, no rhetorical "
+    "'You might be wondering:'. ")
+"""The owner's register from his 2017 blog posts (WP12 round 6, addendum 3), without their tics."""
 CASE_DATA_MISSING = "The table referenced is not in the recorded question"
 """What a case-study answer holds for when the data it must compute from was not recorded."""
 MAX_CASE_SENTENCES = 14
@@ -690,6 +699,7 @@ class NarrativeWriter:
             "voice_samples are STYLE ONLY, never a factual source or a source of IDs. "
             "Use them only for cadence, register and phrasing; resume style is provisional "
             "and should become natural prose. Do not copy factual claims from samples. "
+            + VOICE_RULE +
             "Do not invent motivation, qualifications, dates, quantities, preferences, "
             "eligibility, consent or employer claims. Never borrow the posting's wording into a "
             "first-person claim: describe the applicant's work only in the words its facts and "

@@ -349,3 +349,17 @@ def test_hostile_requirement_hits_are_rejected(profile, mock_job) -> None:
     db.execute = tampering  # type: ignore[method-assign]
     result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter")
     assert result.facts == [] and result.receipt["rejected_count"] > 0
+
+
+def test_a_letter_gets_two_voice_passages_from_the_owners_posts(profile, mock_job) -> None:
+    db, embedder = ConceptPg(), ConceptEmbedder()
+    store = PgKnowledgeStore(db, embedder)
+    store.index_candidate(profile)
+    store.index_job(profile.id, mock_job, "You will own bakery search campaigns.", "https://example.invalid/r")
+    for number, post in enumerate(("Bakery search waste, fictional 2017 post.", "Tracking orders, fictional post.",
+                                   "Reports nobody reads, fictional post."), 1):
+        store.index_voice(profile.id, post, f"voice:blog-2017-{number}")
+    result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True)
+    assert len(result.voice_samples) == 2 and not result.receipt["voice_from_stories"]
+    assert all("fictional" in sample for sample in result.voice_samples)
+    assert not any(sample in json.dumps(result.receipt) for sample in result.voice_samples)

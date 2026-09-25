@@ -666,35 +666,60 @@ to the employer can be named.
 **What the code checks** (`_letter_findings`, corrective rewrites; a letter still failing on
 its third draft holds): the greeting line (`GREETING`), 280-400 words in 4-6 paragraphs
 (`LETTER_LENGTH`), a hook whose first sentence cites the applicant's work and carries a digit
-or a story's problem (`OPENING`), a close of at most two sentences citing the links with no
-stock courtesy (`CLOSING`), a cited story passage when one was supplied (`STORY_MISSING`), at
-most one job-only sentence (`JOB_RESTATED`), the employer's name (`EMPLOYER_NAME`). The
-independent reviewer then grades the grounded letter against the rubric's HARD lines
-(`letter_rubric`, `LETTER_RUBRIC`): a failed line is a corrective rewrite while one remains
-(two for a cover letter, `LETTER_ATTEMPTS`), and on the last attempt its issues stay in the
-trace and the note ("rubric review: N issue(s) remain"); a failed rubric review never blocks a
-grounded letter. Jev's completeness question is scoped to the letter's shape, and a letter's
-first step is a plan, not a claim of fact, supported by cited work and a cited priority.
+or a story's problem (`OPENING`), a close of exactly two sentences, the profile link (cited)
+and an offer to talk, with no stock courtesy (`CLOSING`), a cited story passage when one was
+supplied (`STORY_MISSING`), at most one job-only sentence (`JOB_RESTATED`), the employer's name
+(`EMPLOYER_NAME`). A review that rejects sentences asks the next draft to drop them rather than
+rephrase them (`DROP_REJECTED_FEEDBACK`), and the writer never borrows the posting's wording into
+a first-person claim, never assesses the applicant and states a tradeoff only as a source does.
 
-**The humanizer** (`no-ai-slop-v3`). A sentence citing only job evidence may be deleted or
-folded into a fact sentence (its job ids join that sentence's), never added; fact sets keep
-M9. The lint gives the rewrite the genre's targets: `job_restated`, `stock_opener`,
-`stock_closer`, `fit_commentary`, `connective_tic`, `identical_paragraph_openings`, and the
-upstream rules the first version missed (`portable_sentence`, `fake_strong_verb`,
-`empty_adverb` for the eleven often-empty adverbs, `self_answered_question`, `closing_recap`,
-`and_fragments`, `colon_case`, `decorative_formatting`, `synonym_cycling`, and "in this
-article" / "let's dive in"); a greeting line is not the first sentence. The prompt carries the
-owner's rule: hedges and fit commentary are cut, never kept as voice. A rejected rewrite is
-tried again with its reason (`rejected_rewrite`; up to three rewrites), the trace names every
-discarded attempt (`discarded`) and the answer's note says "no-AI-slop rewrite discarded: …",
-so a kept original is never silent. The trace keeps each accepted rewrite's and the final
-draft's citation ids (`citations`, ids and paragraphs only).
+**One review per draft.** Each cover-letter draft gets one independent review
+(`letter_review`, `LetterReview`): its grounding verdict, as the draft review, and its grade
+against the rubric's HARD lines (`LETTER_RUBRIC_LINES`) together. A grounding failure is a
+corrective rewrite; a failed rubric line gets one improvement draft (`RUBRIC_PASSES`), held to
+every draft check and its own graded review, and dropped when it fails any of them, so the
+grounded letter stands and the rubric never costs a letter. Issues still open after the pass
+(or after the no-slop rewrite's own review) stay in the trace and the note ("rubric review: N
+issue(s) remain"; "rubric review passed" otherwise). Jev's completeness question is scoped to
+the letter's shape, and a letter's first step is a plan, not a claim of fact, supported by
+cited work and a cited priority.
 
-**Bounds.** A letter's Jev grounding and consistency requests are split under 85% of the
-request bound (`_decide_batched`); its answer allowance is 6000 tokens (story and job ids cost
-about 45 tokens each), the writer policy allows 8000 and waits 120 s, and a cover letter adds
-24 calls / USD 2.50 of reservations to a writer field's allowance, raising the form's cap by
-the same (`FORM_LETTER_*`). `rag_answers.py draft` reserves up to 64 calls / USD 3.00.
+**The humanizer** (`no-ai-slop-v3`). A draft whose lint is clean is kept as it is (`CLEAN`,
+which the rubric accepts); otherwise it is rewritten, at most twice. A sentence citing only job
+evidence may be deleted or folded into a fact sentence (its job ids join that sentence's),
+never added; fact sets keep M9; the greeting line and the close's two sentences stay. The lint
+gives the rewrite the genre's targets: `job_restated`, `stock_opener`, `stock_closer`,
+`fit_commentary`, `posting_clause` ("the kind of X that <employer> names", "which <employer>
+expects", "as the role asks", more than twice), `connective_tic`, `repeated_dates` (the same
+date phrase three times), `identical_paragraph_openings`, and the upstream rules the first
+version missed (`portable_sentence`: a first-person line with no name or figure whose content
+words are at least 40% generic; `fake_strong_verb`; `empty_adverb` for the eleven often-empty
+adverbs; `self_answered_question`; `closing_recap`; `and_fragments`; `colon_case`;
+`decorative_formatting`; `synonym_cycling`; "in this article" / "let's dive in"); a greeting line
+is not the first sentence. The prompt carries the owner's rule: hedges and fit commentary are
+cut, never kept as voice. A rejected rewrite is tried again with its reason
+(`rejected_rewrite`), a rewrite whose review fails a rubric line the draft passed is rejected
+(`REJECTED_RUBRIC`), the trace names every discarded attempt (`discarded`) and the answer's note
+says "no-AI-slop rewrite discarded: …", so a kept original is never silent. The trace keeps each
+accepted rewrite's and the final draft's citation ids (`citations`, ids and paragraphs only).
+
+**The owner's voice** (addendum 3). Three posts he wrote in 2017 are indexed as voice samples
+(`index-voice`, style only); a letter gets the two most relevant passages (`voice_samples`), for
+the writer and the no-slop rewrite alike, never as evidence (they reach neither Jev nor the
+review). Both prompts carry `VOICE_RULE`: adopt his register (plain first person, direct
+address, short declarative sentences, concrete numbers, a homely analogy now and then, a blunt
+aside, confidence without puffery, "the bottom line" once) but never the posts' content or their
+blog tics (bucket brigades, "awesome", "insanely", "skyrocket", "explosive", "It's no secret
+that...", "You might be wondering:"), which the lint names `blog_tic`.
+
+**Cost and bounds.** Citation ids travel as short aliases on the writer's and the rewriter's
+wire (`F1`, `S1`, `J1`, `L1`; a hashed id costs some 45 output tokens per citation) and are
+mapped back before any check; Jev grounding carries each cited fact, passage and job chunk once
+per request, and grounding and consistency requests are split under 85% of the request bound
+(`_decide_batched`). A letter's answer allowance is 6000 tokens, the writer policy allows 8000
+and waits 120 s, and a cover letter adds 24 calls / USD 2.50 of reservations to a writer field's
+allowance, raising the form's cap by the same (`FORM_LETTER_*`); `rag_answers.py draft` reserves
+up to 64 calls / USD 3.00. The lead's target is at most 15 calls and USD 0.60 per letter.
 
 ## Verification
 

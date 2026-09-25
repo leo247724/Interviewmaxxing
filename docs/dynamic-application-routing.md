@@ -349,9 +349,11 @@ up to 12 for a letter); the whole description up to five chunks; story passages 
 at p <= 0.05 with the uncertain band reviewed once, and the passage that best matches the
 first priority listed first; a rubric-shaped writer prompt whose code-checkable lines
 (`GREETING`, `LETTER_LENGTH`, `OPENING`, `CLOSING`, `STORY_MISSING`, `JOB_RESTATED`,
-`EMPLOYER_NAME`) get corrective rewrites and whose HARD lines the reviewer grades
-(`letter_rubric`); a humanizer that may delete or fold job-only sentences, lints the genre and
-retries a rejected rewrite with its reason, never discarding one silently. Jev grounding and
+`EMPLOYER_NAME`) get corrective rewrites; one independent review per draft for its grounding
+and the rubric's HARD lines together (`letter_review`), with one improvement pass that never
+costs a grounded letter; a humanizer that skips a clean draft, may delete or fold job-only
+sentences, lints the genre and retries a rejected rewrite with its reason, never discarding
+one silently. Citation ids travel as short aliases on the writer's wire, Jev grounding and
 consistency requests are batched under the request bound, and a cover letter has its own call
 allowance (`FORM_LETTER_*`).
 
