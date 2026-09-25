@@ -44,6 +44,20 @@ MAX_SOURCE_CHUNKS = 64
 MAX_STORY_CHUNKS = 4
 """Story chunks returned for one narrative retrieval (each about 120-300 words)."""
 MAX_REQUIREMENT_CHARS = 1500
+MAX_JOB_CONTEXT_CHUNKS = 5
+"""A cover letter or motivation answer gets the whole job description up to this many
+chunks, else this many chunks ranked by requirement cues (round 6)."""
+MAX_REQUIREMENT_QUERIES = 10
+"""Key requirements a cover letter or motivation answer retrieves facts for, each its own
+embedding input in the one request and its own hybrid query."""
+PRIORITY_STORY_CHUNKS = 2
+"""Story chunks ranked first for a cover letter or motivation answer by the posting's first
+priority alone: the letter's proof is drawn from the passage that best matches it."""
+FACTS_PER_REQUIREMENT = 2
+REQUIREMENT_POOL = 3
+"""The best hits per requirement among which a fact stating a figure is preferred; the
+whole description's ranking prefers figures within windows of the same size, so a weak
+match never jumps ahead of a strong one for its number alone."""
 
 
 @dataclass(frozen=True)
@@ -186,6 +200,24 @@ ORDER BY ts_rank_cd(c.search_terms, websearch_to_tsquery('english', %s)) DESC,
 LIMIT %s
 """
 
+# The whole current description, in order, for a cover letter or motivation answer: a
+# generic question must not pick the job's chunks by its own words (round 6).
+_JOB_SOURCE_SQL = """
+WITH current_job AS (
+    SELECT * FROM imx_knowledge.sources
+    WHERE candidate_id = %s AND kind = 'job' AND job_scope = %s
+    ORDER BY indexed_at DESC, source_id LIMIT 1
+)
+SELECT c.id, c.candidate_id, c.kind, c.job_scope, c.source_id, c.source_version,
+       c.chunk_number, c.body, c.content_hash, s.source_url, s.indexed_job_id
+FROM current_job s
+JOIN imx_knowledge.chunks c
+    USING (candidate_id, kind, job_scope, source_id, source_version)
+WHERE c.embedding_model = %s
+ORDER BY c.chunk_number, c.id
+LIMIT %s
+"""
+
 
 def _fact_relevance_query(query: str, job: JobRecord, evidence: list[dict[str, str]]) -> str:
     if not evidence:
@@ -230,28 +262,198 @@ def _identity_query(query: str) -> bool:
     return bool(_IDENTITY_QUERY.match(normalized))
 
 
-def _key_requirements(evidence: list[dict[str, str]]) -> str:
-    """Requirement-like sentences of the scoped job description, bounded."""
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+|(?<=[a-z])\s*[\u2022\u00b7\-\u2013]\s+(?=[A-Z])")
+
+
+def _requirement_lines(evidence: list[dict[str, str]]) -> list[str]:
+    """Requirement-like sentences of the scoped job description, in order, each once,
+    bounded to ``MAX_REQUIREMENT_CHARS`` together."""
     lines: list[str] = []
+    seen: set[str] = set()
     size = 0
     for item in evidence:
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+|(?<=[a-z])\s*[\u2022\u00b7\-\u2013]\s+(?=[A-Z])", item["text"]):
+        for sentence in _SENTENCE_BREAK.split(item["text"]):
             sentence = " ".join(sentence.split())
-            if len(sentence) < 20 or not _REQUIREMENT_CUE.search(sentence):
+            if len(sentence) < 20 or not _REQUIREMENT_CUE.search(sentence) or sentence.casefold() in seen:
                 continue
             if size + len(sentence) + 1 > MAX_REQUIREMENT_CHARS:
-                return "\n".join(lines)
+                return lines
             lines.append(sentence)
+            seen.add(sentence.casefold())
             size += len(sentence) + 1
+    return lines
+
+
+def _key_requirements(evidence: list[dict[str, str]]) -> str:
+    """Requirement-like sentences of the scoped job description, bounded."""
+    lines = _requirement_lines(evidence)
     if not lines:
         return "\n".join(item["text"] for item in evidence)[:MAX_REQUIREMENT_CHARS]
     return "\n".join(lines)
+
+
+def _requirement_cues(text: str) -> int:
+    """How many requirement-like sentences a job chunk holds: ranks a long description's
+    chunks for a cover letter, so the qualifications beat the salary and EEO text."""
+    return sum(1 for sentence in _SENTENCE_BREAK.split(text)
+               if len(sentence.strip()) >= 20 and _REQUIREMENT_CUE.search(sentence))
+
+
+_YEARS = re.compile(r"\b(\d{1,2})\s*(?:\+|plus\b)?\s*(?:(?:-|\u2013|to)\s*\d{1,2}\s*)?(?:years?|yrs)\b",
+                    re.IGNORECASE)
+_NUMBER = re.compile(r"(?<![A-Za-z\d])\d+(?:[.,]\d+)*(?![A-Za-z\d])|(?<![A-Za-z\d])\d+(?:[.,]\d+)*(?:[kKmMbBx])\b")
+"""A figure: a number standing on its own or with a unit ("58%", "$400K", "8.5x"), not a digit
+inside a name ("B2B", "Q4")."""
+_YEAR = re.compile(r"^(?:19|20)\d{2}$")
+_CLAIM_WORD = re.compile(r"[^\W\d_]{4,}")
+_CLAIM_STOP = frozenset({"with", "from", "into", "that", "this", "their", "they", "them", "were",
+                         "have", "while", "over", "across", "after", "before", "which", "about",
+                         "resume", "years", "year"})
+_CONTEXT_SUFFIX = re.compile(r"\s\([^()]*\)$")
+"""The "(employer; resume: company, period)" a story fact's value ends with."""
+
+
+def _fact_value_text(fact: CandidateFact) -> str:
+    return fact.value if isinstance(fact.value, str) else json.dumps(
+        fact.value, ensure_ascii=False, allow_nan=False)
+
+
+def _years_count(fact: CandidateFact) -> int | None:
+    """The years a years-of-experience fact states ("7 years of performance marketing",
+    ``years_experience: 7``), or None: a fact whose only figure is a count of years. A
+    result that spans years ("$400K a month over 3 years") states other figures too."""
+    text = _CONTEXT_SUFFIX.sub("", _fact_value_text(fact))
+    if isinstance(fact.value, (int, float)) and not isinstance(fact.value, bool):
+        return int(fact.value) if "year" in fact.key.casefold() else None
+    match = _YEARS.search(text)
+    if match is None:
+        return None
+    rest = text[:match.start()] + " " + text[match.end():]
+    return None if _NUMBER.search(rest) else int(match.group(1))
+
+
+def _states_figure(fact: CandidateFact) -> bool:
+    """A fact that states a result or a scale: a figure other than a years count or a
+    calendar year."""
+    if _years_count(fact) is not None:
+        return False
+    return any(not _YEAR.match(number) for number in _NUMBER.findall(_CONTEXT_SUFFIX.sub("", _fact_value_text(fact))))
+
+
+def _claim_terms(fact: CandidateFact) -> tuple[frozenset[str], frozenset[str]]:
+    text = _CONTEXT_SUFFIX.sub("", _fact_value_text(fact)).casefold()
+    numbers = frozenset(number.replace(",", "") for number in _NUMBER.findall(text))
+    words = frozenset(word for word in _CLAIM_WORD.findall(text) if word not in _CLAIM_STOP)
+    return numbers, words
+
+
+def same_claim(first: CandidateFact, second: CandidateFact) -> bool:
+    """Whether two facts state the same claim, as a resume bullet and the story fact that
+    retells it do: they share a figure and at least 40% of the shorter one's content words,
+    or, without figures, at least 60% of them."""
+    first_numbers, first_words = _claim_terms(first)
+    second_numbers, second_words = _claim_terms(second)
+    if not first_words or not second_words:
+        return False
+    overlap = len(first_words & second_words) / min(len(first_words), len(second_words))
+    if first_numbers and second_numbers:
+        return bool(first_numbers & second_numbers) and overlap >= 0.4
+    return not first_numbers and not second_numbers and overlap >= 0.6
+
+
+def _years_asks(requirements: list[str]) -> list[tuple[int, frozenset[str]]]:
+    """The posting's stated years asks ("10+ years of growth marketing"), each with the
+    content words of its requirement, the lower bound of a range."""
+    asks = []
+    for line in requirements:
+        for match in _YEARS.finditer(line):
+            words = frozenset(word for word in _CLAIM_WORD.findall(line.casefold()) if word not in _CLAIM_STOP)
+            asks.append((int(match.group(1)), words))
+    return asks
+
+
+def _below_ask(fact: CandidateFact, years: int, asks: list[tuple[int, frozenset[str]]]) -> bool:
+    """A years fact is below the posting's ask for the same thing: the ask whose
+    requirement shares the most content words with the fact, else the largest ask."""
+    if not asks:
+        return False
+    _, words = _claim_terms(fact)
+    best = max(asks, key=lambda ask: (len(ask[1] & words), ask[0]))
+    ask = best[0] if best[1] & words else max(years_asked for years_asked, _ in asks)
+    return years < ask
+
+
+def select_requirement_facts(pools: list[list[CandidateFact]], fill: list[CandidateFact], *,
+                             requirements: list[str], limit: int,
+                             ) -> tuple[list[CandidateFact], dict[str, Any]]:
+    """Facts for a cover letter or motivation answer, per key requirement (round 6).
+
+    ``pools`` holds each requirement's best hits in rank order; a fact stating a figure
+    moves ahead within its requirement. Each requirement gets its top fact before any gets
+    a second, up to ``FACTS_PER_REQUIREMENT``; then ``fill`` (the whole description's
+    ranking) tops the list up to ``limit``. A fact stating the same claim as one already
+    chosen is left out, as is a second years-of-experience fact and any years fact below
+    the posting's stated ask for the same thing. Returns the facts and a receipt of ids."""
+    asks = _years_asks(requirements)
+    chosen: list[CandidateFact] = []
+    picked: list[list[str]] = [[] for _ in pools]
+    skipped: dict[str, list[str]] = {"same_claim": [], "years_below_ask": [], "second_years": []}
+    years_chosen = False
+
+    def take(fact: CandidateFact) -> bool:
+        nonlocal years_chosen
+        if any(fact.id == other.id for other in chosen):
+            return False
+        if any(same_claim(fact, other) for other in chosen):
+            if fact.id not in skipped["same_claim"]:
+                skipped["same_claim"].append(fact.id)
+            return False
+        years = _years_count(fact)
+        if years is not None:
+            reason = "second_years" if years_chosen else "years_below_ask" if _below_ask(fact, years, asks) else None
+            if reason is not None:
+                if fact.id not in skipped[reason]:
+                    skipped[reason].append(fact.id)
+                return False
+            years_chosen = True
+        chosen.append(fact)
+        return True
+
+    def figures_first(facts: list[CandidateFact]) -> list[CandidateFact]:
+        return [fact for _, fact in sorted(enumerate(facts), key=lambda item: (
+            item[0] // REQUIREMENT_POOL, not _states_figure(item[1]), item[0]))]
+
+    ordered = [figures_first(pool) for pool in pools]
+    for _ in range(FACTS_PER_REQUIREMENT):
+        for index, pool in enumerate(ordered):
+            if len(chosen) >= limit:
+                break
+            for fact in pool:
+                if fact.id in picked[index]:
+                    continue
+                if take(fact):
+                    picked[index].append(fact.id)
+                    break
+    for fact in figures_first(fill):
+        if len(chosen) >= limit:
+            break
+        take(fact)
+    return chosen, {"mode": "per_requirement", "requirements": len(pools), "limit": limit,
+                    "per_requirement_ids": picked, "skipped": skipped,
+                    "years_asks": sorted({years for years, _ in asks})}
 
 
 def _story_relevance_query(query: str, job: JobRecord, evidence: list[dict[str, str]]) -> str:
     """Rank stories by the question, the job title and the description's key requirements."""
     combined = (f"Question: {query}\nRole: {job.title or ''}\nCompany: {job.company or ''}\n"
                 "Key requirements:\n" + _key_requirements(evidence))
+    return combined.encode("utf-8")[:MAX_INPUT_BYTES - 1].decode("utf-8", errors="ignore")
+
+
+def _priority_story_query(job: JobRecord, requirement: str) -> str:
+    """Rank stories by the posting's first priority alone (round 6 addendum: the story is
+    the letter's spine, so its best match for that priority is listed first)."""
+    combined = f"Role: {job.title or ''}\nFirst priority: {requirement}"
     return combined.encode("utf-8")[:MAX_INPUT_BYTES - 1].decode("utf-8", errors="ignore")
 
 
@@ -489,14 +691,23 @@ class PgKnowledgeStore:
         return hits
 
     def _job_context(self, candidate_id: str, scope: str, query: str,
-                     limit: int) -> tuple[list[dict[str, str]], int]:
+                     limit: int, *, whole: bool = False) -> tuple[list[dict[str, str]], int]:
+        """The scoped job description's chunks: ranked by the question's own words for a
+        specific question (at most ``min(limit, 4)``); for a cover letter or motivation
+        answer (``whole``), the whole description when it has at most
+        ``MAX_JOB_CONTEXT_CHUNKS`` chunks, else that many ranked by requirement cues, in
+        the description's order."""
         with self._transaction(candidate_id) as cursor:
-            cursor.execute(_JOB_CONTEXT_SQL, (candidate_id, scope, EMBEDDING_MODEL, _lexical_query(query),
-                                              min(limit * 4, 16)))
+            if whole:
+                cursor.execute(_JOB_SOURCE_SQL, (candidate_id, scope, EMBEDDING_MODEL, MAX_SOURCE_CHUNKS))
+            else:
+                cursor.execute(_JOB_CONTEXT_SQL, (candidate_id, scope, EMBEDDING_MODEL, _lexical_query(query),
+                                                  min(limit * 4, 16)))
             hits = self._scoped_hits(cursor, candidate_id, "job", scope)
         jobs: list[dict[str, str]] = []
         seen: set[str] = set()
         rejected = 0
+        bound = MAX_SOURCE_CHUNKS if whole else min(limit, 4)
         for hit in hits:
             url, identifier = hit.get("source_url"), hit.get("id")
             if (not _valid_hit_body(hit) or not isinstance(url, str) or not url
@@ -510,10 +721,13 @@ class PgKnowledgeStore:
             except KnowledgeError:
                 rejected += 1
                 continue
-            if hit["content_hash"] not in seen and len(jobs) < min(limit, 4):
+            if hit["content_hash"] not in seen and len(jobs) < bound:
                 jobs.append({"id": identifier, "text": hit["body"],
                              "source_url": url, "source_version": hit["source_version"]})
                 seen.add(hit["content_hash"])
+        if whole and len(jobs) > MAX_JOB_CONTEXT_CHUNKS:
+            ranked = sorted(range(len(jobs)), key=lambda index: (-_requirement_cues(jobs[index]["text"]), index))
+            jobs = [jobs[index] for index in sorted(ranked[:MAX_JOB_CONTEXT_CHUNKS])]
         return jobs, rejected
 
     def retrieve(self, *, candidate: CandidateProfile, job: JobRecord,
@@ -529,6 +743,14 @@ class PgKnowledgeStore:
         description's key requirements, only when the caller marks the field as
         narrative (a WRITER-routed question or cover letter) and the question is not
         a bare identity field. Each retrieval uses one embedding request.
+
+        A cover letter or motivation answer (round 6) gets the whole description (or its
+        ``MAX_JOB_CONTEXT_CHUNKS`` chunks with the most requirement cues) and retrieves
+        its facts per key requirement: each requirement is an input of the same embedding
+        request and its own hybrid query, and ``select_requirement_facts`` picks one or two
+        facts per requirement (figures first, no twin claims, at most one years fact and
+        none below the posting's ask) before the description's overall ranking fills up to
+        ``limit``.
         """
         if type(limit) is not int or not 1 <= limit <= MAX_RETRIEVAL_LIMIT:
             raise KnowledgeError("Retrieval limit must be between 1 and 20")
@@ -536,22 +758,30 @@ class PgKnowledgeStore:
             raise KnowledgeError("Retrieval query is empty or exceeds its size limit")
         started = time.monotonic()
         scope = job_fingerprint(job)
-        jobs, rejected = self._job_context(candidate.id, scope, query, limit)
+        letter = _cover_letter_request(query)
+        jobs, rejected = self._job_context(candidate.id, scope, query, limit, whole=letter)
         job_context_ms = round((time.monotonic() - started) * 1000, 3)
         context_query = _fact_relevance_query(query, job, jobs)
-        if jobs and _cover_letter_request(query):
+        requirements: list[str] = []
+        if jobs and letter:
             fact_queries = [("job_context", context_query, 1.0)]
+            requirements = _requirement_lines(jobs)[:MAX_REQUIREMENT_QUERIES]
         else:
             fact_queries = [("question", query, 1.0)]
         identity_field = _identity_query(query)
         story_query = (_story_relevance_query(query, job, jobs)
                        if narrative and not identity_field else None)
+        priority_query = _priority_story_query(job, requirements[0]) if story_query and requirements else None
         embedded = self._embed([text for _, text, _ in fact_queries]
-                               + ([story_query] if story_query else []))
+                               + ([story_query] if story_query else [])
+                               + ([priority_query] if priority_query else []) + requirements)
+        requirement_offset = len(fact_queries) + (1 if story_query else 0) + (1 if priority_query else 0)
         pool_limit = min(limit * 4, 80)
         current = {f.id: f for f in candidate.verified_facts()}
         hits: list[dict[str, Any]] = []
         story_hits: list[dict[str, Any]] = []
+        priority_hits: list[dict[str, Any]] = []
+        requirement_hits: list[list[dict[str, Any]]] = []
         with self._transaction(candidate.id) as cursor:
             if jobs:
                 current_sources = self._snapshot(cursor, candidate.id, "job", scope)
@@ -575,21 +805,57 @@ class PgKnowledgeStore:
                                                      pool_limit, pool_limit))
                 story_hits = self._scoped_hits(cursor, candidate.id, "story", "",
                                                _STORY_RESULT_COLUMNS)
+            if priority_query:
+                priority_lexical = _lexical_query(priority_query)
+                cursor.execute(_RETRIEVE_SCORED_SQL, (candidate.id, "story", "", EMBEDDING_MODEL,
+                                                     json.dumps(embedded.vectors[len(fact_queries) + 1]),
+                                                     pool_limit, priority_lexical, priority_lexical,
+                                                     pool_limit, pool_limit))
+                priority_hits = self._scoped_hits(cursor, candidate.id, "story", "", _STORY_RESULT_COLUMNS)
+            for index, requirement in enumerate(requirements):
+                requirement_lexical = _lexical_query(requirement)
+                cursor.execute(_RETRIEVE_SQL, (candidate.id, "fact", "", EMBEDDING_MODEL,
+                                              json.dumps(embedded.vectors[requirement_offset + index]),
+                                              pool_limit, requirement_lexical, requirement_lexical,
+                                              pool_limit, REQUIREMENT_POOL * 2))
+                requirement_hits.append(self._scoped_hits(cursor, candidate.id, "fact", ""))
 
-        facts: list[CandidateFact] = []
+        def canonical_fact(hit: dict[str, Any]) -> CandidateFact | None:
+            """The current canonical fact an index hit stands for, or None (counted as
+            rejected) for a stale, revoked, changed or tampered hit."""
+            nonlocal rejected
+            source_id, number = hit.get("source_id"), hit.get("chunk_number")
+            fact = current.get(source_id) if isinstance(source_id, str) else None
+            if (not _valid_hit_body(hit) or fact is None or fact_fingerprint(fact) != hit["source_version"]
+                    or type(number) is not int or number < 0):
+                rejected += 1
+                return None
+            canonical_chunks = _chunks(_fact_text(fact))
+            if number >= len(canonical_chunks) or hit["body"] != canonical_chunks[number]:
+                rejected += 1
+                return None
+            return fact
+
+        ranked_facts: list[CandidateFact] = []
         voices: list[str] = []
         stories: list[dict[str, Any]] = []
         seen_facts: set[str] = set()
         seen_voices: set[str] = set()
         seen_stories: set[str] = set()
         versions = {j["source_version"] for j in jobs}
-        for rank, hit in enumerate(story_hits, 1):
+        priority_ids: list[str] = []
+        ranked_hits = ([(rank, hit, True) for rank, hit in enumerate(priority_hits, 1)]
+                       + [(rank, hit, False) for rank, hit in enumerate(story_hits, 1)])
+        for rank, hit, first_priority in ranked_hits:
             header = parse_chunk_header(hit["body"]) if _valid_hit_body(hit) else None
             if header is None:
                 rejected += 1
                 continue
-            if hit["content_hash"] in seen_stories or len(stories) >= MAX_STORY_CHUNKS:
+            if (hit["content_hash"] in seen_stories or len(stories) >= MAX_STORY_CHUNKS
+                    or (first_priority and len(priority_ids) >= PRIORITY_STORY_CHUNKS)):
                 continue
+            if first_priority:
+                priority_ids.append("story:" + hit["content_hash"])
             score = hit.get("score")
             if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
                 score = 1.0 / (60 + rank)  # a driver without the fused score: its rank
@@ -610,24 +876,10 @@ class PgKnowledgeStore:
             body, version = hit["body"], hit["source_version"]
             kind = hit["kind"]
             if kind == "fact":
-                source_id = hit.get("source_id")
-                if not isinstance(source_id, str):
-                    rejected += 1
-                    continue
-                fact = current.get(source_id)
-                number = hit.get("chunk_number")
-                if (fact is None or fact_fingerprint(fact) != version
-                        or type(number) is not int or number < 0):
-                    rejected += 1
-                    continue
-                canonical_chunks = _chunks(_fact_text(fact))
-                if number >= len(canonical_chunks) or body != canonical_chunks[number]:
-                    rejected += 1
-                    continue
-                if source_id not in seen_facts and len(facts) < limit:
-                    facts.append(fact)
-                    seen_facts.add(source_id)
-                    versions.add(version)
+                fact = canonical_fact(hit)
+                if fact is not None and fact.id not in seen_facts:
+                    ranked_facts.append(fact)
+                    seen_facts.add(fact.id)
             elif kind == "voice":
                 if hit["content_hash"] not in seen_voices and len(voices) < 2:
                     voices.append(body)
@@ -638,6 +890,21 @@ class PgKnowledgeStore:
             # samples, the two best story chunks set the tone (style only, as ever).
             voices = [story["text"] for story in stories[:2]]
             voice_from_stories = True
+        selection: dict[str, Any] = {"mode": "ranked", "limit": limit}
+        if requirements:
+            pools: list[list[CandidateFact]] = []
+            for rows in requirement_hits:
+                pool: list[CandidateFact] = []
+                for hit in rows:
+                    fact = canonical_fact(hit)
+                    if fact is not None and len(pool) < REQUIREMENT_POOL and all(f.id != fact.id for f in pool):
+                        pool.append(fact)
+                pools.append(pool)
+            facts, selection = select_requirement_facts(pools, ranked_facts, requirements=requirements,
+                                                        limit=limit)
+        else:
+            facts = ranked_facts[:limit]
+        versions.update(fact_fingerprint(fact) for fact in facts)
 
         return RetrievalResult(facts, jobs, voices, {
             "status": "retrieved", "backend": "pgvector-hybrid",
@@ -647,23 +914,28 @@ class PgKnowledgeStore:
             "fact_query_bytes": len(fact_queries[0][1].encode("utf-8")),
             "fact_queries": [{"stage": stage, "query_sha256": _hash(text),
                               "query_bytes": len(text.encode("utf-8")), "rank_weight": weight}
-                             for stage, text, weight in fact_queries],
+                             for stage, text, weight in [*fact_queries,
+                                                         *(("requirement", line, 1.0) for line in requirements)]],
+            "fact_selection": selection,
             "job_context_applied": bool(jobs), "job_context_duration_ms": job_context_ms,
             "candidate_ranking_uses_job_context": fact_queries[0][0] == "job_context",
             "job_evidence_ids": [j["id"] for j in jobs], "source_versions": sorted(versions),
             "story_ids": [s["id"] for s in stories],
             "story_scores": {s["id"]: s["score"] for s in stories},
             "story_query_applied": story_query is not None, "voice_from_stories": voice_from_stories,
+            "story_priority_ids": priority_ids,
             "story_query_sha256": _hash(story_query) if story_query else None,
             "story_query_bytes": len(story_query.encode("utf-8")) if story_query else 0,
             "stories_skipped_reason": ("identity_field" if narrative and identity_field
                                        else None if narrative else "not_narrative"),
             "counts": {"facts": len(facts), "job_evidence": len(jobs), "voice_samples": len(voices),
-                       "story_chunks": len(stories)},
+                       "story_chunks": len(stories), "requirements": len(requirements)},
             "rejected_count": rejected, "embedding": embedded.receipt,
             "embedding_stages": [{"stage": "candidate_relevance",
                                    "query_stages": [stage for stage, _, _ in fact_queries]
-                                   + (["story_relevance"] if story_query else []),
+                                   + (["story_relevance"] if story_query else [])
+                                   + (["story_priority"] if priority_query else [])
+                                   + (["requirement_relevance"] if requirements else []),
                                    "receipt": embedded.receipt}],
             "duration_ms": round((time.monotonic() - started) * 1000, 3),
         }, stories)

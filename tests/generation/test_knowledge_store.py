@@ -451,9 +451,15 @@ def test_generic_cover_letter_selects_different_role_evidence_not_only_company_n
         assert result.receipt["job_context_applied"]
         assert result.receipt["embedding"]["batch_count"] == 1
         assert result.receipt["embedding"]["usage"]["cost"] == 0.00001
+        # Round 6: each key requirement (a sentence with a requirement cue such as "lead" or
+        # "build") is one more input of the same embedding request.
+        requirements = [description] if label != "vercel-like" else []
+        assert result.receipt["counts"]["requirements"] == len(requirements)
         assert result.receipt["embedding_stages"] == [{"stage": "candidate_relevance",
-                                                       "query_stages": ["job_context"],
+                                                       "query_stages": ["job_context"]
+                                                       + ["requirement_relevance"] * bool(requirements),
                                                        "receipt": result.receipt["embedding"]}]
+        assert embedder.calls[-1][1:] == requirements
         assert "Cover letter" not in json.dumps(result.receipt)
     assert len(set(selected_sets)) == 3
 
@@ -490,7 +496,9 @@ def test_job_relevance_query_has_strict_utf8_byte_bound_and_preserves_question(k
     result = store.retrieve(candidate=profile, job=mock_job, query=query)
     enriched = embedder.calls[-1][0]
     assert query in enriched and len(enriched.encode("utf-8")) < 8000
-    assert "界" in enriched and len(result.job_evidence) == 4
+    # Round 6: a cover letter gets the whole description up to five chunks (here eight chunks,
+    # ranked by requirement cues, none of which a multibyte filler has).
+    assert "界" in enriched and len(result.job_evidence) == 5
     assert result.receipt["fact_queries"][0]["query_bytes"] == len(enriched.encode("utf-8"))
 
 
@@ -723,9 +731,13 @@ def test_narrative_retrieval_returns_story_chunks_but_identity_fields_get_none(k
     result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True)
     assert result.facts and result.job_evidence
     assert 1 <= len(result.story_chunks) <= 4
-    assert len(embedder.calls) == 1 and len(embedder.calls[0]) == 2
+    # One request: the fact query, the story query, the first priority's story query (round 6)
+    # and the one key requirement's fact query.
+    assert len(embedder.calls) == 1 and len(embedder.calls[0]) == 4
     assert embedder.calls[0][1].startswith("Question: Cover letter\nRole: ")
     assert "Key requirements:\nOwn paid search and report orders to the owner." in embedder.calls[0][1]
+    assert embedder.calls[0][2].endswith("First priority: Own paid search and report orders to the owner.")
+    assert embedder.calls[0][3] == "Own paid search and report orders to the owner."
     for rank, chunk in enumerate(result.story_chunks, 1):
         assert chunk["id"] == "story:" + hashlib.sha256(chunk["text"].encode()).hexdigest()
         assert chunk["text"].startswith("Story 0") and chunk["source_version"] == "c" * 64
@@ -736,6 +748,8 @@ def test_narrative_retrieval_returns_story_chunks_but_identity_fields_get_none(k
     assert set(result.receipt["story_scores"]) == set(result.receipt["story_ids"])
     assert result.receipt["counts"]["story_chunks"] == len(result.story_chunks)
     assert result.receipt["story_query_applied"] and result.receipt["stories_skipped_reason"] is None
+    assert result.receipt["story_priority_ids"] and set(result.receipt["story_priority_ids"]) <= set(
+        result.receipt["story_ids"])
     # No explicit style samples: the candidate's own stories set the tone.
     assert result.voice_samples == [c["text"] for c in result.story_chunks[:2]]
     assert result.receipt["voice_from_stories"] is True

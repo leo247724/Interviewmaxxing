@@ -79,14 +79,19 @@ REASONING_BUDGET_TOKENS: dict[str, int] = {
 ``max_tokens`` is this budget plus the answer allowance, so the answer keeps its whole room
 after reasoning; with ``effort: high`` OpenRouter reserved about 80% of ``max_tokens`` for
 reasoning and cut answers. ``high`` is at least what that mapping gave at the old limit."""
-ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analysis": 2000, "cover_letter": 3000,
-                                 "humanize": 3000}
+ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analysis": 2000, "cover_letter": 4000,
+                                 "humanize": 4000}
 """Answer allowance by narrative purpose (bounded by the writer's ``max_tokens``): eight
-cited sentences fit in 2000 tokens, a 300-word cover letter with citations in 3000."""
+cited sentences fit in 2000 tokens, a 400-word cover letter with citations in 4000."""
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
 FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
+FORM_LETTER_CALLS, FORM_LETTER_USD = 24, 1.75
+"""What a cover letter reserves on top of a writer field's allowance (WP12 round 6 addendum):
+the rubric review and up to two corrective rewrites, the story passages' review, and up to
+three no-slop rewrites, each independently reviewed. Reservations are upper bounds (the
+request size and the whole answer allowance at the output price); actual spend is lower."""
 FORM_CAP_CALLS, FORM_CAP_USD = 120, 2.00
 FIT_GIVEN_RULE = (
     "The applicant has already decided this role fits: every saved job is one they chose "
@@ -98,6 +103,80 @@ FIT_GIVEN_RULE = (
     "mentioned. Every claim still cites its evidence; invent no claim or number. ")
 """The owner's rule for cover letters, motivation and narrative answers (WP12 round 5,
 addendum 2): fit is given, the writer builds the case and never judges or hedges it."""
+COVER_LETTER_RULES = (
+    "Write the cover letter the owner's rubric describes: 280-380 words (never more than 400), "
+    "plain first-person prose in these paragraphs, with consecutive zero-based paragraph indices. "
+    "(0) The greeting line alone: 'Dear <name>,' when job_evidence names the hiring manager or "
+    "recruiter, otherwise 'Dear Hiring Manager,'; it cites nothing. "
+    "(1) The hook, 2-3 sentences. Its first sentence carries a digit or a named problem: the "
+    "headline result of the proof below with its employer, or the problem that work solved. Lead "
+    "with money and cases, not channels, and use one headline metric. Never open with an "
+    "application line ('I am writing to apply', 'I am applying'), excitement or passion, a "
+    "description of the role or a count of years. "
+    "(2) The proof: ONE campaign or project, not the career, told as constraint, then what the "
+    "applicant changed, then the result, and naming the tradeoff or constraint (volume that fell, "
+    "a sales team that pushed back, a CEO protecting a channel, a dashboard that disagreed with "
+    "the ledger). Draw it from a story passage (entries keyed story): the constraint and the "
+    "tradeoff live there, not in resume bullets. Story passages are listed best match first for "
+    "the job's first priority; use the first unless another answers a priority the posting names "
+    "more directly. Put the job priority it answers in the same sentence as the work, as a clause. "
+    "Never stack a second headline metric from another campaign, and say what the resume cannot "
+    "(the lie in the data, the fight, the tradeoff) rather than listing bullets. The proof may take "
+    "two paragraphs. "
+    "(3) Why this company: 3-5 sentences naming one thing that is true only of this employer, from "
+    "job_evidence (a channel, a market or geography line, its category or stage, a tool it names), "
+    "paired in the same sentence with the applicant's matching work, then one sentence on what the "
+    "applicant would do first there, built from work the cited facts or passages show he has done "
+    "and a priority job_evidence names. "
+    "(4) The close, exactly 2 sentences: where to see the work (the LinkedIn or portfolio URL of "
+    "the fact keyed contact_links, copied exactly and cited), and a confident one-sentence offer to "
+    "talk. No gratitude: never 'Thank you for considering my application' or 'I would welcome the "
+    "chance to discuss'. "
+    "The letter must pass the 40-employer test: it could not be sent to another employer. At most "
+    "one sentence may restate the posting; otherwise each job priority is a clause inside a "
+    "sentence about the applicant's work that cites both. Weave the story as natural evidence, "
+    "never labelled ('Story 1') or listed. Tie each body paragraph to one requirement the posting "
+    "actually names: two or three deep connections beat six shallow ones. Match the posting's own "
+    "words only where the evidence makes them true, and never name a tool the applicant has not "
+    "used. No comma-separated platform or tool inventories. Every first-person claim names its "
+    "employer and dates. Never comment on how the experience relates, maps, aligns, transfers or "
+    "could apply, and leave out requirements the evidence does not cover. Banned: passionate, "
+    "results-driven, leverage, utilize, synergy, dynamic, fast-paced environment, team player, hit "
+    "the ground running, perfect fit, 'excited to bring my expertise', 'It's not X, it's Y' "
+    "contrasts, three-item lyric lists, a fake-profound last line, em dashes, and the connectives "
+    "'In that same role', 'In the same practice', 'In that role' and 'Separately,'. Contractions are "
+    "fine. No headings, address blocks, bullets or signature. Return NEEDS_INPUT only when "
+    "job_evidence lacks the actual description, no supplied fact or passage relates to the posting "
+    "at all, or nothing true only of this employer can be named from job_evidence. ")
+"""The cover-letter instructions: the owner's rubric (RUBRIC.md, 2026-09-25) line by line, with
+the open-career-skills cover-letter rules that fit it (WP12 round 6, addendum)."""
+LETTER_RUBRIC = (
+    "Grade this cover letter against the owner's rubric. Do not judge whether its claims are "
+    "grounded (a separate review does that) or whether the applicant fits the role (every saved job "
+    "fits). HARD lines: (1) 280-380 words, ceiling 400. (2) A hook of 2-3 sentences whose first "
+    "sentence carries a digit or a named problem; never 'I am writing to apply', excitement, "
+    "passion, a description of the role or a years count. (3) One proof, one campaign, not the "
+    "career: constraint, then what he changed, then the result; never two headline metrics from "
+    "different campaigns stacked. (4) Why this company: 3-5 sentences naming one thing only true of "
+    "this employer (from job_evidence: a channel, a geography line, its category or stage, a tool "
+    "it names) and one sentence on what he would do first. (5) A close of 2 sentences: the "
+    "portfolio or LinkedIn and that he can talk; no gratitude, never 'Thank you for considering my "
+    "application' or 'I would welcome the chance to discuss'. (6) The 40-employer test: it could "
+    "not be sent to 40 employers; at most one sentence restates the posting and job priorities "
+    "appear as clauses in sentences about his work. (7) Not the resume restated: it says what the "
+    "CV cannot (the lie in the data, the fight, the tradeoff, why this team); no comma-separated "
+    "platform inventories. (8) The proof names its tradeoff or constraint. (9) No hedge, "
+    "disclaimer or fit commentary ('relates to', 'maps to', 'could apply', 'well suited'). (11) "
+    "None of: passionate, leverage, utilize, synergy, dynamic landscape, 'I am writing to apply', "
+    "'excited to bring my expertise', 'It's not X, it's Y', three-item lyric lists, a fake-profound "
+    "last line, em dashes, 'In that same role' / 'In the same practice' / 'Separately,'. Return "
+    "SUPPORTED when every HARD line passes. Otherwise return UNSUPPORTED with one issue per failed "
+    "line: name the line number, quote the failing sentence and say what to change using only the "
+    "supplied facts, story passages and job evidence; never supply a new fact, number, employer or "
+    "claim. reference_ids may name the supplied facts or passages a stronger proof or company "
+    "paragraph would use. ")
+"""The rubric review's instructions: the owner's HARD lines, graded on a grounded draft before
+the no-slop pass, feeding the writer's corrective rewrite (WP12 round 6, addendum)."""
 CASE_DATA_MISSING = "The table referenced is not in the recorded question"
 """What a case-study answer holds for when the data it must compute from was not recorded."""
 MAX_CASE_SENTENCES = 14
@@ -134,19 +213,22 @@ class CallBudget:
     """Production budgets follow the form (``allow_form``); fixed limits otherwise."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def allow_form(self, writer_fields: int) -> None:
+    def allow_form(self, writer_fields: int, letters: int = 0) -> None:
         """Limits for one more form, when the budget scales with the form: what it used so
-        far plus 24 calls / USD 0.30 and 12 calls / USD 0.30 per WRITER-routed field (its
+        far plus 24 calls / USD 0.30, 24 calls / USD 0.75 per WRITER-routed field (its
         retrieval, consistency checks, writing, grounding, review and the no-slop rewrite
-        with its second grounding), capped at 120 calls / USD 2.00 in total."""
+        with its second grounding) and 24 calls / USD 1.75 more per cover letter among them
+        (``FORM_LETTER_USD``), capped at 120 calls / USD 2.00 in total, a cap each cover letter
+        raises by its own allowance so a form without one keeps the same limits."""
         if not self.scales_with_form:
             return
         writers = max(0, writer_fields)
+        letters = min(max(0, letters), writers)
         with self._lock:
-            self.max_calls = min(FORM_CAP_CALLS, self.calls + FORM_BASE_CALLS
-                                 + FORM_WRITER_CALLS * writers)
-            self.max_usd = min(FORM_CAP_USD, self.reserved_usd + FORM_BASE_USD
-                               + FORM_WRITER_USD * writers)
+            self.max_calls = min(FORM_CAP_CALLS + FORM_LETTER_CALLS * letters, self.calls + FORM_BASE_CALLS
+                                 + FORM_WRITER_CALLS * writers + FORM_LETTER_CALLS * letters)
+            self.max_usd = min(FORM_CAP_USD + FORM_LETTER_USD * letters, self.reserved_usd + FORM_BASE_USD
+                               + FORM_WRITER_USD * writers + FORM_LETTER_USD * letters)
 
     def reserve(self, body: bytes, upper_cost: float) -> None:
         with self._lock:
@@ -269,7 +351,9 @@ class CitedSentence(BaseModel):
         default_factory=list, max_length=12)
     job_evidence_ids: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(
         default_factory=list, max_length=12)
-    paragraph: int = Field(default=0, ge=0, le=3)
+    paragraph: int = Field(default=0, ge=0, le=6)
+    """Up to seven paragraphs: a cover letter's greeting, hook, proof (one or two), this company
+    and close (round 6)."""
 
     @model_validator(mode="after")
     def plain_text(self) -> Self:
@@ -281,7 +365,7 @@ class CitedSentence(BaseModel):
 class NarrativeDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     status: Literal["READY", "NEEDS_INPUT"]
-    sentences: list[CitedSentence] = Field(max_length=20)
+    sentences: list[CitedSentence] = Field(max_length=24)
     missing_information: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(
         max_length=8)
 
@@ -359,7 +443,8 @@ class NarrativeWriter:
     budget: CallBudget
     transport: Transport = urllib_transport
     timeout_seconds: float = 90.0
-    max_tokens: int = 3000
+    max_tokens: int = 4000
+    """The largest answer allowance (a 400-word cover letter with citations, round 6)."""
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     """Effort for reviews and, when ``narrative_effort`` is unset, for narratives."""
     narrative_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
@@ -458,21 +543,7 @@ class NarrativeWriter:
                              + " needs explicit facts: " + "; ".join(missing),
                              missing_information=missing)
         if purpose == "cover_letter":
-            writing_instructions = (
-                "Write a 200-300 word cover letter in 3-4 natural paragraphs, using consecutive "
-                "zero-based paragraph indices. Use direct, concise first-person prose. Weave 2-3 "
-                "specific responsibilities or priorities from job_evidence together with actual "
-                "relevant resume evidence; do not merely list job keywords. A title and company "
-                "alone are insufficient: request the actual description if job_evidence lacks "
-                "real responsibilities and requirements. Omit headings, address blocks, salutations "
-                "and signatures. Avoid boilerplate, AI cliches, inflated adjectives, exaggerated "
-                "metrics and unsupported enthusiasm or motivation. Do not say you are excited, "
-                "passionate, a perfect fit, uniquely qualified, or drawn to the employer without "
-                "verified evidence. Do not repeat the same experience to reach the word count. "
-                "Build the letter from the requirements the supplied evidence supports and leave "
-                "the others out; return NEEDS_INPUT only when job_evidence lacks the actual "
-                "description or no supplied fact or passage relates to the posting at all. "
-            )
+            writing_instructions = COVER_LETTER_RULES
         elif purpose == "motivation":
             writing_instructions = (
                 "Write a concise first-person answer (at most 8 sentences, one or two paragraphs) "
@@ -480,7 +551,9 @@ class NarrativeWriter:
                 "role or company. The reason is the alignment between the posting's requirements "
                 "or priorities (cite job_evidence) and the applicant's experience (cite facts or "
                 "story passages), in the applicant's voice: name two or three specific "
-                "requirements and the matching work, employer and period. When a fact keyed "
+                "requirements and the matching work, employer and period, each requirement in the "
+                "same sentence as the work that meets it (at most one sentence may cite job evidence "
+                "alone), with no stock opening or courtesy close. When a fact keyed "
                 "career_motivation is supplied, restate it in your own words as part of the "
                 "reason and cite it. Do not invent or imply familiarity with the company, "
                 "enthusiasm or opinions the evidence does not carry. Return NEEDS_INPUT only when "
@@ -511,10 +584,11 @@ class NarrativeWriter:
             "claim, and never copy it verbatim (no run of more than 12 consecutive words from "
             "it). Vary sentence openers: never begin two consecutive sentences with the same "
             "phrase, and never begin two consecutive sentences with 'In that same role'. Job-only "
-            "statements may have empty fact_ids. Plain opening or closing phrases such "
-            "as 'Thank you for considering my application.' may have no citations if "
-            "they make no claim about qualifications, personal intent or motivation. "
-            "The job title and company identify the application target only. "
+            "statements may have empty fact_ids. A sentence that makes no claim at all may "
+            "have no citations, but add no stock courtesy lines. "
+            "The job title and company identify the application target only; name the "
+            "employer exactly as job_evidence names it (job metadata may carry a parent or a "
+            "listing source's name), and never name another company as the target. "
             "Job evidence never establishes candidate experience or credentials. "
             "If facts include experience_context, keep each fact attached to its own "
             "employer or role group. Never transfer a title, date, duty or metric from "
@@ -649,10 +723,12 @@ class NarrativeWriter:
                 if len(draft.text) > (max_length or 4000):
                     raise AIHold("Writer response exceeds field length")
                 if purpose == "cover_letter":
-                    if not 200 <= len(draft.text.split()) <= 300:
-                        raise AIHold("Cover letter must contain 200-300 words")
-                    if len({s.paragraph for s in draft.sentences}) not in (3, 4):
-                        raise AIHold("Cover letter must contain 3-4 paragraphs")
+                    # Hard bounds only: the rubric's 280-400 words and its paragraph shape are
+                    # checked by the resolver, which gets a corrective rewrite (round 6).
+                    if not 200 <= len(draft.text.split()) <= 450:
+                        raise AIHold("Cover letter must contain 200-450 words")
+                    if not 3 <= len({s.paragraph for s in draft.sentences}) <= 7:
+                        raise AIHold("Cover letter must contain 3-7 paragraphs")
                     if not any(s.fact_ids for s in draft.sentences) or not any(
                             s.job_evidence_ids for s in draft.sentences):
                         raise AIHold("Cover letter must cite verified resume facts and the job description")
@@ -689,14 +765,15 @@ class NarrativeWriter:
     def review(self, *, question: str, facts: list[dict[str, Any]], job: dict[str, str],
                job_evidence: list[dict[str, str]] | None = None,
                sentences: list[CitedSentence] | None = None,
-               purpose: Literal["evidence_consistency", "draft_grounding"] = "draft_grounding",
+               purpose: Literal["evidence_consistency", "draft_grounding", "letter_rubric"] = "draft_grounding",
                ) -> GroundingReview:
-        """Independently review ambiguous evidence; the caller controls when escalation is allowed."""
-        if purpose not in ("evidence_consistency", "draft_grounding"):
+        """Independently review ambiguous evidence; the caller controls when escalation is
+        allowed. ``letter_rubric`` grades a grounded cover letter against the owner's rubric."""
+        if purpose not in ("evidence_consistency", "draft_grounding", "letter_rubric"):
             raise AIHold("Unsupported review purpose")
         job_evidence = job_evidence or []
         sentences = sentences or []
-        if len(facts) > 128 or len(job_evidence) > 64 or len(sentences) > 20:
+        if len(facts) > 128 or len(job_evidence) > 64 or len(sentences) > 24:
             raise AIHold("Review evidence exceeds the bounded record count")
         if any(not isinstance(fact, dict) or not isinstance(fact.get("id"), str)
                or not fact["id"].strip() for fact in facts):
@@ -718,7 +795,7 @@ class NarrativeWriter:
             raise AIHold("Review sentence cited an unavailable candidate fact")
         if any(set(sentence.job_evidence_ids) - job_ids for sentence in sentences):
             raise AIHold("Review sentence cited unavailable job evidence")
-        if purpose == "draft_grounding" and not sentences:
+        if purpose in ("draft_grounding", "letter_rubric") and not sentences:
             raise AIHold("Draft grounding requires a cited draft to review")
         instructions = (
             "Review only whether these current canonical verified candidate facts contain TRUE "
@@ -738,7 +815,7 @@ class NarrativeWriter:
             "the exact conflicting claims and IDs when they cannot, or NEEDS_INPUT naming "
             "the precise scope or detail needed if a material contradiction cannot be resolved "
             "from context. Never choose which conflicting version is true. "
-            if purpose == "evidence_consistency" else
+            if purpose == "evidence_consistency" else LETTER_RUBRIC if purpose == "letter_rubric" else
             "Independently review EVERY claim in EVERY draft sentence, read against the "
             "original question. A personal claim must be fully supported by that sentence's fact_ids, "
             "using only those verified candidate records and their source evidence. A job or "
@@ -757,8 +834,14 @@ class NarrativeWriter:
             "timeframes, personal versus team scope and all quantities without exaggeration. "
             "Equivalent numeric formatting, first person and accurate paraphrase are allowed. "
             "Plain greetings and courtesies need no citation when they make no factual, "
-            "motivational or intent claim. Job title/company metadata identifies the target "
-            "only. Reject invented motivation, preferences, credentials, consent or eligibility. "
+            "motivational or intent claim; a closing offer to talk is such a courtesy. A cover "
+            "letter's one sentence on what the applicant would do first at the target employer is a "
+            "plan, not a claim of fact: it is supported when its action is work the cited facts or "
+            "passages show the applicant has done and its object is a priority the cited job "
+            "evidence names. A contact_links entry supports the URLs it states. "
+            "Job title/company metadata identifies the target "
+            "only. Reject a draft that names the target employer other than as job_evidence "
+            "names it. Reject invented motivation, preferences, credentials, consent or eligibility. "
             "Judge grounding and consistency only. Never judge whether the applicant fits the "
             "role, whether their experience is sufficient for it, or whether the draft covers "
             "every requirement of the posting or everything a broad question could include: "

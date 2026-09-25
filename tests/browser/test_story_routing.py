@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,7 +21,12 @@ from interviewmaxxing_browser.ai import (
     DynamicPacketResolver,
     build_ai_runtime,
 )
-from interviewmaxxing_browser.ai.humanize import MAX_REWRITES, check_rewrite, lint
+from interviewmaxxing_browser.ai.humanize import (
+    MAX_REWRITES,
+    REJECTION_FEEDBACK,
+    check_rewrite,
+    lint,
+)
 from interviewmaxxing_browser.ai.providers import CallBudget, NarrativeDraft, NarrativeWriter
 from interviewmaxxing_core import (
     AnswerSource,
@@ -433,7 +439,7 @@ def test_humanizer_rewrites_the_draft_keeps_citations_and_grounds_again(candidat
     assert transport.roles == ["write", "humanize", "review"]
     rewrite = transport.requests[1]
     assert rewrite["reasoning"] == {"max_tokens": 2560} and rewrite["response_format"]["json_schema"]["strict"]
-    assert rewrite["max_tokens"] == 2560 + 3000  # the humanize rewrite keeps a cover letter's room
+    assert rewrite["max_tokens"] == 2560 + 4000  # the humanize rewrite keeps a cover letter's room
     user = json.loads(rewrite["messages"][1]["content"])
     assert user["purpose"] == "answer" and user["voice_samples"] == ["I write short, plain sentences."]
     assert {f["pattern"] for f in user["findings"]} >= {"throat_clearing", "banned_word", "binary_contrast"}
@@ -445,7 +451,12 @@ def test_humanizer_rewrites_the_draft_keeps_citations_and_grounds_again(candidat
     assert {f["pattern"] for f in trace["lint_before"]} >= {"throat_clearing", "banned_word"}
     assert trace["attempts"][0]["status"] == "REWRITTEN" and trace["attempts"][0]["grounding"]
     assert trace["attempts"][0]["independent_review"] == "SUPPORTED"
-    assert "leverage" not in json.dumps(trace) and "bakery" not in json.dumps(trace)
+    # Pattern names, counts and citation ids only (round 6: the rewritten sentences' ids, so
+    # the final letter's citations need no positional alignment), never text.
+    assert "leverage" not in json.dumps(trace) and "regional bakery chain" not in json.dumps(trace)
+    cited = [{"fact_ids": ["fact.bakery"], "job_evidence_ids": [], "paragraph": 0}] * 3
+    assert trace["citations"] == cited and trace["attempts"][0]["citations"] == cited
+    assert trace["discarded"] == []
     assert [r.purpose for r in budget.receipts if r.model == MODEL] == ["narrative", "humanize", "opus_draft_grounding"]
     assert [r.requested_reasoning_effort for r in budget.receipts if r.model == MODEL] == ["high", "high", "low"]
     assert packet.answers[0].provenance.reference_ids == ["fact.bakery"]
@@ -467,18 +478,29 @@ def test_a_failed_rewrite_keeps_the_grounded_draft(candidate, mock_job, failure)
         jev = Jev(support=lambda index, text, requests: 0.02 if requests >= 2 else 1.0)
     transport = Transport(write=[ready(SLOPPY)], humanize=[None if failure == "transport" else ready(rewritten)],
                           review=[REVIEW_OK])
+    # Three rewrite attempts reserve more than the fixed USD 0.50 default.
     packet, resolver, _ctx = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]]),
-                                    real_writer(transport), jev, humanize=True)
+                                    real_writer(transport, budget=CallBudget(max_usd=2.0)), jev, humanize=True)
     assert packet.is_complete
     value = packet.answers[0].value
     assert isinstance(value, TextValue) and value.text == NarrativeDraft.model_validate(ready(SLOPPY)).text
     trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
-    assert trace["status"] == "KEPT_ORIGINAL" and len(trace["attempts"]) == 1
     expected = {"dropped_citation": "REJECTED_DROPPED_CITATION", "new_number": "REJECTED_NEW_NUMBER",
                 "unknown_citation": "REJECTED_UNKNOWN_CITATION", "grounding": "GROUNDING_REJECTED",
                 "transport": "HELD"}[failure]
-    assert trace["attempts"][0]["status"] == expected
-    assert transport.roles == ["write", "humanize"]
+    # Round 6: a rejected rewrite is tried again with its reason (never a transport failure),
+    # and every discarded attempt stays named in the trace and the answer's note.
+    tries = 1 if failure == "transport" else MAX_REWRITES
+    assert trace["status"] == "KEPT_ORIGINAL" and [a["status"] for a in trace["attempts"]] == [expected] * tries
+    assert trace["discarded"] == [expected] * tries
+    assert transport.roles == ["write"] + ["humanize"] * tries
+    assert "no-AI-slop rewrite discarded: " + expected in packet.answers[0].provenance.note
+    if failure in ("dropped_citation", "new_number", "unknown_citation"):
+        second = json.loads(transport.requests[2]["messages"][1]["content"])
+        assert second["rejected_rewrite"] == REJECTION_FEEDBACK[failure]
+    elif failure == "grounding":
+        second = json.loads(transport.requests[2]["messages"][1]["content"])
+        assert second["rejected_rewrite"].startswith("The grounding check rejected the previous rewrite")
 
 
 def test_a_residual_pattern_triggers_one_more_rewrite_at_most(candidate, mock_job):
@@ -491,9 +513,10 @@ def test_a_residual_pattern_triggers_one_more_rewrite_at_most(candidate, mock_jo
     packet, resolver, _ctx = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]]),
                                     real_writer(transport, budget=CallBudget(max_usd=1.0)), Jev(), humanize=True)
     assert packet.is_complete
-    assert transport.roles == ["write", "humanize", "review", "humanize", "review"] and MAX_REWRITES == 2
+    # Round 6: up to three rewrites; a residual finding after each accepted one gets another.
+    assert transport.roles == ["write"] + ["humanize", "review"] * 3 and MAX_REWRITES == 3
     trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
-    assert [a["status"] for a in trace["attempts"]] == ["REWRITTEN", "REWRITTEN"]
+    assert [a["status"] for a in trace["attempts"]] == ["REWRITTEN", "REWRITTEN", "REWRITTEN"]
     assert trace["attempts"][1]["findings"] == [{"pattern": "banned_word", "count": 1}]
     assert {f["pattern"] for f in trace["lint_after"]} == {"throat_clearing", "colon_reveal"}
     value = packet.answers[0].value
@@ -1087,13 +1110,16 @@ def test_a_rewrite_that_moves_a_citation_set_is_rejected_and_the_draft_kept(cand
     ]
     transport = Transport(write=[ready(two)], humanize=[ready(moved)], review=[REVIEW_OK])
     packet, resolver, _ctx = resolve(context(candidate, mock_job), Retriever(list(candidate.facts)),
-                                    real_writer(transport), Jev(), humanize=True)
+                                    real_writer(transport, budget=CallBudget(max_usd=2.0)), Jev(), humanize=True)
     assert packet.is_complete
     value = packet.answers[0].value
     assert isinstance(value, TextValue) and value.text == NarrativeDraft.model_validate(ready(two)).text
     trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
     assert trace["status"] == "KEPT_ORIGINAL" and trace["attempts"][0]["status"] == "REJECTED_MOVED_CITATION"
-    assert transport.roles == ["write", "humanize"]  # rejected before grounding: no review call
+    # Rejected before grounding (no review call), and tried again with the reason each time.
+    assert transport.roles == ["write"] + ["humanize"] * MAX_REWRITES
+    retry = json.loads(transport.requests[2]["messages"][1]["content"])
+    assert retry["rejected_rewrite"] == REJECTION_FEEDBACK["moved_citation"]
     original = NarrativeDraft.model_validate(ready(two))
     assert check_rewrite(original, NarrativeDraft.model_validate(ready(moved)), purpose="answer",
                          supplied_ids={"fact.bakery", "fact.reports"}, job_ids=set(), max_length=None) == "moved_citation"
@@ -1424,12 +1450,13 @@ def test_a_humanized_rewrite_that_pastes_the_statement_is_rejected(candidate, mo
     jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
     packet, resolver, _ctx = resolve(context(with_career_motivation(candidate), mock_job, question=INTEREST),
                                      Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]),
-                                     real_writer(transport), jev, humanize=True)
+                                     real_writer(transport, budget=CallBudget(max_usd=2.0)), jev, humanize=True)
     assert packet.is_complete
     assert packet.answers[0].value.text == NarrativeDraft.model_validate(ready(sloppy)).text
     trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
     assert trace["status"] == "KEPT_ORIGINAL" and trace["attempts"][0]["status"] == "REJECTED_QUOTED_STATEMENT"
-    assert trace["prompt_version"] == "no-ai-slop-v2" and transport.roles == ["write", "humanize"]
+    assert trace["prompt_version"] == "no-ai-slop-v3" and transport.roles == ["write"] + ["humanize"] * MAX_REWRITES
+    assert trace["discarded"] == ["REJECTED_QUOTED_STATEMENT"] * MAX_REWRITES
     rules = transport.requests[1]["messages"][0]["content"]
     assert "quoted_statement finding" in rules and "In that same role" in rules
     assert CAREER_MOTIVATION not in json.dumps(trace)
@@ -1440,15 +1467,23 @@ def test_a_humanized_rewrite_that_pastes_the_statement_is_rejected(candidate, mo
 POSTING = {"id": "job:" + "d" * 64, "source_url": "https://synthetic.test/jobs/2", "source_version": "e" * 64,
            "text": ("Own paid search strategy for enterprise brands and report results to the sales team. "
                     "Requirements: hands-on Google Ads management, conversion tracking, and TikTok Ads experience.")}
-LETTER_OPENING = {"text": "Your team needs someone to own paid search strategy and report results to sales.",
-                  "job_evidence_ids": [POSTING["id"]], "paragraph": 0}
-LETTER_CASE = {"text": "At a regional bakery chain I managed paid search and grew online orders by 35%.",
-               "fact_ids": ["fact.bakery"], "job_evidence_ids": [POSTING["id"]], "paragraph": 1}
-LETTER_CLOSE = {"text": "I wrote weekly reports for two store managers.", "fact_ids": ["fact.reports"], "paragraph": 2}
-HEDGED_LETTER = [LETTER_OPENING, LETTER_CASE,
+RUBRIC_LETTER: list[dict[str, Any]] = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "browser" / "rubric_letter.json").read_text(encoding="utf-8"))["sentences"]
+
+
+def rubric_letter(fact_id: str, job_id: str, *, story_id: str | None = None,
+                  contact: bool = True) -> list[dict[str, Any]]:
+    """The fictional letter in the owner's rubric shape (tests/fixtures/browser), with these ids."""
+    ids = {"$FACT": fact_id, "$JOB": job_id, "$STORY": story_id, "$CONTACT": "contact:links" if contact else None}
+    return [{**sentence, "fact_ids": [ids[i] for i in sentence["fact_ids"] if ids[i]],
+             "job_evidence_ids": [ids[i] for i in sentence["job_evidence_ids"] if ids[i]]}
+            for sentence in RUBRIC_LETTER]
+
+
+CASE_LETTER = rubric_letter("fact.bakery", POSTING["id"])
+HEDGED_LETTER = [*CASE_LETTER[:10],
                  {"text": "While I have not run TikTok Ads, I am a quick learner and would be a strong fit.",
-                  "job_evidence_ids": [POSTING["id"]], "paragraph": 2}, LETTER_CLOSE]
-CASE_LETTER = [LETTER_OPENING, LETTER_CASE, LETTER_CLOSE]
+                  "fact_ids": [], "job_evidence_ids": [POSTING["id"]], "paragraph": 3}, *CASE_LETTER[10:]]
 
 
 def test_a_letter_leaves_out_a_requirement_no_fact_supports_without_a_hedge(candidate, mock_job):

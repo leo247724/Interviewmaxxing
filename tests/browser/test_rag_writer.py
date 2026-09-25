@@ -258,7 +258,7 @@ def test_cover_letter_renders_three_paragraphs_and_fits_default_call_budget() ->
     assert not draft.text.startswith("Dear")
     assert budget.calls == 1 and budget.reserved_usd < budget.max_usd
     assert budget.receipts[0].status == "OK"
-    assert provider.requests[0]["max_tokens"] == 1024 + 3000  # low-effort reasoning + the letter
+    assert provider.requests[0]["max_tokens"] == 1024 + 4000  # low-effort reasoning + the letter
     assert provider.timeouts == [90.0]
     assert json.loads(provider.requests[0]["messages"][1]["content"])["purpose"] == "cover_letter"
 
@@ -288,9 +288,11 @@ def test_cover_letter_needs_resume_facts_even_with_job_and_style_evidence() -> N
 
 
 @pytest.mark.parametrize(("change", "message"), [
-    ("too_short", "200-300 words"),
-    ("too_long", "200-300 words"),
-    ("one_paragraph", "3-4 paragraphs"),
+    # Round 6: the writer holds only outside hard bounds; the rubric's 280-400 words and its
+    # paragraph shape are the resolver's corrective findings.
+    ("too_short", "200-450 words"),
+    ("too_long", "200-450 words"),
+    ("one_paragraph", "3-7 paragraphs"),
     ("no_job_citations", "cite verified resume facts and the job description"),
     ("no_fact_citations", "cite verified resume facts and the job description"),
 ])
@@ -300,7 +302,8 @@ def test_incomplete_letter_formats_hold(change: str, message: str) -> None:
         for sentence in draft["sentences"]:
             sentence["text"] = "Too short."
     elif change == "too_long":
-        draft["sentences"][0]["text"] += " Another word." * 70
+        for sentence in draft["sentences"][:2]:
+            sentence["text"] += " Another word." * 80
     elif change == "one_paragraph":
         for sentence in draft["sentences"]:
             sentence["paragraph"] = 0
@@ -758,9 +761,9 @@ def allowances(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int, float]]:
     seen: list[tuple[int, int, float]] = []
     allow_form = CallBudget.allow_form
 
-    def recording(budget: CallBudget, writer_fields: int) -> None:
+    def recording(budget: CallBudget, writer_fields: int, letters: int = 0) -> None:
         seen.append((writer_fields, budget.calls, budget.reserved_usd))
-        allow_form(budget, writer_fields)
+        allow_form(budget, writer_fields, letters)
 
     monkeypatch.setattr(CallBudget, "allow_form", recording)
     return seen
@@ -1166,7 +1169,7 @@ ALIGNED = ready(
      "fact_ids": ["fact:campaigns"], "job_evidence_ids": ["job:description"]})
 
 
-@pytest.mark.parametrize("purpose,answer_tokens", [("answer", 2000), ("cover_letter", 3000),
+@pytest.mark.parametrize("purpose,answer_tokens", [("answer", 2000), ("cover_letter", 4000),
                                                    ("motivation", 2000)])
 def test_narrative_calls_send_a_reasoning_budget_and_keep_the_answers_room(
         purpose: str, answer_tokens: int) -> None:

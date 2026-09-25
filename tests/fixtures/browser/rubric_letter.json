@@ -1,0 +1,118 @@
+{
+  "_comment": "A fictional cover letter in the owner's rubric shape (WP12 round 6): greeting, hook whose first sentence carries a digit, a one-campaign proof with its constraint and tradeoff, a paragraph on the employer with a first step, and a two-sentence close with the profile link. $FACT, $JOB, $CONTACT and $STORY are replaced by the test's ids; an absent id is dropped.",
+  "sentences": [
+    {
+      "text": "Dear Hiring Manager,",
+      "fact_ids": [],
+      "job_evidence_ids": [],
+      "paragraph": 0
+    },
+    {
+      "text": "In 2024 I grew online orders by 35% for a regional bakery chain after rebuilding how its paid search conversions were counted.",
+      "fact_ids": [
+        "$FACT",
+        "$STORY"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 1
+    },
+    {
+      "text": "Your paid search program ties spend decisions to reported results, and that rebuild at the bakery chain is the work I would bring to it first.",
+      "fact_ids": [
+        "$FACT"
+      ],
+      "job_evidence_ids": [
+        "$JOB"
+      ],
+      "paragraph": 1
+    },
+    {
+      "text": "When I took over the bakery chain's account in 2024, its dashboard counted every phone call as an order, so the budget kept flowing to searches that never produced a sale.",
+      "fact_ids": [
+        "$FACT",
+        "$STORY"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 2
+    },
+    {
+      "text": "I rebuilt the tracking so that only paid orders counted, which halved the reported conversions for two months and made the owner nervous about the spend for most of that spring.",
+      "fact_ids": [
+        "$FACT",
+        "$STORY"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 2
+    },
+    {
+      "text": "I held the budget flat through that dip and moved money toward the searches that still produced paid orders.",
+      "fact_ids": [
+        "$FACT",
+        "$STORY"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 2
+    },
+    {
+      "text": "By the end of 2024 online orders were up 35%, and the owner had stopped reading the dashboard in favour of my weekly report.",
+      "fact_ids": [
+        "$FACT",
+        "$STORY"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 2
+    },
+    {
+      "text": "Your posting asks for someone who owns paid search strategy and reports results to the sales team, which is the weekly rhythm I kept for the bakery chain's store managers in 2024.",
+      "fact_ids": [
+        "$FACT"
+      ],
+      "job_evidence_ids": [
+        "$JOB"
+      ],
+      "paragraph": 3
+    },
+    {
+      "text": "Those managers used my report to decide which of their locations received more budget the following week, and two of them started asking for it before Monday.",
+      "fact_ids": [
+        "$FACT"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 3
+    },
+    {
+      "text": "A sales team reads the same numbers with a different question, so I would keep the report short and tie every line to a closed sale.",
+      "fact_ids": [
+        "$FACT"
+      ],
+      "job_evidence_ids": [
+        "$JOB"
+      ],
+      "paragraph": 3
+    },
+    {
+      "text": "First I would audit which of your paid search conversions reach the sales team's records, the step that paid off at the bakery chain.",
+      "fact_ids": [
+        "$FACT"
+      ],
+      "job_evidence_ids": [
+        "$JOB"
+      ],
+      "paragraph": 3
+    },
+    {
+      "text": "My work and references are on my profile at https://www.linkedin.example/in/avery-example.",
+      "fact_ids": [
+        "$CONTACT"
+      ],
+      "job_evidence_ids": [],
+      "paragraph": 4
+    },
+    {
+      "text": "I can walk you through the bakery chain's order data on a call this week.",
+      "fact_ids": [],
+      "job_evidence_ids": [],
+      "paragraph": 4
+    }
+  ]
+}

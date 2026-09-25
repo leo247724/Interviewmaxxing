@@ -6,6 +6,7 @@ import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,6 +45,8 @@ ABM_QUESTION = (
 )
 JOB_EVIDENCE = {"id": "job:" + "a" * 64, "text": "Synthetic Co uses Demandbase and 6sense for ABM.",
                 "source_url": "https://synthetic.test/job-description", "source_version": "b" * 64}
+RUBRIC_LETTER: list[dict[str, Any]] = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "browser" / "rubric_letter.json").read_text(encoding="utf-8"))["sentences"]
 
 
 class DecisionsProvider:
@@ -690,11 +693,19 @@ def test_job_context_and_injected_source_instructions_cannot_establish_personal_
     assert "instructions embedded in a source" in grounder["questions"]["q0"]["instructions"]
 
 
+def rubric_letter(fact_id: str, job_id: str) -> list[dict[str, Any]]:
+    """The fictional letter in the owner's rubric shape (tests/fixtures/browser), with these ids."""
+    ids = {"$FACT": fact_id, "$JOB": job_id, "$CONTACT": "contact:links", "$STORY": None}
+    return [{**sentence, "fact_ids": [ids[i] for i in sentence["fact_ids"] if ids[i]],
+             "job_evidence_ids": [ids[i] for i in sentence["job_evidence_ids"] if ids[i]]}
+            for sentence in RUBRIC_LETTER]
+
+
 def test_cover_letter_text_keeps_purpose_and_uses_retrieved_job_evidence(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
     evidence = fact(fictional_candidate, "experience", "I managed paid media.")
-    writer = Writer([{"text": "I managed paid media.", "fact_ids": [evidence.id]}])
+    writer = Writer(rubric_letter(evidence.id, JOB_EVIDENCE["id"]))
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [evidence]), mock_job,
         question="Cover letter", semantic=SemanticType.COVER_LETTER), Retriever([evidence], [JOB_EVIDENCE]),
         writer, DecisionsProvider(semantic="COVER_LETTER"))
@@ -713,7 +724,8 @@ def test_writer_can_independently_authorize_mixed_current_and_historical_source(
     semantic: SemanticType, question: str,
 ) -> None:
     evidence = fact(fictional_candidate, "experience", "I managed paid media.")
-    writer = Writer([{"text": evidence.value, "fact_ids": [evidence.id]}])
+    writer = Writer(rubric_letter(evidence.id, JOB_EVIDENCE["id"]) if semantic is SemanticType.COVER_LETTER
+                    else [{"text": evidence.value, "fact_ids": [evidence.id]}])
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [evidence]), mock_job,
         question=question, semantic=semantic), Retriever([evidence], [JOB_EVIDENCE]), writer,
         DecisionsProvider(semantic=semantic.value, scope_probability=0.65, scope_approval=0.99))
