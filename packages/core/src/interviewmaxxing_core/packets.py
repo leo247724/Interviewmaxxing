@@ -20,6 +20,8 @@ answer claims about itself:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Sequence
 from enum import StrEnum
@@ -204,6 +206,19 @@ class AnswerSource(StrEnum):
     """Answered by the user for this application (missing-input resume)."""
     GENERATED_FROM_FACTS = "GENERATED_FROM_FACTS"
     """Text drafted from verified candidate facts; ``reference_ids`` lists them."""
+    GENERATED_FROM_QUESTION = "GENERATED_FROM_QUESTION"
+    """Text computed from the data the question itself shows (a case-study question: its
+    wording and the section context recorded with it); ``reference_ids`` is exactly
+    ``[question_content_ref(field)]``. It cites no candidate fact and makes no personal claim."""
+
+
+def question_content_ref(field: ApplicationField) -> str:
+    """The id of a question's own recorded content, ``form:<sha256>`` of its full wording
+    and section context: an answer computed from that content references it, and any change
+    to the recording makes it a different reference."""
+    payload = json.dumps({"question": field.question_text, "section_context": list(field.section_context)},
+                         sort_keys=True, ensure_ascii=False)
+    return "form:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 EXPLICIT_SOURCES: frozenset[AnswerSource] = frozenset(
@@ -639,6 +654,10 @@ def provenance_problems(
                         f"{fid!r} ({answer.semantic_type}) cites saved answer {ref!r} "
                         f"about {saved.semantic_type}"
                     )
+        elif src is AnswerSource.GENERATED_FROM_QUESTION:
+            field = form.find(fid)
+            if field is None or refs != [question_content_ref(field)]:
+                problems.append(f"{fid!r} must reference the question's own recorded content")
         elif src is AnswerSource.RESUME:
             if refs != [candidate.resume.id]:
                 problems.append(f"{fid!r} must reference the supplied resume {candidate.resume.id!r}")

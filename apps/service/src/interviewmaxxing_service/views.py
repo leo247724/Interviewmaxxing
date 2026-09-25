@@ -606,6 +606,7 @@ _SOURCES: dict[AnswerSource, ReviewSource] = {
     AnswerSource.CANDIDATE_FACT: "fact",
     AnswerSource.USER_INPUT: "user",
     AnswerSource.GENERATED_FROM_FACTS: "generated",
+    AnswerSource.GENERATED_FROM_QUESTION: "generated",
     AnswerSource.RESUME: "resume",
 }
 

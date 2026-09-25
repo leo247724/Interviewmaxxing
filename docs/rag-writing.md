@@ -62,7 +62,9 @@ and cannot be sent directly to the browser as application packets.
 
 To add personal history later, supply an array of user-confirmed facts with `id`,
 `key`, `value` and optional `evidence`, then run `import-facts --file ...` followed
-by `index-profile`. Importing means the user confirmed the file; it does not infer
+by `index-profile`. The import lists and does not import a fact whose own evidence dates or
+places it elsewhere, and skips rows the story index marked `superseded`;
+`remove-facts --ids a,b` removes facts from the profile by id (then `index-profile`). Importing means the user confirmed the file; it does not infer
 verification from arbitrary scraped or model-generated text. Replace a fact by
 its stable ID when correcting it. For tone, `index-voice --file sample.txt` indexes
 a professional writing sample as style-only evidence. The initial writer uses
@@ -190,7 +192,7 @@ everything, as before.
 After a draft passes grounding (and the independent review when a score was
 uncertain), `ai/humanize.py` rewrites it under the rules of
 [petergyang/no-ai-slop](https://github.com/petergyang/no-ai-slop) (`SKILL.md` and
-`eval.md`, prompt `no-ai-slop-v1`): lead with the point; cut throat-clearing openers,
+`eval.md`, prompt `no-ai-slop-v1`, `v2` since round 5): lead with the point; cut throat-clearing openers,
 faux-insight setups, binary contrasts ("It's not X. It's Y."), negative listing, colon
 reveals, dramatic fragments, rhetorical setups, superficial trailing `-ing` analysis,
 importance puffery, weasel attribution, interpretive metadiscourse, fake-profound kickers
@@ -218,7 +220,7 @@ indexing script links each story to a resume role (`candidate.experience`): firs
 distinctive company token the story mentions (`match_role_by_name`, generic words such as
 "agency" or "law" never match, and two matching roles are no match), otherwise by one Jev
 decision over the resume roles with their titles, dates and verified bullets
-(`link_story_to_role`, prompt `story-role-link-v1`, purpose `story_role_link`), accepted
+(`link_story_to_role`, prompt `story-role-link-v1`, `v2` since round 5, purpose `story_role_link`), accepted
 only at confidence 0.90 and probability 0.95. A linked story carries the resume role's
 dates (`2024-03 to 2025-05`, `2025-06 to present`) in its chunk header (`resume role:`,
 `period:`), its summary chunk and every fact's value, and records
@@ -412,7 +414,7 @@ through the import above, with its basis in the evidence ("Glaze Agency: title, 
 months"; "Crumb & Co.: a bullet stating 36 months"). The numeric screener therefore
 answers "How many years of X" from a per-area fact only once the person confirmed it.
 
-**The applicant's own reason (M7).** A motivation narrative needs, besides the
+**The applicant's own reason (M7; superseded in round 5, addendum 2).** A motivation narrative needs, besides the
 alignment, the applicant's own reason: a retrieved story passage about this kind of work
 or the `career_motivation` statement. With neither, the field holds before any writer
 call ("Motivation answer needs the applicant's own reason: a story about this kind of
@@ -449,6 +451,170 @@ field, capped at 200 calls / USD 4.00 in total (`FORM_*` in `providers.py`). The
 per-field allowance was 12 calls / USD 0.30 and the caps 120 calls / USD 2.00 until a
 live "why you're a good fit" narrative exhausted 12 calls before its draft (it then
 finished its form at 29 calls and USD 0.34); four such fields fit under the caps.
+
+## Round 5: story linking and dating, restated motivation, dropped story evidence
+
+**An employer-name link needs the company's distinctive name.** A story used to link to
+the resume role whose company shared any one distinctive-looking word with it: on the
+live index a story headed "Growth Marketing Specialist, <another company>" linked (by
+`employer_name`, confidence 1.0) to a resume role at "<Shop> Growth <Solutions>" through
+"Growth", and its facts and chunk headers carried that role's 2023-10 to 2024-02 instead of
+2019-2020 (the tests use the exact pair, with fictional story text). Now
+`match_role_by_name` links only when the story names the company distinctively
+(`names_company`): every distinctive word of the company's name (`company_tokens`) appears
+in the story's heading, text, employer phrase or product name, or its full name appears as
+consecutive words (trailing legal suffixes such as Inc or LLC may be left out,
+`company_words`). Common business words (Growth, Solutions, Marketing, Consulting, Law,
+Media, Digital, Group, Inc, Partners, Strategy, Creative, Tech and the like) are never
+distinctive, so one of them never links, and a name made only of them needs the full
+name. Two matching roles are still no match. The Jev link decision (prompt
+`story-role-link-v2`) is also told that a shared common word does not make an employer
+the same.
+
+**Headings state periods.** The years and periods a story states are read from its heading
+as well as its body (`stated_years`, `stated_periods`), and a range is read as a period
+with its start and end months: "Aug 2019 - May 2020" is `2019-08 to 2020-05`, "Jun 2025 -
+Present" is `2025-06 to present` (open-ended), "Mar 2024 - May 2025" is `2024-03 to
+2025-05`; "08/2019 - 05/2020", "2019-08 to 2020-05" and "2019 to 2023" (a years-only range
+keeps the earlier `2019–2023` form) are read too. A heading without a range that names one
+year, or adjacent years, states that year or span ("Growth Marketer, Acme (2019)"); a year
+in the body, or years stated apart, is never a period by itself, and a range whose end
+comes before its start is ignored. An unlinked story carries its heading's period, else
+the one range its body states (`dating_period`; several different ranges in the body date
+parts of the story, so then the year rules of rounds 2 and 4 apply). The review shows the
+period and where it was stated ("period the story states: 2019-08 to 2020-05 (in its
+heading)"), and "years the story states" now includes the heading's.
+
+**A stated period that contradicts a link rejects it.** When a story's heading states a
+period (`story_period`: a range, one year or adjacent years) that shares no month with the
+proposed resume role's dates, the story is not that role's account: `build_story_index`
+does not link it, it carries its stated period in its chunk headers and facts
+(`period_source: story`), and the review names the mismatch ("not linked: <title> at
+<company>, <role dates> (proposed by <method>) does not overlap <stated period>" and a
+**check** note); the receipt counts `link_period_mismatches` and marks the story row
+`link_rejected` (method, resume role id and reason, no names or dates). An open period
+("Present") runs to today, like a current role. Before the Jev link decision, the roles
+the story's stated period does not overlap are left out (`excluded_by_period` in its
+trace), and with none left no decision is asked (`NO_OVERLAPPING_ROLE`); a name link that
+the period contradicts is traced `PERIOD_MISMATCH` and then rejected by the index. Only
+the heading's period can reject a link: a range in the body may date a part of the work (a
+pilot, the years before), and a year the body states outside the role's dates keeps the
+round-2 rule (the resume dates win, `stated_year_outside_resume_role` is flagged and the
+sentence stating it yields no fact).
+
+**Markdown splits at H1 and H2.** A Markdown or text document with one H1 and H2
+sections used to be read as one story whenever its H1 read "Stories NN - ..." (numbered
+mode ignored the unnumbered H2s) or an H2 was long or ended with a colon. Now every H1 and
+H2 (`#`, `##`, or a setext `===`/`---` underline) starts a story, numbered or not and
+whatever its wording, like a heading of any level in a .docx; an H3 or deeper stays inside a
+numbered story as before. A heading directly followed by another heading with no text
+between (a document title over H2 stories) is a section title, not a story; any other
+heading without text is still an error, and a heading longer than 400 characters is one
+too. `#hashtag` lines are text (a heading needs a space after its hashes), surrounding
+emphasis marks are dropped from heading words, and a title's `|` becomes `/` (the chunk
+header's field separator), so the story, its chunks and its facts keep one title and story
+id. Setext underlines and thematic breaks (`***`, `---` after a blank line) are separators,
+not text.
+
+**Motivation is restated, never pasted.** The person's `career_motivation` statement had
+been pasted verbatim into every "why us" narrative. The writer prompt now says: a fact keyed
+`career_motivation` is the applicant's own statement of what they look for; restate it in
+different words each time, with the same meaning and no new claim, never copy more than 12
+consecutive words of it; vary sentence openers and never begin two consecutive sentences
+with the same phrase or with "In that same role". The humanizer holds the lexical check
+(`ai/humanize.py`, `MAX_QUOTED_WORDS = 12`, `quoted_run`/`quotes_statement`, case and
+punctuation ignored): the resolver applies it to the writer's draft before grounding, and a
+draft quoting more than 12 consecutive words of the statement gets the one corrective
+rewrite with that instruction (draft trace `STATEMENT_QUOTED`), then holds if it quotes
+again. Every deterministic finding of a draft (an uncited motivation reason, a quoted
+statement, a totality word) now goes into that one rewrite together (`rejected_for`). In
+the no-slop pass (prompt `no-ai-slop-v2`) a quoted statement is a lint finding
+(`quoted_statement`) and a rewrite that quotes one is rejected
+(`REJECTED_QUOTED_STATEMENT`, the grounded draft is kept); two consecutive sentences with
+the same three-word opener are a `repeated_opener` finding. Traces carry pattern names
+and counts, never the statement.
+
+**Dropped story evidence stays dropped (review pass 5, M1 and M2).** A story passage and
+the facts extracted from it are one piece of evidence judged twice (the chunk against its
+related facts, the fact against its competitors). When the story consistency check drops a
+chunk, the story facts sourced from it (`story:<chunk id>`) or stating one of its sentences
+leave the field's evidence too; when the fact consistency check drops a story fact, the
+chunks that carry its sentence (its source chunk, a summary chunk repeating it) leave too.
+The propagated ids are traced under `story_evidence_dropped` with `propagated_from`, and the
+field continues with what remains. A strong evidence review cached for the candidate
+revision used to answer every later field before any comparison, so a story fact dropped
+for the first field reached the second field's writer; a field that selected a story fact
+now runs its comparisons (on the cached Jev verdicts, without a new request), drops the
+story fact again, and takes the cached review instead of a second one
+(`consistency_cache` with `dropped_story_fact_ids`). This concerns story facts with
+`story:` provenance that are verified; a fact the person confirmed through the import has
+`user:` provenance and is canonical evidence, and unconfirmed story facts are never
+evidence. The story verdict cache (L4) stores a verdict, its score and its asks flag,
+only when two slots fit (`max_cache_entries` 0 and 1 cache nothing instead of failing) and
+counts it as cached only when both halves are present.
+
+**Addendum 2: fit is given, the writer builds the case.** The owner vets every saved job
+before it enters the pipeline, so every one fits by definition. For cover letters, motivation
+answers and narrative answers the writer prompt now says so (`FIT_GIVEN_RULE`): map the
+posting's requirements to the applicant's experience, concretely and affirmatively; never
+hedge ("while I have not…", "although my background is in…"), never add a disclaimer about a
+requirement the experience does not cover, never comment on fit; a requirement no fact or
+passage supports is simply not mentioned, and every claim still needs its citation. The
+resolver enforces it in code: a draft with a hedge, a disclaimer or a fit comment
+(`fit_hedges` in `ai/humanize.py`: concessions about the applicant, volunteered gaps,
+"a quick learner", "I would be a strong fit") gets the one corrective rewrite (draft trace
+`FIT_HEDGED`), and the no-slop pass lints the same patterns (`fit_hedge`). Round 4's M7 is
+superseded: a motivation answer's reason is the alignment between the posting and the
+applicant's experience, in the applicant's voice, restating `career_motivation` when it is
+set; no story passage or statement is required any more, and the field holds only when no
+fact relates to the posting at all. The cover-letter prompt no longer asks for missing
+experience; it returns `NEEDS_INPUT` only without a real job description or any related
+fact. The independent draft review judges grounding and consistency only: never fit,
+sufficiency of experience or coverage of the posting (a requirement the draft leaves out
+is not an issue; it no longer returns `INCOMPLETE`), and the Jev completeness check and the
+required details say the same for cover letters and motivation questions.
+
+**Addendum item 7: case-study questions.** "Calculate CPA and ROAS for each channel. Based on
+this information, respond to the above question" asks for a computation over data the form
+shows with the question, not for the applicant's history, and used to hold as "No verified
+fact or saved answer answers this question". A WRITER-routed text question whose wording
+asks to calculate, analyse or respond to given data (`case_analysis_question` in
+`ai/case_analysis.py`) is now admitted whatever its candidate source scope and answered under
+the writer purpose `case_analysis` (`CASE_ANALYSIS_SYSTEM`): from the question's recorded
+wording and `section_context` only (`data_evidence`, cited by `form:<sha256>`), computing every
+requested metric with its working shown ("Search CPA = $5,000 / 100 conversions = $50") and
+answering the follow-up from those results, citing no candidate fact and making no personal
+claim. The working is checked in code (`check_working`: each `… = c` computed correctly from
+numbers the data states or earlier results, no other number the data does not state; one
+corrective rewrite, then a hold), Jev grounds each sentence in the data and checks
+completeness (an uncertain score goes to the independent review), and the answer's
+provenance is the new `GENERATED_FROM_QUESTION` source (CONTRACTS.md), which packet
+validation re-derives from the inspected field. When the recording carries no data (fewer
+than four numbers) the field holds before any writer call with "The table referenced is not
+in the recorded question". Today the inspector records headings as `section_context`, not the
+table, text or image alt that precedes a question in its block: that part of item 7 belongs to
+WP1's `inspect.js` (requested through the lead); until it lands, case questions hold with that
+reason instead of the misleading "no verified fact".
+
+**Addendum item 8: confirmed facts that contradict their own evidence.** Three confirmed facts
+placed work from a story dated Aug 2019 - May 2020 at a resume role dated 2023-10 to 2024-02:
+they came from a confirm file written before the linking fix and imported afterwards.
+`import-facts` now lists and does not import a fact whose own evidence contradicts it
+(`fact_self_contradictions`: the period its evidence states, such as a story heading's range,
+shares no month with the period its value states, or its evidence links or names a resume
+employer other than the one its value names; reason codes only, no values); the index script
+marks the confirmed facts of a story whose resume link changed, or whose story left the
+document, as `superseded` rows in the next `.confirm.json` (`superseded_story_facts`; the review
+lists them with the removal command, the receipt their ids), which the import skips; and the
+independent review's hold message ends with the profile fact ids it referenced
+("… (facts: sf_…, sf_…)") so the person can remove them with `remove-facts`.
+
+**Re-indexing.** The candidate's current documents are unchanged by these rules when
+their stories state no heading period and their name links use a distinctive name; a
+re-run shows any change in the receipt's `link_period_mismatches`, `linked_stories` and
+the chunk ids.
+Chunk ids change for a story whose heading states a period and whose link is rejected (its
+header carries its own period), and for a title containing `|`.
 
 ## Verification
 

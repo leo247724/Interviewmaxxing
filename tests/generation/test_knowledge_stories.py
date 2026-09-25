@@ -541,3 +541,353 @@ def test_confirmable_facts_take_the_import_shape_for_unverified_facts_only(stori
     review = st.facts_review(index, candidate_id="default")
     markdown = st.facts_review_markdown(review, [])
     assert "import-facts" in markdown and "| UNVERIFIED |" in markdown
+
+
+# --- round 5: distinctive employer names, stated periods, period mismatches, Markdown sections ----
+
+# The pair the live story index linked by a shared "Growth" (2026-09-25); the story text is fictional.
+PAIR_TITLE = "Growth Marketing Specialist, RecruitHubSports"
+PAIR_COMPANY = "Shop Growth Solutions"
+RECRUITING = ("I ran paid social and email campaigns for a youth sports recruiting network. "
+              "I grew free athlete sign-ups by 40% in one season and wrote the weekly report for the founders.")
+
+
+def _story(tmp_path: Path, heading: str, body: str = RECRUITING, name: str = "story.md") -> tuple[st.Story, st.StoryAnalysis]:
+    path = tmp_path / name
+    path.write_text(f"## {heading}\n\n{body}\n", encoding="utf-8")
+    document = st.read_stories(path)
+    return document.stories[0], document.analyses[0]
+
+
+def _shop(start: str = "2023-10", end: str | None = "2024-02", current: bool = False) -> st.ResumeRole:
+    return st.ResumeRole("exp_shop", PAIR_COMPANY, "Marketing Manager", start, end, current,
+                         ("Managed paid search for an online store.",))
+
+
+def test_a_shared_common_word_never_links_a_story_to_a_resume_role(tmp_path: Path) -> None:
+    story, analysis = _story(tmp_path, PAIR_TITLE)
+    # "Shop", "Growth" and "Solutions" are all common words: only the full name names the company.
+    assert st.company_tokens(PAIR_COMPANY) == set() and st.company_words(PAIR_COMPANY) == ["shop", "growth", "solutions"]
+    assert st.match_role_by_name(story, analysis, [_shop()]) is None
+    named, named_analysis = _story(tmp_path, "Paid search for an online store",
+                                   "I ran paid search at Shop Growth Solutions for an online store and cut the cost per order by 12%.",
+                                   name="named.md")
+    link = st.match_role_by_name(named, named_analysis, [_shop()])
+    assert link is not None and (link.resume_role_id, link.method) == ("exp_shop", "employer_name")
+    # A single common word never names a company, whatever the company.
+    for word in ("Growth", "Solutions", "Marketing", "Consulting", "Law", "Media", "Digital", "Group", "Inc"):
+        role = st.ResumeRole("exp_x", f"{word} Partners LLC", "Manager", "2020-01", "2021-01", False, ())
+        assert not st.names_company([f"I led {word} work for a regional agency."], role.company), word
+    # A name with distinctive words needs all of them, or its full name ("Co." may be left out).
+    assert st.company_tokens("Crumb & Co. Bakeries") == {"crumb", "bakeries"}
+    assert not st.names_company(["I ran the Crumb account for a bakery."], "Crumb & Co. Bakeries")
+    assert st.names_company(["I ran paid search for Crumb Bakeries in Ohio."], "Crumb & Co. Bakeries")
+    assert st.names_company(["I joined Acme Growth in 2021."], "Acme Growth, Inc.")
+    assert st.names_company(["Acme"], "Acme Growth, Inc.")  # the one distinctive word
+    assert not st.names_company(["We practiced growth solutions at the shop."], PAIR_COMPANY)  # not consecutive
+
+
+@pytest.mark.parametrize(("heading", "years", "label"), [
+    (f"{PAIR_TITLE} (Aug 2019 - May 2020)", ["2019", "2020"], "2019-08 to 2020-05"),
+    ("Paid Media Lead, Lumen Legal | Jun 2025 - Present", ["2025"], "2025-06 to present"),
+    ("SEO Manager, Glaze Agency, Mar 2024 - May 2025", ["2024", "2025"], "2024-03 to 2025-05"),
+    ("Analyst, Orbit Foods (08/2019 \u2013 05/2020)", ["2019", "2020"], "2019-08 to 2020-05"),
+    ("Coordinator, Orbit Foods, 2017 to 2019", ["2017", "2019"], "2017\u20132019"),
+])
+def test_a_heading_states_the_story_period(tmp_path: Path, heading: str, years: list[str], label: str) -> None:
+    story, analysis = _story(tmp_path, heading)
+    assert st.stated_years(story) == years  # the body states no year; the heading does
+    period = st.story_period(story)
+    assert period is not None and (period.label, period.source) == (label, "heading")
+    assert analysis.period == label
+    assert st.resolve_period(story, None) == (label, "story", False)
+    index = st.build_story_index(st.read_stories(tmp_path / "story.md"), verified_at=NOW)
+    assert all(f" | period: {label} | " in chunk.text.split("\n")[0] for chunk in index.chunks)
+    assert index.facts and all(str(fact.value).endswith(f", {label})") and "period_source: story" in fact.evidence
+                               for fact in index.facts)
+    review = st.facts_review(index, candidate_id="default")
+    assert review["stories"][0]["stated_period"] == {"label": label, "start": period.start, "end": period.end, "in": "heading"}
+    markdown = st.facts_review_markdown(review)
+    assert f"years the story states: {', '.join(years)}" in markdown
+    assert f"- period the story states: {label} (in its heading)" in markdown
+    assert st.story_index_receipt(index)["stories"][0]["stated_period_in"] == "heading"
+
+
+def test_month_ranges_are_periods_and_the_heading_comes_first() -> None:
+    def story(title: str, body: str) -> st.Story:
+        return st.Story(1, title, tuple(st.split_sentences(body)))
+
+    body = "From Aug 2019 to May 2020 I ran paid social for a sports network. In 2020 I grew sign-ups by 40%."
+    [period] = st.stated_periods(story("Paid social", body))
+    assert (period.start, period.end, period.source, period.label) == ("2019-08", "2020-05", "body", "2019-08 to 2020-05")
+    # A body range dates an unlinked story; only a heading states the story's own period.
+    assert st.story_period(story("Paid social", body)) is None and st.dating_period(story("Paid social", body)) == period
+    both = st.stated_periods(story("Lead, Orbit Foods (Jan 2018 - Dec 2018)", body))
+    assert [p.source for p in both] == ["heading", "body"] and st.story_period(story("Lead, Orbit Foods (Jan 2018 - Dec 2018)", body)).label == "2018-01 to 2018-12"  # type: ignore[union-attr]
+    # Two different ranges in the body date parts of the story, not the whole story.
+    two = story("Paid social", "From Jan 2020 to Mar 2020 I ran a pilot. From Jun 2021 to Dec 2021 I ran the program.")
+    assert len(st.stated_periods(two)) == 2 and st.story_period(two) is None and st.dating_period(two) is None
+    assert st.stated_periods(story("x", "In 2019-08 to 2020-05 I ran it; Sept. 2021 \u2014 present I advise.")) == [
+        st.StatedPeriod("2019-08", "2020-05", "body"), st.StatedPeriod("2021-09", None, "body")]
+    # Not periods: an end before its start, a year list, a single year, a year inside a word or a longer number.
+    for text in ("May 2020 - Aug 2019 I ran it.", "In 2019 and 2023 I ran it.", "In 2021 I ran it.",
+                 "A 2019-era budget, ticket 12019-2020."):
+        assert st.stated_periods(story("x", text)) == [], text
+    open_role = st.StoryRoleLink("s", "exp", "Orbit Foods", "Lead", "2025-07", None, True, "jev_match")
+    assert st.period_overlaps_role(st.StatedPeriod("2025-06", None, "heading"), open_role, date(2026, 9, 25)) is True
+    assert st.period_overlaps_role(st.StatedPeriod("2019-08", "2020-05", "heading"), open_role, date(2026, 9, 25)) is False
+    assert st.period_overlaps_role(st.StatedPeriod("2019", "2019", "heading"),
+                                   replace(open_role, start="2019-12", end="2020-06", current=False), date(2026, 9, 25)) is True
+    assert st.period_overlaps_role(st.StatedPeriod("2019-08", "2020-05", "heading"),
+                                   replace(open_role, start=None), date(2026, 9, 25)) is None
+
+
+def test_a_link_the_stated_period_contradicts_is_not_used_and_is_reported(tmp_path: Path) -> None:
+    story, _analysis = _story(tmp_path, f"{PAIR_TITLE} (Aug 2019 - May 2020)")
+    document = st.read_stories(tmp_path / "story.md")
+    link = st.StoryRoleLink(story.story_id, "exp_shop", PAIR_COMPANY, "Marketing Manager", "2023-10", "2024-02",
+                            False, "employer_name")
+    index = st.build_story_index(document, verified_at=NOW, links={story.story_id: link})
+    assert index.link_for(story.story_id) is None
+    mismatch = index.mismatch_for(story.story_id)
+    assert mismatch is not None and mismatch["stated_period"] == "2019-08 to 2020-05" and mismatch["role_period"] == "2023-10 to 2024-02"
+    assert (mismatch["reason"], mismatch["stated_in"], mismatch["method"]) == ("stated_period_outside_resume_role", "heading", "employer_name")
+    # The story's own period, never the role's: in every chunk header and fact.
+    for chunk in index.chunks:
+        header = chunk.text.split("\n")[0]
+        assert " | period: 2019-08 to 2020-05 | " in header and "2023-10" not in chunk.text and "resume role:" not in header
+        assert chunk.resume_role_id is None and chunk.period == "2019-08 to 2020-05"
+    assert index.facts and all("2023-10" not in str(f.value) and "resume_role_id: exp_shop" not in f.evidence
+                               and "period_source: story" in f.evidence for f in index.facts)
+    receipt = st.story_index_receipt(index)
+    row = receipt["stories"][0]
+    assert row["link"] is None and row["link_rejected"] == {"method": "employer_name", "resume_role_id": "exp_shop",
+                                                           "reason": "stated_period_outside_resume_role"}
+    assert receipt["link_period_mismatches"] == 1 and receipt["linked_stories"] == 0
+    assert PAIR_COMPANY not in json.dumps(receipt) and "2019-08" not in json.dumps(receipt)
+    review = st.facts_review(index, candidate_id="default")
+    assert review["stories"][0]["link_rejected"]["company"] == PAIR_COMPANY and review["stories"][0]["resume_role"] is None
+    assert "does not overlap the resume role" in review["stories"][0]["note"]
+    markdown = st.facts_review_markdown(review)
+    assert ("- not linked: Marketing Manager at Shop Growth Solutions, 2023-10 to 2024-02 (proposed by employer_name) "
+            "does not overlap 2019-08 to 2020-05") in markdown and "**check:**" in markdown
+    # An overlapping role keeps the link and the resume dates, as before.
+    overlapping = replace(link, start="2019-06", end="2020-12", method="jev_match")
+    kept = st.build_story_index(document, verified_at=NOW, links={story.story_id: overlapping})
+    assert kept.link_for(story.story_id) == overlapping and kept.mismatch_for(story.story_id) is None
+    assert all(" | period: 2019-06 to 2020-12 | " in c.text.split("\n")[0] for c in kept.chunks)
+    # An open period against a current role overlaps; against an ended one it does not.
+    present, _ = _story(tmp_path, "Paid Media Lead, Lumen Legal | Jun 2025 - Present", name="present.md")
+    current = st.StoryRoleLink(present.story_id, "exp_now", "Lumen Legal", "Paid Media Lead", "2025-07", None, True, "jev_match")
+    present_doc = st.read_stories(tmp_path / "present.md")
+    assert st.build_story_index(present_doc, verified_at=NOW, links={present.story_id: current}).link_for(present.story_id) == current
+    ended = replace(current, start="2023-10", end="2024-02", current=False)
+    assert st.build_story_index(present_doc, verified_at=NOW, links={present.story_id: ended}).mismatch_for(present.story_id)
+
+
+def test_a_single_stated_year_outside_the_role_is_still_only_a_flag(stories_docx: Path) -> None:
+    """A year the story mentions once ("in 2024") is not a period: the resume dates win and
+    the sentence yields no fact (round 2); only a stated range can reject a link."""
+    document = st.read_stories(stories_docx)
+    bakery = document.stories[0]
+    assert st.story_period(bakery) is None and st.stated_years(bakery) == ["2024"]
+    link = st.StoryRoleLink(bakery.story_id, "exp_old", "Glaze Agency", "PPC Specialist", "2021-01", "2022-12",
+                            False, "jev_match", 0.91, 0.96)
+    index = st.build_story_index(document, verified_at=NOW, links={bakery.story_id: link})
+    assert index.link_for(bakery.story_id) == link and index.mismatch_for(bakery.story_id) is None
+    assert st.story_index_receipt(index)["stated_year_discrepancies"] == 1
+
+
+MD_ROLES = ("I managed paid search for a regional credit union and cut the cost per lead by 18%. "
+            "I rebuilt the conversion tracking in Google Ads.")
+
+
+@pytest.mark.parametrize("layout", ["numbered_h1", "title_h1", "intro_h1", "long_h2", "colon_h2", "setext"])
+def test_markdown_splits_at_h1_and_h2(tmp_path: Path, layout: str) -> None:
+    first = f"{PAIR_TITLE} (Aug 2019 - May 2020)"
+    second = "SEO Manager, Glaze Agency (Mar 2024 - May 2025)"
+    if layout == "long_h2":
+        first += " | Remote | growth marketing for a youth sports recruiting network with paid social, email and events"
+        assert len(first) > 120
+    if layout == "colon_h2":
+        second = "SEO Manager at Glaze Agency, Mar 2024 - May 2025:"
+    top = {"numbered_h1": "# Stories 05 - Work history", "title_h1": "# Work history", "intro_h1": "# Work history",
+           "long_h2": "# Work history", "colon_h2": "# Work history", "setext": "Work history\n============"}[layout]
+    intro = "\n\nMy roles in order, oldest first.\n" if layout == "intro_h1" else "\n"
+    if layout == "setext":
+        text = f"{top}\n\n{first}\n---\n\n{RECRUITING}\n\n{second}\n---\n\n{MD_ROLES}\n"
+    else:
+        text = f"{top}\n{intro}\n## {first}\n\n{RECRUITING}\n\n## {second}\n\n{MD_ROLES}\n"
+    path = tmp_path / "work.md"
+    path.write_text(text, encoding="utf-8")
+    stories = st.read_stories(path).stories
+    titles = [s.title for s in stories]
+    expected = [first.replace("|", "/"), second]  # a title's bars become slashes, like its chunk header
+    if layout == "intro_h1":
+        assert titles == ["Work history", *expected] and stories[0].sentences == ("My roles in order, oldest first.",)
+    else:
+        assert titles == expected  # the document title over the H2 sections is not a story
+    assert [s.number for s in stories] == list(range(1, len(stories) + 1))
+    recruiting = next(s for s in stories if s.title == expected[0])
+    assert recruiting.body == RECRUITING and st.story_period(recruiting).label == "2019-08 to 2020-05"  # type: ignore[union-attr]
+
+
+def test_markdown_boundaries_keep_numbers_hashtags_and_subsections(tmp_path: Path) -> None:
+    path = tmp_path / "numbered.md"
+    path.write_text("## Stories 04 - SEO at Linkforge\n\n" + SEO_STORY + "\n\n### Results\n\nI kept every client.\n\n"
+                    "#seo #growth\n\n## Stories 07 - Paid search at Glaze\n\n" + MD_ROLES + "\n", encoding="utf-8")
+    first, second = st.read_stories(path).stories
+    assert (first.number, first.title, second.number, second.title) == (4, "SEO at Linkforge", 7, "Paid search at Glaze")
+    # An H3 in a numbered document stays in its story; a "#hashtag" line is text, not a heading.
+    assert "Results" in first.sentences and "#seo #growth" in first.sentences and first.sentences[-1] == "#seo #growth"
+    trailing = tmp_path / "trailing.md"
+    trailing.write_text("## First role\n\n" + MD_ROLES + "\n\n## A heading with nothing under it\n", encoding="utf-8")
+    with pytest.raises(st.StoryParseError, match="no story text"):
+        st.read_stories(trailing)
+    huge = tmp_path / "huge.md"
+    huge.write_text("## " + "word " * 100 + "\n\n" + MD_ROLES + "\n", encoding="utf-8")
+    with pytest.raises(st.StoryParseError, match="length bound"):
+        st.read_stories(huge)
+    emphasis = tmp_path / "emphasis.md"
+    emphasis.write_text("# **Work history** #\n\n## _Paid search at Glaze_\n\n" + MD_ROLES + "\n", encoding="utf-8")
+    [story] = st.read_stories(emphasis).stories
+    assert story.title == "Paid search at Glaze"
+
+
+def test_a_docx_title_over_heading_stories_is_a_section_title(tmp_path: Path) -> None:
+    path = docx(tmp_path / "titled.docx", [
+        [("Work history", False)], [("Paid search for a bakery", False)], [(BAKERY, False)],
+        [("Ovenboard", False)], [(OVENBOARD, False)],
+    ], heading_styles={0: "Title", 1: "Heading1", 3: "Heading1"})
+    stories = st.parse_stories(st.read_docx(path))
+    assert [(s.number, s.title) for s in stories] == [(1, "Paid search for a bakery"), (2, "Ovenboard")]
+    # A bold run heading with no text under it is still an error, as before.
+    bare = docx(tmp_path / "bare.docx", [[("Stories 01 - Empty", True)], [("Stories 02 - Full", True), (BAKERY, False)]])
+    with pytest.raises(st.StoryParseError, match="no story text"):
+        st.parse_stories(st.read_docx(bare))
+
+
+def test_a_heading_with_bars_keeps_one_title_and_story_id_across_chunks_and_facts(tmp_path: Path) -> None:
+    story, _analysis = _story(tmp_path, "Paid Media Lead | Lumen Legal | Jun 2025 - Present")
+    assert story.title == "Paid Media Lead / Lumen Legal / Jun 2025 - Present"
+    assert st.story_period(story).label == "2025-06 to present"  # type: ignore[union-attr]
+    index = st.build_story_index(st.read_stories(tmp_path / "story.md"), verified_at=NOW)
+    for chunk in index.chunks:
+        header = st.parse_chunk_header(chunk.text)
+        assert header is not None and header["title"] == story.title and header["story_id"] == story.story_id
+    assert all(fact.evidence[0] == f"Story 01: {story.title}" for fact in index.facts)
+
+
+def test_a_range_in_the_body_dates_an_unlinked_story_but_never_rejects_a_link(tmp_path: Path) -> None:
+    """A range in the body may date only part of the work (a pilot before the role):
+    the heading states the story's own period, and only it can reject a link."""
+    body = ("From Jan 2020 to Mar 2020 I ran a paid social pilot for a sports recruiting network. "
+            "I then managed the network's paid social budget and grew sign-ups by 40%.")
+    story, _analysis = _story(tmp_path, "Paid social for a recruiting network", body)
+    document = st.read_stories(tmp_path / "story.md")
+    unlinked = st.build_story_index(document, verified_at=NOW)
+    assert all(" | period: 2020-01 to 2020-03 | " in c.text.split("\n")[0] for c in unlinked.chunks)
+    link = st.StoryRoleLink(story.story_id, "exp_net", "Northfield Athletics", "Paid Social Manager", "2021-01",
+                            "2022-05", False, "jev_match", 0.95, 0.97)
+    linked = st.build_story_index(document, verified_at=NOW, links={story.story_id: link})
+    assert linked.link_for(story.story_id) == link and linked.mismatch_for(story.story_id) is None
+    assert all(" | period: 2021-01 to 2022-05 | " in c.text.split("\n")[0] for c in linked.chunks)
+    # The year outside the role is the round-2 flag: its sentence yields no fact.
+    assert st.story_index_receipt(linked)["stated_year_discrepancies"] == 1
+    assert [entry["reason"] for entry in linked.skipped] == ["stated_year_conflicts_with_resume_role"]
+
+
+@pytest.mark.parametrize(("heading", "label"), [
+    (f"{PAIR_TITLE} (2019)", "2019"),
+    (f"{PAIR_TITLE}, 2019 - 2020", "2019\u20132020"),
+    (f"{PAIR_TITLE}, 2019 and 2020", "2019\u20132020"),
+    (f"{PAIR_TITLE}, 2017 and 2020", None),  # years apart date nothing (round 4, L8)
+    (PAIR_TITLE, None),
+])
+def test_a_heading_year_is_the_story_period_and_can_reject_a_link(tmp_path: Path, heading: str, label: str | None) -> None:
+    story, _analysis = _story(tmp_path, heading)
+    period = st.story_period(story)
+    assert (period.label if period else None) == label
+    link = st.StoryRoleLink(story.story_id, "exp_shop", PAIR_COMPANY, "Marketing Manager", "2023-10", "2024-02",
+                            False, "jev_match", 0.95, 0.97)
+    index = st.build_story_index(st.read_stories(tmp_path / "story.md"), verified_at=NOW, links={story.story_id: link})
+    if label is None:
+        assert index.link_for(story.story_id) == link  # nothing stated: the resume dates stand
+    else:
+        assert index.link_for(story.story_id) is None and index.mismatch_for(story.story_id)["stated_period"] == label  # type: ignore[index]
+        assert all(f" | period: {label} | " in c.text.split("\n")[0] for c in index.chunks)
+    # A year in the body is never a period by itself.
+    body_only, _ = _story(tmp_path, PAIR_TITLE, RECRUITING + " In 2019 I also ran the email list.", name="body.md")
+    assert st.story_period(body_only) is None and st.stated_years(body_only) == ["2019"]
+
+
+# --- round 5, addendum item 8: confirmed facts that contradict their own evidence -------------------
+
+
+def _confirmed(fact: object) -> object:
+    from interviewmaxxing_core import FactVerification, VerificationMethod, VerificationStatus
+
+    return fact.model_copy(update={"source": "user:confirmed fact import", "verification": FactVerification(  # type: ignore[attr-defined]
+        status=VerificationStatus.VERIFIED, method=VerificationMethod.USER_STATED, verified_at=NOW)})
+
+
+def test_a_fact_whose_evidence_dates_or_places_it_elsewhere_contradicts_itself(tmp_path: Path) -> None:
+    from interviewmaxxing_core import CandidateFact, FactVerification, VerificationStatus
+
+    roles = [st.ResumeRole("exp_harbor", "Harbor Growth Solutions", "Marketing Manager", "2023-10", "2024-02", False, ()),
+             st.ResumeRole("exp_links", "Linkforge", "SEO Project Manager", "2025-07", "2026-05", False, ())]
+
+    def fact(value: str, evidence: list[str]) -> CandidateFact:
+        return CandidateFact(id="sf_0123456789abcdef_000000000001", key="achievement", value=value, source="story:" + "1" * 64,
+                             verification=FactVerification(status=VerificationStatus.UNVERIFIED), evidence=evidence)
+
+    # The live shape: a confirm file written while the story was linked by a shared word.
+    stale = fact("I grew free athlete sign-ups by 40% in one season (youth sports recruiting network; resume: "
+                 "Harbor Growth Solutions, 2023-10 to 2024-02)",
+                 ["Story 05: Growth Marketing Specialist, Tidewater Recruiting (Aug 2019 - May 2020)",
+                  "period_source: resume_role", "story_source: candidate-stories-profile", "resume_role_id: exp_harbor"])
+    assert st.fact_self_contradictions(stale, roles, today=date(2026, 9, 25)) == ["evidence_period_contradicts_fact_period"]
+    # The same fact dated by its own story: nothing to object to.
+    fixed = fact("I grew free athlete sign-ups by 40% in one season (youth sports recruiting network, 2019-08 to 2020-05)",
+                 ["Story 05: Growth Marketing Specialist, Tidewater Recruiting (Aug 2019 - May 2020)",
+                  "period_source: story", "story_source: candidate-stories-profile"])
+    assert st.fact_self_contradictions(fixed, roles, today=date(2026, 9, 25)) == []
+    # Evidence that names another employer: the linked role, or a resume company the heading names.
+    linked_elsewhere = fact("I ran link-building audits (resume: Harbor Growth Solutions, 2023-10 to 2024-02)",
+                            ["Story 02: Audits", "period_source: resume_role", "resume_role_id: exp_links"])
+    assert st.fact_self_contradictions(linked_elsewhere, roles) == ["evidence_employer_contradicts_fact_employer"]
+    heading_elsewhere = fact("I ran link-building audits (resume: Harbor Growth Solutions, 2023-10 to 2024-02)",
+                             ["Story 02: SEO audits at Linkforge", "period_source: resume_role"])
+    assert st.fact_self_contradictions(heading_elsewhere, roles) == ["evidence_employer_contradicts_fact_employer"]
+    # A resume fact or a user statement without dates or links has nothing to contradict.
+    plain = fact("Managed a $40,000 monthly paid search budget.", ["Resume bullet"])
+    assert st.fact_self_contradictions(plain, roles) == []
+
+
+def test_confirmed_facts_of_a_story_whose_link_changed_are_superseded(tmp_path: Path) -> None:
+    from interviewmaxxing_core import CandidateProfile
+
+    story, _analysis = _story(tmp_path, f"{PAIR_TITLE} (Aug 2019 - May 2020)")
+    document = st.read_stories(tmp_path / "story.md")
+    wrong = st.StoryRoleLink(story.story_id, "exp_shop", PAIR_COMPANY, "Marketing Manager", "2023-10", "2024-02",
+                             False, "employer_name")
+    before = st.build_story_index(document, verified_at=NOW, links={story.story_id: wrong}, source_id="profile-src")
+    # Facts confirmed while the story still carried the wrong link record it in their evidence.
+    confirmed = [_confirmed(f.model_copy(update={"evidence": [*f.evidence, "resume_role_id: exp_shop"]}))
+                 for f in before.facts]
+    unconfirmed = before.facts[0].model_copy(update={"id": before.facts[0].id[:-1] + "f"})
+    gone = _confirmed(before.facts[0].model_copy(update={"id": "sf_ffffffffffffffff_000000000001"}))
+    other_source = _confirmed(before.facts[0].model_copy(update={
+        "id": before.facts[0].id[:-1] + "e", "evidence": [line.replace("profile-src", "docx") for line in before.facts[0].evidence]}))
+    fixture = Path(__file__).parents[1] / "fixtures" / "core" / "candidate_profile.json"
+    profile = CandidateProfile.model_validate(json.loads(fixture.read_text()))
+    profile = profile.model_copy(update={"facts": [*profile.facts, *confirmed, unconfirmed, gone, other_source]})
+    now_index = st.build_story_index(document, verified_at=NOW, links={story.story_id: wrong}, source_id="profile-src")
+    assert now_index.link_for(story.story_id) is None  # the heading period rejects the wrong link now
+    rows = st.superseded_story_facts(profile, now_index)
+    assert rows == [*({"id": f.id, "superseded": True, "reason": "story_link_changed"} for f in confirmed),
+                    {"id": gone.id, "superseded": True, "reason": "story_no_longer_in_document"}]
+    review = st.facts_review(now_index, candidate_id="default")
+    review["superseded"] = rows
+    markdown = st.facts_review_markdown(review)
+    assert "## Superseded confirmed facts" in markdown and "remove-facts --ids " + confirmed[0].id in markdown  # type: ignore[attr-defined]

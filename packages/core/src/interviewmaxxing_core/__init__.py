@@ -165,6 +165,7 @@ from .packets import (
     UserInput,
     answer_problems,
     provenance_problems,
+    question_content_ref,
 )
 from .preferences import (
     DESIRED_SALARY_QUESTION,
@@ -348,6 +349,7 @@ __all__ = [
     "normalize_work_arrangement",
     "pay_period_of",
     "provenance_problems",
+    "question_content_ref",
     "render_question",
     "sha256_file",
     "snapshot_hash",

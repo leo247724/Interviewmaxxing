@@ -623,7 +623,7 @@ def test_a_story_links_to_a_resume_role_only_through_the_gates() -> None:
     assert trace["choice"] == "r1" and trace["role_ids"] == ["exp_old", "exp_bakery"]
     assert "Crumb" not in json.dumps(trace) and "regional bakery chain" not in json.dumps(trace)
     [request] = jev.requests
-    assert request["state"]["prompt_version"] == "story-role-link-v1"
+    assert request["state"]["prompt_version"] == "story-role-link-v2"
     assert set(request["questions"]["role"]["criteria"]) == {"r0", "r1", "NONE"}
     assert request["state"]["resume_roles"]["r1"]["company"] == "Crumb & Co. Bakeries"
     assert request["state"]["story"]["years_stated"] == ["2024"]
@@ -922,7 +922,8 @@ def test_motivation_narratives_state_alignment_and_cite_the_career_motivation_fa
     draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
     assert draft["attempts"] == []  # the double makes no provider call
     [details] = _required_details(ctx.form.fields[0], "motivation")
-    assert "alignment" in details and "cited story passage or the career_motivation statement" in details
+    assert "alignment" in details and "career_motivation statement restated when supplied" in details
+    assert "A personal reason beyond that" in details  # round 5 addendum 2: M7's demand is superseded
     # Without a statement the applicant's own account of the work gives the reason (round 4).
     writer = Writer([
         {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
@@ -1013,37 +1014,29 @@ def test_enumeration_questions_write_from_the_facts_at_hand_without_totality_wor
 # --- round 4: the applicant's own reason, tiered comparisons, reviewed rewrites, one allowance --
 
 
-def test_motivation_needs_a_cited_story_passage_or_the_career_motivation_statement(candidate, mock_job):
-    from interviewmaxxing_browser.ai.routing import MOTIVATION_MISSING_DETAIL
-
+def test_a_motivation_question_with_facts_but_no_statement_is_written_not_held(candidate, mock_job):
+    """Round 5, addendum 2 supersedes round 4's M7: the reason is the alignment between the
+    posting and the applicant's experience; neither a story passage nor a career_motivation
+    statement is required, and the field holds only when no fact relates to the posting."""
     jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
     aligned = [
         {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
         {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
          "fact_ids": ["fact.bakery"], "job_evidence_ids": [JOB_EVIDENCE["id"]]},
     ]
-    # No story passage and no statement: held before any writer call, naming what is missing.
     writer = Writer(aligned)
     packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
                                     Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
-    assert held(packet, ctx) and not writer.calls
-    [missing] = packet.missing_inputs
-    assert "career_motivation statement" in missing.prompt and "story about this kind of work" in MOTIVATION_MISSING_DETAIL
-    # A passage retrieved but not cited as the reason: one corrective rewrite, then the hold.
-    chunk = story_chunk()
+    assert packet.is_complete and ctx.problems(packet) == [] and len(writer.calls) == 1
+    assert writer.calls[0]["purpose"] == "motivation"
+    assert all(item["key"] not in ("career_motivation", "story") for item in writer.calls[0]["facts"])
+    assert next(t["status"] for t in resolver.narrative_traces if t["stage"] == "draft") == "READY"
+    assert packet.answers[0].provenance.reference_ids == ["fact.bakery"]
+    # Held only when nothing relates to the posting: retrieval found no fact at all.
     writer = Writer(aligned)
     packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
-                                    Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE]), writer, jev)
-    assert held(packet, ctx) and len(writer.calls) == 2
-    [issue] = writer.calls[1]["review_feedback"]
-    assert "story: passage" in issue and "career_motivation statement" in issue
-    assert next(t["status"] for t in resolver.narrative_traces if t["stage"] == "draft") == "MOTIVATION_UNCITED"
-    # The passage cited as the reason: complete on the first draft.
-    writer = Writer([*aligned, {"text": "I set up conversion tracking so the owner could see which campaigns paid off.",
-                                "fact_ids": [chunk["id"]]}])
-    packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
-                                    Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE]), writer, jev)
-    assert packet.is_complete and len(writer.calls) == 1
+                                    Retriever([], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
 
 
 def test_a_global_counterclaim_beyond_the_bound_is_still_compared(fictional_candidate, mock_job):
@@ -1142,3 +1135,489 @@ def test_the_form_allowance_is_granted_once_per_step_per_run(candidate, mock_job
     assert budget.max_calls > limits[0] and budget.max_usd > limits[1]
 
 
+# --- round 5: distinctive names and stated periods; review pass 5 M1, M2 and L4; restated motivation --
+
+RECRUITING = ("I ran paid social and email campaigns for a youth sports recruiting network. "
+              "I grew free athlete sign-ups by 40% in one season.")
+
+
+def _pair_story(title: str = "Growth Marketing Specialist, RecruitHubSports (Aug 2019 - May 2020)",
+                body: str = RECRUITING) -> tuple[Any, Any]:
+    from interviewmaxxing_generation.knowledge import stories as st
+
+    story = st.Story(1, title, tuple(st.split_sentences(body)))
+    return story, st.analyse_story(story)
+
+
+def test_link_stories_never_links_by_a_common_word_and_asks_only_about_overlapping_roles() -> None:
+    from datetime import UTC, date, datetime
+
+    from interviewmaxxing_browser.ai.stories import link_stories
+    from interviewmaxxing_generation.knowledge import stories as st
+
+    today, now = date(2026, 9, 25), datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+    shop = st.ResumeRole("exp_shop", "Shop Growth Solutions", "Marketing Manager", "2023-10", "2024-02", False,
+                         ("Managed paid search for an online store.",))
+    story, analysis = _pair_story()
+    jev = Jev(link=("r0", 1.0, 1.0))
+    decisions = _decide(jev)
+    links, traces = link_stories([story], [analysis], [shop], decide=decisions.decide, model=decisions.model, today=today)
+    # "Growth" is not the company's name, and no role overlaps Aug 2019 - May 2020: nothing is asked.
+    assert links == {} and not jev.requests
+    [trace] = traces
+    assert trace["status"] == "NO_OVERLAPPING_ROLE" and trace["excluded_by_period"] == ["exp_shop"] and trace["role_ids"] == []
+    index = st.build_story_index(st.StoryDocument("0" * 64, 1, (story,), (analysis,)), verified_at=now, links=links)
+    assert all(" | period: 2019-08 to 2020-05 | " in c.text.split("\n")[0] and "2023-10" not in c.text for c in index.chunks)
+    assert index.facts and all("2023-10" not in str(f.value) for f in index.facts)
+    # With a role that does overlap, Jev is asked about that role only and told the stated period.
+    early = st.ResumeRole("exp_early", "Northfield Athletics", "Growth Marketer", "2019-06", "2020-12", False,
+                          ("Ran paid social for a sports recruiting network.",))
+    jev = Jev(link=("r0", 0.97, 0.98))
+    decisions = _decide(jev)
+    links, [trace] = link_stories([story], [analysis], [shop, early], decide=decisions.decide,
+                                  model=decisions.model, today=today)
+    [request] = jev.requests
+    assert list(request["state"]["resume_roles"]) == ["r0"]
+    assert request["state"]["resume_roles"]["r0"]["company"] == "Northfield Athletics"
+    assert request["state"]["story"]["period_stated"] == "2019-08 to 2020-05"
+    assert request["state"]["story"]["years_stated"] == ["2019", "2020"]  # read from the heading
+    assert links[story.story_id].resume_role_id == "exp_early" and trace["excluded_by_period"] == ["exp_shop"]
+    # A name link the stated period contradicts is proposed, traced as a mismatch and dropped by the index.
+    named, named_analysis = _pair_story("Paid search at Shop Growth Solutions (Aug 2019 - May 2020)",
+                                        "I ran paid search at Shop Growth Solutions for an online store.")
+    links, [trace] = link_stories([named], [named_analysis], [shop], today=today)
+    assert links[named.story_id].method == "employer_name" and trace["status"] == "PERIOD_MISMATCH"
+    index = st.build_story_index(st.StoryDocument("0" * 64, 1, (named,), (named_analysis,)), verified_at=now, links=links)
+    assert index.link_for(named.story_id) is None and index.mismatch_for(named.story_id)["method"] == "employer_name"  # type: ignore[index]
+
+
+def _extracted(profile: CandidateProfile, chunk: dict[str, Any], sentence: str, fid: str,
+               *, key: str = "achievement") -> CandidateFact:
+    """A story fact as the index extracts it: the sentence, its context and the chunk it came from."""
+    return fact(profile, sentence + " (regional bakery chain; resume: Crumb & Co., 2023-04 to 2024-03)", fid=fid,
+                key=key, source=chunk["id"])
+
+
+def test_a_dropped_story_chunk_takes_the_facts_extracted_from_it(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    chunk = story_chunk(TENURE_TEXT, period="2023-04 to 2024-03", resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    extracted = _extracted(profile, chunk, TENURE_TEXT[:-1], "sf_tenure_sentence")
+    profile = profile.model_copy(update={"facts": [*profile.facts, extracted]})
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
+    jev = Jev(story=0.1)  # the chunk contradicts the resume's tenure; the fact's own check passes
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0], extracted], [chunk]),
+                                    writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert [item["id"] for item in writer.calls[0]["facts"]] == ["fact.bakery"]  # neither the chunk nor its fact
+    drops = [t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped"]
+    assert [(t["story_ids"], t["fact_ids"], t["status"]) for t in drops] == [
+        ([chunk["id"]], [], "CONTINUED"), ([], ["sf_tenure_sentence"], "CONTINUED")]
+    assert drops[1]["propagated_from"] == {"story_ids": [chunk["id"]], "fact_ids": []}
+    assert "same story sentence" in drops[1]["reason"]
+    check = next(t for t in resolver.narrative_traces if t["stage"] == "consistency")
+    assert check["dropped_story_fact_ids"] == []  # the fact passed its own comparison: M1's failure case
+    [grounding] = jev.grounding_requests()
+    assert "sf_tenure_sentence" not in json.dumps(grounding["state"]) and chunk["id"] not in json.dumps(grounding["state"])
+
+
+def test_a_dropped_story_fact_takes_the_chunks_that_carry_its_sentence(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    chunk = story_chunk(TENURE_TEXT, period="2023-04 to 2024-03", resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    # A summary chunk of the same story repeats the sentence; the fact names the section chunk as its source.
+    summary = story_chunk("Summary of story 01. Outcomes: " + TENURE_TEXT, period="2023-04 to 2024-03",
+                          resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    other = story_chunk("I wrote a weekly report that listed orders by campaign and by store for the owner.",
+                        period="2023-04 to 2024-03", resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    extracted = _extracted(profile, chunk, TENURE_TEXT[:-1], "sf_tenure_sentence")
+    profile = profile.model_copy(update={"facts": [*profile.facts, extracted]})
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]},
+                     {"text": "I reported orders by campaign every week.", "fact_ids": [other["id"]]}])
+    jev = Jev(consistency={"sf_tenure_sentence": 0.2})  # the fact contradicts the resume; the chunks pass
+    packet, resolver, ctx = resolve(context(profile, mock_job),
+                                    Retriever([profile.facts[0], extracted], [chunk, summary, other]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert [item["id"] for item in writer.calls[0]["facts"]] == ["fact.bakery", other["id"]]
+    drops = [t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped"]
+    assert [(t["story_ids"], t["fact_ids"]) for t in drops] == [
+        ([], ["sf_tenure_sentence"]), ([chunk["id"], summary["id"]], [])]
+    assert drops[1]["propagated_from"] == {"story_ids": [], "fact_ids": ["sf_tenure_sentence"]}
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")["status"] == "CONSISTENT"
+    assert chunk["id"] not in packet.answers[0].provenance.note and other["id"] in packet.answers[0].provenance.note
+
+
+def test_shares_story_evidence_needs_the_source_or_the_sentence(candidate) -> None:
+    from interviewmaxxing_browser.ai.stories import shares_story_evidence
+
+    chunk = story_chunk(TENURE_TEXT)
+    assert shares_story_evidence(_extracted(candidate, chunk, "Anything at all", "sf_a"), chunk)
+    elsewhere = {"id": "story:" + "2" * 64, "text": chunk["text"]}
+    assert shares_story_evidence(_extracted(candidate, elsewhere, TENURE_TEXT[:-1], "sf_b"), chunk)
+    assert not shares_story_evidence(_extracted(candidate, elsewhere, "I grew orders by 35%", "sf_c"), chunk)
+    resume = fact(candidate, TENURE_TEXT, fid="fact.resume")  # a resume fact never shares story evidence
+    assert not shares_story_evidence(resume, chunk)
+
+
+def _two_field_context(candidate: CandidateProfile, job: JobRecord) -> PacketContext:
+    base = context(candidate, job)
+    second = base.form.fields[0].model_copy(update={"id": "second", "label": "Tell us about a result you are proud of.",
+                                                     "selector": "#second"})
+    return replace(base, form=base.form.model_copy(update={"fields": [base.form.fields[0], second]}))
+
+
+def test_a_cached_strong_review_still_drops_a_story_fact_for_the_next_field(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    story_fact = fact(profile, "Over almost 2 years I grew online orders by 35% for the bakery chain (resume: Crumb & Co., 2023-04 to 2024-03)",
+                      fid="sf_story_tenure", key="achievement", source="story:" + "1" * 64)
+    profile = profile.model_copy(update={"facts": [*profile.facts, story_fact]})
+    # The story fact is contradicted; the resume fact's verdict is uncertain, so the first
+    # field's evidence goes to the strong review, which is cached for the candidate revision.
+    jev = Jev(consistency={"sf_story_tenure": 0.2, "fact.bakery": 0.9})
+    writer = ReviewingWriter([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
+    budget = CallBudget(max_calls=80, max_usd=1.0)
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"), transport=jev, max_attempts=1), budget)
+    router = AIFormRouter(decisions)
+    ctx = _two_field_context(profile, mock_job)
+    ctx = replace(ctx, form=router.annotate(ctx.form, document_id="synthetic-stories"))
+    resolver = DynamicPacketResolver(decisions, writer, router=router,
+                                     retriever=Retriever([profile.facts[0], story_fact]), humanize=False)
+    packet = asyncio.run(resolver.resolve(ctx))
+    assert packet.is_complete and len(packet.answers) == 2 and ctx.problems(packet) == []
+    # Neither field's writer sees the contradicted story fact: the second field used to take
+    # the cached review's early return and keep it.
+    assert len(writer.calls) == 2 and all([item["id"] for item in call["facts"]] == ["fact.bakery"] for call in writer.calls)
+    assert len([r for r in writer.reviews if r["purpose"] == "evidence_consistency"]) == 1  # reviewed once
+    drops = [t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped"]
+    assert [t["fact_ids"] for t in drops] == [["sf_story_tenure"], ["sf_story_tenure"]]
+    [cached] = [t for t in resolver.narrative_traces if t["stage"] == "consistency_cache"]
+    assert cached["status"] == "SUPPORTED" and cached["dropped_story_fact_ids"] == ["sf_story_tenure"]
+    assert len([r for r in jev.requests if "canonical_alternatives" in r["state"]]) == 1  # verdicts reused
+    # Fields that select no story fact still take the cached review directly, before any comparison.
+    resolver.retriever = Retriever([profile.facts[0]])
+    resolver.narrative_traces.clear()
+    assert asyncio.run(resolver.resolve(ctx)).is_complete
+    cached = [t for t in resolver.narrative_traces if t["stage"] == "consistency_cache"]
+    assert len(cached) == 2 and all("dropped_story_fact_ids" not in t for t in cached)
+    assert not any(t["stage"] in ("consistency", "story_evidence_dropped") for t in resolver.narrative_traces)
+    assert len([r for r in writer.reviews if r["purpose"] == "evidence_consistency"]) == 1
+
+
+@pytest.mark.parametrize(("entries", "stored", "requests"), [(0, 0, 2), (1, 0, 2), (2, 2, 1), (3, 2, 1)])
+def test_the_story_verdict_cache_holds_whole_pairs_or_nothing(candidate, mock_job, entries, stored, requests):
+    import threading
+
+    from interviewmaxxing_browser.ai.stories import story_consistency
+
+    chunk = story_chunk()
+    money = fact(candidate, "Managed a $40,000 paid search budget for a florist in 2022.", fid="fact.florist")
+    ctx = context(candidate.model_copy(update={"facts": [*candidate.facts, money]}), mock_job)
+    jev = Jev()
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"), transport=jev, max_attempts=1),
+                                 max_cache_entries=0)  # every request reaches the scripted Jev
+    cache: dict[str, float] = {}
+    lock = threading.RLock()
+    for _ in range(2):
+        confidence, kept = story_consistency(context=ctx, chunks=[chunk], decide=decisions.decide, trace=lambda t: t,
+                                             model=decisions.model, min_probability=0.95, cache=cache, lock=lock,
+                                             max_cache_entries=entries, max_facts=40, question=QUESTION)
+        assert confidence == 1.0 and kept == [chunk]
+    assert len(cache) == stored and len(jev.story_requests()) == requests
+    # Half a pair (its asks flag evicted) is not a cached verdict: the chunk is asked again.
+    if stored:
+        cache.pop(next(key for key in cache if key.endswith(":asks")))
+        story_consistency(context=ctx, chunks=[chunk], decide=decisions.decide, trace=lambda t: t,
+                          model=decisions.model, min_probability=0.95, cache=cache, lock=lock,
+                          max_cache_entries=entries, max_facts=40, question=QUESTION)
+        assert len(jev.story_requests()) == requests + 1 and len(cache) <= max(entries, 2)
+
+
+# Item 5: the person's statement is restated, never pasted; sentence openers vary.
+
+QUOTING = [
+    {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+    {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
+     "fact_ids": ["fact.bakery"], "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+    {"text": CAREER_MOTIVATION, "fact_ids": ["career_motivation"]},
+]
+RESTATED = [*QUOTING[:2], {"text": "What I want next is a role that ties paid media spend to results I can measure, "
+                                   "with room to build the tracking behind them.", "fact_ids": ["career_motivation"]}]
+
+
+def test_a_draft_quoting_the_career_motivation_statement_is_rewritten(candidate, mock_job):
+    from interviewmaxxing_browser.ai.humanize import QUOTED_STATEMENT_FEEDBACK
+
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    profile = with_career_motivation(candidate)
+    writer = DraftQueue(QUOTING, RESTATED)
+    packet, resolver, ctx = resolve(context(profile, mock_job, question=INTEREST),
+                                    Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert packet.answers[0].value.text == NarrativeDraft.model_validate(ready(RESTATED)).text
+    first, second = writer.calls
+    assert not first["review_feedback"] and second["review_feedback"] == [QUOTED_STATEMENT_FEEDBACK]
+    drafts = [t for t in resolver.narrative_traces if t["stage"] == "draft"]
+    assert drafts[0]["status"] == "STATEMENT_QUOTED" and drafts[0]["rejected_for"] == ["STATEMENT_QUOTED"]
+    assert drafts[1]["status"] == "READY" and "rejected_for" not in drafts[1]
+    assert len(jev.grounding_requests()) == 1  # the quoting draft never reached grounding
+    # Pasted twice: the field holds after the one corrective rewrite.
+    packet, resolver, ctx = resolve(context(profile, mock_job, question=INTEREST),
+                                    Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), DraftQueue(QUOTING), jev)
+    assert held(packet, ctx)
+    # Twelve consecutive words are allowed; thirteen are not.
+    twelve = [*QUOTING[:2], {"text": "I look for roles where paid media budgets are tied to measured results I can check.",
+                             "fact_ids": ["career_motivation"]}]
+    packet, _, ctx = resolve(context(profile, mock_job, question=INTEREST),
+                             Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), DraftQueue(twelve), jev)
+    assert packet.is_complete
+
+
+def test_one_corrective_rewrite_names_every_deterministic_finding(candidate, mock_job):
+    from interviewmaxxing_browser.ai.humanize import FIT_HEDGE_FEEDBACK, QUOTED_STATEMENT_FEEDBACK
+
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    hedged_and_pasted = [QUOTING[0], {**QUOTING[1], "text": "While I have not managed retail media, I managed paid "
+                                      "search for a regional bakery chain and grew online orders by 35%."}, QUOTING[2]]
+    writer = DraftQueue(hedged_and_pasted, RESTATED)
+    packet, resolver, _ctx = resolve(context(with_career_motivation(candidate), mock_job, question=INTEREST),
+                                     Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert packet.is_complete
+    assert writer.calls[1]["review_feedback"] == [FIT_HEDGE_FEEDBACK, QUOTED_STATEMENT_FEEDBACK]
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert draft["status"] == "FIT_HEDGED" and draft["rejected_for"] == ["FIT_HEDGED", "STATEMENT_QUOTED"]
+
+
+def test_the_writer_prompt_restates_the_statement_and_varies_openers(candidate, mock_job):
+    transport = Transport(write=[ready(CLEAN)])
+    packet, _, _ = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]]), real_writer(transport), Jev())
+    assert packet.is_complete
+    system = transport.requests[0]["messages"][0]["content"]
+    assert "career_motivation is the applicant's own statement of what they look for" in system
+    assert "restate it in different words each time, with the same meaning and no new claim" in system
+    assert "no run of more than 12 consecutive words" in system
+    assert "never begin two consecutive sentences with 'In that same role'" in system
+
+
+def test_the_humanizer_flags_quotes_and_repeated_openers_and_rejects_a_quoting_rewrite() -> None:
+    from interviewmaxxing_browser.ai.humanize import MAX_QUOTED_WORDS, quoted_run, quotes_statement
+
+    pasted = ("Put simply, I LOOK for roles where paid-media budgets are tied to measured outcomes, and where I "
+              "can build tracking.")
+    assert len(quoted_run(pasted, CAREER_MOTIVATION)) == 18 > MAX_QUOTED_WORDS  # case and punctuation ignored
+    assert quotes_statement(pasted, [CAREER_MOTIVATION]) and not quotes_statement(pasted, [])
+    findings = {f.pattern: f for f in lint(pasted, statements=[CAREER_MOTIVATION])}
+    assert findings["quoted_statement"].count == 1 and "quoted_statement" not in {f.pattern for f in lint(pasted)}
+    repeated = "In that same role, I ran paid search. In that same role, I built the tracking. Orders grew by 35%."
+    assert {f.pattern: f.count for f in lint(repeated)}["repeated_opener"] == 1
+    assert "repeated_opener" not in {f.pattern for f in lint("I ran paid search. I built the tracking.")}
+    original = NarrativeDraft.model_validate(ready(RESTATED))
+    quoting = NarrativeDraft.model_validate(ready(QUOTING))
+    ids = {"fact.bakery", "career_motivation"}
+    assert check_rewrite(original, quoting, purpose="motivation", supplied_ids=ids, job_ids={JOB_EVIDENCE["id"]},
+                         max_length=None, statements=[CAREER_MOTIVATION]) == "quoted_statement"
+    assert check_rewrite(original, quoting, purpose="motivation", supplied_ids=ids, job_ids={JOB_EVIDENCE["id"]},
+                         max_length=None) is None
+
+
+def test_a_humanized_rewrite_that_pastes_the_statement_is_rejected(candidate, mock_job):
+    sloppy = [dict(s) for s in RESTATED]
+    sloppy[1] = {**sloppy[1], "text": "Here's the thing: I managed paid search for a regional bakery chain and grew online orders by 35%."}
+    transport = Transport(write=[ready(sloppy)], humanize=[ready(QUOTING)], review=[REVIEW_OK])
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    packet, resolver, _ctx = resolve(context(with_career_motivation(candidate), mock_job, question=INTEREST),
+                                     Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]),
+                                     real_writer(transport), jev, humanize=True)
+    assert packet.is_complete
+    assert packet.answers[0].value.text == NarrativeDraft.model_validate(ready(sloppy)).text
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
+    assert trace["status"] == "KEPT_ORIGINAL" and trace["attempts"][0]["status"] == "REJECTED_QUOTED_STATEMENT"
+    assert trace["prompt_version"] == "no-ai-slop-v2" and transport.roles == ["write", "humanize"]
+    rules = transport.requests[1]["messages"][0]["content"]
+    assert "quoted_statement finding" in rules and "In that same role" in rules
+    assert CAREER_MOTIVATION not in json.dumps(trace)
+
+
+# --- round 5, addendum 2: fit is given; the writer builds the case; the review judges grounding --
+
+POSTING = {"id": "job:" + "d" * 64, "source_url": "https://synthetic.test/jobs/2", "source_version": "e" * 64,
+           "text": ("Own paid search strategy for enterprise brands and report results to the sales team. "
+                    "Requirements: hands-on Google Ads management, conversion tracking, and TikTok Ads experience.")}
+LETTER_OPENING = {"text": "Your team needs someone to own paid search strategy and report results to sales.",
+                  "job_evidence_ids": [POSTING["id"]], "paragraph": 0}
+LETTER_CASE = {"text": "At a regional bakery chain I managed paid search and grew online orders by 35%.",
+               "fact_ids": ["fact.bakery"], "job_evidence_ids": [POSTING["id"]], "paragraph": 1}
+LETTER_CLOSE = {"text": "I wrote weekly reports for two store managers.", "fact_ids": ["fact.reports"], "paragraph": 2}
+HEDGED_LETTER = [LETTER_OPENING, LETTER_CASE,
+                 {"text": "While I have not run TikTok Ads, I am a quick learner and would be a strong fit.",
+                  "job_evidence_ids": [POSTING["id"]], "paragraph": 2}, LETTER_CLOSE]
+CASE_LETTER = [LETTER_OPENING, LETTER_CASE, LETTER_CLOSE]
+
+
+def test_a_letter_leaves_out_a_requirement_no_fact_supports_without_a_hedge(candidate, mock_job):
+    from interviewmaxxing_browser.ai.humanize import FIT_HEDGE_FEEDBACK, fit_hedges
+
+    jev = Jev(semantic="COVER_LETTER")
+    writer = DraftQueue(HEDGED_LETTER, CASE_LETTER)
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question="Cover letter", semantic=SemanticType.COVER_LETTER),
+                                    Retriever(list(candidate.facts), job_evidence=[POSTING]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    first, second = writer.calls
+    assert first["purpose"] == "cover_letter" and second["review_feedback"] == [FIT_HEDGE_FEEDBACK]
+    text = packet.answers[0].value.text
+    assert "TikTok" not in text and fit_hedges(text) == []  # the unsupported requirement is simply left out
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert draft["status"] == "FIT_HEDGED" and draft["rejected_for"] == ["FIT_HEDGED"]
+    # A letter that makes the case from what the facts support is written on the first draft.
+    writer = DraftQueue(CASE_LETTER)
+    packet, _, ctx = resolve(context(candidate, mock_job, question="Cover letter", semantic=SemanticType.COVER_LETTER),
+                             Retriever(list(candidate.facts), job_evidence=[POSTING]), writer, jev)
+    assert packet.is_complete and len(writer.calls) == 1
+
+
+def test_fit_hedges_are_named_and_linted_and_ordinary_claims_are_not() -> None:
+    from interviewmaxxing_browser.ai.humanize import fit_hedges
+
+    for hedge in ("While I have not managed TikTok Ads, I ran paid social on Meta.",
+                  "Although my background is in paid search, I learned social quickly.",
+                  "I have limited experience with Amazon Ads.", "I'm a quick learner and eager to learn.",
+                  "I believe I would be a strong fit for this role.", "I've never run TV, but my digital work is deep.",
+                  "I don't have direct experience with retail media."):
+        assert fit_hedges(hedge), hedge
+        assert "fit_hedge" in {f.pattern for f in lint(hedge)}
+    for claim in ("While I was at Glaze Agency, I managed Google Ads for twelve clients.",
+                  "I trained a team with no prior experience in SEO to run audits.",
+                  "We hired a strong candidate for the analytics seat.", "I helped the client ramp up spend to $50,000.",
+                  "I do not rely on last-click attribution, but on incrementality tests."):
+        assert fit_hedges(claim) == [], claim
+
+
+@dataclass
+class ConflictingReviewer(Writer):
+    """A writer whose independent review finds a conflict and names the facts involved."""
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+    reference_ids: list[str] = field(default_factory=list)
+
+    def review(self, **kwargs: Any) -> Any:
+        self.reviews.append(kwargs)
+        return SimpleNamespace(verdict="CONFLICT", issues=["Two facts date the same role differently."],
+                               reference_ids=self.reference_ids)
+
+
+def test_a_review_hold_names_the_fact_ids_to_correct_or_remove(candidate, mock_job):
+    """Round 5, addendum item 8: the person removes confirmed facts that contradict their own
+    evidence by id, so the review's hold message names them (story and job ids stay out)."""
+    chunk = story_chunk()
+    other = fact(candidate, "Grew online orders by 20% for the regional bakery chain in 2024.", fid="fact.bakery_other",
+                 key="achievement")
+    profile = candidate.model_copy(update={"facts": [*candidate.facts, other]})
+    writer = ConflictingReviewer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}],
+                                 reference_ids=["fact.bakery", "fact.bakery_other", chunk["id"]])
+    jev = Jev(consistency=0.9)  # uncertain: the evidence goes to the independent review
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    [missing] = packet.missing_inputs
+    assert missing.prompt.endswith("(facts: fact.bakery, fact.bakery_other)") and chunk["id"] not in missing.prompt
+    assert "Two facts date the same role differently." in missing.prompt
+    review = next(t for t in resolver.narrative_traces if t["stage"] == "strong_review")
+    assert review["status"] == "CONFLICT" and review["reference_ids"] == ["fact.bakery", "fact.bakery_other", chunk["id"]]
+
+
+# --- round 5, addendum item 7: case-study questions answered from the question's own data ---------
+
+CASE_QUESTION = ("Calculate CPA and ROAS for each channel. Based on this information, respond to the above question - "
+                 "Part B: Universal Data Reading & Optimization Identification")
+CASE_TABLE = ("Channel | Spend | Conversions | Revenue\nSearch | $5,000 | 100 | $12,500\n"
+              "Social | $3,000 | 40 | $4,800\nDisplay | $2,000 | 10 | $1,500")  # fictional figures
+
+
+def case_context(candidate: CandidateProfile, job: JobRecord, *, section_context: list[str]) -> PacketContext:
+    ctx = context(candidate, job, question=CASE_QUESTION)
+    field_ = ctx.form.fields[0].model_copy(update={"section_context": section_context})
+    return replace(ctx, form=ctx.form.model_copy(update={"fields": [field_]}))
+
+
+def case_sentences(data_id: str, *, search_cpa: str = "$50") -> list[dict[str, Any]]:
+    lines = [f"Search CPA = $5,000 / 100 conversions = {search_cpa}.", "Search ROAS = $12,500 / $5,000 = 2.5.",
+             "Social CPA = $3,000 / 40 = $75.", "Social ROAS = $4,800 / $3,000 = 1.6.",
+             "Display CPA = $2,000 / 10 = $200.", "Display ROAS = $1,500 / $2,000 = 0.75.",
+             "Search has the lowest CPA and the highest ROAS, so the $2,000 on Display should move to Search."]
+    return [{"text": line, "job_evidence_ids": [data_id]} for line in lines]
+
+
+def test_case_study_wording_is_recognised() -> None:
+    from interviewmaxxing_browser.ai.case_analysis import case_analysis_question
+
+    for question in (CASE_QUESTION, "Using the table above, which channel should get more budget?",
+                     "Review the following data and identify the weakest campaign.", "Case study: compute ROAS per channel."):
+        assert case_analysis_question(question), question
+    for question in ("How do you calculate ROAS?", "Describe a campaign you led and what it achieved.", INTEREST):
+        assert not case_analysis_question(question), question
+
+
+def test_the_working_is_checked_in_code() -> None:
+    from interviewmaxxing_browser.ai.case_analysis import check_working
+
+    good = " ".join(s["text"] for s in case_sentences("form:x"))
+    assert check_working(good, CASE_TABLE) is None
+    assert check_working("Total spend = $5,000 + $3,000 + $2,000 = $10,000, so blended ROAS is "
+                         "(12,500 + 4,800 + 1,500) / 10,000 = 1.88, about 1.9.", CASE_TABLE) is None
+    assert "is wrong: it computes 50.00" in check_working("Search CPA = $5,000 / 100 = $55.", CASE_TABLE)  # type: ignore[operator]
+    assert "uses $6,000" in check_working("Search CPA = $6,000 / 100 = $60.", CASE_TABLE)  # type: ignore[operator]
+    assert "states $80" in check_working("Search CPA = $5,000 / 100 = $50 and will reach $80.", CASE_TABLE)  # type: ignore[operator]
+    assert check_working("Search conversion rate = 100 / 5,000 = 2%.", CASE_TABLE + "\nSearch clicks 5,000") is None
+
+
+def test_a_case_question_is_computed_from_its_own_data_and_cites_it(candidate, mock_job):
+    from interviewmaxxing_core import question_content_ref
+
+    ctx = case_context(candidate, mock_job, section_context=["Part B", CASE_TABLE])
+    data_id = question_content_ref(ctx.form.fields[0])
+    writer = Writer(case_sentences(data_id))
+    retriever = Retriever([candidate.facts[0]])
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)  # the candidate scope does not apply
+    packet, resolver, ctx = resolve(ctx, retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_QUESTION
+    assert answer.provenance.reference_ids == [data_id] and "no candidate fact" in answer.provenance.note
+    [call] = writer.calls
+    assert call["purpose"] == "case_analysis" and call["facts"] == [] and call["voice_samples"] == []
+    assert [e["id"] for e in call["job_evidence"]] == [data_id] and CASE_TABLE in call["job_evidence"][0]["text"]
+    assert not retriever.calls  # the candidate's evidence is never retrieved for a case question
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")
+    assert trace["status"] == "READY" and trace["data_numbers"] == 9 and "Search" not in json.dumps(trace)
+    [grounding] = jev.grounding_requests()
+    assert grounding["state"]["purpose"] == "case_analysis" and set(grounding["questions"]) == {f"q{i}" for i in range(7)} | {"complete"}
+
+
+def test_a_case_question_without_its_table_holds_with_the_reason(candidate, mock_job):
+    from interviewmaxxing_browser.ai.providers import CASE_DATA_MISSING
+
+    writer = Writer(case_sentences("form:x"))
+    packet, resolver, ctx = resolve(case_context(candidate, mock_job, section_context=[]), Retriever([candidate.facts[0]]),
+                                    writer, Jev())
+    assert held(packet, ctx) and not writer.calls
+    [missing] = packet.missing_inputs
+    assert CASE_DATA_MISSING in missing.prompt and CASE_DATA_MISSING == "The table referenced is not in the recorded question"
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")["status"] == "DATA_MISSING"
+
+
+def test_wrong_working_gets_one_corrective_rewrite_then_holds(candidate, mock_job):
+    from interviewmaxxing_core import question_content_ref
+
+    ctx = case_context(candidate, mock_job, section_context=[CASE_TABLE])
+    data_id = question_content_ref(ctx.form.fields[0])
+    writer = DraftQueue(case_sentences(data_id, search_cpa="$55"), case_sentences(data_id))
+    packet, resolver, ctx = resolve(ctx, Retriever([candidate.facts[0]]), writer, Jev())
+    assert packet.is_complete and len(writer.calls) == 2
+    [issue] = writer.calls[1]["review_feedback"]
+    assert "is wrong: it computes 50.00" in issue and "show the working" in issue
+    writer = DraftQueue(case_sentences(data_id, search_cpa="$55"))
+    packet, resolver, ctx = resolve(case_context(candidate, mock_job, section_context=[CASE_TABLE]),
+                                    Retriever([candidate.facts[0]]), writer, Jev())
+    assert held(packet, ctx) and "working does not check out" in packet.missing_inputs[0].prompt
+    # A draft that cites a candidate fact is no case analysis.
+    cited = case_sentences(data_id)
+    cited[0] = {**cited[0], "fact_ids": ["fact.bakery"]}
+    packet, resolver, ctx = resolve(case_context(candidate, mock_job, section_context=[CASE_TABLE]),
+                                    Retriever([candidate.facts[0]]), Writer(cited), Jev())
+    assert held(packet, ctx)
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")["status"] == "CITATIONS_INVALID"

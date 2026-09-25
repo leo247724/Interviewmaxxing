@@ -362,11 +362,35 @@ years fact stays verified; areas come from role titles or bullets that state the
 duration, never from a mention or a linked story ([rag-writing.md](rag-writing.md), Round
 4). Motivation narratives need the applicant's own reason, a cited story passage or the
 `career_motivation` statement, or hold before writing; a draft citing neither gets the one
-corrective rewrite (`MOTIVATION_UNCITED`). The consistency comparison set tiers same-key
+corrective rewrite (`MOTIVATION_UNCITED`; superseded in round 5, addendum 2). The consistency comparison set tiers same-key
 and global claims before the count-ranked rest (`tiered_first`), for the Jev check and the
 review. The humanizer keeps each sentence's citation set together (`REJECTED_MOVED_CITATION`)
 and every humanized draft gets the independent review. The form allowance is granted once
 per step per runtime, so a re-resolve of a step grants nothing more.
+
+**Round 5 (WP12).** One story sentence is one piece of evidence: when the story consistency
+check drops a chunk, the story facts extracted from it (their `story:<chunk id>` source, or
+their sentence in the chunk's text) leave the field's evidence too, and a story fact the
+fact consistency check drops takes the chunks that carry its sentence; the propagated ids
+are traced under `story_evidence_dropped` with `propagated_from` (review pass 5, M1). A
+strong review cached for the candidate revision no longer answers a later field that
+selected a story fact: its comparisons run on the cached Jev verdicts, so the story fact
+dropped for the first field is dropped again, and the cached review stands in for a second
+review (`consistency_cache` with `dropped_story_fact_ids`; M2). The story verdict cache
+stores a verdict (its score and its asks flag) only when two slots fit, and reads it only
+whole (L4). A draft that copies more than 12 consecutive words of the person's
+`career_motivation` gets the one corrective rewrite (`STATEMENT_QUOTED`; every
+deterministic finding of a draft goes into that one rewrite, `rejected_for`), and a
+humanized rewrite that does is rejected (`REJECTED_QUOTED_STATEMENT`). Story linking and
+dating changes are in [rag-writing.md](rag-writing.md), Round 5. Addenda: fit is given for every saved
+job, so cover letters, motivation and narrative answers build the case and never hedge or judge
+fit (`FIT_GIVEN_RULE`; a hedge, disclaimer or fit comment gets the one corrective rewrite,
+`FIT_HEDGED`); round 4's personal-reason demand is superseded (the alignment is the reason); the
+independent draft review judges grounding and consistency only; a review hold names the profile
+fact ids it referenced; and a WRITER question asking to calculate or analyse data given with it
+is answered under the purpose `case_analysis` from that data alone, working checked in code,
+provenance `GENERATED_FROM_QUESTION`, or held with "The table referenced is not in the recorded
+question" when the recording carries no data.
 
 ## Bounds and observations
 
