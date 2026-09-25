@@ -368,6 +368,19 @@ person's professional stories chunked into a `story` kind in pgvector, retrieval
 and narrative answers, Opus 5.5 at high effort, a no-AI-slop rewrite that must re-pass grounding).
 LinkedIn Easy Apply is out of scope for good.
 
+**Merged late evening (j-workspace 99485ca).** WP1 rounds 7–9 (labels from the shown question,
+BambooHR comboboxes, hidden import inputs, Jobvite, lookup portals and Floating UI's page-wide
+aria-hidden marks, referral wording typed on any control); WP6 with WP8 (dialog wizards, embedded
+iframes, JazzHR/Dayforce/Jobvite flows; approve → authorize → submit exactly the approved packet,
+mock-only, behind `IMX_ALLOW_SUBMISSION=1`, `--yes` and a per-application approval); WP12 rounds
+1–2c (stories and the SEO story in pgvector, resume-dated story facts, motivation questions as
+cover-letter narratives, 31 derived years-of-experience facts, bounded evidence everywhere, and
+story claims that contradict the resume dropped from an answer's evidence rather than holding
+it). Full gates on 551717e: browser, core, service, generation and candidate suites plus 25 e2e
+tests pass. Pending: WP7 Workday rebase, WP12 round 3 (motivation from alignment, the writer's
+output budget under high effort, derived facts as screener evidence, enumerations), review pass 4,
+then `prepare-batch --retry` over the 120 held applications.
+
 **Stories in the RAG (WP12, merged a966528).** The person's four professional stories are indexed
 as a `story` kind (15 chunks, 39 story-provenance facts merged into the profile); narrative fields
 retrieve story chunks with the facts, the writer runs at high effort, and a no-AI-slop rewrite
