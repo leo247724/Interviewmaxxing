@@ -413,6 +413,18 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Retry six (14:45, second merge wave: WP2 round 11, WP1 round 12, WP12 round 5, WP10 round 6, WP8
+round 3).** 18 run, 4 more prepared: **20 of 40 prepared**, 10 held, 4 failed, holds 24 → 15. Of the
+40, six are skipped because their only open items need the person (a CAPTCHA at the final step, a
+consent the runtime never operates). The 15 remaining holds: two identity fields on CAPTCHA-blocked
+forms, the Paylocity work-history dates and address line, two Greenhouse checkbox groups whose
+options were never observed, the case-study question (its data sits outside the recorded field),
+two narratives the corpus does not cover (programmatic campaign, service-line P&L), one experience
+multi-select, one screener wording the standing policies will take. The four failures are all
+re-rendering forms: BambooHR's Fabric text fields change ids when a value is set (two forms),
+Greenhouse's EEO block appears after the custom questions (KnowBe4), and a Teamtailor text field
+appears mid-fill. WP1 round 13 takes them.
+
 **Retry five (13:05, after the answer sheet).** The person declined to answer 84 open questions
 one by one and stated standing rules instead: any "do you have / have you" experience question is
 Yes (he vets every application before it enters the batch), every experience threshold up to his
