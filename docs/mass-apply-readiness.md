@@ -488,6 +488,9 @@ years-of-experience facts from the resume timeline.
 
 ## How to run the next batch
 
+Worker rounds that run as Claude Code cloud sessions: see `docs/cloud-rounds.md` (start, steer,
+and the GitHub push requirement).
+
 ```bash
 # fresh inventory
 uv run --no-sync interviewmaxxing prepare-batch --inventory /abs/private/application-urls.json \
