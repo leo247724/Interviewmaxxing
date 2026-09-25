@@ -168,6 +168,13 @@ class FieldBinding:
     dial_code_field: str | None = None
     """For a phone number box: the field just before it that picks the country code
     separately (Workday "Country Phone Code"). Its chosen code is not typed again."""
+    input_select: bool = False
+    """A ``TYPEAHEAD`` that is an input-select (a react-select without ARIA roles): its
+    answer is typed and the option equal to it chosen (``aria.fill_input_select``)."""
+    suggests: bool = False
+    """A street address input that lists suggestions while it is typed into and keeps
+    what is typed (Paylocity's Address Line 1): typed, the suggestions dismissed, never
+    chosen from."""
 
 
 @dataclass(frozen=True)
@@ -502,6 +509,8 @@ def _control_type(control: DomControl, group_size: int) -> ControlType:
         return ControlType.SELECT
     if _probed_lookup(control):
         return ControlType.TYPEAHEAD
+    if control.input_select is not None:
+        return ControlType.TYPEAHEAD  # its options show only for what is typed
     if control.kind == "custom":
         return ControlType.UNSUPPORTED
     if control.tag == "select":
@@ -707,6 +716,12 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         input_type=input_type,
         control_type=control_type,
     )
+    # A street address input that lists suggestions while it is typed into (Paylocity's
+    # Address Line 1) keeps what is typed: a text answer, never a choice among suggestions.
+    suggests = (control_type is ControlType.TYPEAHEAD and _probed_lookup(first)
+                and semantic is SemanticType.ADDRESS)
+    if suggests:
+        control_type, input_type, max_length = ControlType.TEXT, first.type, first.max_length
     app_field = ApplicationField(
         id=field_id,
         label=label,
@@ -747,13 +762,17 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         checked_values=frozenset(
             value for m, value in zip(group.members, values, strict=True) if m.checked
         ) if is_group else (frozenset({"on"}) if first.checked else frozenset()),
-        value=str(operated["value"]) if operated else first.value,
+        value=(str(operated["value"]) if operated
+               else str(first.input_select.get("display") or "") if first.input_select is not None
+               else first.value),
         aria=operated,
         user_completed=user_completed,
         upload_anchor=first.upload_anchor or None,
         pressed=first.tag == "button" and first.type == "radio",
         date_segments=tuple((s["kind"], s["selector"]) for s in first.date_segments)
         if control_type is ControlType.TEXT else (),
+        input_select=first.input_select is not None and control_type is ControlType.TYPEAHEAD,
+        suggests=suggests,
     )
     return app_field, binding
 

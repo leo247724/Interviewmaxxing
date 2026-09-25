@@ -126,6 +126,13 @@ _CONTEXT_LOST = re.compile(
 )
 
 
+_INTERCEPTED = re.compile(r"intercepts pointer events", re.IGNORECASE)
+"""A Playwright click that another element (an overlay) takes: its label would be too."""
+_CHECKABLE = ("(el) => el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')"
+              " && !el.disabled")
+"""Read-only: an enabled checkbox or radio input, the only element a click is dispatched to."""
+
+
 def _context_lost(exc: Exception) -> bool:
     """A Playwright error caused by the document going away. Only the error's own
     message counts: its call log always ends "waiting for scheduled navigations to
@@ -495,6 +502,10 @@ class PlaywrightDriver:
             await handle.dispose()
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None:
+        """Check or uncheck a checkbox or radio: a click on the input, else on its label
+        (custom-styled inputs are often hidden behind it). When something else takes the
+        pointer where they are (a fixed cookie dialog or panel over the page), the click
+        is dispatched to the input itself, never to whatever covers it, and read back."""
         before = self._doc_mark()
         locator = self._scope.locator(selector)
         try:
@@ -503,16 +514,28 @@ class PlaywrightDriver:
             return
         except PlaywrightError as exc:
             self._guard(before, f"setting {selector}", exc)
-            if label_selector is None:
-                raise NotActionable(f"could not set {selector}: {exc}") from exc
-        # Custom-styled inputs are often hidden behind their label: click the label.
+            failure: PlaywrightError = exc
+        how = ""
+        if label_selector is not None and not _INTERCEPTED.search(str(failure)):
+            how = " via its label"
+            try:
+                if await locator.is_checked() != checked:
+                    await self._scope.locator(label_selector).click(timeout=self._timeout_ms)
+                self._guard(before, f"setting {selector}")
+                return
+            except PlaywrightError as exc:
+                self._guard(before, f"setting {selector}", exc)
+                failure = exc
         try:
-            if await locator.is_checked() != checked:
-                await self._scope.locator(label_selector).click(timeout=self._timeout_ms)
+            if await locator.evaluate(_CHECKABLE) and await locator.is_checked() != checked:
+                await locator.dispatch_event("click")
+            done = await locator.is_checked() == checked
         except PlaywrightError as exc:
             self._guard(before, f"setting {selector}", exc)
-            raise NotActionable(f"could not set {selector} via its label: {exc}") from exc
+            raise NotActionable(f"could not set {selector}{how}: {failure}") from exc
         self._guard(before, f"setting {selector}")
+        if not done:
+            raise NotActionable(f"could not set {selector}{how}: {failure}")
 
     async def set_files(self, selector: str, path: Path) -> bool:
         """Attach ``path`` to the file input directly (hidden inputs behind an "Attach"

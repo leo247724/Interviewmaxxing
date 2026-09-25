@@ -45,7 +45,15 @@ from typing import Any, Literal
 from interviewmaxxing_core import BrowserOptions
 
 from .annotations import FormAnnotator, SchemaHintLoader
-from .aria import ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, COMBO_STATE, ENTER_SAFE, PHONE_STATE
+from .aria import (
+    ARIA_EXPANSION,
+    ARIA_OBSERVE,
+    ARIA_STATE,
+    COMBO_STATE,
+    ENTER_SAFE,
+    INPUT_SELECT_STATE,
+    PHONE_STATE,
+)
 from .driver import (
     _FILE_DIGEST,
     DEEP_QUERY,
@@ -227,7 +235,7 @@ OpenCLI's own targeting (CSS and semantic locators) does not enter."""
 _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
-    COMBO_STATE, PHONE_STATE, ENTER_SAFE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN, _BUTTONS_WITHIN,
+    COMBO_STATE, PHONE_STATE, ENTER_SAFE, INPUT_SELECT_STATE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN, _BUTTONS_WITHIN,
     UPLOAD_STATE,
     _IN_OWN_POPUP,
     _IN_SHADOW,
