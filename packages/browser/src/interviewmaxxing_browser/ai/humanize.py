@@ -463,6 +463,20 @@ def _close(draft: NarrativeDraft) -> tuple[int, bool]:
     return len(close), any(_TALK.search(s.text) for s in close)
 
 
+_FIGURE = re.compile(r"(?<![\w.])(\d+(?:,\d{3})*(?:\.\d+)?)\s*([kKmMbB](?![a-z]))?")
+
+
+def _number_values(text: str) -> set[float]:
+    """The figures a text states, by value: "$50,000", "$50K" and "50k" are one number, so a
+    rewrite may reformat a figure (round 6: a live rewrite was rejected for "$50K") but never
+    add one."""
+    values = set()
+    for number, unit in _FIGURE.findall(text):
+        value = float(number.replace(",", "")) * {"k": 1e3, "m": 1e6, "b": 1e9}.get(unit.lower(), 1.0)
+        values.add(round(value, 6))
+    return values
+
+
 def _job_only(draft: NarrativeDraft) -> list[str]:
     return [s.text for s in draft.sentences if s.job_evidence_ids and not s.fact_ids]
 
@@ -497,7 +511,7 @@ def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
         return "dropped_citation"  # the job evidence a fact sentence paired with it
     if len(_job_only(rewritten)) > len(_job_only(original)):
         return "added_job_sentence"
-    if set(_NUMBER.findall(rewritten.text)) - set(_NUMBER.findall(original.text)):
+    if _number_values(rewritten.text) - _number_values(original.text):
         return "new_number"
     words, before = len(rewritten.text.split()), len(original.text.split())
     if not LENGTH_TOLERANCE[0] * before <= words <= LENGTH_TOLERANCE[1] * before:

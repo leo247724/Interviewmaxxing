@@ -2091,3 +2091,22 @@ def test_voice_passages_reach_the_writer_and_the_rewrite_as_style_only(candidate
                                         "The bottom line is cost. The bottom line is also speed.")}
     assert "blog_tic" in patterns
     assert "blog_tic" not in {f.pattern for f in lint("I cut cost per order 31% at a bakery chain in 2024.")}
+
+
+def test_a_rewrite_may_reformat_a_figure_but_never_add_one() -> None:
+    original = NarrativeDraft.model_validate(ready([
+        {"text": "At a bakery chain I managed deals averaging $50,000 and cut cost per order 31%.",
+         "fact_ids": ["fact.bakery"]},
+        {"text": "Each deal took 5 to 10 touch points before the owner signed off.", "fact_ids": ["fact.bakery"]}]))
+    reformatted = NarrativeDraft.model_validate(ready([
+        {"text": "At a bakery chain I ran deals of about $50K and cut cost per order by 31%.",
+         "fact_ids": ["fact.bakery"]},
+        {"text": "Each one took 5-10 touch points before the owner signed off.", "fact_ids": ["fact.bakery"]}]))
+    assert check_rewrite(original, reformatted, purpose="answer", supplied_ids={"fact.bakery"}, job_ids=set(),
+                         max_length=None) is None
+    added = NarrativeDraft.model_validate(ready([
+        {"text": "At a bakery chain I ran deals of about $50K and cut cost per order by 31% in 90 days.",
+         "fact_ids": ["fact.bakery"]},
+        {"text": "Each one took 5-10 touch points before the owner signed off.", "fact_ids": ["fact.bakery"]}]))
+    assert check_rewrite(original, added, purpose="answer", supplied_ids={"fact.bakery"}, job_ids=set(),
+                         max_length=None) == "new_number"

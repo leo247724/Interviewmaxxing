@@ -4280,16 +4280,9 @@ class DynamicPacketResolver:
                 self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
                     supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence,
                     trace=entry, rewrite_attempt=rewrite_attempt, force_review=True)
-                graded = entry.get("rubric_review")
-                rubric = trace.get("rubric")
-                if (isinstance(graded, dict) and graded.get("rubric") == "FAIL"
-                        and isinstance(rubric, dict) and rubric.get("status") == "PASSED"):
-                    # The no-slop pass edits wording; a rewrite that breaks a rubric line the
-                    # draft passed is rejected and tried again with the issues.
-                    entry["status"] = "REJECTED_RUBRIC"
-                    raise _CorrectableDraftRejection("UNSUPPORTED", list(graded.get("review_issues") or [])[:8]
-                                                     or ["The rewrite fails a rubric line the draft passed."],
-                                                     from_review=True)
+                # The rewrite's own review grades it against the rubric too; that grade is the
+                # shipped letter's (recorded below), never a reason to discard a grounded rewrite:
+                # a live trial kept an un-humanized letter over one noisy FAIL.
 
             def trace_humanize(entry: dict[str, Any]) -> dict[str, Any]:
                 humanized.append(self._trace(entry))
