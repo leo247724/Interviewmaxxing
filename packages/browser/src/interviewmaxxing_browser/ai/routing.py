@@ -67,6 +67,7 @@ from interviewmaxxing_core.answer_policies import (
     stated_answer_policies,
 )
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
+from interviewmaxxing_core.preferences import names_work_mode, stated_metro_area
 from interviewmaxxing_generation.questions import (
     QuestionText,
     motivation_question,
@@ -172,6 +173,17 @@ from .humanize import (
     quotes_statement,
     stock_closer,
     stock_opener,
+)
+from .metro import (
+    Metro,
+    MetroVerdict,
+    PlaceReading,
+    job_place,
+    metro_place_named,
+    names_place,
+    person_metro,
+    posting_mode,
+    read_place,
 )
 from .providers import (
     CASE_DATA_MISSING,
@@ -596,6 +608,16 @@ _RELOCATION_INSTRUCTIONS = (
 _NEGATED_LIST = re.compile(r"\b(?:not|outside|except|excluding|other than)\b", re.IGNORECASE)
 _PLACE_AFTER = re.compile(r"\b(?:in|to|of|near|around|from|within)\s+(?:the\s+|our\s+|their\s+|its\s+|a\s+)?"
                           r"([A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*)*)")
+_OFFICE_PREFERENCE = re.compile(
+    r"\bprefer\w*|\bpreference\b|\bwhich\s+(?:of\s+(?:our|these|the)\s+)?(?:office|location|hub|site)s?\b|"
+    r"\bwork\s+(?:from|out\s+of)\b|\bwould\s+you\s+like\s+to\s+work\b", re.IGNORECASE)
+"""A question asking where the applicant would work: a preference, or which office (round 13)."""
+_NEUTRAL_OPTION = re.compile(
+    r"^(?:no preference|any|anywhere|other|none|n/?a|not applicable|either|flexible|"
+    r"open to (?:any|all)\b.*)$")
+"""Options beside the offices that name no place and no work mode ("No preference")."""
+_AT_PLACE = re.compile(r"\bat\s+(?:the\s+|our\s+|their\s+|its\s+|a\s+)?([A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*)*)")
+"""A place after "at" ("at the Austin office"), for the on-site questions (round 13)."""
 _CAPITALIZED_RUN = re.compile(r"[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*)*")
 _CITY_ALIASES = ((re.compile(r"\bWashington,?\s*D\.?\s?C\b\.?"), "Washington DC"),
                  (re.compile(r"\bNew York,?\s*(?:NY\b|City\b)"), "New York City"))
@@ -977,15 +999,17 @@ def _residence_share(gate: FieldRouteDecision) -> float:
     return sum(gate.semantic_probabilities.get(t.value, 0.0) for t in RESIDENCE_TYPES)
 
 
-def _places(text: str, *, after_preposition: bool) -> list[str]:
+def _places(text: str, *, after_preposition: bool, at: bool = False) -> list[str]:
     """Places a text names that are not a US state, the country or a generic word: after
     "in", "to", "of", "near" … in a question ("located in Austin", "commuting distance of
     Austin"), or any capitalized run in an option ("Austin, TX"). "Washington, DC" and "New
-    York, NY" are cities."""
+    York, NY" are cities. With ``at``, also after "at" ("at the Austin office")."""
     for pattern, alias in _CITY_ALIASES:
         text = pattern.sub(alias, text)
     runs = ([m.group(1) for m in _PLACE_AFTER.finditer(text)] if after_preposition
             else _CAPITALIZED_RUN.findall(text))
+    if at:
+        runs += [m.group(1) for m in _AT_PLACE.finditer(text)]
     places = []
     for run in runs:
         key = run.strip(" .,;:!?'").casefold()
@@ -1646,7 +1670,7 @@ class DynamicPacketResolver:
         # An address-derived relocation answer is gated by its own decision and the code
         # checks, not by the source scope (a relocation question may read as a preference).
         relocation = (not allowed and answer.provenance.source is AnswerSource.PROFILE_IDENTITY
-                      and self._is_relocation_place(fld, gate))
+                      and self._is_relocation_place(fld, gate, context.candidate.identity.address.city))
         allowed = allowed or relocation
         if (not allowed and answer.provenance.source is AnswerSource.PROFILE_IDENTITY
                 and gate.route is not FieldRoute.UNSUPPORTED
@@ -1908,9 +1932,16 @@ class DynamicPacketResolver:
         Fields are decided concurrently (``_each``).
 
         Also returns the fields whose reworded saved answer Jev confirmed but that could not
-        be placed on them: those hold for the user and never get a generated answer."""
+        be placed on them: those hold for the user and never get a generated answer.
+
+        With a metro area stated (round 13), a work-arrangement preference the factual pass
+        copied by its match phrases ("Location Preference") is decided again by the metro:
+        the preference is then the fallback, kept when the metro cannot decide."""
+        revisable = ({answer.field_id for answer in packet.answers
+                      if self._preference_copy(context, answer)}
+                     if self._metro(context) is not None else set())
         fields = [field for field in context.form.fields
-                  if packet.answer_for(field.id) is None
+                  if (packet.answer_for(field.id) is None or field.id in revisable)
                   and not any(u.field_id == field.id for u in context.user_inputs)
                   and report.field(field.id).route is not FieldRoute.UNSUPPORTED]
         results = await self._each(fields, lambda field: self._stored_answer(
@@ -1920,7 +1951,8 @@ class DynamicPacketResolver:
         for field, result in zip(fields, results, strict=True):
             _raise_unexpected(result)
             if isinstance(result, BaseException):
-                held[field.id] = str(result)
+                if field.id not in revisable:  # a copied preference stays as the fallback
+                    held[field.id] = str(result)
             elif result is not None:
                 mapped.append(result)
         if not mapped and not held:
@@ -1930,8 +1962,23 @@ class DynamicPacketResolver:
         missing += [MissingInput.for_field(context.form, context.form.field(field_id),
                                            reason=MissingReason.AMBIGUOUS, prompt=prompt)
                     for field_id, prompt in held.items() if context.form.field(field_id).required]
+        kept = [answer for answer in packet.answers if answer.field_id not in done]
         return ApplicationPacket.model_validate(packet.model_dump() | {
-            "answers": [*packet.answers, *mapped], "missing_inputs": missing}), set(held)
+            "answers": [*kept, *mapped], "missing_inputs": missing}), set(held)
+
+    def _preference_copy(self, context: PacketContext, answer: PacketAnswer) -> bool:
+        """An answer the factual pass copied from the work-arrangement preference onto a
+        field the metro decides: a work-mode choice, an office list or an on-site question
+        naming a city (round 13)."""
+        if answer.provenance.source is not AnswerSource.SAVED_ANSWER:
+            return False
+        saved = [context.candidate.find_saved_answer(ref) for ref in answer.provenance.reference_ids]
+        if not saved or not all(a is not None and stated_work_arrangement_preference(a.question)
+                                for a in saved):
+            return False
+        field = context.form.field(answer.field_id)
+        return (self._is_work_location(field) or self._is_office_choice(field)
+                or self._is_onsite_city_question(field))
 
     def _conditional_follow_ups(self, context: PacketContext, packet: ApplicationPacket,
                                 report: FormRouteReport, *, governed_by: set[str] | None = None,
@@ -2041,7 +2088,11 @@ class DynamicPacketResolver:
         question = QuestionText.of(field)
         exact = [a for a in context.candidate.applicable_saved_answers(context.job)
                  if saved_answer_matches(a, question)]
-        own = [a for a in exact if not _is_status_question(a)]
+        # With a metro area stated (round 13) the work-arrangement preference is the metro's
+        # fallback, not the person's own answer to this wording.
+        metro_stated = self._metro(context) is not None
+        own = [a for a in exact if not _is_status_question(a)
+               and not (metro_stated and stated_work_arrangement_preference(a.question))]
         legal = field.semantic_type in (SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP) or (
             field.semantic_type in _UNTYPED_LEGAL and _plain_authorization(field))
         answer: PacketAnswer | None = None
@@ -2059,6 +2110,11 @@ class DynamicPacketResolver:
         if field.control_type in CHOICE_CONTROLS:
             if SemanticType.REFERRAL_SOURCE in (field.semantic_type, gate.semantic_type):
                 answer, settled = self._referral_option(context, field)
+            if (not settled and not own and self._is_office_choice(field)
+                    and self._metro(context) is not None):
+                # Round 13: an office list ("Location Preference": Burlingame, CA / Austin, TX /
+                # Remote) takes the office in the person's metro, else Remote.
+                return self._office_choice(context, field)
             if not settled and not own and self._is_work_location(field):
                 # Round 10: a remote / hybrid / on-site choice, whatever its type, from the
                 # saved work-arrangement preference; the address never answers it.
@@ -2087,7 +2143,7 @@ class DynamicPacketResolver:
                 return derived
         if field.semantic_type in STATEMENT_TYPES:
             return self._statement(context, field, gate)
-        if self._is_relocation_place(field, gate):
+        if self._is_relocation_place(field, gate, context.candidate.identity.address.city):
             # "Do you live in or will you relocate to …": the address first, then the
             # saved relocation answer; never a reworded or generated one.
             return self._relocation(context, field) or self._relocation_default(context, field, gate)
@@ -2320,7 +2376,9 @@ class DynamicPacketResolver:
                       if answer.scope is AnswerScope.GLOBAL and answer.applies_to(context.job)
                       and not _is_status_question(answer)
                       # Round 12: a standing answer policy is a rule, never a reworded question.
-                      and answer_policy_key(answer) is None]
+                      and answer_policy_key(answer) is None
+                      # Round 13: the metro area feeds the work-arrangement derivation only.
+                      and not stated_metro_area(answer.question)]
         same_type = [a for a in applicable if typed and a.semantic_type is field.semantic_type]
         # An untyped answer to a question that now also has a typed answer (an import that
         # added the key's type) is superseded by the typed one.
@@ -2993,14 +3051,20 @@ class DynamicPacketResolver:
                 and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
                 and _yes_no_pair(field)
                 and _ONSITE_WORDING.search(field.question_text) is not None
-                and bool(_places(field.question_text, after_preposition=True)))
+                and bool(_places(field.question_text, after_preposition=True, at=True)))
 
     def _onsite_city(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
         """An on-site-in-a-named-city question derived from ``work_arrangement_preference``
         with ``willing_to_relocate`` and the verified city (round 9's city rule): on-site
         acceptable and (already in that city or willing to relocate) is Yes; on-site not
         acceptable, or not willing to relocate elsewhere, is No; unknown when the
-        preference is null, or the relocation answer is needed and null."""
+        preference is null, or the relocation answer is needed and null. Since round 13 the
+        person's metro area decides first when they state one (``_metro_onsite``)."""
+        metro = self._metro(context)
+        if metro is not None:
+            decided, answer = self._metro_onsite(context, field, *metro)
+            if decided:
+                return answer
         saved = [a for a in context.candidate.applicable_saved_answers(context.job)
                  if a.semantic_type is None and isinstance(a.value, str)
                  and stated_work_arrangement_preference(a.question)]
@@ -3042,7 +3106,14 @@ class DynamicPacketResolver:
                        gate: FieldRouteDecision) -> PacketAnswer | None:
         """The saved work-arrangement preference (``work_arrangement_preference``) mapped onto
         the field's options: an exact option, else Jev's option equivalence. A job-scoped
-        answer for this job comes first, else the newest GLOBAL one."""
+        answer for this job comes first, else the newest GLOBAL one. Since round 13 the
+        person's metro area decides first when they state one (``_metro_work_mode``); the
+        preference is the fallback when the job's place cannot be read."""
+        metro = self._metro(context)
+        if metro is not None:
+            decided, answer = self._metro_work_mode(context, field, *metro)
+            if decided:
+                return answer
         saved = [a for a in context.candidate.applicable_saved_answers(context.job)
                  if a.semantic_type is None and isinstance(a.value, str)
                  and stated_work_arrangement_preference(a.question)]
@@ -3074,6 +3145,158 @@ class DynamicPacketResolver:
             return None
         self._trace(trace | {"status": "MAPPED", "reference_ids": [latest.id]})
         return mapped
+
+    # --- the work arrangement by the person's metro area (round 13) ------------------------
+
+    @staticmethod
+    def _metro(context: PacketContext) -> tuple[Metro, SavedAnswer] | None:
+        """The person's metro (their verified city and the saved ``metro_area`` places) and
+        that saved answer: a job-scoped one for this job first, else the newest GLOBAL one.
+        None when no metro area is saved or the identity states no city: the saved
+        work-arrangement preference then decides as before."""
+        saved = [a for a in context.candidate.applicable_saved_answers(context.job)
+                 if a.semantic_type is None and isinstance(a.value, str)
+                 and stated_metro_area(a.question)]
+        if not saved:
+            return None
+        latest = max([a for a in saved if a.scope is AnswerScope.JOB] or saved,
+                     key=lambda a: a.confirmed_at)
+        assert isinstance(latest.value, str)
+        metro = person_metro(context.candidate.identity.address, latest.value)
+        return (metro, latest) if metro is not None else None
+
+    @staticmethod
+    def _where(context: PacketContext, field: ApplicationField,
+               metro: Metro) -> tuple[PlaceReading, str]:
+        """Where the work is: the place the question names ("on-site at the Austin office"),
+        else the job's location; and which of the two said it."""
+        reading = read_place(field.question_text, metro,
+                             places=_places(field.question_text, after_preposition=True, at=True))
+        if reading.verdict is not MetroVerdict.UNKNOWN:
+            return reading, "question"
+        return job_place(context.job, metro), "job"
+
+    def _metro_onsite(self, context: PacketContext, field: ApplicationField, metro: Metro,
+                      saved: SavedAnswer) -> tuple[bool, PacketAnswer | None]:
+        """An on-site question naming a city, by the person's metro (the owner's rule): work
+        in the metro is fine on-site or hybrid, whatever the job requires, so Yes; work
+        anywhere else (or a remote job) is No, unless the person's saved relocation answer
+        is Yes. Not decided (the preference decides) when neither the question nor the job's
+        location names a place the reading knows."""
+        reading, source = self._where(context, field, metro)
+        trace: dict[str, Any] = {"stage": "work_arrangement", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "question": "onsite_city",
+            "metro": reading.verdict.value, "place_source": source, "place": reading.place,
+            "reference_ids": [saved.id]}
+        if reading.verdict is MetroVerdict.UNKNOWN:
+            self._trace(trace | {"status": "NOT_DECIDED"})
+            return False, None
+        polarity = "yes"
+        if reading.verdict is not MetroVerdict.IN_METRO:
+            relocation = context.candidate.saved_answers_for(SemanticType.RELOCATION, job=context.job)
+            willing = (max([a for a in relocation if a.scope is AnswerScope.JOB] or relocation,
+                           key=lambda a: a.confirmed_at) if relocation else None)
+            stated = _polarity(str(willing.value)) if willing is not None else None
+            # The relocation answer is typed, so the trace names it; the answer cites the metro.
+            trace.update(relocation=stated or "unstated",
+                         **({"relocation_reference": willing.id} if willing is not None else {}))
+            polarity = "yes" if stated == "yes" else "no"
+        option = next((o for o in usable_options(field) if _polarity(o.label) == polarity), None)
+        value = _choice_value(field, [option]) if option is not None else None
+        if value is None or answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return True, None
+        self._trace(trace | {"status": "ANSWERED", "choice": polarity})
+        note = ("the work is in the person's metro area, where on-site or hybrid work is fine"
+                if reading.verdict is MetroVerdict.IN_METRO
+                else "the work is outside the person's metro area: remote, unless they relocate")
+        return True, PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[saved.id],
+                                  note=note))
+
+    def _metro_work_mode(self, context: PacketContext, field: ApplicationField, metro: Metro,
+                         saved: SavedAnswer) -> tuple[bool, PacketAnswer | None]:
+        """A remote / hybrid / on-site choice by the person's metro: for work in the metro the
+        mode the posting states (its location or title), else hybrid or on-site (both on a
+        select-all question); for work anywhere else, or a remote job, remote. Not decided
+        (the preference decides) when the job's place cannot be read."""
+        reading, source = self._where(context, field, metro)
+        trace: dict[str, Any] = {"stage": "work_arrangement", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "question": "work_mode",
+            "metro": reading.verdict.value, "place_source": source, "place": reading.place,
+            "reference_ids": [saved.id]}
+        if reading.verdict is MetroVerdict.UNKNOWN:
+            self._trace(trace | {"status": "NOT_DECIDED"})
+            return False, None
+        posted = posting_mode(context.job) if reading.verdict is MetroVerdict.IN_METRO else None
+        wanted = (([posted] if posted else ["hybrid", "on-site"])
+                  if reading.verdict is MetroVerdict.IN_METRO else ["remote"])
+        options = usable_options(field)
+        if field.control_type in MULTI_CHOICE_CONTROLS:
+            chosen = [o for o in options if work_mode_of(o.label) in wanted]
+        else:
+            chosen = next(([same[0]] for mode in wanted
+                           if len(same := [o for o in options if work_mode_of(o.label) == mode]) == 1), [])
+        trace.update(modes=wanted, posted=posted)
+        value = _choice_value(field, chosen) if chosen else None
+        if value is None or answer_problems(field, value):
+            self._trace(trace | {"status": "NO_OPTION"})
+            return True, None
+        self._trace(trace | {"status": "ANSWERED", "selected": [work_mode_of(o.label) for o in chosen]})
+        return True, PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[saved.id],
+                note=("the job is in the person's metro area: " + " or ".join(wanted)
+                      if reading.verdict is MetroVerdict.IN_METRO
+                      else "the job is outside the person's metro area: remote")))
+
+    @staticmethod
+    def _is_office_choice(field: ApplicationField) -> bool:
+        """A choice among office locations, perhaps with Remote, asking where the applicant
+        would work ("Location Preference": Burlingame, CA / Columbus, OH / Austin, TX / New
+        York City, NY / Remote): preference or office wording and no current or past wording,
+        at least two options naming a place, and every other option a work mode or a neutral
+        answer ("No preference")."""
+        wording = " ".join([field.label, field.help_text or ""])
+        if (field.control_type not in CHOICE_CONTROLS or _OFFICE_PREFERENCE.search(wording) is None
+                or _PRESENT_OR_PAST.search(wording) is not None):
+            return False
+        options = usable_options(field)
+        places = [o for o in options if names_place(o.label)]
+        return len(places) >= 2 and all(
+            names_work_mode(o.label) or _NEUTRAL_OPTION.match(question_key(o.label)) is not None
+            for o in options if o not in places)
+
+    def _office_choice(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
+        """The office in the person's metro (their own city's first; every such office on a
+        select-all question), else the Remote option; held when there is neither."""
+        options = usable_options(field)
+        trace: dict[str, Any] = {"stage": "work_arrangement", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "question": "office_location",
+            "option_count": len(options)}
+        found = self._metro(context)
+        if found is None:
+            self._trace(trace | {"status": "NO_METRO"})
+            return None
+        metro, saved = found
+        trace["reference_ids"] = [saved.id]
+        in_metro = sorted((o for o in options if metro_place_named(o.label, metro) is not None),
+                          key=lambda o: metro_place_named(o.label, metro) != metro.city)
+        remote = [o for o in options if work_mode_of(o.label) == "remote"]
+        multi = field.control_type in MULTI_CHOICE_CONTROLS
+        chosen = (in_metro if multi else in_metro[:1]) if in_metro else (
+            remote if multi or len(remote) == 1 else [])
+        verdict = MetroVerdict.IN_METRO if in_metro else MetroVerdict.OUTSIDE
+        trace.update(metro=verdict.value, place=metro_place_named(in_metro[0].label, metro)
+                     if in_metro else None)
+        value = _choice_value(field, chosen) if chosen else None
+        if value is None or answer_problems(field, value):
+            self._trace(trace | {"status": "NO_OPTION"})
+            return None
+        self._trace(trace | {"status": "ANSWERED", "selected": len(chosen)})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[saved.id],
+                note=("the office in the person's metro area" if in_metro
+                      else "no office in the person's metro area: remote")))
 
     # --- consent and attestation statements -----------------------------------------------
 
@@ -3445,10 +3668,13 @@ class DynamicPacketResolver:
     # --- relocation questions that name a place -------------------------------------------
 
     @staticmethod
-    def _is_relocation_place(field: ApplicationField, gate: FieldRouteDecision) -> bool:
+    def _is_relocation_place(field: ApplicationField, gate: FieldRouteDecision,
+                             city: str | None = None) -> bool:
         """A required yes/no or single-choice relocation question that names a place (a US
-        state in its wording, or state options), routed as a literal answer (label or
-        route mass) about the applicant (at most 0.01 on another person or entity)."""
+        state in its wording, state options, or since round 13 the applicant's own ``city``:
+        "If you are not currently based in Austin, would you be willing to relocate?"),
+        routed as a literal answer (label or route mass) about the applicant (at most 0.01
+        on another person or entity)."""
         return (field.required and field.semantic_type is SemanticType.RELOCATION
                 and field.control_type in (ControlType.SELECT, ControlType.RADIO)
                 and (gate.route is FieldRoute.COPY_KNOWN or _answer_route(gate))
@@ -3456,7 +3682,8 @@ class DynamicPacketResolver:
                     SourceScope.OTHER_PERSON_OR_ENTITY.value, 0.0) <= 0.01
                 and (bool(_listed_states(field))
                      or sum(1 for option in usable_options(field)
-                            if us_states_named(option.label)) >= 2))
+                            if us_states_named(option.label)) >= 2
+                     or (city is not None and _names_city(city, field.question_text))))
 
     def _relocation(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
         """One Jev Choice over the options plus UNKNOWN and NOT_PLACE: the option that is
@@ -3498,7 +3725,9 @@ class DynamicPacketResolver:
         option = keys[answer.choice]
         region = us_state_code(address.region or "")
         named = (_listed_states(field) if _NEGATED_LIST.search(field.question_text) is None else set())
-        if _yes_no_pair(field):
+        if _yes_no_pair(field) and _polarity(option.label) is not None:
+            # A Yes or No is true only as Yes (an address never states unwillingness); an
+            # option without either ("I'm based in Austin") is checked by its place below.
             if _polarity(option.label) != "yes" or (named and region not in named):
                 self._trace(trace | {"status": "ADDRESS_MISMATCH"})
                 return None
