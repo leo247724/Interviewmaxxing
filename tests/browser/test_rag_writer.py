@@ -763,22 +763,24 @@ def allowances(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int, float]]:
 
 # --- round 6 (D): the call budget scales with the form -----------------------------------------
 # A production budget allows each resolved form what the budget used so far plus 24 calls /
-# USD 0.30 and 8 calls / USD 0.15 per WRITER-routed field, capped at 120 calls / USD 2.00 in
-# total. A fixed budget (``CallBudget()``, as elsewhere in these tests) never changes.
+# USD 0.30 and 12 calls / USD 0.30 per WRITER-routed field (raised from 8 / USD 0.15 by WP12
+# for the story consistency check, the no-slop rewrite and its second grounding), capped at
+# 120 calls / USD 2.00 in total. A fixed budget (``CallBudget()``, as elsewhere in these
+# tests) never changes.
 
 
 @pytest.mark.parametrize(("writers", "max_calls", "max_usd"), [
-    (0, 24, 0.30), (1, 32, 0.45), (4, 56, 0.90), (11, 112, 1.95), (12, 120, 2.00),
+    (0, 24, 0.30), (1, 36, 0.60), (4, 72, 1.50), (5, 84, 1.80), (6, 96, 2.00), (8, 120, 2.00),
     (20, 120, 2.00),
-], ids=["no-writer", "one-writer", "four-writers", "eleven-under-the-caps",
-        "twelve-reach-the-caps", "twenty-capped"])
-def test_a_scaling_budget_allows_a_form_24_calls_and_usd_030_plus_8_and_015_per_writer(
+], ids=["no-writer", "one-writer", "four-writers", "five-under-the-caps",
+        "six-reach-the-usd-cap", "eight-reach-the-call-cap", "twenty-capped"])
+def test_a_scaling_budget_allows_a_form_24_calls_and_usd_030_plus_12_and_030_per_writer(
     writers: int, max_calls: int, max_usd: float,
 ) -> None:
     from interviewmaxxing_browser.ai import providers
 
     assert (providers.FORM_BASE_CALLS, providers.FORM_BASE_USD) == (24, 0.30)
-    assert (providers.FORM_WRITER_CALLS, providers.FORM_WRITER_USD) == (8, 0.15)
+    assert (providers.FORM_WRITER_CALLS, providers.FORM_WRITER_USD) == (12, 0.30)
     assert (providers.FORM_CAP_CALLS, providers.FORM_CAP_USD) == (120, 2.00)
     budget = CallBudget(scales_with_form=True)
     assert (budget.max_calls, budget.max_usd) == (48, 0.50)  # until a form is resolved
@@ -798,17 +800,17 @@ def test_a_negative_writer_count_allows_only_the_base() -> None:
 def test_a_second_form_gets_its_allowance_on_top_of_what_the_budget_used() -> None:
     budget = CallBudget(scales_with_form=True)
     budget.allow_form(4)
-    assert budget.max_calls == 56
+    assert budget.max_calls == 72
     for _ in range(10):
         budget.reserve(b"{}", 0.01)
     # A reported cost above its reservation counts as used too.
     budget.record(CallReceipt("narrative", MODEL, MODEL, .1, .05, .01, "OK"))
     assert budget.calls == 10 and budget.reserved_usd == pytest.approx(0.14)
     budget.allow_form(1)
-    # What was used plus the second form's own allowance: the first form's unused 46 calls
-    # (about USD 0.76) do not carry over.
-    assert budget.max_calls == 10 + 24 + 8
-    assert budget.max_usd == pytest.approx(0.14 + 0.30 + 0.15)
+    # What was used plus the second form's own allowance: the first form's unused 62 calls
+    # (about USD 1.36) do not carry over.
+    assert budget.max_calls == 10 + 24 + 12
+    assert budget.max_usd == pytest.approx(0.14 + 0.30 + 0.30)
 
 
 def test_the_caps_bound_the_budgets_total_independently() -> None:
@@ -817,15 +819,15 @@ def test_the_caps_bound_the_budgets_total_independently() -> None:
     for _ in range(100):
         budget.reserve(b"{}", 0.018)
     assert budget.calls == 100 and budget.reserved_usd == pytest.approx(1.80)
-    budget.allow_form(4)  # 56 calls and USD 0.90 more would pass both caps
+    budget.allow_form(4)  # 72 calls and USD 1.50 more would pass both caps
     assert budget.max_calls == 120 and budget.max_usd == pytest.approx(2.00)
 
     budget = CallBudget(scales_with_form=True)
     budget.allow_form(12)
     for _ in range(50):
         budget.reserve(b"{}", 0.002)
-    budget.allow_form(9)  # 50 + 24 + 72 = 146 calls, USD 0.10 + 0.30 + 1.35 = 1.75
-    assert budget.max_calls == 120 and budget.max_usd == pytest.approx(1.75)
+    budget.allow_form(4)  # 50 + 24 + 48 = 122 calls, USD 0.10 + 0.30 + 1.20 = 1.60
+    assert budget.max_calls == 120 and budget.max_usd == pytest.approx(1.60)
 
 
 def test_a_budget_that_spent_its_cap_gets_no_further_allowance() -> None:
@@ -904,7 +906,7 @@ def test_the_production_runtime_shares_one_budget_that_scales_with_the_form(tmp_
     assert fixed.scales_with_form is False
 
 
-def test_a_breezy_form_with_four_writer_fields_of_eight_gets_56_calls_and_usd_090(
+def test_a_breezy_form_with_four_writer_fields_of_eight_gets_72_calls_and_usd_150(
     fictional_candidate: Any, mock_job: Any, allowances: list[tuple[int, int, float]],
 ) -> None:
     import asyncio
@@ -922,10 +924,10 @@ def test_a_breezy_form_with_four_writer_fields_of_eight_gets_56_calls_and_usd_09
     routing = report.provider_calls
     [(writers, calls, used_usd)] = allowances
     assert (writers, calls) == (4, routing)
-    assert budget.max_calls - calls == 24 + 4 * 8 == 56
-    assert budget.max_usd == pytest.approx(used_usd + 0.30 + 4 * 0.15)
-    assert budget.max_usd - used_usd == pytest.approx(0.90)
-    assert resolver.provider_usage()["limits"] == {"max_calls": routing + 56, "max_usd": budget.max_usd}
+    assert budget.max_calls - calls == 24 + 4 * 12 == 72
+    assert budget.max_usd == pytest.approx(used_usd + 0.30 + 4 * 0.30)
+    assert budget.max_usd - used_usd == pytest.approx(1.50)
+    assert resolver.provider_usage()["limits"] == {"max_calls": routing + 72, "max_usd": budget.max_usd}
     # The contact fields are copied; without a configured writer the prose waits for the user.
     assert [a.field_id for a in packet.answers] == ["first_name", "last_name", "email", "phone"]
     assert [m.field_id for m in packet.missing_inputs] == [f"prose_{i}" for i in range(4)]
@@ -951,7 +953,7 @@ def test_only_fields_the_report_routes_to_the_writer_raise_the_allowance(
     decision = report.field("salary")
     assert (decision.proposed_route, decision.route) == (FieldRoute.WRITER, FieldRoute.HUMAN_INPUT)
     assert [(writers, calls) for writers, calls, _ in allowances] == [(4, report.provider_calls)]
-    assert resolver.decisions.budget.max_calls == report.provider_calls + 24 + 4 * 8
+    assert resolver.decisions.budget.max_calls == report.provider_calls + 24 + 4 * 12
 
 
 def test_each_form_a_runtime_resolves_gets_its_allowance_on_top_of_what_was_used(
@@ -975,9 +977,9 @@ def test_each_form_a_runtime_resolves_gets_its_allowance_on_top_of_what_was_used
     used = resolver.router.report_for(first).provider_calls
     used_both = used + resolver.router.report_for(second).provider_calls
     assert [(writers, calls) for writers, calls, _ in allowances] == [(4, used), (1, used_both)]
-    assert budget.max_calls == used_both + 24 + 8
-    assert budget.max_usd == pytest.approx(allowances[1][2] + 0.30 + 0.15)
-    assert resolver.provider_usage()["limits"] == {"max_calls": used_both + 32, "max_usd": budget.max_usd}
+    assert budget.max_calls == used_both + 24 + 12
+    assert budget.max_usd == pytest.approx(allowances[1][2] + 0.30 + 0.30)
+    assert resolver.provider_usage()["limits"] == {"max_calls": used_both + 36, "max_usd": budget.max_usd}
 
 
 def test_a_fixed_budget_keeps_its_limits_through_a_resolved_form(

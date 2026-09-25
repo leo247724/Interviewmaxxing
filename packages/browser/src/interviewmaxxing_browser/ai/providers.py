@@ -73,7 +73,7 @@ def flush_receipts(buffer: list[tuple[CallBudget, CallReceipt]]) -> None:
 
 
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
-FORM_WRITER_CALLS, FORM_WRITER_USD = 8, 0.15
+FORM_WRITER_CALLS, FORM_WRITER_USD = 12, 0.30
 FORM_CAP_CALLS, FORM_CAP_USD = 120, 2.00
 
 
@@ -91,8 +91,9 @@ class CallBudget:
 
     def allow_form(self, writer_fields: int) -> None:
         """Limits for one more form, when the budget scales with the form: what it used so
-        far plus 24 calls / USD 0.30 and 8 calls / USD 0.15 per WRITER-routed field, capped
-        at 120 calls / USD 2.00 in total."""
+        far plus 24 calls / USD 0.30 and 12 calls / USD 0.30 per WRITER-routed field (its
+        retrieval, consistency checks, writing, grounding, review and the no-slop rewrite
+        with its second grounding), capped at 120 calls / USD 2.00 in total."""
         if not self.scales_with_form:
             return
         writers = max(0, writer_fields)
