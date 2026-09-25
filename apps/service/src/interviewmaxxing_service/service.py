@@ -9,6 +9,7 @@ submission state itself.
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 from urllib.parse import urlsplit
 
 from interviewmaxxing_core import (
@@ -39,6 +41,7 @@ from interviewmaxxing_core import (
     MissingInput,
     NotFound,
     ReconciliationMethod,
+    SubmissionBlocked,
     SubmissionOutcome,
     SubmissionReconciliation,
     normalize_application_url,
@@ -47,7 +50,7 @@ from interviewmaxxing_core import (
 from interviewmaxxing_pipeline import PipelineItem
 
 from . import errors
-from .answers import plan_answers, unanswered_required
+from .answers import current_questions, plan_answers, unanswered_required
 from .application_links import ApplicationLinks
 from .candidate import (
     CandidateDataInvalid,
@@ -63,14 +66,37 @@ from .models import (
     PRESENTATION_VERSION,
     AnswerInput,
     ApplicationListView,
+    ApplicationReviewView,
     ApplicationView,
+    ApprovalView,
+    ApproveInput,
+    BrowserActionView,
     CandidateView,
     RecheckInput,
     ReconcileInput,
     ResumeDocumentView,
+    ReviewQueueView,
+    ReviewStage,
     StartApplicationInput,
+    SubmitInput,
+    SubmitReadinessView,
     UserConfirmedNotReceivedInput,
     UserFoundConfirmationInput,
+)
+from .review import (
+    NO_RECORDS,
+    ReviewAnswers,
+    ReviewInputs,
+    SavedAnswerRef,
+    packet_rows,
+    prepared_steps,
+    review_answers,
+)
+from .review_queue import (
+    PROVIDER_EVENT,
+    browser_hold,
+    provider_cost,
+    review_queue,
 )
 from .summaries import StoreSnapshot, store_snapshot, url_alias
 from .views import (
@@ -80,8 +106,10 @@ from .views import (
     application_view,
     awaited_inputs,
     form_step_of,
+    iso,
     prepared_event,
     preparing_attempt,
+    recorded_questions,
     run_packet_ids,
 )
 
@@ -103,6 +131,13 @@ BUSY_MESSAGE = (
     "Another application is using the browser right now. Wait for it to finish or "
     "stop for your input, then try again."
 )
+_SUBMITTED_STATES = frozenset({S.SUBMITTED, S.SUBMITTING, S.SUBMISSION_UNKNOWN})
+_CLOSED_STATES = frozenset({S.DUPLICATE, S.WITHDRAWN, S.FAILED_PERMANENT})
+SUBMISSION_OFF = (
+    "Submission is turned off in this service. Restart it with IMX_ALLOW_SUBMISSION=1 to "
+    "submit approved applications from the dashboard."
+)
+ANSWERED_EVENT = "input.received"
 
 
 @dataclass(frozen=True)
@@ -131,25 +166,27 @@ _DOWNLOAD_TYPES = {
 }
 
 
+V = TypeVar("V")
+
 SAVED_WORDING_LIMIT = 256
 """Applications whose saved-answer wording the service keeps (least recently used go)."""
 
 
-class _LoadOnUse(Mapping[str, str]):
+class _LoadOnUse(Mapping[str, V]):
     """A mapping read from ``load`` the first time a value is asked for, so a view that
     needs no saved-answer wording never reads the profile. It answers lookups of one key
     only: iterating it or taking its length raises instead of reading the profile."""
 
-    def __init__(self, load: Callable[[], Mapping[str, str]]) -> None:
+    def __init__(self, load: Callable[[], Mapping[str, V]]) -> None:
         self._load = load
-        self._data: Mapping[str, str] | None = None
+        self._data: Mapping[str, V] | None = None
 
-    def _loaded(self) -> Mapping[str, str]:
+    def _loaded(self) -> Mapping[str, V]:
         if self._data is None:
             self._data = self._load()
         return self._data
 
-    def __getitem__(self, key: str) -> str:
+    def __getitem__(self, key: str) -> V:
         return self._loaded()[key]
 
     def __iter__(self) -> Iterator[str]:
@@ -178,9 +215,11 @@ class PresentationService:
         ``review``; optional."""
         self.owner = f"service:{os.getpid()}"
         self.application_links: ApplicationLinks | None = None
-        self._wording: OrderedDict[str, tuple[int, dict[str, str]]] = OrderedDict()
-        """Application id -> (its version, the saved-answer wording its review used), the
-        most recently used last; at most ``_wording_limit`` entries."""
+        self._wording: OrderedDict[
+            str, tuple[int, dict[str, SavedAnswerRef], frozenset[str]]
+        ] = OrderedDict()
+        """Application id -> (its version, the saved answers its views used, the ids looked
+        up), the most recently used last; at most ``_wording_limit`` entries."""
         self._wording_limit = SAVED_WORDING_LIMIT
         self._wording_lock = threading.Lock()
 
@@ -225,11 +264,12 @@ class PresentationService:
         app: Application,
         *,
         answer_errors: dict[str, str] | None = None,
+        events: Sequence[ApplicationEvent] | None = None,
     ) -> ApplicationView:
         requests = store.list_requests(app.id)
         request = next((r for r in requests if r.id == app.request_id), requests[0])
         packet = store.latest_packet(app.id)
-        events = store.list_events(app.id)
+        events = store.list_events(app.id) if events is None else events
         review_packets = self._review_packets(store, app, events)
         pinned = store.pinned_resume(app.id)
         prior = None
@@ -290,35 +330,44 @@ class PresentationService:
         return packets
 
     def _saved_wording(self, app: Application, packets: list[ApplicationPacket]) -> dict[str, str]:
-        """``_saved_questions`` once per application version: the packets a view uses
-        change only with the version, so repeated status reads, answers and resumes do
-        not read the profile from disk again. A failed read is not kept, and only the
-        ``_wording_limit`` most recently used applications are."""
-        with self._wording_lock:
-            kept = self._wording.get(app.id)
-            if kept is not None and kept[0] == app.version:
-                self._wording.move_to_end(app.id)
-                return kept[1]
-        wording = self._saved_questions(packets)
-        if wording is None:
-            return {}
-        with self._wording_lock:
-            self._wording[app.id] = (app.version, wording)
-            self._wording.move_to_end(app.id)
-            while len(self._wording) > self._wording_limit:
-                self._wording.popitem(last=False)
-        return wording
+        """Saved-answer id -> the question it was saved for (``_saved_refs``)."""
+        return {ref_id: ref.question for ref_id, ref in self._saved_refs(app, packets).items()}
 
-    def _saved_questions(self, packets: list[ApplicationPacket]) -> dict[str, str] | None:
-        """Saved-answer id -> the question it was saved for, for the saved answers these
-        packets used; empty when none were used. None when the profile can't be read."""
-        wanted = {
+    def _saved_refs(
+        self, app: Application, packets: Sequence[ApplicationPacket]
+    ) -> dict[str, SavedAnswerRef]:
+        """``_read_saved_refs`` once per application version: the packets a view uses
+        change only with the version, so repeated status reads, answers and resumes do
+        not read the profile from disk again (a view that needs saved answers the kept
+        entry didn't look up reads it once more). A failed read is not kept, and only the
+        ``_wording_limit`` most recently used applications are."""
+        wanted = frozenset(
             ref
             for packet in packets
             for answer in packet.answers
             if answer.provenance.source is AnswerSource.SAVED_ANSWER
             for ref in answer.provenance.reference_ids
-        }
+        )
+        with self._wording_lock:
+            kept = self._wording.get(app.id)
+            if kept is not None and kept[0] == app.version and wanted <= kept[2]:
+                self._wording.move_to_end(app.id)
+                return kept[1]
+        if kept is not None and kept[0] == app.version:
+            wanted |= kept[2]
+        refs = self._read_saved_refs(wanted)
+        if refs is None:
+            return {}
+        with self._wording_lock:
+            self._wording[app.id] = (app.version, refs, wanted)
+            self._wording.move_to_end(app.id)
+            while len(self._wording) > self._wording_limit:
+                self._wording.popitem(last=False)
+        return refs
+
+    def _read_saved_refs(self, wanted: frozenset[str]) -> dict[str, SavedAnswerRef] | None:
+        """The wording and scope of the ``wanted`` saved answers (never their values);
+        empty when none are wanted. None when the profile can't be read."""
         if not wanted or self.profile_loader is None:
             return {}
         try:
@@ -328,7 +377,11 @@ class PresentationService:
             return None
         if profile is None:
             return None
-        return {saved.id: saved.question for saved in profile.saved_answers if saved.id in wanted}
+        return {
+            saved.id: SavedAnswerRef(id=saved.id, question=saved.question, scope=saved.scope)
+            for saved in profile.saved_answers
+            if saved.id in wanted
+        }
 
     @staticmethod
     def _awaited(store: ApplicationStore, app: Application) -> list[MissingInput]:
@@ -372,7 +425,14 @@ class PresentationService:
             "runner": "unavailable" if self._runner_unavailable() else "available",
             "applicationMode": self.config.application_mode,
             "presentationVersion": PRESENTATION_VERSION,
+            "submission": "enabled" if self._submission_enabled else "disabled",
+            "browser": "headless" if self.config.headless else "visible",
         }
+
+    @property
+    def _submission_enabled(self) -> bool:
+        """``IMX_ALLOW_SUBMISSION=1`` at start, with a runner able to submit."""
+        return self.config.allow_submission and self.dispatcher.can_submit
 
     def _runner_unavailable(self) -> str | None:
         return self.runner_problem() if self.runner_problem is not None else None
@@ -573,16 +633,26 @@ class PresentationService:
             return self._view(store, app)
 
     def answer(self, application_id: str, body: AnswerInput) -> ApplicationView:
+        """Save answers to the questions the application waits for and, for a prepared
+        application, changes to the answers of its prepared form (the review lane's edit:
+        the question ids its review lists). Nothing runs: ``resume`` prepares it again
+        with them. A change that isn't valid answers 422 with the problem per question."""
         self._settle(application_id)
         with self._store() as store:
             app = self._owned(store, application_id)
             if self.dispatcher.status(app.id) is not None or app.state is not S.NEEDS_INPUT:
                 raise errors.conflict("This application isn't waiting for answers right now.")
-            plan = plan_answers(self._awaited(store, app), body)
+            awaited = self._awaited(store, app)
+            waiting = current_questions(awaited)
+            edits = self._edits(store, app, store.list_events(app.id))
+            extra = [q for qid, q in edits.questions.items() if qid not in waiting]
+            plan = plan_answers([*awaited, *extra], body, allowed_reuse=edits.reuse)
             if plan.stale:
                 message = "These questions have changed. Reload to see the current questions."
                 raise errors.conflict(message, {qid: message for qid in plan.stale})
             if plan.errors:
+                if any(qid not in waiting for qid in plan.errors):
+                    raise errors.invalid("Some answers need attention.", plan.errors)
                 return self._view(store, app, answer_errors=plan.errors)
             if plan.inputs:
                 job = store.get_job(app.job_id)
@@ -722,6 +792,254 @@ class PresentationService:
         with self._claimed(store, app.id) as claim:
             store.reconcile_submission(claim, reconciliation)
 
+    # --- the review lane ---------------------------------------------------------------------
+
+    def review_queue(self) -> ReviewQueueView:
+        """The Prepared queue: applications at their final review step and those held
+        only by a browser step, newest first, from one read of the store."""
+        with self._store(), store_snapshot(self.config.paths.state_db) as snapshot:
+            items = review_queue(snapshot, self.config.candidate_id)
+        return ReviewQueueView(applications=items)
+
+    def review(self, application_id: str) -> ApplicationReviewView:
+        with self._store() as store:
+            app = self._owned(store, application_id)
+            if app.state is S.SUBMITTING and self.dispatcher.status(app.id) is None:
+                store.recover_interrupted_submissions()
+                app = store.get_application(app.id)
+            return self._review(store, app)
+
+    def approve(self, application_id: str, body: ApproveInput) -> ApplicationReviewView:
+        """Approve the prepared packet the person reviewed, through the store's
+        ``approve_submission`` (which pins every page's packet). Submits nothing."""
+        self._settle(application_id)
+        with self._store() as store:
+            app = self._owned(store, application_id)
+            if self.dispatcher.status(app.id) is not None:
+                raise errors.conflict(
+                    "A run is working on this application right now. Approve it once it stops.")
+            prepared = store.prepared_packet(app.id)
+            if prepared is None:
+                raise errors.conflict(
+                    "This application isn't stopped at a completed preparation, so there is "
+                    "nothing to approve. Prepare it again and review it first.")
+            if body.packet_id != prepared:
+                raise errors.conflict(
+                    "This application was prepared again since this page was loaded. Review "
+                    "the new preparation, then approve it.")
+            with self._claimed(store, app.id) as claim:
+                try:
+                    store.approve_submission(claim, packet_id=prepared, approver=_approver())
+                except SubmissionBlocked as exc:
+                    raise errors.conflict(_blocked_message(exc)) from exc
+            return self._review(store, store.get_application(app.id))
+
+    def submit(self, application_id: str, body: SubmitInput) -> ApplicationReviewView:
+        """Submit an approved application from the dashboard: the CLI ``submit APP --yes``
+        path. Only in a service started with ``IMX_ALLOW_SUBMISSION=1``, only for the
+        approval the person confirmed (``packetId``), and only where the application mode
+        allows the site. Records the authorization, then runs the submission runner, which
+        submits exactly the approved packets or stops before submitting."""
+        if not self._submission_enabled:
+            raise errors.forbidden(f"{SUBMISSION_OFF} Nothing was submitted.")
+        self._settle(application_id)
+        with self.dispatcher.lock, self._store() as store:
+            app = self._owned(store, application_id)
+            if self.dispatcher.status(app.id) is not None:
+                raise errors.conflict(
+                    "A run is working on this application right now. Nothing was submitted.")
+            if app.state in _SUBMITTED_STATES:
+                raise errors.conflict(
+                    "This application was already submitted or its submission is being "
+                    "settled; it is never submitted again.")
+            if app.state in _CLOSED_STATES:
+                raise errors.conflict("This application is closed and can't be submitted.")
+            approval = store.submission_approval(app.id)
+            if approval is None:
+                raise errors.conflict(
+                    "Approve this preparation before submitting it. Nothing was submitted.")
+            if approval.packet_id != body.packet_id:
+                raise errors.conflict(
+                    "The approval changed since this page was loaded. Reload and check it "
+                    "again. Nothing was submitted.")
+            self._require_runner()
+            self._require_test_site(store, app)
+            if self._claim_live_elsewhere(app):
+                raise errors.conflict(
+                    "This application is being worked on elsewhere. Try again in a moment.")
+            if self.dispatcher.busy:
+                raise errors.conflict(BUSY_MESSAGE)
+            with self._claimed(store, app.id) as claim:
+                try:
+                    store.authorize_submission(claim)
+                except SubmissionBlocked as exc:
+                    raise errors.conflict(_blocked_message(exc)) from exc
+            before = app.state
+            run = self.dispatcher.submit(
+                app.id, "submit",
+                lambda executor: executor.submit(app.id),
+                allow_browser_action=not self.config.headless, after=self._after_run,
+            )
+        self._wait_for_departure(application_id, before, run)
+        return self.review(application_id)
+
+    def _review(self, store: ApplicationStore, app: Application) -> ApplicationReviewView:
+        events = store.list_events(app.id)
+        view = self._view(store, app, events=events)
+        prepared = prepared_event(events) if app.state is S.NEEDS_INPUT else None
+        stage: ReviewStage = "other"
+        if prepared is not None:
+            stage = "prepared"
+        elif app.state is S.NEEDS_INPUT:
+            stop = next((e for e in reversed(events) if e.to_state is not None), None)
+            if stop is not None and browser_hold(stop.metadata) is not None:
+                stage = "browser_action"
+        approval = store.submission_approval(app.id)
+        latest_ready = next((e for e in reversed(events) if e.event == "preparation.ready"), None)
+        changed = latest_ready is not None and any(
+            e.event == ANSWERED_EVENT and e.sequence > latest_ready.sequence for e in events)
+        edit_note: str | None = None
+        if prepared is not None:
+            edits = self._edits(store, app, events, prepared=prepared)
+            rows = edits.rows
+            if not edits.questions and rows and all(r.no_edit_reason == NO_RECORDS for r in rows):
+                edit_note = NO_RECORDS
+        else:
+            packet = store.latest_packet(app.id)
+            rows = packet_rows([packet], self._review_inputs(store, app, events, [packet])) \
+                if packet is not None and app.state not in _WORKING else []
+            edit_note = "Only a prepared application's answers can be changed here."
+        if self.dispatcher.status(app.id) is not None:
+            edit_note = "A run is working on this application right now."
+        budget = [e for e in events if e.event == PROVIDER_EVENT]
+        cost = provider_cost(
+            sum(float(e.metadata.get("known_cost_usd") or 0.0) for e in budget),
+            sum(int(e.metadata.get("calls") or 0) for e in budget),
+            sum(int(e.metadata.get("unknown_cost_calls") or 0) for e in budget),
+        ) if budget else None
+        captcha = latest_ready is not None and latest_ready.metadata.get("captcha_pending") is True
+        return ApplicationReviewView(
+            application=view,
+            stage=stage,
+            prepared_packet_id=store.prepared_packet(app.id),
+            approval=ApprovalView(
+                packet_id=approval.packet_id, approved_at=iso(approval.approved_at),
+                approver=approval.approver, pages=max(len(approval.steps), 1),
+            ) if approval is not None else None,
+            changed_since_preparation=changed,
+            provider_cost=cost,
+            answers=rows,
+            edit_note=edit_note,
+            submit=self._submit_readiness(store, app, approved=approval is not None,
+                                          changed=changed, prepared=prepared is not None,
+                                          captcha=captcha),
+            browser=self._browser_action(store, app),
+        )
+
+    def _review_inputs(
+        self, store: ApplicationStore, app: Application, events: Sequence[ApplicationEvent],
+        packets: Sequence[ApplicationPacket],
+    ) -> ReviewInputs:
+        return ReviewInputs(
+            user_inputs=store.list_user_inputs(app.id),
+            recorded=recorded_questions(events),
+            saved=_LoadOnUse(lambda: self._saved_refs(app, packets)),
+        )
+
+    def _edits(
+        self, store: ApplicationStore, app: Application, events: Sequence[ApplicationEvent],
+        *, prepared: ApplicationEvent | None = None,
+    ) -> ReviewAnswers:
+        """The prepared form's rows and the questions an edit may answer; none unless
+        the application is stopped at a completed preparation."""
+        prepared = prepared or (prepared_event(events) if app.state is S.NEEDS_INPUT else None)
+        if prepared is None:
+            return ReviewAnswers(rows=[], questions={}, reuse={})
+        steps = prepared_steps(events, prepared)
+        packets: dict[str, ApplicationPacket] = {}
+        for step in steps:
+            try:
+                packets[step.packet_id] = store.get_packet(step.packet_id)
+            except NotFound:
+                continue
+        inputs = self._review_inputs(store, app, events, list(packets.values()))
+        return review_answers(steps, packets, inputs)
+
+    def _submit_readiness(
+        self, store: ApplicationStore, app: Application, *, approved: bool, changed: bool,
+        prepared: bool, captcha: bool,
+    ) -> SubmitReadinessView:
+        command = f"IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit {app.id} --yes"
+        if captcha:
+            command += " --act"
+        problems: list[str] = []
+        if not self._submission_enabled:
+            problems.append(SUBMISSION_OFF)
+        if app.state in _SUBMITTED_STATES:
+            problems.append("This application was already submitted or its submission is "
+                            "being settled; it is never submitted again.")
+        elif app.state in _CLOSED_STATES:
+            problems.append("This application is closed and can't be submitted.")
+        elif not approved:
+            if changed:
+                problems.append("Answers changed since this preparation. Prepare it again, "
+                                "then review and approve the new preparation.")
+            elif prepared:
+                problems.append("Approve this preparation first.")
+            else:
+                problems.append("Only an application prepared to its final review step and "
+                                "approved can be submitted.")
+        requests = store.list_requests(app.id)
+        url = next((r.application_url for r in requests if r.id == app.request_id),
+                   requests[0].application_url if requests else "")
+        mode = self._mode_problem(url)
+        if mode:
+            problems.append("This service is in TEST_ONLY mode: it only submits to local test "
+                            "sites (127.0.0.1 or localhost).")
+        runner = self._runner_unavailable()
+        if runner:
+            problems.append(runner)
+        running = self.dispatcher.status(app.id)
+        if running is not None:
+            problems.append("A run is working on this application right now.")
+        elif self.dispatcher.busy:
+            problems.append(BUSY_MESSAGE)
+        elif self._claim_live_elsewhere(app):
+            problems.append("This application is being worked on elsewhere. Try again in a moment.")
+        if captcha and self.config.headless:
+            problems.append(
+                "A CAPTCHA on this form must be solved in the browser, and this service runs "
+                "its browser headless. Submit it from a terminal instead.")
+        return SubmitReadinessView(
+            allowed=not problems, problems=problems, enabled=self._submission_enabled,
+            opens_browser=not self.config.headless, command=command,
+        )
+
+    def _browser_action(self, store: ApplicationStore, app: Application) -> BrowserActionView:
+        """Whether ``resume`` can open a visible browser window for this application now
+        (the ``resume --act`` equivalent), and the command-line line otherwise."""
+        command = f"interviewmaxxing resume {app.id} --act"
+        reason: str | None = None
+        if app.state in _SUBMITTED_STATES or app.state in _CLOSED_STATES:
+            reason = "This application can't continue."
+        elif self.config.headless:
+            reason = ("This service runs its browser headless, so it can't open a window. Run "
+                      "the command in a terminal instead.")
+        elif self._runner_unavailable():
+            reason = self._runner_unavailable()
+        elif self.dispatcher.busy:
+            reason = (
+                "A run is working on this application right now."
+                if self.dispatcher.status(app.id) is not None else BUSY_MESSAGE)
+        else:
+            requests = store.list_requests(app.id)
+            url = next((r.application_url for r in requests if r.id == app.request_id),
+                       requests[0].application_url if requests else "")
+            if self._mode_problem(url):
+                reason = ("This service is in TEST_ONLY mode: it only opens local test sites. "
+                          "Run the command in a terminal instead.")
+        return BrowserActionView(available=reason is None, reason=reason, command=command)
+
     # --- after a run (executor thread) ------------------------------------------------------
 
     def _after_run(self, run: Run) -> None:
@@ -793,6 +1111,35 @@ class PresentationService:
         return EvidenceFile(
             path=target, media_type=media, download_name=f"{ref.id}{suffix}", attachment=attachment
         )
+
+
+def _approver() -> str:
+    """Who approved, for ``application.approved`` (the CLI records ``cli:<login>``)."""
+    try:
+        return f"dashboard:{getpass.getuser()}"
+    except Exception:  # no login name in this environment
+        return "dashboard"
+
+
+_BLOCKED_MESSAGES = (
+    ("answers were saved", "Answers changed since this preparation. Prepare it again so they "
+                           "are filled in, then approve it."),
+    ("open required questions", "Some required questions of this preparation are still open."),
+    ("is missing", "A page of this preparation is missing from the store. Prepare it again."),
+    ("not stopped at a completed preparation",
+     "This application isn't stopped at a completed preparation. Prepare it again and review "
+     "it first."),
+    ("no valid approval", "Approve this preparation before submitting it."),
+)
+
+
+def _blocked_message(exc: SubmissionBlocked) -> str:
+    """The store's refusal in plain words (its own text names ids and states)."""
+    text = str(exc)
+    for marker, message in _BLOCKED_MESSAGES:
+        if marker in text:
+            return message
+    return f"The store refused it: {text}."
 
 
 def _url_problem(url: str) -> str | None:

@@ -9,6 +9,10 @@ SQLite connection stays on the thread that created it.
 Only one run happens at a time because all runs share the persistent browser profile.
 A request that would start a second run is refused (``ExecutorBusy``) instead of
 queued, so nothing acts on the user's behalf later without them seeing it.
+
+Submission runs (``submit``) come from a separate factory, ``submission_factory``,
+which exists only in a service started with ``IMX_ALLOW_SUBMISSION=1``; every other
+run uses the preparation-only ``factory``.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from interviewmaxxing_core import ApplyOutcome, MissingInput, UserInput
 
@@ -28,7 +32,7 @@ from .views import RunStatus
 
 log = logging.getLogger("interviewmaxxing.service")
 
-RunKind = Literal["apply", "resume", "reconcile"]
+RunKind = Literal["apply", "resume", "reconcile", "submit"]
 
 
 @runtime_checkable
@@ -44,6 +48,14 @@ class ApplicationExecutor(Protocol):
         """Recheck a SUBMISSION_UNKNOWN application against the site in the browser,
         without resubmitting. Records ``reconcile_submission`` only on proof."""
         ...
+
+
+@runtime_checkable
+class SubmissionExecutor(Protocol):
+    """The runner behind ``interviewmaxxing submit`` (``create_submission_runner``):
+    submits exactly the approved packets of an authorized application."""
+
+    async def submit(self, application_id: str) -> ApplyOutcome: ...
 
 
 class ServiceInteraction:
@@ -69,7 +81,8 @@ class ServiceInteraction:
 
 
 ExecutorFactory = Callable[[ServiceInteraction], ApplicationExecutor]
-RunCall = Callable[[ApplicationExecutor], Awaitable[ApplyOutcome]]
+SubmissionFactory = Callable[[ServiceInteraction], SubmissionExecutor]
+RunCall = Callable[[Any], Awaitable[ApplyOutcome]]
 AfterRun = Callable[["Run"], None]
 
 
@@ -77,6 +90,10 @@ class ExecutorBusy(RuntimeError):
     def __init__(self, application_id: str) -> None:
         super().__init__("another application is running")
         self.application_id = application_id
+
+
+class SubmissionUnavailable(RuntimeError):
+    """A submit run was asked of a dispatcher built without a submission factory."""
 
 
 @dataclass
@@ -96,8 +113,11 @@ class Run:
 class Dispatcher:
     """Runs one executor call at a time on a dedicated event-loop thread."""
 
-    def __init__(self, factory: ExecutorFactory) -> None:
+    def __init__(
+        self, factory: ExecutorFactory, *, submission_factory: SubmissionFactory | None = None
+    ) -> None:
         self._factory = factory
+        self._submission_factory = submission_factory
         self.lock = threading.RLock()
         """Hold while checking ``busy`` and starting a run, so the check and the start
         are atomic with the store write between them."""
@@ -118,6 +138,11 @@ class Dispatcher:
     def busy(self) -> bool:
         return self.current is not None
 
+    @property
+    def can_submit(self) -> bool:
+        """A submission factory was configured (``IMX_ALLOW_SUBMISSION=1``)."""
+        return self._submission_factory is not None
+
     def status(self, application_id: str) -> RunStatus | None:
         run = self.current
         return run.status if run is not None and run.application_id == application_id else None
@@ -131,6 +156,8 @@ class Dispatcher:
         allow_browser_action: bool = False,
         after: AfterRun | None = None,
     ) -> Run:
+        if kind == "submit" and self._submission_factory is None:
+            raise SubmissionUnavailable("submission is not enabled in this service")
         with self.lock:
             current = self.current
             if current is not None:
@@ -146,7 +173,13 @@ class Dispatcher:
         self, run: Run, call: RunCall, allow_browser_action: bool, after: AfterRun | None
     ) -> None:
         try:
-            executor = self._factory(ServiceInteraction(allow_browser_action=allow_browser_action))
+            interaction = ServiceInteraction(allow_browser_action=allow_browser_action)
+            executor: Any
+            if run.kind == "submit":
+                assert self._submission_factory is not None  # checked by ``submit``
+                executor = self._submission_factory(interaction)
+            else:
+                executor = self._factory(interaction)
             run.outcome = await call(executor)
         except BaseException as exc:  # recorded and handled by ``after``
             run.error = exc

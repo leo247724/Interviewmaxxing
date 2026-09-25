@@ -26,6 +26,7 @@ from .integration import (
     LocalSelectionBackend,
     runner_factory,
     runner_problem,
+    submission_runner_factory,
 )
 from .ownership import ServiceAlreadyRunning
 
@@ -64,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
         app = build_app(
             config,
             candidates=candidates,
-            dispatcher=Dispatcher(runner_factory(config)),
+            dispatcher=Dispatcher(
+                runner_factory(config), submission_factory=submission_runner_factory(config)
+            ),
             profile_loader=lambda: candidates.profile(config.candidate_id),
             runner_problem=lambda: runner_problem(config),
             unavailable=unavailable,

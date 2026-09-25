@@ -52,7 +52,7 @@ def test_health_has_no_private_data(harness: Harness) -> None:
         "status": "ok", "service": "interviewmaxxing-service", "contractVersion": "2",
         "executor": "idle", "runner": "available", "pipeline": "available",
         "jobs": "unavailable", "selection": "unavailable", "applicationMode": "TEST_ONLY",
-        "presentationVersion": "2",
+        "presentationVersion": "2", "submission": "disabled", "browser": "visible",
     }
     assert "access-control-allow-origin" not in r.headers
     assert r.headers["cache-control"] == "no-store"

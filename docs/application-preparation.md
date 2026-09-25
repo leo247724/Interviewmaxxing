@@ -87,7 +87,9 @@ before the form can be submitted. The questions form appears only when questions
 remain. Packets keep field ids rather than wording, so a question without recorded
 wording is named by its kind ("Email", "Work authorization"); the screenshot shows the
 site's own wording. "Prepare again" re-reads the site and stops at the review step
-again; the dashboard has no way to submit a prepared application. The pipeline's
+again. The review lane (`/review`) lists the prepared applications and lets you change an
+answer, approve and, when the service runs with `IMX_ALLOW_SUBMISSION=1`, submit: see
+[Applying from the dashboard](dashboard.md#applying-from-the-dashboard). The pipeline's
 "Prepared for review" filter finds cards whose application is prepared: cards linked
 to it, and cards saved with the same application URL, as the store normalizes it, so
 applications prepared by `prepare-batch` are found too. **Review** opens the

@@ -296,6 +296,12 @@ export interface ApplicationListView {
 export interface AnswerInput {
   answers: Record<string, AnswerValue>;
   attestations: Record<string, boolean>;
+  /**
+   * Optional, per question id: how far the answer may be reused. "application" (the
+   * default for an omitted question) keeps it to this application; "job" and "global"
+   * also save it for reuse. The review lane sends it with a changed answer.
+   */
+  reuse?: Record<string, "application" | "job" | "global">;
 }
 
 export type ReconcileInput =

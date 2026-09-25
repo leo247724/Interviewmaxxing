@@ -2,10 +2,12 @@
 
 **Nothing is submitted unless three things hold together:** you approved the prepared
 application (`interviewmaxxing approve APP`), the command runs with
-`IMX_ALLOW_SUBMISSION=1`, and you pass `--yes`. `apply`, `resume`, `prepare-batch`
-and the dashboard never submit; they prepare. What is submitted is exactly the
-packet you approved: the submission run fills it again from the store and never
-resolves, generates or re-reads an answer from your profile.
+`IMX_ALLOW_SUBMISSION=1`, and you pass `--yes`. `apply`, `resume` and `prepare-batch`
+never submit; they prepare. The dashboard submits only through its review lane, under the
+same rules: the service started with `IMX_ALLOW_SUBMISSION=1`, your approval, and your
+confirmation in the dashboard ([dashboard.md](dashboard.md#applying-from-the-dashboard)).
+What is submitted is exactly the packet you approved: the submission run fills it again
+from the store and never resolves, generates or re-reads an answer from your profile.
 
 This path is built and tested against the localhost mock ATS only
 (`scripts/mock_ats.py`). No real employer submission has been authorized or made.
@@ -139,8 +141,8 @@ share `status` output; share `events`.
 
 ## The store's rules
 
-`ApplicationStore` (`packages/core`) is the only authority; the CLI, the runner and any
-future dashboard action call these operations (see `CONTRACTS.md` §7):
+`ApplicationStore` (`packages/core`) is the only authority; the CLI, the runner and the
+dashboard (through the service) call these operations (see `CONTRACTS.md` §7):
 
 - `is_preparation_only(app)` is true while the application has an
   `application.preparation_only` event and no authorization lifts it. An authorization
@@ -257,4 +259,5 @@ applications) and no longer says "nothing was submitted" once one was.
   otherwise the run stops as described above and you submit it in the browser yourself.
   After that the store still shows the application as not submitted: the CLI has no command
   to record a submission made outside this path.
-- The dashboard has no approve action yet; it is planned on top of `approve_submission`.
+- The dashboard approves through `approve_submission` and submits through the same
+  authorization and submission runner ([dashboard.md](dashboard.md#applying-from-the-dashboard)).

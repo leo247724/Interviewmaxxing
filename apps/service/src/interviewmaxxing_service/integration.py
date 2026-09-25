@@ -31,7 +31,13 @@ from interviewmaxxing_core import (
 
 from .candidate import CandidateDataInvalid, CandidateSetupError, CandidateSetupState, ResumeEntry
 from .config import ServiceConfig
-from .executor import ApplicationExecutor, ExecutorFactory, ServiceInteraction
+from .executor import (
+    ApplicationExecutor,
+    ExecutorFactory,
+    ServiceInteraction,
+    SubmissionExecutor,
+    SubmissionFactory,
+)
 from .jobs_api import ApplicationLookup, DecisionRecord, Rank
 
 
@@ -141,6 +147,9 @@ def runner_problem(config: ServiceConfig | None = None) -> str | None:
         return "The application runner isn't installed in this service yet. Nothing was sent."
     if not hasattr(module, "create_runner") and not hasattr(module, "LocalApplicationRunner"):
         return "The installed application runner has no usable entry point. Nothing was sent."
+    if config is not None and config.allow_submission and not hasattr(module, "create_submission_runner"):
+        return ("Submission is enabled, but the installed application runner can't submit "
+                "approved applications. Nothing was sent.")
     if config is not None and config.dynamic_runtime:
         factory = getattr(module, "create_runner", None)
         if factory is None or "dynamic_options" not in inspect.signature(factory).parameters:
@@ -200,6 +209,32 @@ def runner_factory(config: ServiceConfig) -> ExecutorFactory:
             runner = module.LocalApplicationRunner(
                 paths=config.paths, interaction=interaction, headless=config.headless
             )
+        return runner
+
+    return make
+
+
+def submission_runner_factory(config: ServiceConfig) -> SubmissionFactory | None:
+    """The runner behind the dashboard's Submit: the CLI ``submit``'s
+    ``create_submission_runner`` with the service's browser and runtime options (an
+    application is submitted with the runtime it was prepared with). None unless the
+    service was started with ``IMX_ALLOW_SUBMISSION=1``, so a service without it never
+    builds a submission-capable runner. The runner itself submits only an application
+    whose approval was authorized, and only its approved packets."""
+    if not config.allow_submission:
+        return None
+
+    def make(interaction: ServiceInteraction) -> SubmissionExecutor:
+        module = _runner_module()
+        kwargs: dict[str, Any] = {}
+        if config.dynamic_runtime:
+            problem = runner_problem(config)
+            if problem:
+                raise RuntimeError(problem)
+            kwargs["dynamic_options"] = _dynamic_options(config)
+        runner: SubmissionExecutor = module.create_submission_runner(
+            config.paths, headless=config.headless, interaction=interaction, **kwargs
+        )
         return runner
 
     return make

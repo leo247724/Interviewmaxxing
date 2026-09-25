@@ -395,10 +395,12 @@ def serve(
     decisions: Any = None,
     runner_problem: Any = None,
     executor_factory: Any = None,
+    submission_factory: Any = None,
     **config: Any,
 ) -> Iterator[Harness]:
     """A running service over ``paths`` with the scripted runner, ``candidates`` and
-    optional jobs/selection backends."""
+    optional jobs/selection backends. ``submission_factory`` (called with the config)
+    builds the runners of submission runs; without it the service can't submit."""
     paths.ensure()
     runs: list[ServiceInteraction] = []
 
@@ -418,7 +420,11 @@ def serve(
     app = build_app(
         service_config,
         candidates=candidates,
-        dispatcher=Dispatcher(executor_factory(service_config) if executor_factory else factory),
+        dispatcher=Dispatcher(
+            executor_factory(service_config) if executor_factory else factory,
+            submission_factory=(submission_factory(service_config)
+                                if submission_factory else None),
+        ),
         profile_loader=profile_loader,
         listings=listings, search=search, decisions=decisions,
         runner_problem=runner_problem,

@@ -8,6 +8,14 @@ export interface ServiceReadiness {
   applicationMode: "TEST_ONLY" | "LIVE";
   /** The presentation contract version (CONTRACTS.md §12); absent means version 1. */
   presentationVersion?: string;
+  /**
+   * Whether the service was started with IMX_ALLOW_SUBMISSION=1, so the review lane
+   * may submit approved applications after the person confirms. Absent on older
+   * services, which never submit from the dashboard.
+   */
+  submission?: "enabled" | "disabled";
+  /** Whether the service's browser opens a visible window or runs headless. Absent on older services. */
+  browser?: "visible" | "headless";
 }
 
 /** Presentation contract major versions this dashboard reads (CONTRACTS.md §12). */

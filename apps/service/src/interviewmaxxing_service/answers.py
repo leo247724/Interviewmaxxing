@@ -9,7 +9,7 @@ saved unless every submitted answer is valid.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from interviewmaxxing_core import (
@@ -89,8 +89,19 @@ def _convert(missing: MissingInput, value: object) -> AnswerValue:
     raise ValueError("This question can't be answered here.")
 
 
-def plan_answers(awaited: Sequence[MissingInput], body: AnswerInput) -> AnswerPlan:
+SCOPE_NOT_OFFERED = "Choose one of the scopes this answer offers; it can't be kept that widely."
+
+
+def plan_answers(
+    awaited: Sequence[MissingInput],
+    body: AnswerInput,
+    *,
+    allowed_reuse: Mapping[str, Collection[str]] | None = None,
+) -> AnswerPlan:
+    """``allowed_reuse``: per question id, the reuse scopes its answer may be saved with
+    (the review lane's edits say why they are fewer); any scope for other questions."""
     questions = current_questions(awaited)
+    allowed_reuse = allowed_reuse or {}
     inputs: list[UserInput] = []
     errors: dict[str, str] = {}
     stale: list[str] = []
@@ -105,6 +116,9 @@ def plan_answers(awaited: Sequence[MissingInput], body: AnswerInput) -> AnswerPl
         if _is_blank(value):
             continue  # saving a draft may leave questions blank
         reuse: ReuseChoice = body.reuse.get(qid, "application")
+        if qid in allowed_reuse and reuse not in allowed_reuse[qid]:
+            errors[qid] = SCOPE_NOT_OFFERED
+            continue
         try:
             converted = _convert(missing, value)
             if as_attestation and missing.required and converted == BooleanValue(checked=False):

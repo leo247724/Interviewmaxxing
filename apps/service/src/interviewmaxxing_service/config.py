@@ -13,6 +13,9 @@ Variable                       Default                      Meaning
 ``IMX_SERVICE_HEADLESS``       ``0``                        ``1`` runs the browser headless
 ``IMX_SERVICE_MAX_UPLOAD``     ``10485760``                 Resume upload limit in bytes
 ``IMX_SERVICE_APPLICATION_MODE`` ``TEST_ONLY``              ``TEST_ONLY`` or ``LIVE`` (see below)
+``IMX_ALLOW_SUBMISSION``       (unset)                      ``1`` lets the dashboard submit
+                                                            approved applications, each after
+                                                            the person confirms it
 =============================  ===========================  ================================
 
 Local data paths and the candidate id come from ``LocalPaths.from_env()``
@@ -79,6 +82,12 @@ class ServiceConfig:
     """``TEST_ONLY`` (default): application runs, resumes and site rechecks may only
     target loopback test sites; job discovery and selection are unaffected. ``LIVE``
     must be chosen explicitly (``IMX_SERVICE_APPLICATION_MODE=LIVE``)."""
+    allow_submission: bool = False
+    """``IMX_ALLOW_SUBMISSION=1`` exactly, read once at start (the CLI's ``submit`` rule).
+    Without it the service builds no submission-capable runner and refuses every submit.
+    With it, an application is submitted only when the person approved its preparation
+    and confirms the submission in the dashboard, and TEST_ONLY still limits the service
+    to local test sites."""
     browser: str = "playwright"
     opencli_profile: str | None = None
     ai_routing: bool = False
@@ -152,6 +161,7 @@ class ServiceConfig:
             headless=env.get("IMX_SERVICE_HEADLESS", "0") in ("1", "true", "yes"),
             max_upload_bytes=max_upload,
             application_mode=env.get("IMX_SERVICE_APPLICATION_MODE", "TEST_ONLY"),
+            allow_submission=env.get("IMX_ALLOW_SUBMISSION") == "1",
             browser=env.get("IMX_SERVICE_BROWSER", "playwright").strip().lower(),
             opencli_profile=env.get("IMX_SERVICE_OPENCLI_PROFILE", "").strip() or None,
             ai_routing=ai_flag in ("1", "true", "yes", "on"),

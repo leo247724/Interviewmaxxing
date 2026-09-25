@@ -408,6 +408,16 @@ def evidence_href(public_base: str, application_id: str, evidence: EvidenceRef) 
     return f"{public_base}/applications/{application_id}/evidence/{evidence.id}"
 
 
+_URL_IN_TEXT = re.compile(r"https?://[^\s)\]}>\"']+")
+
+
+def _page_addresses(text: str) -> str:
+    """``text`` with every http(s) address as its page address (``page_address``): the
+    runtime describes evidence as "<what> at <page URL>", and a query or fragment can
+    hold a per-session draft token."""
+    return _URL_IN_TEXT.sub(lambda m: page_address(m.group(0)) or m.group(0), text)
+
+
 def evidence_view(public_base: str, application_id: str, evidence: EvidenceRef) -> EvidenceView:
     kind = evidence.kind
     user = kind is EvidenceKind.USER_STATEMENT
@@ -429,7 +439,7 @@ def evidence_view(public_base: str, application_id: str, evidence: EvidenceRef) 
         EvidenceKind.USER_STATEMENT: "user_report",
         EvidenceKind.OTHER: "page_text",
     }[kind]
-    value = evidence.description.strip() or None
+    value = _page_addresses(evidence.description.strip()) or None
     if kind is EvidenceKind.CONFIRMATION_URL and evidence.uri:
         value = evidence.uri
     return EvidenceView(
@@ -710,13 +720,20 @@ def _review_question(
 def _review_value(
     answer: PacketAnswer, missing: MissingInput | None
 ) -> tuple[ReviewControl, str | list[str]] | None:
+    return review_value(
+        answer, textarea=missing is not None and missing.control_type is ControlType.TEXTAREA
+    )
+
+
+def review_value(
+    answer: PacketAnswer, *, textarea: bool = False
+) -> tuple[ReviewControl, str | list[str]] | None:
+    """How an answer reads in a review: its control and value (text, option label(s),
+    "Yes"/"No" or a file name). Text is long when the field is a text area, the answer is
+    a cover letter or written question, or it spans lines."""
     value = answer.value
     if isinstance(value, TextValue):
-        long = (
-            (missing is not None and missing.control_type is ControlType.TEXTAREA)
-            or answer.semantic_type in _LONG_TEXT_TYPES
-            or "\n" in value.text
-        )
+        long = textarea or answer.semantic_type in _LONG_TEXT_TYPES or "\n" in value.text
         return ("long_text" if long else "text"), value.text
     if isinstance(value, ChoiceValue):
         return "single_select", value.label

@@ -52,6 +52,7 @@ IMX_BACKEND_URL=http://127.0.0.1:8765 IMX_WEB_ORIGIN=http://127.0.0.1:4317 \
 | `IMX_SERVICE_PUBLIC_BASE` | `/api/imx` | Path prefix the browser uses for evidence links |
 | `IMX_SERVICE_HEADLESS` | `0` | `1` runs the runner's browser headless (tests); the default shows it for sign-in/CAPTCHA |
 | `IMX_SERVICE_MAX_UPLOAD` | `10485760` | Resume upload limit (bytes) |
+| `IMX_ALLOW_SUBMISSION` | unset | Exactly `1` lets the dashboard submit applications the person approved and confirms one at a time ([the review lane](#the-review-lane-wp11-round-3)); anything else, and the service builds no submission-capable runner |
 | `IMX_HOME`, `IMX_CANDIDATE_ID`, ... | see CONTRACTS.md §8 | Local data paths and the configured stable candidate id |
 | `IMX_OPENROUTER_ENV_FILE` | unset | Explicit path to an ignored env file holding `OPENROUTER_API_KEY` (J2 `load_api_key`); otherwise the server's own environment. Never sent to the browser or logged. |
 | `IMX_JOBS_DB` | `$IMX_HOME/jobs/jobs.sqlite3` | J1 listing store |
@@ -75,10 +76,12 @@ On start the service marks submissions interrupted by an earlier process as `SUB
   ```json
   {"status":"ok","service":"interviewmaxxing-service","contractVersion":"2","executor":"idle"|"busy",
    "runner":"available"|"unavailable","applicationMode":"TEST_ONLY"|"LIVE","presentationVersion":"2",
+   "submission":"enabled"|"disabled","browser":"visible"|"headless",
    "pipeline":"available"|"unavailable","jobs":"available"|"unavailable","selection":"available"|"unavailable"}
   ```
 
-  `contractVersion` is core's `CONTRACT_VERSION`. `presentationVersion` is this service's view contract (`models.PRESENTATION_VERSION`); a response without it is version 1, before [prepared reviews](#prepared-applications-and-the-review-list-wp3).
+  `contractVersion` is core's `CONTRACT_VERSION`. `presentationVersion` is this service's view contract (`models.PRESENTATION_VERSION`); a response without it is version 1, before [prepared reviews](#prepared-applications-and-the-review-list-wp3). `submission` is `enabled` only when the service was started with `IMX_ALLOW_SUBMISSION=1`; `browser` says whether the runner's browser window is shown (`IMX_SERVICE_HEADLESS`).
+- **Submission.** `POST /applications/{id}/submit` is refused (`403`) unless `submission` is `enabled`, and in `TEST_ONLY` it is refused for any application whose URL is not loopback, like resume. See [the review lane](#the-review-lane-wp11-round-3).
 
 - **Limit.** The check is on the URL the service is given. Redirects the site itself performs happen inside the I1 browser.
 
@@ -94,10 +97,14 @@ The Next gateway forwards `/api/imx/<path>` to `http://127.0.0.1:<port>/<path>`.
 | `GET /applications` | — | `ApplicationListView`: every application of the configured candidate, most recently updated first ([prepared reviews](#prepared-applications-and-the-review-list-wp3)) |
 | `POST /applications` | `StartApplicationInput` | `201` (new) or `200` (existing) `ApplicationView` |
 | `GET /applications/{id}` | — | `ApplicationView` |
-| `POST /applications/{id}/answers` | `AnswerInput` (+ optional `reuse`) | `ApplicationView`; invalid values in `needs.errors`, nothing saved |
+| `POST /applications/{id}/answers` | `AnswerInput` (+ optional `reuse`) | `ApplicationView`; invalid values in `needs.errors`, nothing saved. For a prepared application it also takes changes to the prepared answers (the review's `questionId`s); a change that doesn't fit answers `422` with `fieldErrors` by question id |
 | `POST /applications/{id}/resume` | `{}` | `ApplicationView` |
 | `POST /applications/{id}/reconcile` | `ReconcileInput` | `ApplicationView` |
 | `GET /applications/{id}/evidence/{evidenceId}` | — | the evidence file |
+| `GET /review` | — | `ReviewQueueView`: the Prepared queue ([review lane](#the-review-lane-wp11-round-3)) |
+| `GET /applications/{id}/review` | — | `ApplicationReviewView` |
+| `POST /applications/{id}/approve` | `{"packetId"}` | `ApplicationReviewView`; approves exactly that prepared packet |
+| `POST /applications/{id}/submit` | `{"packetId", "confirm": true}` | `ApplicationReviewView`; only with `IMX_ALLOW_SUBMISSION=1` |
 
 Errors are `{"error": {"code", "message", "fieldErrors"?}}` with the frontend's codes:
 
@@ -165,10 +172,40 @@ review: {                      // filled answers in form order; [] before any pa
 
 - **Prepared.** The state is `NEEDS_INPUT` and, walking back from the latest transition, a `preparation.ready` event comes before any transition other than the runner's own re-inspection (INSPECTING -> NEEDS_INPUT). A later stop for questions, sign-in or a failure is never shown as prepared. `captchaPending`, `formStep` and `formUrl` come from the event's metadata; `formUrl` keeps only the scheme, host and path (`views.page_address`), because sites put per-session draft tokens in the query or fragment.
 - **`needs` of a prepared application** is `null`, or a `questions` need when the stop still records answerable questions. The earlier fallback (an `interaction` "VERIFICATION" need from the stop's reason) no longer applies to prepared stops. `resume` works as before: it re-prepares from the site, and submission stays disabled.
-- **Evidence.** Only evidence recorded by the preparing run (from the previous stop to `preparation.ready`) is listed, so screenshots of an earlier failed run are not shown as the prepared form.
+- **Evidence.** Only evidence recorded by the preparing run (from the previous stop to `preparation.ready`) is listed, so screenshots of an earlier failed run are not shown as the prepared form. An evidence `value` names pages by their page address: the runtime describes evidence as "… at <page URL>", and the query or fragment can hold a draft token (WP11 round 3; a confirmation page's URL stays exact).
 - **Review list.** For a prepared application it covers every step of the preparing attempt (`views.preparing_attempt`): the latest packet per form step from the `packet.saved` events after the last REQUESTED, FAILED_* or DUPLICATE transition, through question stops (a run resumed after the user answers carries on in the draft the site kept), up to the final step. Otherwise it is the latest packet. `question` is the first line of recorded wording when there is one (`wordingRecorded: true`): the user's own answer's question, a question recorded for that step and field in any NEEDS_INPUT stop, or the question a used saved answer was saved for (read through the profile loader only when a row has no other recorded wording, at most once per application version, and not while the application is running). Otherwise it is a plain name for the question's semantic type ("Email", "Resume", "Work authorization", "Question on the form"), because packets keep field ids, not wording. Provenance ids, notes, field ids and artifact paths are never included.
 - **Docket.** The stop after `preparation.ready` reads "Paused at the final review step for you to check." (`info`) instead of "Waiting for you."
 - **`GET /applications`** returns `{"applications": ApplicationSummaryView[]}` with `{id, state, applicationUrl, job, requestedAt, updatedAt, preparation, pipelineEntryIds}`. `pipelineEntryIds` are the candidate's pipeline cards linked to the application plus unlinked cards whose `applicationUrl` the store resolves to it (`find_application`: its own URL normalization and aliases). It only helps find prepared cards; it links nothing and never implies a receipt. The list reads the store in one read-only snapshot with a fixed number of queries (`summaries.py`: the applications with their requests and jobs, the prepared stops with their runs' evidence, and one alias query for all unlinked cards), not each application's history.
+
+### The review lane (WP11 round 3)
+
+The dashboard's review lane (`/review` in `apps/web`) lets the person check a prepared application, change an answer, approve it and, in a service started with `IMX_ALLOW_SUBMISSION=1`, submit it. Every operation goes through the store's own rules (`docs/submission.md`); the service adds no second path. The route additions are within presentation version 2: new routes, two new `/healthz` keys, and edits through the existing answers route.
+
+**`GET /review`** returns `{"applications": ReviewQueueItemView[]}`, newest stop first: the candidate's applications stopped at their final review step (`stage: "prepared"`), and those held only by a step the person does in the browser (`stage: "browser_action"`: a sign-in or CAPTCHA page, or a stop whose recorded items are all browser actions, custom controls or files). Each item has `{id, state, stage, applicationUrl, job, preparedAt, stoppedAt, captchaPending, providerCost, hold, approved}`:
+
+- `providerCost` is `{knownUsd, calls, unknownCostCalls}` summed over every `provider.budget` event, or `null`.
+- `hold` is `{kind, summary}`, one plain line: `ready` ("Ready to review and approve"), `approved` ("Approved: waiting to be submitted"), `edited` (answers saved since the preparation, "prepare it again"), `questions` (required questions the stop still records; optional ones left blank don't hold it), `sign_in`, `captcha` or `browser_action` ("To finish in the browser: <question>"). A prepared form whose CAPTCHA is solved at submission adds " · CAPTCHA to solve when submitting".
+- `approved` is the store's `submission_approval` rule: the latest approval names the latest preparation, nothing invalidated it and no answer was saved since that preparation.
+- Like `GET /applications`, it reads the store in one read-only snapshot with a fixed number of queries (`review_queue.py`).
+
+**`GET /applications/{id}/review`** returns `ApplicationReviewView`: `{application, stage, preparedPacketId, approval, changedSincePreparation, providerCost, answers, editNote, submit, browser}`.
+
+- `application` is the desk's `ApplicationView`. `preparedPacketId` is the packet an approval pins now (`ApplicationStore.prepared_packet`). `approval` is `{packetId, approvedAt, approver, pages}` while valid.
+- `answers` lists every question of the prepared form in form order: the pages an approval pins (`review.prepared_steps`, the store's `_prepared_steps` rule) and, per page, the questions the runner recorded with `preparation.ready` (`steps[].fields`), each with its packet answer or `value: null` ("Left blank"). A row is `{questionId, question, wordingRecorded, page, control, value, required, provenance, citations, confidence, edit, noEditReason}`. A preparation recorded before `steps` lists its packets' answers, without blanks or edits (`editNote`).
+- `provenance` is `{kind, label, detail}`. `label` is the badge's words ("Your details", "Your resume", "Saved answer", "Saved policy", "Derived", "Fact-grounded screener", "RAG narrative", "Your answer", "Left blank"). `kind` is `identity`, `resume`, `user`, `saved_answer` (the simple-answer keys, job-scoped answers), `saved_policy` (a policy reference, the standing referral answer, or an answer saved for global reuse from a question: `sa_` ids with GLOBAL scope), `derived` (the salary, pay period, work authorization status, start date, work-arrangement and relocation derivations, by their notes), `fact_screener` (other answers grounded in verified facts), `narrative` (the writer's drafts) or `blank`. `detail` is the resolver's note without its citation lists. `citations` (`{facts, passages, jobEvidence}`) lists the fact ids, story passage ids and job-description evidence ids of narratives and fact-grounded answers. Values are the person's own data and are shown in full; nothing is logged.
+- `edit` is how a row can be changed: `{control, options, lookup, attestation, required, value, reuse, note}`. It answers the question as it was prepared (step, field id and fingerprint), so the next preparation fills it in: the resolver takes the person's answer to that exact question first. A choice is editable only when its options are recorded (a question stop recorded the question with the same fingerprint, or a runner records `choices` with the step); otherwise `noEditReason` says so. Files and custom controls are not editable. `reuse` offers `job` and `global` only when the question's full wording is known (a recorded question, the person's own earlier answer, or a first line the runner did not cut), because a reusable answer is matched to other forms by its wording, never for contact details (`PROFILE_IDENTITY_TYPES`: a reusable answer would outrank the verified profile on every form), and not `global` for a narrative (drafted for this job, citing its description). A scope the row doesn't offer is refused (`422`).
+- `submit` is `{allowed, problems, enabled, opensBrowser, command}`: `allowed` when everything but the person's confirmation is in place, otherwise `problems` in plain words (submission off, not approved, answers changed since the preparation, `TEST_ONLY` for a non-loopback site, the runner, another run, a CAPTCHA a headless service can't show). `command` is the CLI equivalent.
+- `browser` is `{available, reason, command}`: whether `POST /applications/{id}/resume` can open a visible browser window now (the `resume --act` equivalent: a run the person starts may wait for them in the window), or why not and `interviewmaxxing resume APP --act` to run in a terminal instead.
+
+**Changing an answer.** `POST /applications/{id}/answers` with the row's `questionId` (under `attestations` when `edit.attestation`) and optional `reuse`, then `POST /applications/{id}/resume` to prepare it again. The answer is saved as the application's own user input and, for `job` or `global`, as a saved answer, exactly as for a question the application asked; a `reuse` the row doesn't offer is refused (`422`). Saving it lapses any approval (the store's rule: an answer saved after the preparation is not in the prepared packet).
+
+**`POST /applications/{id}/approve`** with `{"packetId": preparedPacketId}` calls `approve_submission` under a claim, approver `dashboard:<login>`: it pins every page's packet and submits nothing. A `packetId` that is not the current prepared packet (the application was prepared again since the page loaded) answers `409`; so do the store's refusals (answers changed, open required questions), in plain words. Approving the approved packet again is a no-op.
+
+**`POST /applications/{id}/submit`** with `{"packetId": approval.packetId, "confirm": true}` (the person's explicit confirmation; any other body is `400`) is the CLI's `IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit APP --yes`:
+
+1. `403` unless the service was started with `IMX_ALLOW_SUBMISSION=1` (it then also builds the CLI's `create_submission_runner`, with the service's browser and runtime options); in `TEST_ONLY`, `403` for a non-loopback site.
+2. `409` for a submitted, submitting or uncertain application (never submitted again), a closed one, a missing approval, a `packetId` other than the approved one, or a busy browser.
+3. Under the dispatcher lock it records `authorize_submission` and runs the submission runner, which submits exactly the approved packets or stops before submitting (a changed form withdraws the approval). The run may act in a visible browser window when the service is not headless.
 
 ### Application handoff links
 
@@ -469,6 +506,10 @@ uv pip install --python .venv-task/bin/python --no-deps --no-sources -e apps/ser
   - `test_lookup_questions`: suggestions offered as a select, free text accepted, blanks kept as drafts.
   - `test_application_list`: `GET /applications` order, candidate scope and `pipelineEntryIds`; on a fictional board of every shape (`board_support.py`, also a benchmark: `uv run --no-sync python tests/service/board_support.py`) each row equals its detail view, and the number of statements does not grow with the board.
 - `test_prepared_acceptance` (marked `slow`): the real runner prepares the mock's standard job through HTTP; the view is a review with a served screenshot and the saved answers' wording, and nothing is submitted.
+- WP11 round 3, the review lane:
+  - `test_review_lane`: the review page's rows (form order, blanks, every provenance kind, citations, what each edit offers), approving (every page pinned, idempotent, a stale packet refused, lapsed by an edit until the new preparation is approved), the submission guard (off by default, confirmation and approved packet required, `TEST_ONLY` sites refused, a headless service's CAPTCHA), exactly the approved packet submitted, edits saved as the person's answer to that exact question with their reuse scope (422 for what doesn't fit), and the browser action.
+  - `test_review_queue`: the queue's shapes and order against each review, the approval flag against `submission_approval` through edits, invalidations and new preparations, provider cost, candidate scope, and a fixed number of statements.
+  - `test_review_acceptance` (marked `slow`): the real runner and the mock ATS: prepare, review, change an answer, prepare again, approve and submit from the dashboard, exactly once with the changed answer; and a service without submission refusing it.
 - `test_acceptance` (marked `slow`): HTTP → real I1 runner → headless Chromium → `scripts/mock_ats.py` in its own process, with a fictional profile in a temporary `IMX_HOME`. It covers:
   - receipt, server-side acceptance count, uploaded file digest and a repeat request;
   - A/B resume pins across a profile change and a restart, with missing answers answered after the restart;

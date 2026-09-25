@@ -1,10 +1,11 @@
 # Interviewmaxxing web — application desk, pipeline and jobs
 
-Next.js 16 / React 19 / TypeScript frontend for Interviewmaxxing. It has three views:
+Next.js 16 / React 19 / TypeScript frontend for Interviewmaxxing. It has four views:
 
 - **Desk:** the supplied-URL application flow (`ARCHITECTURE.md` §2 and §17). This development build requires verified `TEST_ONLY` readiness and a loopback application URL before starting or resuming browser execution. The desk shows progress, asks for missing required answers or direct user statements, and ends with a receipt or an accurate blocked/uncertain state.
 - **Pipeline:** the user's own tracker, using the 23-column reference workbook schema.
 - **Jobs:** search across job sources, with Jev APPLY/SKIP/REVIEW decisions.
+- **Review:** the review-and-submit lane. The Prepared queue lists every application stopped at its final review step (or held only by a step in the browser); each one's review page shows every answer with where it came from, and approves, changes answers, prepares again and, only when the service allows it and the person confirms, submits (see [Review lane](#review-lane)).
 
 Recommendations and tracked cards never apply by themselves. Applying always goes through the desk and its single backend duplicate check.
 
@@ -15,7 +16,9 @@ Recommendations and tracked cards never apply by themselves. Applying always goe
 | `/` | Live desk. Talks to the application service through `/api/imx/*`. With no service configured it says so and never simulates a result. |
 | `/preview` | Fixture mode, clearly labelled. It uses an in-memory fictional candidate and fictional job sites. It makes no network calls and sends nothing. `?scenario=` selects a fixture (see below). |
 | `/pipeline`, `/jobs` | Live pipeline board and jobs browser through the same gateway. Missing service routes and connection failures stay explicit. |
+| `/review`, `/review/{applicationId}` | Live Prepared queue and one application's review page (approve, change answers, prepare again, submit when allowed). |
 | `/preview/pipeline`, `/preview/jobs` | Labelled fixture versions with fictional records shaped like the reference workbook. |
+| `/preview/review`, `/preview/review/{applicationId}` | Labelled fixture review lane: three fictional applications (prepared with a CAPTCHA pending, approved, held by a sign-in). Approve, edit and prepare again change the tab's copy only; the preview never submits. |
 | `/api/imx/[...path]` | Same-origin gateway (`lib/gateway.ts`), described below. It never invents a result and never logs bodies. |
 
 ## Commands
@@ -159,9 +162,32 @@ Semantics the UI relies on:
 - **Applying:** "Apply" from a listing or card only prefills the desk. The user's press of **Apply and submit** starts the normal `POST /applications`, where S1's duplicate check applies. The request includes optional `pipelineEntryId`/`listingId` only while the URL matches the handoff. The service validates ownership and matching URLs, then links the canonical application before execution. Changing the URL starts an independent application. The tracker reads receipt authority from that linked application.
 - **Reviewing:** a prepared card offers "Review" instead of "Apply". It hands the desk the application id (`DeskHandoff.applicationId`, with the application's link); the desk reads it with `GET /applications/{id}` and follows it as it follows a started or restored application. Nothing is prefilled, started, resumed or submitted. If it can't be read, the desk says "Couldn't open the prepared application" with the reason and shows the empty compose form.
 
+## Review lane
+
+The Review section is where the person reviews and submits prepared applications, one at a time, from the queue. Types are in `lib/review/types.ts` (the service's "review lane" models, camelCase), the client in `lib/review/http.ts`, the pure rules in `lib/review/logic.ts` and the labelled fixtures in `lib/review/preview.ts`.
+
+| Operation | Method and path | Body | Success |
+| --- | --- | --- | --- |
+| queue | `GET /api/imx/review` | — | `ReviewQueueView {applications}`: newest first by `stoppedAt` |
+| review | `GET /api/imx/applications/{id}/review` | — | `ApplicationReviewView`: the desk's `application` plus `stage`, `preparedPacketId`, `approval`, `changedSincePreparation`, `providerCost`, `answers`, `editNote`, `submit`, `browser` |
+| approve | `POST /api/imx/applications/{id}/approve` | `{packetId}`: the `preparedPacketId` the page showed | `ApplicationReviewView` |
+| submit | `POST /api/imx/applications/{id}/submit` | `{packetId, confirm: true}`: the approval's `packetId` | `ApplicationReviewView` |
+| change an answer | `POST /api/imx/applications/{id}/answers` (the desk's route) | `{answers: {questionId: value}, attestations: {}, reuse: {questionId: scope}}`, or the value under `attestations` for a statement | `ApplicationView`; a refused answer is 422 with `fieldErrors[questionId]` |
+| prepare again, resume in the browser | `POST /api/imx/applications/{id}/resume` (the desk's route) | `{}` | `ApplicationView` |
+
+Semantics the pages rely on:
+
+- **Queue.** One row per application: employer, role, backend (`job.ats`), prepared time, AI provider cost (`providerCost`: the known USD amount, the calls, and calls without a reported cost), the service's one-line `hold.summary`, and Approved, CAPTCHA and In-the-browser marks. Filters: All, To review (prepared, not approved), Approved, In the browser. A service without the route (404) gets one quiet note; an unreachable one the usual service notice.
+- **Answers.** `answers` is every question of the prepared form in form order, page by page, blanks included (`value: null`, "Left blank"). Each carries a provenance badge by `provenance.kind`: `identity`, `resume`, `saved_answer`, `saved_policy` (standing answer rules: a policy, or an answer saved for every application), `derived` (salary, work authorization status and start date derivations), `fact_screener`, `narrative` (written from facts and stories, shown in full with a Copy button), `user` and `blank`, with the service's `label` and the resolver's `detail`. `citations` (fact, story passage and job evidence ids) open in a disclosure. Confidence below 0.9 is flagged "Check this". The values are the person's own data: the page shows them, and nothing is logged.
+- **Changing an answer.** Only a row with `edit` and a `questionId` offers **Edit answer**; otherwise `noEditReason` says why (for example options that weren't recorded). The editor follows `edit.control` (text, long text, a lookup's text, radios or a menu for `options`, checkboxes, Yes/No, or a statement checkbox for `edit.attestation`) and offers only the `edit.reuse` scopes: this application only, this job, or every application. **Save and prepare again** (the default) saves through the answers route and then calls `resume`; **Save only** leaves the form as it was, and the page says the answers changed since this preparation. A blank never replaces an answer. Saving withdraws an approval.
+- **Approve.** Offered only for a current preparation (`preparedPacketId`), not approved, not changed since, with no required question left open. It sends that packet id, so a preparation that changed meanwhile is refused instead of approved. Approving submits nothing.
+- **Submit.** The button is off, with every reason listed, unless `submit.allowed` (the service started with `IMX_ALLOW_SUBMISSION=1`, a valid approval, a submittable state, the mode rule below), and in live mode the fresh `/healthz` agrees (`submission` not `"disabled"`, runner available). When on, it opens a confirmation naming the employer, with a required "I reviewed every answer" checkbox; only then is `{packetId: approval.packetId, confirm: true}` sent. When `submit.opensBrowser`, the confirmation says a browser window opens (for a CAPTCHA or sign-in). `submit.command` shows the terminal equivalent. The page polls while the application is working and then shows the outcome, with a link to the desk for the receipt or an uncertain submission.
+- **Resume in browser.** For an application held only by a sign-in, a CAPTCHA or another browser step: `resume` when `browser.available` (a visible browser window opens), else `browser.command` (`interviewmaxxing resume APP --act`) with a Copy button.
+- **Mode rule.** The review lane follows the service's `applicationMode`: a `TEST_ONLY` service acts only on local test applications (loopback URLs), a `LIVE` service on the employer's site (`reviewExecutionProblem` in `lib/review/logic.ts`). The service enforces the same rule. The desk keeps its own test-only gate.
+
 ### Development readiness and visual checkpoint
 
-`GET /healthz` reports `executor: "idle" | "busy"`, `runner: "available" | "unavailable"` and `applicationMode: "TEST_ONLY" | "LIVE"`, and from presentation version 2 `presentationVersion: "2"` (absent on older services, which send no `preparation`, `review`, `lookup` or application list; the desk and board then keep their earlier behaviour). The desk and board read it (`presentationSupport` in `lib/service/readiness.ts`): for a major version they don't know, the desk drops `preparation`, `review` and `lookup` (a prepared stop shows as the generic pause) and says so in a notice, and the board marks no card and says why in one quiet line. The desk requires `TEST_ONLY`, an available runner and a loopback target; an absent health response fails closed. The same gate covers resume, answer-and-continue and site recheck. Each execution action fetches current health, so runner recovery needs no page reload. User-reported reconciliation involves no browser execution and remains available. Jobs and pipeline show the test-mode notice independently of read-only discovery. This frontend intentionally does not enable real employer dispatch in this development deployment.
+`GET /healthz` reports `executor: "idle" | "busy"`, `runner: "available" | "unavailable"` and `applicationMode: "TEST_ONLY" | "LIVE"`, from the review lane `submission: "enabled" | "disabled"` (`IMX_ALLOW_SUBMISSION=1` at service start) and `browser: "visible" | "headless"`, and from presentation version 2 `presentationVersion: "2"` (absent on older services, which send no `preparation`, `review`, `lookup` or application list; the desk and board then keep their earlier behaviour). The desk and board read it (`presentationSupport` in `lib/service/readiness.ts`): for a major version they don't know, the desk drops `preparation`, `review` and `lookup` (a prepared stop shows as the generic pause) and says so in a notice, and the board marks no card and says why in one quiet line. The desk requires `TEST_ONLY`, an available runner and a loopback target; an absent health response fails closed. The same gate covers resume, answer-and-continue and site recheck. Each execution action fetches current health, so runner recovery needs no page reload. User-reported reconciliation involves no browser execution and remains available. Jobs and pipeline show the test-mode notice independently of read-only discovery. The desk intentionally does not start real employer applications in this development deployment. In `LIVE` mode the banner says the service works on real employer sites and that nothing is submitted unless submission is on and the person approves and confirms the application in Review; it shows "Submission on" or "Submission off" when the service reports it.
 
 The workspace uses Newsreader for page titles, Schibsted Grotesk for controls/data and restrained forest accents. Jobs shows an editable search brief above result rows, with evidence and decision reasoning side by side. Pipeline includes actionable filters (next actions, upcoming interviews, prepared for review), readable dates/pay, separate arrangement/commute, and both board and list layouts. Upcoming interviews includes dates today or later in America/Chicago; historical follow-up suggestions are not appointments. Linked pipeline receipts require explicit site confirmation authority; user reports and missing authority remain labelled separately.
 
@@ -221,6 +247,8 @@ Start a fresh fixture process/home for each full acceptance run. Stop and restar
 
 `straight`, `prepared` (fills both pages and stops at the final review step; nothing is submitted, and **Prepare again** repeats the run), `lookup` (the location question offers three matching places; pick one or enter a different value, then the form is prepared for review with a CAPTCHA still to solve), `questions`, `sign_in`, `captcha`, `duplicate`, `uncertain` (first recheck is inconclusive, second finds a portal record), `connection_drop` (status unreachable twice while submitting), `failure_retryable`, `failure_permanent`, `unavailable`.
 
+The review lane's preview (`/preview/review`) holds `pv_prepared_northwind` (every provenance kind, a cited narrative, a blank optional field, a CAPTCHA pending), `pv_approved_larkspur` (approved) and `pv_signin_quarry` (held by a sign-in; **Resume in browser** acts as if you signed in and the form was prepared). Submit is always off there.
+
 Every preview session also holds one seeded, already-prepared application, `pv_prepared_northwind` (Senior Lifecycle Marketer at Northwind Cartography, CAPTCHA pending). `status()` returns it and `list()` lists it with `pipelineEntryIds: ["pipe_pv_northwind"]`, followed by applications started in the session (`pipelineEntryIds: []`). It never changes a scenario's flow.
 
 ## Privacy and accessibility notes
@@ -233,5 +261,6 @@ Every preview session also holds one seeded, already-prepared application, `pv_p
 
 - The live desk works once S1 is running and `IMX_BACKEND_URL`/`IMX_WEB_ORIGIN` are set. Pipeline and Jobs need the S1 routes above, backed by P1, J1 and J2.
 - Evidence screenshots are shown from the `href` the service provides. The service must serve those artifacts.
+- The review lane changes an answer only where the service offers an editor (`edit`). A choice whose options weren't recorded when the form was filled, and the pinned resume, show why they can't be changed there. Contact details can be changed for one application only; the profile is where they change everywhere.
 - The review list of a prepared application shows what the service reports it entered. The desk can't compare it with the live page, so the screenshot of the review page is the reference, and the desk never solves a CAPTCHA.
 - The preview's job identity comes from fixtures and does not reflect the URL you type.

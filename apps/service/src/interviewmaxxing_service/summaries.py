@@ -175,6 +175,14 @@ class StoreSnapshot:
         rows = self.conn.execute(_BY_ALIAS, (json.dumps(sorted(aliases)), candidate_id))
         return {alias: app_id for alias, app_id in rows}
 
+    def prepared_stops(
+        self, candidate_id: str
+    ) -> tuple[dict[str, ApplicationEvent], dict[str, list[EvidenceRef]]]:
+        """Per prepared application of the candidate (its current stop is a prepared
+        one): the ``preparation.ready`` event behind the stop, and the evidence its run
+        recorded."""
+        return self._prepared(candidate_id)
+
     def _prepared(
         self, candidate_id: str
     ) -> tuple[dict[str, ApplicationEvent], dict[str, list[EvidenceRef]]]:
