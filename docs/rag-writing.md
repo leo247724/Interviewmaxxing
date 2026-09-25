@@ -443,7 +443,12 @@ Story chunks still stand in for voice samples when the profile has none (L10): t
 writer prompt keeps them style-only and the humanizer's lexical guard (no new number,
 name or claim) applies, so a borrowed phrase cannot become a claim. The form allowance
 (`allow_form`) is granted once per step (application id and form fingerprint) per
-runtime; a re-resolve of the same step grants nothing more (L11).
+runtime; a re-resolve of the same step grants nothing more (L11). Each grant is what the
+budget used so far plus 24 calls / USD 0.30 and 24 calls / USD 0.75 per WRITER-routed
+field, capped at 200 calls / USD 4.00 in total (`FORM_*` in `providers.py`). The
+per-field allowance was 12 calls / USD 0.30 and the caps 120 calls / USD 2.00 until a
+live "why you're a good fit" narrative exhausted 12 calls before its draft (it then
+finished its form at 29 calls and USD 0.34); four such fields fit under the caps.
 
 ## Verification
 

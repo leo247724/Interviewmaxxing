@@ -86,8 +86,13 @@ cited sentences fit in 2000 tokens, a 300-word cover letter with citations in 30
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
+"""What every resolved form is allowed on top of what the budget already used."""
 FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
-FORM_CAP_CALLS, FORM_CAP_USD = 120, 2.00
+"""More per WRITER-routed field: a live "why you're a good fit" narrative exhausted 12
+calls before its draft and finished its form at 29 calls and USD 0.34."""
+FORM_CAP_CALLS, FORM_CAP_USD = 200, 4.00
+"""The budget's total cap, so four narrative fields at about 30 calls / USD 0.35 each never
+reach it."""
 
 
 @dataclass
@@ -104,9 +109,9 @@ class CallBudget:
 
     def allow_form(self, writer_fields: int) -> None:
         """Limits for one more form, when the budget scales with the form: what it used so
-        far plus 24 calls / USD 0.30 and 12 calls / USD 0.30 per WRITER-routed field (its
+        far plus 24 calls / USD 0.30 and 24 calls / USD 0.75 per WRITER-routed field (its
         retrieval, consistency checks, writing, grounding, review and the no-slop rewrite
-        with its second grounding), capped at 120 calls / USD 2.00 in total."""
+        with its second grounding), capped at 200 calls / USD 4.00 in total."""
         if not self.scales_with_form:
             return
         writers = max(0, writer_fields)
