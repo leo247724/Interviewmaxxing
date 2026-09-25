@@ -1,15 +1,11 @@
 {
   "mcpServers": {
     "2captcha": {
-      "command": "npx",
+      "command": "sh",
       "args": [
-        "-y",
-        "@2captcha/mcp"
-      ],
-      "env": {
-        "API_TOKEN": "${TWOCAPTCHA_API_KEY}",
-        "MAX_SPEND_USD": "5"
-      }
+        "-c",
+        "set -a; [ -f ./env.local ] && . ./env.local; export API_TOKEN=\"${API_TOKEN:-$TWOCAPTCHA_API_KEY}\" MAX_SPEND_USD=\"${MAX_SPEND_USD:-5}\"; exec npx -y @2captcha/mcp"
+      ]
     }
   }
 }
