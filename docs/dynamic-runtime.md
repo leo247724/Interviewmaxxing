@@ -364,6 +364,24 @@ without site adapters:
   the attach) is accepted at any later write by the same rule (see "Passing states and own
   changes" above). Pre-checked consent boxes the packet does not answer are cleared as
   before.
+- **Follow-up questions a choice reveals (round 11).** BambooHR shows conditional fields
+  the moment a Yes/No is chosen ("Will you now or in the future require employment visa
+  sponsorship?" reveals two follow-ups). When the freshness check before the next write,
+  or the readback of the step after the last write, finds that only *additional*
+  questions appeared after a choice this fill made (radio, select, multiselect,
+  checkbox, checkbox group or lookup): every approved question still shown, in its order,
+  with the same wording, options and binding shape, the actions and the employer context
+  as approved once the revealed questions' own controls are left out, then that is a
+  conditional reveal, not a lost context. The fill stops with the same kind of page error
+  as after an upload that changed the step ("2 follow-up question(s) (…) appeared after the
+  answer to '…'; inspect this step and resolve it again before continuing"): the question
+  about to be written is not attempted and nothing is reported failed (follow-ups found by
+  the readback are reported `SKIPPED`), the answered choice stays answered, and the runner
+  re-inspects and resolves the step again with every answer, the choice included, so the
+  run reaches its final review in two resolutions. A reworded or removed existing question,
+  a changed action or context, or questions appearing after a *text* write still stop the
+  fill as before ("questions, bindings, actions, or employer context changed while filling";
+  the remaining answers are not attempted). Mock: `bamboohr-conditional`.
 - **Question text of upload controls** leaves out the trigger ("ATTACH RESUME/CV"), file
   chips, sizes and upload/parse status, and a label that only says "Attach" yields to the
   group's question ("Resume/CV"), so an upload does not change the field's fingerprint and a
