@@ -21,6 +21,18 @@ salary derivation reads first among the person's salary answers."""
 WORK_ARRANGEMENTS: tuple[str, ...] = ("remote", "hybrid", "on-site")
 """The closed vocabulary of ``work_arrangement_preference``."""
 
+METRO_AREA_QUESTION = ("Which towns and cities around where you live are your metro area, where "
+                       "on-site or hybrid work is fine?")
+"""The saved question of the person's metro area (simple answers ``metro_area``, round 13): the
+places around their own city they commute to, comma-separated, as an untyped GLOBAL saved
+answer. A job in the metro may be on-site or hybrid; a job anywhere else is remote. Only the
+work-arrangement derivation reads it, never a wording match."""
+
+
+def stated_metro_area(question: str) -> bool:
+    """Whether a saved answer's question is the metro-area question."""
+    return normalize_text(question) == normalize_text(METRO_AREA_QUESTION)
+
 _MODE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("remote", re.compile(r"\b(?:remote(?:ly)?|wfh|work(?:ing)? from home|telecommut\w*|"
                           r"telework\w*|virtual(?:ly)?|distributed)\b", re.IGNORECASE)),

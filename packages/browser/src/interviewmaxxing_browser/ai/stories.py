@@ -199,11 +199,30 @@ def _related(chunk_fact: CandidateFact, fact: CandidateFact,
     return score
 
 
+STORY_REVIEW_QUESTION = (
+    "Do the story passages (ids starting with story:) directly contradict the verified candidate "
+    "facts supplied with them? A story passage is the applicant's own written account of one role "
+    "or project, not a verified fact; its resume role and period come from the verified resume "
+    "and supersede any year the passage itself states, which is not a contradiction. Different "
+    "employers, roles, periods, budgets, results, team sizes and tools coexist, and so do a "
+    "rounded figure and its exact value or a detail the facts do not mention; missing detail is "
+    "not a contradiction. Return CONFLICT when a passage makes an irreconcilable claim about the "
+    "same employer, role, period, quantity or event as a fact, naming each contradicting passage "
+    "and the facts it contradicts in reference_ids, or SUPPORTED when every passage can coexist "
+    "with the facts.")
+"""The independent review's question for story passages Jev left uncertain (round 6)."""
+
+StoryReview = Callable[[dict[str, dict[str, Any]], dict[str, list[CandidateFact]]], set[str]]
+"""Reviews the uncertain chunks (by key) against their comparison facts and returns the
+keys it finds contradicted; raising ``AIHold`` (no reviewer, a failed call) drops them all."""
+
+
 def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
                       decide: Callable[..., Any], trace: Callable[[dict[str, Any]], Any],
                       model: str, min_probability: float, cache: dict[str, float],
                       lock: threading.RLock, max_cache_entries: int,
                       max_facts: int, question: str | None = None,
+                      review: StoryReview | None = None,
                       ) -> tuple[float, list[dict[str, Any]]]:
     """Drop a story chunk that contradicts a verified structured fact; the resume is
     canonical. Hold only when the question itself asks about the contradicted point.
@@ -212,9 +231,14 @@ def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
     most related to it (named subjects, kinds of quantity, global claims), never with
     the facts extracted from that same story. The same request asks, per chunk, whether
     the question is about the role's dates, tenure or figures, which is what a story can
-    contradict. Verdicts are cached per runtime under the chunk and its exact comparison
-    set. Returns the minimum probability of the kept chunks and the kept chunks; the
-    trace records the dropped ids and their probabilities, never text."""
+    contradict. A chunk is dropped at a "free of contradiction" score of at most
+    1 - ``min_probability`` (a real contradiction); the uncertain band between goes to one
+    independent ``review`` for all such chunks, which keeps the ones it does not find
+    contradicted (round 6: uncertainty is not contradiction; without a reviewer, or when
+    the review fails, the uncertain chunks are dropped as before). Verdicts are cached
+    per runtime under the chunk and its exact comparison set. Returns the minimum
+    probability of the kept chunks and the kept chunks; the trace records the dropped
+    ids, their probabilities and the review outcome, never text."""
     if not chunks:
         return 1.0, []
     canonical = [fact for fact in context.candidate.verified_facts() if fact.value is not None]
@@ -302,7 +326,20 @@ def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
                         cache.pop(next(iter(cache)))
                     cache[verdict_keys[key]] = scores[key]
                     cache[verdict_keys[key] + ":asks"] = asks[key]
-    contradicted = [key for key in keyed if scores[key] < min_probability]
+    contradicted = [key for key in keyed if scores[key] <= 1 - min_probability]
+    uncertain = [key for key in keyed if 1 - min_probability < scores[key] < min_probability]
+    review_outcome: dict[str, Any] | None = None
+    if uncertain:
+        try:
+            if review is None:
+                raise AIHold("A stronger independent reviewer is not configured")
+            found = review({key: keyed[key] for key in uncertain}, {key: comparisons[key] for key in uncertain})
+            review_outcome = {"reviewed": uncertain, "contradicted": sorted(found & set(uncertain)),
+                              "status": "REVIEWED"}
+        except AIHold:
+            found = set(uncertain)
+            review_outcome = {"reviewed": uncertain, "contradicted": uncertain, "status": "NOT_REVIEWED"}
+        contradicted += [key for key in uncertain if key in found]
     decisive = [key for key in contradicted if asks.get(key, 0.0) >= min_probability]
     kept = [chunk for key, chunk in keyed.items() if key not in contradicted]
     status = "HELD" if decisive else "DROPPED" if contradicted else "CONSISTENT"
@@ -310,7 +347,8 @@ def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
            "story_ids": {key: chunk["id"] for key, chunk in keyed.items()},
            "comparison_ids": {key: [fact.id for fact in facts] for key, facts in comparisons.items()},
            "probabilities": scores, "question_asks_about_it": asks,
-           "cached": sorted(set(keyed) - set(asking)), "status": status})
+           "cached": sorted(set(keyed) - set(asking)), "status": status,
+           **({"review": review_outcome} if review_outcome else {})})
     if contradicted:
         trace({"stage": "story_evidence_dropped", "story_ids": [keyed[key]["id"] for key in contradicted],
                "fact_ids": [], "reason": "contradicts verified facts about the same role",
@@ -446,7 +484,8 @@ def link_stories(stories: Sequence[Story], analyses: Sequence[StoryAnalysis],
 
 __all__ = [
     "LINK_MIN_CONFIDENCE", "LINK_MIN_PROBABILITY", "MAX_STORY_EVIDENCE", "STORY_ID",
-    "STORY_LINK_PROMPT_VERSION", "STORY_PROMPT_VERSION", "link_stories", "link_story_to_role",
+    "STORY_LINK_PROMPT_VERSION", "STORY_PROMPT_VERSION", "STORY_REVIEW_QUESTION", "StoryReview",
+    "link_stories", "link_story_to_role",
     "overlapping_roles", "resume_dates_note", "shares_story_evidence", "story_consistency",
     "story_evidence", "story_note", "story_trace", "transient_story_facts", "validate_story_chunks",
 ]

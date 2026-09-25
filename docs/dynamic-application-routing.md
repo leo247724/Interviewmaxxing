@@ -335,6 +335,34 @@ The person does not answer screeners one by one: at retry five (2026-09-25) they
   - A class that applies but cannot be placed replaces the field's prompt with one naming the policy. NONE, BELOW_GATE, NOT_ALLOWED, NO_POLICY and the guards leave the hold as it was.
 - **Budget.** The pass adds two calls and USD 0.01 per candidate field to the form's allowance, once per step (`CallBudget.allow_calls`).
 
+## Round 13: the work arrangement follows the job's metro
+
+`work_arrangement_preference` holds one value, and the person's is "remote". So an on-site question for a job in his own metro got No, although in-person or hybrid work there is fine. The simple answers gain `metro_area`: the towns around the person's verified `city`, comma-separated, stored as an untyped GLOBAL saved answer to `METRO_AREA_QUESTION` (core `preferences.py`). With it set, the place of the work decides (`ai/metro.py`); without it, or when no place can be read, the preference decides as before. The metro area never takes part in wording equivalence.
+
+- **Reading a place (`read_place`, `job_place`).** The metro is the person's city and the `metro_area` places; a state written beside a town is dropped from the list.
+  - **IN_METRO:** a text names a metro place as a whole word, and no other state is written right after it ("Austin, TX", "Austin, Texas, United States", "Round Rock (Hybrid)"). "Austin, MN" and "Georgetown, DC" are OUTSIDE.
+  - **REMOTE:** a job location that says remote, anywhere or work from home. A job with no location is remote too, by the owner's rule.
+  - **OUTSIDE:** a text that names another place: a "City, ST", a US state, a country, or another capitalized place in a job location.
+  - **UNKNOWN:** nothing readable ("Multiple Locations", "Hybrid").
+  - A question's wording is read for the place it names ("on-site five days per week at the Austin office"; places after "at" now count). The job's location is read when the question names none. A question's "this is not a remote role" never makes a remote job.
+- **On-site questions naming a city (`_metro_onsite`).** In the metro the answer is Yes, whatever the job requires. Elsewhere, or for a remote job, it is No unless the person's saved `willing_to_relocate` is Yes.
+- **Remote / hybrid / on-site selects (`_metro_work_mode`).**
+  - In the metro: the mode the posting states in its location or title ("Austin, TX (Hybrid)"), else hybrid, else on-site. A select-all question gets both hybrid and on-site.
+  - Elsewhere, or remote: Remote.
+  - A select without such an option holds (`NO_OPTION`).
+- **Office lists (`_is_office_choice`, `_office_choice`).** A choice asking where the applicant would work (preference or office wording, no current or past wording) whose options are at least two places ("City, ST" or a state), plus work modes or neutral answers. An example is "Location Preference": Burlingame, CA / Columbus, OH / Austin, TX / New York City, NY / Remote.
+  - It takes the office in the metro, the person's own city first (every such office on a select-all question), else the Remote option. Without either it holds.
+  - Without a `metro_area` such a list keeps its earlier paths.
+- **Relocation questions naming the person's city.** `_is_relocation_place` also admits a relocation question that names the applicant's own city: "If you are not currently based in Austin, would you be willing to relocate?". The relocation screener picks the option that is true for the verified address ("I'm based in Austin"). An option that is neither Yes nor No is accepted when it names the applicant's city; a Yes or No must still be Yes.
+- **The preference becomes the fallback.** The importer gives `work_arrangement_preference` match phrases such as "Location Preference", so the factual pass copies it onto those questions by their wording. With a metro stated, that copy on a work-mode choice, an office list or an on-site question is decided again by the metro (`_preference_copy`). The copy stays only when the metro cannot decide. For those fields the preference no longer counts as the person's own exact answer.
+- **Provenance and trace.** The metro answers are `SAVED_ANSWER` citing the `metro_area` saved answer. The relocation answer is typed, so it is named in the trace. The relocation-question answer stays `PROFILE_IDENTITY`, since it comes from the address. The trace stage is `work_arrangement`:
+  - `question`: `onsite_city`, `work_mode` or `office_location`;
+  - `metro`: the verdict;
+  - `place_source`: `question` or `job`;
+  - `place`: the place named;
+  - `modes` and `posted` for a select, and `relocation` when it was read;
+  - the status: `ANSWERED`, `NOT_DECIDED` (the preference then decides), `NO_OPTION`, `INVALID` or `NO_METRO`.
+
 ## Narrative escalation
 
 Jev classifies and selects facts; it never authors prose. `COPY_KNOWN` describes responsibility, not ready-to-fill status. Readiness requires an actual verified source and canonical validation. `EXPLICIT_ANSWER`, unclear or low-confidence source applicability blocks both copy and writing unless an exact scoped user/saved answer already resolves the question. Demographic answers require an explicit verified saved answer; identity never implies them.
@@ -440,6 +468,21 @@ fact ids it referenced; and a WRITER question asking to calculate or analyse dat
 is answered under the purpose `case_analysis` from that data alone, working checked in code,
 provenance `GENERATED_FROM_QUESTION`, or held with "The table referenced is not in the recorded
 question" when the recording carries no data.
+
+**Round 6 (WP12).** Cover letters follow the owner's rubric ([rag-writing.md](rag-writing.md),
+Round 6): the employer from the job record; facts retrieved per key requirement (at most two
+each, figures first, no twin claims, one years fact at most and none below the posting's ask,
+up to 12 for a letter); the whole description up to five chunks; story passages dropped only
+at p <= 0.05 with the uncertain band reviewed once, and the passage that best matches the
+first priority listed first; a rubric-shaped writer prompt whose code-checkable lines
+(`GREETING`, `LETTER_LENGTH`, `OPENING`, `CLOSING`, `STORY_MISSING`, `JOB_RESTATED`,
+`EMPLOYER_NAME`) get corrective rewrites; one independent review per draft for its grounding
+and the rubric's HARD lines together (`letter_review`), with one improvement pass that never
+costs a grounded letter; a humanizer that skips a clean draft, may delete or fold job-only
+sentences, lints the genre and retries a rejected rewrite with its reason, never discarding
+one silently. Citation ids travel as short aliases on the writer's wire, Jev grounding and
+consistency requests are batched under the request bound, and a cover letter has its own call
+allowance (`FORM_LETTER_*`).
 
 ## Bounds and observations
 
