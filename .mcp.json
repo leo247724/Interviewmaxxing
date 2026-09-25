@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "2captcha": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@2captcha/mcp"
+      ],
+      "env": {
+        "API_TOKEN": "${TWOCAPTCHA_API_KEY}",
+        "MAX_SPEND_USD": "5"
+      }
+    }
+  }
+}
