@@ -110,13 +110,15 @@ def test_of_several_policies_the_one_naming_the_residence_is_the_question(
     assert state["chosen"] == "" and server.submissions("jobvite-like")["consents"] == []
 
 
+@pytest.mark.parametrize("url", [POSTING, "/jobs/jobvite-like/apply?accept=link"],
+                         ids=["accept-button", "accept-link"])
 def test_accepting_the_consent_sends_the_policy_and_leads_to_the_form(
-    server: Any, options: BrowserOptions
+    url: str, server: Any, options: BrowserOptions
 ) -> None:
     async def scenario() -> tuple[Any, Any]:
         browser = await PlaywrightSessionFactory().start(options)
         try:
-            gate = await browser.open(server.url(POSTING))
+            gate = await browser.open(server.url(url))
             question = await browser.data_consent("United States")
             return gate, await browser.accept_data_consent(question, "United States")
         finally:
@@ -124,8 +126,9 @@ def test_accepting_the_consent_sends_the_policy_and_leads_to_the_form(
 
     gate, after = asyncio.run(scenario())
     assert after is not None and after.kind is PageKind.APPLICATION_FORM and after.form is not None, after
-    # The form continues the posting that was opened, so it carries its identity.
-    assert gate.job_identity is not None and after.job_identity == gate.job_identity
+    if url == POSTING:
+        # The form continues the posting that was opened, so it carries its identity.
+        assert gate.job_identity is not None and after.job_identity == gate.job_identity
     summary = server.submissions("jobvite-like")
     assert [json.loads(c["policy"]) for c in summary["consents"]] == [{"consentPolicyId": "policy-7d1f"}]
     assert summary["accepted_count"] == 0

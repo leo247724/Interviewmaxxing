@@ -3575,21 +3575,26 @@ JV_CONSENT_JS = r"""(function () {
   // Jobvite's consent form: choosing a policy shows it with "I Accept" (it submits the form
   // with the policy ids, and the site remembers the consent) and "I Decline" (back to the
   // posting); choosing nothing shows "Back" again.
+  // ?accept=link: "I Accept" is a link drawn as a button whose click submits the form.
   var select = document.getElementById("jv-country-select");
   var policy = document.getElementById("jv-policy");
   var back = document.getElementById("jv-back");
   var actions = document.getElementById("jv-accept-reject");
+  var asLink = new URLSearchParams(location.search).get("accept") === "link";
   select.addEventListener("change", function () {
     actions.textContent = "";
     var chosen = !!select.value;
     policy.hidden = !chosen;
     back.hidden = chosen;
     if (!chosen) return;
-    var accept = document.createElement("button");
-    accept.type = "submit";
+    var accept = document.createElement(asLink ? "a" : "button");
+    if (asLink) accept.href = "#"; else accept.type = "submit";
     accept.className = "jv-button jv-button-primary";
     accept.textContent = "I Accept";
-    accept.addEventListener("click", function () { document.cookie = "bwa_jv_consent=accepted; path=/"; });
+    accept.addEventListener("click", function (e) {
+      document.cookie = "bwa_jv_consent=accepted; path=/";
+      if (asLink) { e.preventDefault(); select.form.submit(); }
+    });
     var decline = document.createElement("a");
     decline.className = "jv-button";
     decline.href = back.querySelector("a").getAttribute("href");

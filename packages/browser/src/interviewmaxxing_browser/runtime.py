@@ -3222,9 +3222,10 @@ class GenericApplicationBrowser:
                                                       fields=[question]))
 
     async def _consent_accept(self) -> str | None:
-        """The one accept control of the consent page's form once its policy shows,
-        waited for up to ``_CONSENT_WAIT_S``; None when the page stops being the consent
-        page or no single one shows."""
+        """The one accept control of the consent page once its policy shows ("I Accept": a
+        button of its form or of no form, else a link drawn as one), waited for up to
+        ``_CONSENT_WAIT_S``; None when the page stops being the consent page or no single
+        one shows."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _CONSENT_WAIT_S
         while True:
@@ -3233,7 +3234,9 @@ class GenericApplicationBrowser:
                 return None
             accepts = [b.selector for b in model.snapshot.buttons
                        if _CONSENT_ACCEPT.match(b.text) and not b.disabled
-                       and b.form_index == model.form_index]
+                       and b.form_index in (model.form_index, -1)]
+            if not accepts:
+                accepts = [link.selector for link in model.snapshot.links if _CONSENT_ACCEPT.match(link.text)]
             if len(accepts) == 1:
                 return accepts[0]
             if loop.time() >= deadline:
