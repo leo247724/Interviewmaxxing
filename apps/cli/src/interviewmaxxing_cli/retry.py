@@ -11,14 +11,22 @@ are selected by where they stand now in the application store
   started and recorded no outcome: it timed out or crashed) and ``error`` (the job
   never recorded an application); all four by default.
 * A ``needs_input`` application runs again only when something changed for it: at
-  least one of its holds was answered after it stopped, on it or with a saved answer for
-  its wording (``triage.recorded_holds``). ``--all`` runs every held one (after a fix).
-  ``failed_retryable``, ``unknown`` and ``error`` applications always run again.
+  least one of its holds was answered after it stopped, on it (``answer``, or ``answer
+  --sheet``, which saves each entry on each of its applications) or with a saved answer
+  for its wording (``triage.recorded_holds``). ``--all`` runs every held one (after a
+  fix). ``failed_retryable``, ``unknown`` and ``error`` applications always run again.
 * A ``needs_input`` application whose open holds are all browser actions (sign-in,
   CAPTCHA, a custom control, a file: ``triage.needs_browser``) has nothing that can be
   answered, and a headless retry usually meets the same page again, so it is skipped as
   ``browser actions only`` unless ``--user-actions`` (or ``--all``); ``resume APP
   --act`` clears it in a visible browser.
+* ``--only-app`` keeps only the named applications of the ledger (each must be one of
+  them) and runs each held one of them even with nothing answered: naming it is the
+  reason to run it.
+* ``RetryStats.selected_by`` counts each selected application under the first reason
+  that applies: its outcome (``failed_retryable``, ``unknown``, ``error``) or, held,
+  ``answered since the stop``, ``--only-app``, ``user actions`` (browser actions only,
+  ``--user-actions``), ``--all``.
 * A ``needs_input`` application whose open holds are all EXPLICIT_ANSWER_REQUIRED is
   skipped unless ``--include-explicit``: only the person can answer those.
 
@@ -36,7 +44,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,8 +68,11 @@ from .batch import (
     LedgerEntry,
     RetryStats,
     _plain_batch_id,
+    batch_ledger,
     latest_entries,
+    read_ledger,
     read_ledger_lines,
+    require_ledgers,
     run_batch,
 )
 from .triage import (
@@ -75,6 +86,12 @@ from .triage import (
 RETRY_OUTCOMES: tuple[str, ...] = ("needs_input", "failed_retryable", "unknown", "error")
 """What ``--outcomes`` may select; all of them by default."""
 NEVER_RETRIED: tuple[str, ...] = ("prepared", "closed", "duplicate", "blocked")
+ANSWERED = "answered since the stop"
+"""``RetryStats.selected_by`` for a held application with a question answered since it
+stopped (by ``answer``, ``answer --sheet`` or a saved answer for its wording)."""
+USER_ACTIONS = "user actions"
+"""``RetryStats.selected_by`` for a held application with nothing answered whose open
+holds are all browser actions, run because of ``--user-actions``."""
 INHERITED: tuple[str, ...] = (
     "candidate_id", "workers", "per_job_timeout_s", "retry_retryable", "sync_closed",
     "browser", "opencli_profile", "ai_routing", "env_file", "writer_model",
@@ -157,18 +174,38 @@ def _row(entry: LedgerEntry, application_id: str | None) -> BatchRow:
                     status=entry.status, application_id=application_id)
 
 
+def _selection_reason(current: str, answered: int, *, browser_only: bool, rerun_all: bool,
+                      user_actions: bool, only: bool) -> str | None:
+    """Why an application that stands at ``current`` runs again (``RetryStats.selected_by``),
+    or None when it does not. A held one needs a hold answered since its stop, to be named
+    by ``--only-app``, ``--user-actions`` with only browser actions open, or ``--all``;
+    the most specific reason that applies counts."""
+    if current != "needs_input":
+        return current
+    if answered:
+        return ANSWERED
+    if only:
+        return "--only-app"
+    if user_actions and browser_only:
+        return USER_ACTIONS
+    return "--all" if rerun_all else None
+
+
 def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                outcomes: Collection[str] = RETRY_OUTCOMES, include_explicit: bool = False,
                rerun_all: bool = False, user_actions: bool = False,
-               backends: Collection[str] | None = None,
-               limit: int | None = None) -> RetryPlan:
+               backends: Collection[str] | None = None, limit: int | None = None,
+               only_apps: Collection[str] | None = None) -> RetryPlan:
     """Select the applications of ``batch_id``'s ledger to run again (see the module
-    docstring), in ledger order. Raises ``ValueError`` for a batch id that is not a
-    plain name or an outcome that is never retried, and ``FileNotFoundError`` for a
-    batch without a ledger. An application with a valid approval (a submission run of it
-    stopped) is left to ``submit-approved``: preparing it again would withdraw the
-    approval. ``user_actions`` also runs held applications with nothing answered whose
-    open holds are all browser actions. Reads only; creates nothing."""
+    docstring), in ledger order; with ``only_apps``, only those applications (a listing
+    counts when its line or the store's application for its URL is one of them).
+    ``user_actions`` also runs held applications with nothing answered whose open holds
+    are all browser actions. Raises ``ValueError`` for a batch id that is not a plain
+    name, an outcome that is never retried or an ``only_apps`` id that is none of the
+    ledger's applications, and ``FileNotFoundError`` for a batch without a ledger. An
+    application with a valid approval (a submission run of it stopped) is left to
+    ``submit-approved``: preparing it again would withdraw the approval. Reads only;
+    creates nothing."""
     unknown = sorted(set(outcomes) - set(RETRY_OUTCOMES))
     if unknown:
         raise ValueError(f"cannot retry {', '.join(unknown)}; choose from "
@@ -178,10 +215,14 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
     if not ledger.is_file():
         raise FileNotFoundError(f"no ledger for batch {batch_id!r} under {root.parent}")
     wanted = set(outcomes)
+    only = list(dict.fromkeys(only_apps)) if only_apps else []
+    only_set = set(only)
     saved = candidate_saved_answers(paths, candidate_id)
     skipped: Counter[str] = Counter()
+    reasons: Counter[str] = Counter()
     items: list[RetryItem] = []
     chosen: set[str] = set()
+    named: set[str] = set()
     considered = 0
     entries, ignored = read_ledger_lines(ledger)
     store = ApplicationStore.open(paths.state_db) if paths.state_db.is_file() else None
@@ -189,17 +230,25 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
         for entry in latest_entries(entries).values():
             if backends and entry.backend not in backends:
                 continue
+            app = _application(store, candidate_id, entry) if only else None
+            if only:
+                ids = {i for i in (entry.application_id, app.id if app else None) if i} & only_set
+                if not ids:
+                    continue
+                named |= ids
             considered += 1
             if entry.outcome in NEVER_RETRIED:
                 skipped[entry.outcome] += 1
                 continue
-            app = _application(store, candidate_id, entry)
+            if not only:
+                app = _application(store, candidate_id, entry)
             if app is None or store is None:
                 if entry.outcome != "error":
                     skipped["application not found"] += 1
                 elif "error" not in wanted:
                     skipped["not selected (error)"] += 1
                 else:
+                    reasons["error"] += 1
                     items.append(RetryItem(row=_row(entry, None), previous_outcome="error",
                                            holds_before=()))
                 continue
@@ -219,8 +268,10 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                 continue
             holds = recorded_holds(store, app, events, saved, store.get_job(app.job_id))
             browser_only = bool(holds.open) and all(needs_browser(m) for m in holds.open)
-            if (current == "needs_input" and not rerun_all and not holds.answered
-                    and not (user_actions and browser_only)):
+            reason = _selection_reason(current, holds.answered, browser_only=browser_only,
+                                       rerun_all=rerun_all, user_actions=user_actions,
+                                       only=bool(only))
+            if reason is None:
                 # Browser actions cannot be answered, so they are told apart from holds
                 # that wait for an answer.
                 skipped[BROWSER_ONLY_SKIP if browser_only else "nothing answered since the stop"] += 1
@@ -230,21 +281,49 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                 skipped["explicit answers only"] += 1
                 continue
             chosen.add(app.id)
+            reasons[reason] += 1
             items.append(RetryItem(row=_row(entry, app.id), previous_outcome=current,
                                    holds_before=tuple(hold_key(m.label)
                                                       for m in holds.recorded)))
     finally:
         if store is not None:
             store.close()
+    missing = [app_id for app_id in only if app_id not in named]
+    if missing:
+        raise ValueError(f"--only-app: not an application of batch {batch_id!r} for candidate "
+                         f"{candidate_id!r}: {', '.join(missing)}")
     if limit is not None and len(items) > limit:
         skipped["over --limit"] += len(items) - limit
         items = items[:max(limit, 0)]
     stats = RetryStats(retry_of=batch_id, outcomes=[o for o in RETRY_OUTCOMES if o in wanted],
                        include_explicit=include_explicit, rerun_all=rerun_all,
-                       user_actions=user_actions, considered=considered,
-                       selected=len(items), skipped=dict(skipped.most_common()),
-                       ledger_lines_ignored=ignored)
+                       user_actions=user_actions, only_apps=only, considered=considered,
+                       selected=len(items), selected_by=dict(reasons.most_common()),
+                       skipped=dict(skipped.most_common()), ledger_lines_ignored=ignored)
     return RetryPlan(retry_of=batch_id, items=tuple(items), stats=stats)
+
+
+def batch_applications(paths: LocalPaths, batch_ids: Iterable[str], *,
+                       candidate_id: str) -> set[str]:
+    """The applications ``holds --batch-id`` reads: of each listing of each batch at its
+    latest line there, the ones held or failed there (``needs_input``,
+    ``failed_retryable``, ``error`` or ``already_recorded``: what ``--retry`` of the batch
+    considers), resolved as ``plan_retry`` resolves them (the line's application of this
+    candidate, else the store's application for its URL). Raises ``ValueError`` and
+    ``FileNotFoundError`` as ``batch.require_ledgers``. Reads only; creates nothing."""
+    ids = require_ledgers(paths, batch_ids)
+    if not paths.state_db.is_file():
+        return set()
+    found: set[str] = set()
+    with ApplicationStore.open(paths.state_db) as store:
+        for batch_id in ids:
+            for entry in latest_entries(read_ledger(batch_ledger(paths, batch_id))).values():
+                if entry.outcome in NEVER_RETRIED:
+                    continue
+                app = _application(store, candidate_id, entry)
+                if app is not None:
+                    found.add(app.id)
+    return found
 
 
 def holds_cleared(before: Sequence[str], entry: LedgerEntry) -> int | None:
@@ -283,11 +362,14 @@ async def run_retry(options: BatchOptions, plan: RetryPlan, *,
 
 
 __all__ = [
+    "ANSWERED",
     "INHERITED",
     "NEVER_RETRIED",
     "RETRY_OUTCOMES",
+    "USER_ACTIONS",
     "RetryItem",
     "RetryPlan",
+    "batch_applications",
     "default_retry_id",
     "holds_cleared",
     "plan_retry",

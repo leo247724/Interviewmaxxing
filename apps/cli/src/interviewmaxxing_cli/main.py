@@ -111,9 +111,11 @@ many jobs (preparation only):
   interviewmaxxing prepare-batch --inventory FILE   prepare Saved jobs, --workers at a time
   interviewmaxxing batch-report [BATCH_ID ...]      outcomes, questions, fill failures
   interviewmaxxing holds                            open questions, each with its answer line
-  interviewmaxxing holds --sheet FILE               ... or as an answer sheet to fill in once
+  interviewmaxxing holds --sheet FILE --batch-id B  ... or as an answer sheet to fill in once
+  interviewmaxxing answer --sheet FILE --dry-run    check the filled-in sheet, save nothing
   interviewmaxxing answer --sheet FILE              apply the filled-in sheet everywhere
   interviewmaxxing prepare-batch --retry BATCH_ID   run the held and failed ones again
+  interviewmaxxing batch-report --family BATCH_ID   yield over retries, applications to review
 
 local data (never in source control):
   IMX_HOME           root directory (default ~/.interviewmaxxing)
@@ -700,9 +702,12 @@ def _raw_answers(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _answer_sheet(args: argparse.Namespace) -> int:
-    """``answer --sheet FILE``: see ``interviewmaxxing_cli.sheet.apply_sheet``. Prints
-    counts and the wordings not applied, never an answer, then the retry line."""
-    from .sheet import apply_sheet, newest_batch_id, read_sheet, render_result, retry_line
+    """``answer --sheet FILE [--dry-run]``: see ``interviewmaxxing_cli.sheet.apply_sheet``.
+    Prints counts and, per answered entry, how many applications received it and why the
+    others did not, never an answer; then the retry lines (with ``--dry-run``, the command
+    that saves them)."""
+    from .sheet import apply_sheet, read_sheet, render_result, retry_batch_ids, retry_line
+    from .triage import command_line
 
     if args.application_id or args.set or args.answers:
         print("error: --sheet takes no APPLICATION_ID, --set or --answers (the sheet names "
@@ -716,21 +721,28 @@ def _answer_sheet(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     try:
-        result = apply_sheet(paths, sheet, owner=_owner())
+        result = apply_sheet(paths, sheet, owner=_owner(), dry_run=args.dry_run)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_ERROR
     for line in render_result(result, path):
         print(line)
-    batch_id = args.batch_id or newest_batch_id(paths)
-    if batch_id is not None:
-        print(f"next: {retry_line(_cli_prefix(args), batch_id)}")
-    else:
+    cli = _cli_prefix(args)
+    if args.dry_run:
+        print(f"next: {command_line(cli, 'answer', '--sheet', args.sheet)}   (saves them)")
+        return EXIT_OK
+    batch_ids = [args.batch_id] if args.batch_id else retry_batch_ids(paths, sheet)
+    for batch_id in batch_ids:
+        print(f"next: {retry_line(cli, batch_id)}")
+    if not batch_ids:
         print(f"next: {PROG} resume APP (no batch under {paths.home / 'batches'} to retry)")
     return EXIT_OK
 
 
 def cmd_answer(args: argparse.Namespace) -> int:
+    if args.dry_run and not args.sheet:
+        print("error: --dry-run applies to --sheet", file=sys.stderr)
+        return EXIT_USAGE
     if args.sheet:
         return _answer_sheet(args)
     if not args.application_id:
@@ -940,6 +952,22 @@ def _csv(value: str | None) -> set[str] | None:
     return {item.strip() for item in value.split(",") if item.strip()}
 
 
+def _ids(text: str) -> list[str]:
+    """``A,B``: the ids of one repeatable option, in order, blanks and repeats dropped."""
+    values = list(dict.fromkeys(v.strip() for v in text.split(",") if v.strip()))
+    if not values:
+        raise argparse.ArgumentTypeError("give at least one id")
+    return values
+
+
+def _flat(groups: Sequence[Sequence[str]] | None) -> list[str] | None:
+    """Every id of a repeated ``_ids`` option, in order, repeats dropped; None when the
+    option was not given."""
+    if groups is None:
+        return None
+    return list(dict.fromkeys(item for group in groups for item in group))
+
+
 RETRY_FLAGS: dict[str, str] = {
     "candidate": "candidate_id", "workers": "workers", "per_job_timeout": "per_job_timeout_s",
     "retry_retryable": "retry_retryable", "sync_closed": "sync_closed", "browser": "browser",
@@ -1036,18 +1064,28 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
     never submits."""
     if args.retry is not None:
         return _retry_batch(args)
-    if args.outcomes is not None or args.include_explicit or args.rerun_all or args.user_actions:
-        print("error: --outcomes, --include-explicit, --all and --user-actions apply to --retry",
-              file=sys.stderr)
+    if (args.outcomes is not None or args.include_explicit or args.rerun_all
+            or args.only_apps is not None or args.user_actions):
+        print("error: --outcomes, --include-explicit, --all, --only-app and --user-actions "
+              "apply to --retry", file=sys.stderr)
         return EXIT_USAGE
     from pydantic import ValidationError
 
-    from .batch import BatchOptions, default_batch_id, read_inventory, run_batch
+    from .batch import BatchOptions, default_batch_id, prepared_or_held, read_inventory, run_batch
 
     paths = _paths(args)
     try:
+        exclusion = (prepared_or_held(paths, _flat(args.exclude_batches) or [])
+                     if args.exclude_batches is not None else None)
+    except FileNotFoundError as exc:
+        print(f"error: --exclude-batches: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except ValueError as exc:
+        print(f"error: --exclude-batches: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
         rows, invalid = read_inventory(Path(args.inventory), backends=_csv(args.backends),
-                                       statuses=_csv(args.statuses) or set(), limit=args.limit)
+                                       statuses=_csv(args.statuses) or set())
         options = BatchOptions(
             paths=paths, batch_id=args.batch_id or default_batch_id(),
             max_prepared=args.max_prepared, include_existing=args.include_existing,
@@ -1056,14 +1094,27 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
     except (ValidationError, OSError, ValueError) as exc:
         print(f"error: {_problems(exc)}", file=sys.stderr)
         return EXIT_USAGE
+    excluded = 0
+    if exclusion is not None:
+        kept = [row for row in rows if not exclusion.excludes(row)]
+        excluded, rows = len(rows) - len(kept), kept
+    rows = rows[:args.limit] if args.limit is not None else rows
     if not rows:
-        print(f"error: no inventory rows match (skipped {invalid} without a valid URL)",
-              file=sys.stderr)
+        print(f"error: no inventory rows match (skipped {invalid} without a valid URL"
+              + (f", {excluded} prepared or held by the excluded batches"
+                 if exclusion is not None else "")
+              + ")", file=sys.stderr)
         return EXIT_USAGE
+    batches = list(exclusion.batches) if exclusion is not None else []
+    header = (f"batch {options.batch_id}: {len(rows)} row(s), {options.workers} worker(s), "
+              f"preparation only; ledger in {options.batch_dir}")
+    if exclusion is not None:
+        header += (f"; {excluded} row(s) left out as prepared or held by "
+                   f"{', '.join(batches)}")
     summary = _run_batch_command(
-        args, f"batch {options.batch_id}: {len(rows)} row(s), {options.workers} worker(s), "
-              f"preparation only; ledger in {options.batch_dir}", options.batch_dir,
-        lambda show: run_batch(options, rows, on_entry=show, skipped_invalid_url=invalid))
+        args, header, options.batch_dir,
+        lambda show: run_batch(options, rows, on_entry=show, skipped_invalid_url=invalid,
+                               skipped_excluded=excluded, excluded_batches=batches))
     if summary is None:
         return EXIT_INTERRUPTED
     _print_summary(args, summary, options.batch_dir)
@@ -1074,12 +1125,12 @@ def _retry_batch(args: argparse.Namespace) -> int:
     """``prepare-batch --retry BATCH_ID``: see ``interviewmaxxing_cli.retry``."""
     from pydantic import ValidationError
 
-    from .batch import read_summary
+    from .batch import counted, read_summary
     from .retry import RETRY_OUTCOMES, default_retry_id, plan_retry, retry_options, run_retry
 
-    if args.statuses != "resolved" or args.include_existing:
-        print("error: --statuses and --include-existing apply to --inventory runs",
-              file=sys.stderr)
+    if args.statuses != "resolved" or args.include_existing or args.exclude_batches is not None:
+        print("error: --statuses, --include-existing and --exclude-batches apply to "
+              "--inventory runs", file=sys.stderr)
         return EXIT_USAGE
     paths = _paths(args)
     try:
@@ -1093,7 +1144,7 @@ def _retry_batch(args: argparse.Namespace) -> int:
                           outcomes=args.outcomes or RETRY_OUTCOMES,
                           include_explicit=args.include_explicit, rerun_all=args.rerun_all,
                           user_actions=args.user_actions, backends=_csv(args.backends),
-                          limit=args.limit)
+                          limit=args.limit, only_apps=_flat(args.only_apps))
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -1105,9 +1156,10 @@ def _retry_batch(args: argparse.Namespace) -> int:
         print(f"note: batch {args.retry} recorded no run options (it predates them); the "
               "flags given here are used", file=progress)
     stats = plan.stats
-    skipped = ", ".join(f"{reason} ({count})" for reason, count in stats.skipped.items())
     header = (f"batch {options.batch_id}: retry of {args.retry}, {stats.selected} of "
-              f"{stats.considered} listing(s) selected (skipped: {skipped or 'none'}), "
+              f"{stats.considered} listing(s) selected"
+              + (f" (by: {counted(stats.selected_by)})" if stats.selected_by else "")
+              + f" (skipped: {counted(stats.skipped) or 'none'}), "
               f"{options.workers} worker(s), preparation only; ledger in {options.batch_dir}")
     summary = _run_batch_command(args, header, options.batch_dir,
                                  lambda show: run_retry(options, plan, on_entry=show))
@@ -1122,13 +1174,13 @@ def cmd_batch_report(args: argparse.Namespace) -> int:
     ``interviewmaxxing_cli.batch.build_report``."""
     from .batch import build_report, render_report_markdown
 
-    if args.batch_ids and args.since is not None:
-        print("error: give batch ids or --since, not both", file=sys.stderr)
+    if (args.batch_ids or args.families) and args.since is not None:
+        print("error: give batch ids or --family, or --since, not both", file=sys.stderr)
         return EXIT_USAGE
     paths = _paths(args)
     try:
         report = build_report(paths, args.batch_ids or None, top=args.top, since=args.since,
-                              cli=_cli_prefix(args))
+                              cli=_cli_prefix(args), families=args.families or ())
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -1142,29 +1194,63 @@ def cmd_batch_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _holds_scope(args: argparse.Namespace, paths: LocalPaths,
+                 candidate_id: str) -> tuple[list[str], set[str] | None]:
+    """``holds --batch-id``/``--since``: the batches and the applications they hold or
+    failed (``retry.batch_applications``); no batches and None (every held application)
+    without either. Raises ``ValueError`` and ``FileNotFoundError`` for a batch id."""
+    from .batch import batches_since
+    from .retry import batch_applications
+
+    if args.since is not None:
+        batches = batches_since(paths, args.since)
+    elif args.batch_ids:
+        batches = list(dict.fromkeys(args.batch_ids))
+    else:
+        return [], None
+    return batches, batch_applications(paths, batches, candidate_id=candidate_id)
+
+
 def cmd_holds(args: argparse.Namespace) -> int:
-    """Open holds of every NEEDS_INPUT application, grouped by question; read-only. See
+    """Open holds of every NEEDS_INPUT application (or of those some batches hold or
+    failed), grouped by question; read-only. See
     ``interviewmaxxing_cli.triage.build_holds``."""
     from .triage import build_holds, render_holds_markdown
 
+    if args.batch_ids and args.since is not None:
+        print("error: give --batch-id or --since, not both", file=sys.stderr)
+        return EXIT_USAGE
     paths = _paths(args)
+    candidate_id = args.candidate or paths.candidate_id
+    try:
+        batches, applications = _holds_scope(args, paths, candidate_id)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     if args.sheet:
         from .sheet import build_sheet, write_sheet
         from .triage import command_line
 
-        sheet = build_sheet(paths, args.candidate or paths.candidate_id, cli=_cli_prefix(args))
+        sheet = build_sheet(paths, candidate_id, cli=_cli_prefix(args),
+                            applications=applications, batches=batches, since=args.since)
         try:
             write_sheet(sheet, Path(args.sheet), force=args.force)
         except (OSError, FileExistsError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
         proposed = sum(1 for q in sheet.questions if q.proposal is not None)
+        scope = (f" of {', '.join(batches) or 'no batch'}"
+                 if applications is not None else "")
         print(f"wrote {len(sheet.questions)} question(s) ({proposed} with an unconfirmed "
               f"proposal) and {len(sheet.actions)} browser action(s) for {sheet.held} held "
-              f"application(s) to {args.sheet} (owner-only). Fill in `answer`, then: "
+              f"application(s){scope} to {args.sheet} (owner-only). Fill in `answer`, then: "
               f"{command_line(_cli_prefix(args), 'answer', '--sheet', args.sheet)}")
         return EXIT_OK
-    report = build_holds(paths, args.candidate or paths.candidate_id, cli=_cli_prefix(args))
+    report = build_holds(paths, candidate_id, cli=_cli_prefix(args), applications=applications,
+                         batches=batches, since=args.since)
     if args.json:
         print(_dump(report))
     else:
@@ -1298,12 +1384,14 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "A row's application is linked to its Saved pipeline card (pipeline_id); a job that "
         "no longer accepts applications moves its Saved card to Closed with a dated note. "
         "No card is created or moved to Applied. Summarize ledgers with `batch-report`. "
+        "--exclude-batches leaves out the listings earlier batches and their retries "
+        "prepared or held. "
         "With --retry BATCH_ID instead of --inventory, the applications of that batch that "
-        "failed, or are held with a question answered since they stopped (--all: every "
-        "held one; --user-actions: also those held only on browser actions), are "
-        "continued with `resume` as a new batch, with the original batch's worker count, "
-        "timeout and runtime flags unless given again; prepared and closed applications are "
-        "never run again.",
+        "failed, or are held with a question answered since they stopped (by `answer` or "
+        "`answer --sheet`; --all: every held one; --user-actions: also those held only on "
+        "browser actions; --only-app: the named ones), are continued with `resume` as a new "
+        "batch, with the original batch's worker count, timeout and runtime flags unless "
+        "given again; prepared and closed applications are never run again.",
     )
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--inventory", metavar="FILE",
@@ -1328,6 +1416,14 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
                         "nothing can answer; skipped by default as 'browser actions only', "
                         "because a headless retry usually meets them again (`resume APP "
                         "--act` clears one in a visible browser)")
+    p.add_argument("--only-app", dest="only_apps", type=_ids, action="append",
+                   metavar="APP[,APP]",
+                   help="with --retry: only these applications of the batch (repeatable); "
+                        "each held one runs even with nothing answered since it stopped")
+    p.add_argument("--exclude-batches", type=_ids, action="append", metavar="A,B",
+                   help="with --inventory: leave out the listings these batches (each with "
+                        "its whole retry family) prepared or held, so a run over the whole "
+                        "inventory does not run them again")
     p.add_argument("--backends", metavar="A,B,C", help="only these backends")
     p.add_argument("--statuses", metavar="A,B", default="resolved",
                    help="only these inventory statuses (default: resolved)")
@@ -1365,12 +1461,18 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "failed, closed, no form, prepared rate, median duration, provider cost), the "
         "questions that held applications in categories and grouped by wording with the "
         "`answer ... --reuse global` line that answers each, fill failures grouped by "
-        "detail, durations and pipeline card links. Writes no file; question wording is "
-        "truncated to 80 characters, failure details are masked and CLI messages are never "
-        "shown.",
+        "detail, durations and pipeline card links; for a batch read with its retries, the "
+        "yield of each run (ran, prepared, held, failed, holds open, cost); and the "
+        "applications waiting at their final review step with the `approve` and `submit` "
+        "lines you run after reviewing them (the report submits nothing). Writes no file; "
+        "question wording is truncated to 80 characters, failure details are masked and "
+        "CLI messages are never shown.",
     )
     p.add_argument("batch_ids", nargs="*", metavar="BATCH_ID",
                    help="batches to combine (default: every batch under $IMX_HOME/batches)")
+    p.add_argument("--family", dest="families", action="append", metavar="BATCH_ID",
+                   help="also read every batch of this batch's retry family: the batch it "
+                        "retried and every retry of it (repeatable); adds its yield table")
     p.add_argument("--since", type=_since, metavar="DATE",
                    help="only batches with a line finished at or after DATE (UTC date or ISO "
                         "date and time)")
@@ -1387,10 +1489,17 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "of the candidate by their wording, with counts, backends and the exact "
         "`interviewmaxxing answer APP --set FIELD=VALUE --reuse global` line that answers "
         "each for all of them (or `resume APP --act` for a browser action). Questions "
-        "answered after their application stopped are not listed. Then run `prepare-batch "
-        "--retry BATCH_ID`. Read-only; stored answer values are never shown.",
+        "answered after their application stopped are not listed. --batch-id or --since "
+        "limit it to the applications those batches hold or failed. Then run "
+        "`prepare-batch --retry BATCH_ID`. Read-only; stored answer values are never shown.",
     )
     p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
+    p.add_argument("--batch-id", dest="batch_ids", action="append", metavar="ID",
+                   help="only the applications this batch holds or failed (repeatable): "
+                        "those `prepare-batch --retry ID` considers")
+    p.add_argument("--since", type=_since, metavar="DATE",
+                   help="only the applications held or failed in the batches with a line "
+                        "finished at or after DATE (as batch-report --since selects them)")
     p.add_argument("--json", action="store_true", help="print the groups as JSON")
     p.add_argument("--sheet", metavar="FILE",
                    help="instead of printing the groups, write an answer sheet (owner-only "
@@ -1422,8 +1531,11 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "says otherwise. Then run `resume`. With --sheet FILE (no APPLICATION_ID), apply "
         "every filled-in entry of an answer sheet written by `holds --sheet` to each of its "
         "applications with the entry's `reuse`; an entry that does not fit a question as "
-        "recorded is reported by its wording and skipped, a hold answered since its stop is "
-        "left alone, and the output never shows an answer. Then run `prepare-batch --retry`.",
+        "recorded is reported by its wording and skipped, an application whose recorded "
+        "options changed since the sheet was written is skipped, a hold answered since its "
+        "stop is left alone, and each answered entry prints how many applications received "
+        "it; the output never shows an answer. --dry-run prints the same and saves nothing. "
+        "Then run `prepare-batch --retry`.",
     )
     p.add_argument("application_id", nargs="?", metavar="APPLICATION_ID")
     p.add_argument("--set", action="append", metavar="FIELD=VALUE", help="one answer (repeatable)")
@@ -1436,7 +1548,12 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
                         "application it names")
     p.add_argument("--batch-id", metavar="ID",
                    help="with --sheet: the batch to name in the `prepare-batch --retry` line "
-                        "printed at the end (default: the newest batch under $IMX_HOME/batches)")
+                        "printed at the end (default: the first batch of each batch the "
+                        "sheet was limited to, else of the newest batch under "
+                        "$IMX_HOME/batches)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="with --sheet: check every answer against its applications and "
+                        "print what would be saved, per entry; save nothing")
     p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser(

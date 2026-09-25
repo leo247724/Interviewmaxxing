@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import shlex
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -587,6 +587,11 @@ class HoldsReport(Contract):
     applications, grouped by question wording."""
 
     candidate_id: str
+    batches: list[str] = Field(default_factory=list)
+    """With ``--batch-id`` or ``--since``: only the applications these batches hold or
+    failed were read (``retry.batch_applications``); empty: every application."""
+    since: datetime | None = None
+    """With ``--since``: the batches are those with a line finished at or after it."""
     held: int = Field(default=0, ge=0)
     """Applications with at least one open hold."""
     answered: int = Field(default=0, ge=0)
@@ -603,18 +608,29 @@ class HoldsReport(Contract):
     questions: list[HoldGroup] = Field(default_factory=list)
 
 
+def held_applications(store: ApplicationStore, candidate_id: str,
+                      applications: Collection[str] | None = None) -> list[Application]:
+    """The candidate's NEEDS_INPUT applications, only those in ``applications`` when it
+    is given (``holds --batch-id``/``--since``)."""
+    held = store.list_applications(candidate_id=candidate_id, states=[S.NEEDS_INPUT])
+    return held if applications is None else [a for a in held if a.id in applications]
+
+
 def build_holds(paths: LocalPaths, candidate_id: str, *,
-                cli: Sequence[str] = (PROG,)) -> HoldsReport:
-    """Group the open holds of every NEEDS_INPUT application of ``candidate_id`` by their
+                cli: Sequence[str] = (PROG,), applications: Collection[str] | None = None,
+                batches: Sequence[str] = (), since: datetime | None = None) -> HoldsReport:
+    """Group the open holds of every NEEDS_INPUT application of ``candidate_id`` (only
+    those in ``applications`` when it is given: the applications of ``batches``) by their
     complete question wording. Creates nothing (no state database: an empty report)."""
-    report: dict[str, Any] = {"candidate_id": candidate_id}
+    report: dict[str, Any] = {"candidate_id": candidate_id, "batches": list(batches),
+                              "since": since}
     if not paths.state_db.is_file():
         return HoldsReport(**report)
     saved = candidate_saved_answers(paths, candidate_id)
     counts: Counter[str] = Counter()
     occurrences: list[HoldOccurrence] = []
     with ApplicationStore.open(paths.state_db) as store:
-        for app in store.list_applications(candidate_id=candidate_id, states=[S.NEEDS_INPUT]):
+        for app in held_applications(store, candidate_id, applications):
             events = store.list_events(app.id)
             if prepared_stop(events):
                 counts["prepared"] += 1
@@ -638,8 +654,15 @@ def build_holds(paths: LocalPaths, candidate_id: str, *,
 
 
 def render_holds_markdown(report: HoldsReport) -> str:
+    scope: list[str] = []
+    if report.batches or report.since is not None:
+        scope.append("- only the applications held or failed in: "
+                     + (", ".join(report.batches) or "no batch")
+                     + (f" (the batches with a line since {report.since.isoformat()})"
+                        if report.since is not None else ""))
     lines = ["# Open holds", "",
              f"- candidate: {report.candidate_id}",
+             *scope,
              f"- held applications: {report.held}, with {report.open_holds} open hold(s) in "
              f"{len(report.questions)} distinct question(s)"]
     if report.answered_holds:
@@ -684,6 +707,7 @@ __all__ = [
     "failure_text",
     "group_failures",
     "group_holds",
+    "held_applications",
     "hold_key",
     "needs_browser",
     "prepared_stop",

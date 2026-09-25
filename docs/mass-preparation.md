@@ -16,16 +16,74 @@ The loop at scale:
 ```sh
 interviewmaxxing prepare-batch --inventory inventory.json --workers 3 --batch-id big1
 interviewmaxxing batch-report big1          # outcomes, backends, questions, fill failures
-interviewmaxxing holds --sheet sheet.json   # each open question once, as a sheet to fill in
+interviewmaxxing holds --sheet sheet.json --batch-id big1  # this batch's open questions, once each
 $EDITOR sheet.json                          # set "answer" where you can
+interviewmaxxing answer --sheet sheet.json --dry-run  # what would be saved, per entry
 interviewmaxxing answer --sheet sheet.json  # applies each answer to every application asking it
-interviewmaxxing prepare-batch --retry big1 # the held and failed ones again, same settings
-interviewmaxxing batch-report big1 big1-retry-20260924T210507Z
+interviewmaxxing prepare-batch --retry big1 # the answered and failed ones again, same settings
+interviewmaxxing batch-report --family big1 # yield per run; the prepared ones to review
 ```
 
 For a handful of questions, `interviewmaxxing holds` without `--sheet` prints one
 `answer APP --set FIELD=VALUE --reuse global` line per question instead (see
 [Open holds](#open-holds-interviewmaxxing-holds)).
+
+## The mass run
+
+The pilots (`pilot7-20260924` and the ones before it) prepared or held a few dozen jobs of
+the Saved inventory. The mass run prepares the rest of it without running those again,
+then works through its holds one sitting at a time. Every command below is preparation
+only: nothing is submitted until you approve an application you reviewed and run its
+`submit` line yourself.
+
+```sh
+# 0. Where the pilots stand (read-only): the yield of each run, what waits for review.
+interviewmaxxing batch-report --family pilot7-20260924
+
+# 1. Prepare the whole Saved inventory on the backends that prepare headless (LinkedIn
+#    and the sign-in-gated boards stay out). --exclude-batches leaves out every listing a
+#    pilot batch or any of its retries prepared or held (name every pilot batch).
+interviewmaxxing prepare-batch --inventory /abs/private/application-urls.json \
+  --backends greenhouse,ashby,lever,workable,rippling,jazzhr,bamboohr,breezy,gem \
+  --exclude-batches pilot7-20260924 \
+  --workers 4 --per-job-timeout 600 --ai-routing --env-file /abs/env.local \
+  --writer-model anthropic/claude-opus-5.5 --rag-connection-file /abs/private/connection.json \
+  --batch-id mass-20260925
+#    Interrupted? Run the same command again (same --batch-id and --exclude-batches).
+
+# 2. Outcomes, backends, questions, fill failures, cost.
+interviewmaxxing batch-report --family mass-20260925
+
+# 3. One answer sheet for this batch only (the pilots' old holds stay out of it).
+interviewmaxxing holds --sheet /abs/private/mass-sheet.json --batch-id mass-20260925
+$EDITOR /abs/private/mass-sheet.json
+interviewmaxxing answer --sheet /abs/private/mass-sheet.json --dry-run
+interviewmaxxing answer --sheet /abs/private/mass-sheet.json
+
+# 4. Run again what the sheet answered and what failed, with the batch's own settings.
+interviewmaxxing prepare-batch --retry mass-20260925 --batch-id mass-20260925-r1
+
+# 5. After a runtime fix that concerns a few applications: only those.
+interviewmaxxing prepare-batch --retry mass-20260925 --only-app APP1,APP2 \
+  --batch-id mass-20260925-r2
+
+# 6. The yield of every run so far, and the applications at their final review step.
+interviewmaxxing batch-report --family mass-20260925
+```
+
+Repeat 3 to 6 with a new sheet (`holds --sheet FILE --batch-id mass-20260925 --force`
+replaces the old file) while the yield table still gains prepared applications. A plain
+retry skips the applications held only on browser actions (`browser actions only`: a
+sign-in, a CAPTCHA, a custom control, a file); clear each with `interviewmaxxing resume
+APP --act` in a visible browser (the sheet's `actions` list the lines), or add
+`--user-actions` to run them headless again after a runtime fix. Always
+retry the first batch (`--retry mass-20260925`), not a retry: its ledger lists every
+application of the run, and `answer --sheet` prints exactly that `--retry` line. The
+report's "At the final review step" section lists each prepared application with its
+`approve` and `submit` lines; review each one first (`interviewmaxxing status APP` and
+the evidence under `$IMX_HOME/artifacts/APP/`). `submit` needs `IMX_ALLOW_SUBMISSION=1`
+and `--yes`, and submits exactly what you approved
+([Submitting what you approved](#submitting-what-you-approved)).
 
 ## What it does and does not do
 
@@ -120,12 +178,12 @@ interviewmaxxing [--home DIR] prepare-batch --inventory inventory.json \
   --backends greenhouse,lever --limit 40 --workers 3 --max-prepared 20 \
   [--statuses resolved] [--retry-retryable 1] [--per-job-timeout 900] \
   [--batch-id ID] [--include-existing] [--sync-closed | --no-sync-closed] \
-  [--candidate ID] [--json]
+  [--exclude-batches A,B] [--candidate ID] [--json]
 
 interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
   [--outcomes needs_input,failed_retryable,unknown,error] [--all] [--include-explicit] \
-  [--user-actions] [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] \
-  [--workers N] [--per-job-timeout S] [runtime flags] [--json]
+  [--user-actions] [--only-app APP[,APP]] [--backends A,B] [--limit N] [--max-prepared N] \
+  [--batch-id ID] [--workers N] [--per-job-timeout S] [runtime flags] [--json]
 ```
 
 `--inventory` and `--retry` are mutually exclusive; see
@@ -139,6 +197,7 @@ interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
 | `--per-job-timeout S` | A job running longer than this is stopped (its whole process group: SIGTERM, then SIGKILL after 15 s) and recorded as `error`; nothing is submitted. The message says how it ended: `the run was stopped (SIGTERM)`, `the run ignored SIGTERM for 15 s and was killed (SIGKILL)`, or `the run did not exit after SIGTERM and SIGKILL (process group N may still be running)`. |
 | `--batch-id ID` | Name of the batch (default: `batch-YYYYmmddTHHMMSSZ`; with `--retry`, `BATCH_ID-retry-YYYYmmddTHHMMSSZ`). Reuse it to resume. |
 | `--include-existing` | Also run URLs that already have an application in the store. Without it, such rows are recorded as `already_recorded` and skipped, unless the stored application is `REQUESTED`, `INSPECTING`, `PACKET_READY`, `FILLING` or `FAILED_RETRYABLE`, which `apply` resumes anyway (a run stopped mid-fill, for example by a timeout, is left in `PACKET_READY` or `FILLING`). |
+| `--exclude-batches A,B` | Repeatable. Leaves out every inventory row whose listing earlier batches prepared or held: each named batch counts with its whole retry family (the batch it retried and every retry, `batch-report --family`), and a listing is left out when one of their ledger lines says `prepared` or `needs_input` (or `already_recorded` for a `NEEDS_INPUT` application), matched by listing id or by normalized URL. Listings those batches only saw fail, error, close or duplicate are not left out (a closed or duplicate one is recorded as `already_recorded` as usual; a failed one runs again). Left-out rows are not written to the ledger; `summary.json` counts them as `skipped_excluded` and names the batches in `excluded_batches`. `--limit` counts the rows that are left. A batch id without a ledger exits `1`. Give the same flag again when continuing the batch. |
 | `--sync-closed`, `--no-sync-closed` | On by default. When a `closed` row (or an `already_recorded` row whose stored state is `FAILED_PERMANENT`) saw the job closed, that is its reason is the runner's "The job is no longer accepting applications…", and it has a linked card still in Saved, moves the card to Closed through the revision-aware `move_item` with the note `Observed closed on YYYY-MM-DD (UTC) by prepare-batch <batch id>: <observed reason> (application <id>)`. The note appears in the card's history ("Moved from Saved to Closed. …"). No other card field changes. A `FAILED_PERMANENT` for any other reason moves nothing. A card already in Closed is left as it is, with nothing recorded; a card in any other lane is left where it is. `--no-sync-closed` still links cards but moves none. |
 | `--json` | Print the summary as JSON (progress lines then go to stderr). |
 
@@ -292,7 +351,9 @@ Everything lives under `$IMX_HOME/batches/<batch id>/` (directory `0700`, files 
   (the reasons for cards not linked and Closed moves skipped, counted; a move
   skipped because the link failed counts once, under the link reason). Also
   `skipped_same_url` (rows not launched because an earlier row of the run has the same
-  normalized URL, or in a retry the same application), `ledger_lines_ignored`,
+  normalized URL, or in a retry the same application), `skipped_excluded` and
+  `excluded_batches` (`--exclude-batches`: rows left out, and the batch families named,
+  each with every retry), `ledger_lines_ignored`,
   `run_options` (the run's candidate, workers, per-job timeout, retry count,
   `--max-prepared`, `--include-existing`, closed-card sync, browser and runtime flags,
   which `--retry` reuses) and, for a retry batch, `retry` (see
@@ -335,7 +396,8 @@ A job stopped by the timeout leaves its application with a lapsing claim; the ne
 ```sh
 interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
   [--outcomes needs_input,failed_retryable,unknown,error] [--all] [--include-explicit] \
-  [--user-actions] [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] [--json]
+  [--user-actions] [--only-app APP[,APP]] [--backends A,B] [--limit N] [--max-prepared N] \
+  [--batch-id ID] [--json]
 ```
 
 After a runtime fix, or after answering questions (see
@@ -349,7 +411,7 @@ the state database (a listing without an application id is looked up by its URL)
 | `prepared` | NEEDS_INPUT at the final review step | never |
 | `closed` | FAILED_PERMANENT | never |
 | `duplicate`, `blocked` | DUPLICATE, a submission state | never |
-| `needs_input` | NEEDS_INPUT for questions, sign-in, CAPTCHA or a custom control | with `--outcomes` (default), once one of its holds was answered since it stopped; held only on browser actions, with `--user-actions`; every one with `--all` |
+| `needs_input` | NEEDS_INPUT for questions, sign-in, CAPTCHA or a custom control | with `--outcomes` (default), once one of its holds was answered since it stopped; held only on browser actions, with `--user-actions`; the ones `--only-app` names; every one with `--all` |
 | `failed_retryable` | FAILED_RETRYABLE | with `--outcomes` (default) |
 | `unknown` | REQUESTED, INSPECTING, PACKET_READY or FILLING: a run started and recorded no outcome (it timed out or crashed) | with `--outcomes` (default) |
 | `error` | the job never recorded an application (for example the CLI could not start) | with `--outcomes` (default); it runs `apply URL` |
@@ -371,13 +433,26 @@ again. A `needs_input` application whose open holds are all
 `EXPLICIT_ANSWER_REQUIRED` is skipped unless `--include-explicit` (also with `--all`):
 only the person can answer those. A hold is no longer open once, after the
 application stopped, the person answered exactly that question for it
-(`interviewmaxxing answer APP`), or saved an answer whose question is the same wording
-(compared as the resolver compares it), whose semantic type is unset or the hold's,
-and which applies to the job (`--reuse global`, or `--reuse job` for this job). An
-answer that existed before the stop was already available to the run that stopped,
-so it does not count. A second listing of an application already selected (an alias
-URL) is skipped. `--backends` keeps the listings of those backends; `--limit N` runs
-at most N of the selected ones.
+(`interviewmaxxing answer APP`, or `answer --sheet`, which saves each entry on each of
+its applications), or saved an answer whose question is the same wording (compared as
+the resolver compares it), whose semantic type is unset or the hold's, and which
+applies to the job (`--reuse global`, or `--reuse job` for this job). So after
+`answer --sheet`, a plain `--retry` (no `--all`) runs every application that received
+an answer, and every other application whose question a `global` entry answered (also
+one of another batch, or one taken out of the entry's `fields`). An answer that existed
+before the stop was already available to the run that stopped, so it does not count. A
+second listing of an application already selected (an alias URL) is skipped.
+`--backends` keeps the listings of those backends; `--limit N` runs at most N of the
+selected ones.
+
+`--only-app APP[,APP]` (repeatable) keeps only those applications of the ledger (a
+listing counts when its line, or the store's application for its URL, is one of them)
+and runs each held one even with nothing answered since it stopped: naming it is the
+reason, so a handful can run again after a fix without `--all` (one held only on browser
+actions runs too, without `--user-actions`). The other rules stand: prepared, closed and
+approved applications are still skipped, explicit-only holds still need
+`--include-explicit`, and `--outcomes`, `--backends` and `--limit` still apply. An id
+that is none of the ledger's applications is a usage error (exit `2`) naming it.
 
 The selected applications run as a new batch (`--batch-id`, default
 `BATCH_ID-retry-YYYYmmddTHHMMSSZ`; it must differ from `BATCH_ID`) with the same
@@ -395,16 +470,21 @@ whose summary predates `run_options` uses the flags given (a note says so).
 
 The retry's ledger lines carry `retry_of`, `previous_outcome`, `holds_before` and
 `holds_cleared`, and its `summary.json` a `retry` object: `retry_of`, the `outcomes`
-selected, `include_explicit`, `considered` (listings after `--backends`),
-`rerun_all` (`--all`), `user_actions` (`--user-actions`), `selected`, `skipped` (counted by
-reason: `prepared`, `closed`, `duplicate`, `blocked`, `approved (left to submit-approved)`,
-`not selected (<outcome>)`, `nothing answered since the stop`, `browser actions only`,
-`explicit answers only`, `application not found`, `same application as another listing`,
-`over --limit`), `retried`,
-`prepared` (now prepared), `holds_before`, `holds_cleared`, `holds_open` (holding the
-retried applications now, new ones included), `transitions` (previous outcome ->
-outcome -> count) and `ledger_lines_ignored` (of the retried ledger). The Markdown
-summary shows them under "Retry of BATCH_ID", including "holds cleared: N of M".
+selected, `include_explicit`, `rerun_all` (`--all`), `user_actions` (`--user-actions`),
+`only_apps` (`--only-app`), `considered` (listings after `--backends` and `--only-app`),
+`selected`, `selected_by` (why, each selected listing counted under the first reason
+that applies: its outcome `failed_retryable`, `unknown` or `error`, or, held,
+`answered since the stop`, `--only-app` (named, nothing answered), `user actions` (only
+browser actions open, `--user-actions`) or `--all`), `skipped` (counted by reason:
+`prepared`, `closed`, `duplicate`, `blocked`, `approved (left to submit-approved)`, `not
+selected (<outcome>)`, `nothing answered since the stop`, `browser actions only`,
+`explicit answers only`, `application not found`, `same application as another
+listing`, `over --limit`), `retried`, `prepared` (now prepared), `holds_before`,
+`holds_cleared`, `holds_open` (holding the retried applications now, new ones
+included), `transitions` (previous outcome -> outcome -> count) and
+`ledger_lines_ignored` (of the retried ledger). The header line and the Markdown summary
+show them under "Retry of BATCH_ID", including "selected by: answered since the stop
+(N)" and "holds cleared: N of M".
 
 Running the same retry `--batch-id` again continues it like any batch (settled rows
 are not launched again). A new `--retry` of the original batch selects again from
@@ -417,17 +497,31 @@ error, `130` when interrupted.
 ## Open holds (`interviewmaxxing holds`)
 
 ```sh
-interviewmaxxing [--home DIR] holds [--candidate ID] [--json]
+interviewmaxxing [--home DIR] holds [--candidate ID] [--batch-id ID ... | --since DATE] [--json]
 ```
 
 Groups the open holds of every `NEEDS_INPUT` application of the candidate
 (`--candidate`, default `IMX_CANDIDATE_ID`) in the state database by their complete
 question wording (case, spacing, sentence punctuation and required markers ignored),
-so that each distinct question is answered once. For each group: the question (cut to
-80 characters), the number of holds and of applications, the backends (the bound
-job's ATS), the most frequent reason (and every reason counted), semantic type and
-control type, the hold category, a sample application and its field id, and the line
-that clears it:
+so that each distinct question is answered once.
+
+`--batch-id ID` (repeatable) reads only the applications those batches hold or failed:
+each listing of the batch at its latest line there, unless that line says `prepared`,
+`closed`, `duplicate` or `blocked` (the applications `prepare-batch --retry ID`
+considers), resolved as the retry resolves them (the line's application, else the
+store's application for the listing's URL, for this candidate). An application that
+failed in the batch and is held now (after a retry) is included; one the batch prepared
+is not, whatever the store says now, because a retry of the batch would not run it.
+`--since DATE` does the same for the batches with a ledger line finished at or after
+DATE, as `batch-report --since` selects them. The two cannot be combined; a batch id
+without a ledger exits `1`. The report then names the batches (`batches`, `since` in
+the JSON; "only the applications held or failed in: …" in the Markdown), and its
+counts cover those applications only.
+
+For each group: the question (cut to 80 characters), the number of holds and of
+applications, the backends (the bound job's ATS), the most frequent reason (and every
+reason counted), semantic type and control type, the hold category, a sample
+application and its field id, and the line that clears it:
 
 - `interviewmaxxing answer SAMPLE --set FIELD=VALUE --reuse global` (replace `VALUE`;
   a choice takes an option value or label, `interviewmaxxing status SAMPLE` lists
@@ -458,18 +552,22 @@ to see its options, does not scale to a hundred of them. The answer sheet puts e
 distinct open question, with its options, into one private file that you fill in once:
 
 ```sh
-interviewmaxxing [--home DIR] holds [--candidate ID] --sheet FILE [--force]
+interviewmaxxing [--home DIR] holds [--candidate ID] --sheet FILE [--batch-id ID ... | --since DATE] [--force]
 $EDITOR FILE
+interviewmaxxing [--home DIR] answer --sheet FILE --dry-run
 interviewmaxxing [--home DIR] answer --sheet FILE [--batch-id ID]
 interviewmaxxing prepare-batch --retry BATCH_ID
 ```
 
 `holds --sheet FILE` groups the open holds exactly as `holds` does (same candidate, same
-wording key, holds answered since their stop left out) and writes them as JSON, owner-only
-(`0600`), refusing to replace an existing file unless `--force` (a sheet may hold answers
-you typed). It prints counts only: how many questions, how many with a proposal, how many
-browser actions and held applications, and the `answer --sheet` line to run next. The
-file has:
+wording key, holds answered since their stop left out, and with `--batch-id` or `--since`
+the same applications only: those the batches hold or failed) and writes them as JSON,
+owner-only (`0600`), refusing to replace an existing file unless `--force` (a sheet may
+hold answers you typed). After a batch, `--batch-id BATCH` keeps the sheet to that batch's
+questions instead of every held application's (older pilots included). It prints counts
+only: how many questions, how many with a proposal, how many browser actions and held
+applications (and of which batches), and the `answer --sheet` line to run next. The file
+has:
 
 - `questions`: one entry per distinct question, most applications first:
   - `question`: the complete wording as first recorded (not cut).
@@ -502,8 +600,12 @@ file has:
     latest trace of each stage counts, stages in the order above, the person's own saved
     answers before anything derived from facts.
 - `actions`: the holds that need the browser (sign-in, CAPTCHA, an unsupported control,
-  a file), each with its wording, reason and one `resume APP --act` line per
-  application.
+  a file), each with its wording, reason, `fields` keyed by application like the
+  questions' (the field id, or `null` for a page-level action such as a sign-in or a
+  CAPTCHA), so that a filter by application keeps them, `application_ids` and one
+  `resume APP --act` line per application.
+- `batches` and `since`: the batches the sheet was limited to (`--batch-id`, or those
+  `--since` selected); empty for a sheet of every held application.
 - `held` and `open_holds`: the counts behind the entries; `candidate_id`, `generated_at`,
   `version` and a `note` recalling the rules.
 
@@ -515,19 +617,44 @@ saved as the application's own user input, and, for `global` or `job`, saved for
 with that scope. A hold answered since its application stopped (by `answer`, by an earlier
 sheet, or by a saved answer for its wording) is left as it is, so applying the same sheet
 twice changes nothing the second time, and a sheet generated after the answers were saved
-no longer lists them. It prints counts and wordings, never a value: entries answered,
-answers saved and applications concerned, holds already answered, and for each entry
-not applied somewhere its wording, why and how many applications (`invalid`: the answer
-is not one of that application's recorded options or has the wrong shape, so that entry
-is skipped there and the rest are applied; `not open`: the field is not a recorded
-question of the application's current stop; `not waiting`: the application is no longer
-NEEDS_INPUT; `not found`; `busy`: another run holds it). The last line is the
-`prepare-batch --retry BATCH_ID` to run next: `--batch-id` when given, else the batch
-under `$IMX_HOME/batches` whose ledger was written last (when that is itself a retry, the
-batch it retried, whose ledger lists every application of the run), else a `resume APP`
-hint. Exit status: `0` when the sheet was applied (also when nothing was left to apply),
-`1` without a state database, `2` for a sheet that does not validate (the message names
-the entry and field, never a value) or for a `--sheet` combined with an application id.
+no longer lists them. An application stopped again since the sheet was written (a retry)
+is checked against its new stop: when the options it recorded for the question now
+differ from those the sheet shows for it (`options`, or its `options_by_application`;
+compared by label, case, spacing and order ignored), the entry is skipped there
+(`options changed`), since the answer was chosen among the options you saw; a lookup's
+options are the site's suggestions for what was typed and never count as changed. When
+its field id now asks another question, it is skipped as `not open`. Regenerate the
+sheet for those.
+
+It prints counts and wordings, never a value or an option: entries answered, answers
+saved and applications concerned, holds already answered, then one line per answered
+entry, in sheet order:
+
+```text
+- 2 of 3 application(s) received it; options changed on 1: Which of these tools have you used?
+- 0 of 1 application(s) received it; options changed on 0; invalid on 1: Before applying, how familiar were you with this company?
+```
+
+that is how many of the entry's applications received the answer, how many were
+skipped because their recorded options changed since the sheet was written, and any
+other reason with its count (`invalid`: the answer is not one of that application's
+recorded options or has the wrong shape, so that entry is skipped there and the rest
+are applied; `already answered`; `not open`: the field is not a recorded question of the
+application's current stop, or asks another question now; `not waiting`: the
+application is no longer NEEDS_INPUT; `not found`; `busy`: another run holds it).
+
+`--dry-run` runs every one of those checks and prints the same lines ("would save",
+"would receive it") without saving anything: no user input, no saved answer, no event,
+no claim (a claim another run holds is read, and counted as `busy`). Its last line is the
+`answer --sheet FILE` that saves them. Without `--dry-run` the last lines are the
+`prepare-batch --retry BATCH_ID` to run next: `--batch-id` when given; else, for a sheet
+limited to batches, the first batch of each one's retry family (the batch it retried,
+whose ledger lists every application of the run); else the first batch of the family of
+the batch under `$IMX_HOME/batches` whose ledger was written last; else a `resume APP`
+hint. Exit status: `0` when the sheet was applied or checked (also when nothing was left
+to apply), `1` without a state database, `2` for a sheet that does not validate (the
+message names the entry and field, never a value), for a `--sheet` combined with an
+application id, or for `--dry-run` without `--sheet`.
 
 The sheet is the one place your typed values live outside the profile and the state
 database: keep it out of source control and delete it once applied. Reusable keys
@@ -537,17 +664,22 @@ across employers; the sheet is for the long tail a batch surfaces.
 ## Batch report
 
 ```sh
-interviewmaxxing [--home DIR] batch-report [BATCH_ID ...] [--since DATE] [--top N] [--json]
+interviewmaxxing [--home DIR] batch-report [BATCH_ID ...] [--family BATCH_ID ...] [--since DATE] \
+  [--top N] [--json]
 ```
 
-Reads the named batch ledgers (`$IMX_HOME/batches/<BATCH_ID>/ledger.jsonl`), or those
-with a line finished at or after `--since DATE` (a UTC date such as `2026-09-24`, or an
-ISO date and time; the whole ledger of each such batch is read), or every batch ledger
-under `$IMX_HOME/batches/` when neither is given, and prints one report for them.
-Batch ids and `--since` cannot be combined. It writes no file and creates nothing, not
-even `$IMX_HOME`. It opens the existing state database, the same way `status` does (an
-idempotent schema check), only for ledger lines older than `missing_items` or its
-field ids, and for the failures of `failed_retryable` rows.
+Reads the named batch ledgers (`$IMX_HOME/batches/<BATCH_ID>/ledger.jsonl`) and, for
+each `--family BATCH_ID` (repeatable), the ledgers of that batch's whole retry family:
+the batch it retried (followed back to the first batch) and every `prepare-batch --retry`
+of it or of its retries (a retry's `summary.json`, or its ledger lines, name the batch it
+retried). Or those with a line finished at or after `--since DATE` (a UTC date such as
+`2026-09-24`, or an ISO date and time; the whole ledger of each such batch is read), or
+every batch ledger under `$IMX_HOME/batches/` when none of these is given, and prints one
+report for them. Batch ids or `--family`, and `--since`, cannot be combined. It writes no
+file, creates nothing, not even `$IMX_HOME`, and submits nothing. It opens the existing
+state database, the same way `status` does (an idempotent schema check), for ledger lines
+older than `missing_items` or its field ids, for the failures of `failed_retryable` rows,
+and to tell which applications wait at their final review step.
 
 Each listing counts once, as its latest launched entry (any outcome except
 `already_recorded`) in the selected ledgers, else its latest `already_recorded`
@@ -557,6 +689,28 @@ retries shows where each listing stands now. The report shows:
 
 - **Totals** by outcome and a **backend × outcome** table for those rows. A row
   without a backend is counted as `(none)`.
+- **Yield over retries**, for each batch read together with at least one retry of it
+  (and for every `--family`, even alone): one row per run of the family (one batch id),
+  in the order they started, the first batch first:
+
+  ```text
+  | # | batch | finished (UTC) | ran | prepared | prepared total | held | failed | holds open | cost USD |
+  | 1 | big1 | 2026-09-24 18:00 | 20 | 5 | 5 of 20 | 12 | 3 | 40 | 4.0000 |
+  | 2 | big1-retry-20260924T210507Z | 2026-09-24 21:20 | 15 | 4 | 9 of 20 | 9 | 2 | 25 | 2.5000 |
+  ```
+
+  `ran` is the listings the batch launched and `prepared` those it prepared; the other
+  counts are where the family's listings stood once it finished, each at its latest line
+  of this or an earlier run (as the rows below count them): `prepared total` (of the
+  family's listings), `held` (`needs_input`), `failed` (`failed_retryable` or `error`) and
+  `holds open` (questions and actions on the held listings' latest lines). `cost USD` is
+  the run's own known provider cost: the family's known cost after it minus before it (a
+  line's cost is its application's total so far, so a run of these applications outside
+  the family in between counts in the next run). The family's total follows the table.
+  Retries read without the batch they retried get no table. The JSON has `families`
+  (`root`, `batches`, `listings`, `runs`: `batch_id`, `retry_of`, `started_at`,
+  `finished_at`, `ran`, `prepared`, `prepared_total`, `held`, `failed`, `holds_open`,
+  `cost_usd`, `cost_total_usd`) and `requested_families`.
 - **Backend readiness**, one row per backend: `applications` (listings), `prepared`,
   `needs_input`, `failed` (`failed_retryable` runs that reached a form, and `error`),
   `closed`, `no_form` (`failed_retryable` runs that never reached a fillable form: "Could
@@ -603,12 +757,32 @@ retries shows where each listing stands now. The report shows:
   lines that are not JSON objects, or prepare lines that do not validate), and of
   unreadable submission lines (`submissions.lines_ignored`: lines marked
   `kind: "submission"` that do not validate). Each unreadable line counts once.
+- **At the final review step**, last: every row's application stopped at its final
+  review step now (by the state database: `NEEDS_INPUT` right after a
+  `preparation.ready`, whatever the row's line says; without a state database, the rows
+  whose line says `prepared`), each application once, with the lines you run after
+  reviewing it:
+
+  ```text
+  | application | job | backend | approve | submit |
+  | app_example | Example Co — Growth Marketing Manager | greenhouse | `interviewmaxxing approve app_example` | `IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit app_example --yes` |
+  ```
+
+  An application you already approved shows `approved` instead of its `approve` line;
+  one whose review step shows a CAPTCHA gets `--act` on its `submit` line (you solve it in
+  a visible window). The report runs none of these lines and submits nothing; review
+  each application first (`interviewmaxxing status APP` and the evidence under
+  `$IMX_HOME/artifacts/APP/`). `submit` refuses an application you did not approve and
+  needs `IMX_ALLOW_SUBMISSION=1` and `--yes`. The JSON has `ready`: `application_id`,
+  `listing_id`, `batch_id`, `company`, `title`, `backend`, `approved` (`null` without a
+  state database), `captcha_pending`, `review`, `approve` (`null` once approved) and
+  `submit`.
 
 `--json` prints the same report as JSON (`BatchReport`: `batches`, `batches_dir`,
-`since`, `ledger_lines_ignored`, `rows`, `totals`, `by_backend`, `durations`,
-`duration_median_s`, `duration_p95_s`, `holds`, `pipeline`, the provider cost fields,
-`questions`, `fill_failures` and `backends`). Markdown table cells escape `|`. Hold
-categories:
+`since`, `requested_families`, `ledger_lines_ignored`, `rows`, `totals`, `by_backend`,
+`durations`, `duration_median_s`, `duration_p95_s`, `holds`, `pipeline`, the provider
+cost fields, `questions`, `fill_failures`, `backends`, `submissions`, `families` and
+`ready`). Markdown table cells escape `|`. Hold categories:
 
 | Category | Rule (checked in this order) |
 | --- | --- |
@@ -633,12 +807,14 @@ The ledger keeps the full question labels (cut to 120 characters) under
 never prints CLI messages; failure details are masked as described above.
 
 Exit status: `0` on success, including when there are no ledgers (the report then
-says `No batch ledgers under <dir>.`), `1` when a named batch has no ledger, and
-`2` for an invalid batch id or date, or batch ids with `--since`.
+says `No batch ledgers under <dir>.`), `1` when a named batch (or `--family` batch) has
+no ledger, and `2` for an invalid batch id or date, or batch ids or `--family` with
+`--since`.
 
 ```sh
 interviewmaxxing batch-report --top 5                  # every batch
 interviewmaxxing batch-report big1 big1-retry-20260924T210507Z --json
+interviewmaxxing batch-report --family big1            # big1 and every retry of it
 interviewmaxxing batch-report --since 2026-09-24
 interviewmaxxing status app_example                    # a sample's questions and options
 ```
@@ -682,28 +858,39 @@ Resuming a prepared application re-inspects the site and stops at the same revie
 step again; submission stays disabled for it.
 
 Verification: `tests/core/test_batch.py` runs the harness offline against a fake
-`apply` command, including card links and Closed moves with a store-backed fake;
-`tests/core/test_batch_report.py` covers `batch-report` (question groups, fill
-failures, backend readiness, several batches and `--since`, the JSON schema);
-`tests/core/test_batch_retry.py` covers `--retry` against a store-backed fake of
-`apply` and `resume`; `tests/core/test_batch_holds.py` covers `holds`, including
-running one generated `answer` line; `tests/core/test_answer_sheet.py` covers
-`holds --sheet` and `answer --sheet` (the entries and actions, the file mode, proposals
-from below-gate traces and that they are never applied, validation failures reported by
-wording, idempotence and the retry line); `tests/core/test_batch_privacy.py` covers the
-masked failure details, what `events`, `status --json` and `holds --json` print, and the
-unreadable submission lines; `tests/core/test_batch_hardening.py` covers the
-directory modes, the single state connection, rows sharing a URL, runs stopped
-mid-fill, unreadable ledger lines, Closed moves only for closed jobs, lookups outside
-the workers' lock, timeout escalation and escaped table cells;
-`tests/service/test_application_links_batch.py` checks that the service accepts the
-links a batch writes and shows its Closed moves; `e2e/test_batch_e2e.py` runs the
-harness with three workers, real headless Chromium and the fictional candidate
-against the localhost mock ATS, then the loop (`holds`, a default retry that runs nothing
-before any answer, an `--all` retry that skips explicit-only holds, one shared question
-answered with its `answer` line and the other through `holds --sheet` and `answer --sheet`,
-a retry that prepares them, a combined report), and checks that the server received no
-submission.
+`apply` command, including card links and Closed moves with a store-backed fake, batch
+families (`BatchTree`) and `--exclude-batches` (listings a batch or its retry prepared or
+held left out by listing id or URL, the others run, `--limit` after the exclusion, the
+usage errors); `tests/core/test_batch_report.py` covers `batch-report` (question groups,
+fill failures, backend readiness, several batches and `--since`, the JSON schema, the
+yield over retries of a family and `--family`, and the applications at their final
+review step with their `approve` and `submit` lines, approved ones, a pending CAPTCHA,
+ones that moved on, and nothing submitted); `tests/core/test_batch_retry.py` covers
+`--retry` against a store-backed fake of `apply` and `resume`, the sheet's answers
+counting as answered for a default retry (also through a global answer's wording, and
+in another batch) and `--only-app`; `tests/core/test_batch_holds.py` covers `holds`,
+including running one generated `answer` line; `tests/core/test_answer_sheet.py` covers
+`holds --sheet` and `answer --sheet` (the entries and actions with their `fields`, the
+file mode, proposals from below-gate traces and that they are never applied, validation
+failures reported by wording, idempotence, a sheet and `holds` limited to batches or
+`--since`, options that changed since the sheet was written, a field that asks another
+question, per-entry counts, `--dry-run` saving nothing, and the retry lines);
+`tests/core/test_batch_privacy.py` covers the masked failure details, what `events`,
+`status --json` and `holds --json` print, and the unreadable submission lines;
+`tests/core/test_batch_hardening.py` covers the directory modes, the single state
+connection, rows sharing a URL, runs stopped mid-fill, unreadable ledger lines, Closed
+moves only for closed jobs, lookups outside the workers' lock, timeout escalation and
+escaped table cells; `tests/service/test_application_links_batch.py` checks that the
+service accepts the links a batch writes and shows its Closed moves;
+`e2e/test_batch_e2e.py` runs the harness with three workers, real headless Chromium and
+the fictional candidate against the localhost mock ATS, then the loop (`holds`, a
+default retry that runs nothing before any answer, an `--all` retry that skips
+explicit-only holds, one shared question answered with its `answer` line and the other
+through `holds --sheet --batch-id`, `answer --sheet --dry-run` and `answer --sheet`, a
+default retry that runs all three and prepares two, an `--only-app` retry, the family's
+yield and review lines from `batch-report --family`, and a run over a new inventory
+that leaves the batch's listings out with `--exclude-batches`), and checks that the
+server received no submission.
 
 ## Submitting what you approved
 
