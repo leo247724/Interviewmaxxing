@@ -549,10 +549,13 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
                     break
             else:
                 # No question shown anywhere: an option's text or a machine name is
-                # still never the group's label; a readable name ("pronouns") is.
+                # still never the group's label; a readable name ("pronouns") is, and so
+                # is a legend of several words that only looked like a machine name for a
+                # digit or a hyphen ("... up to 25% of the time?").
                 name = first.name
                 readable = bool(name) and not _looks_like_identifier(name) and clean_label(name).lower() not in option_labels
-                label_text = name if readable else ""
+                sentence = " " in derived and derived.lower() not in option_labels
+                label_text = label_text if sentence else name if readable else ""
         question, rest = _take_question(label_text) if consumed else (label_text, None)
         label = clean_label(question)
         help_text = _join_unique(
