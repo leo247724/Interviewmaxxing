@@ -77,7 +77,7 @@ CAPTCHA_WIDGET_FIELD = "g-recaptcha-response"
 CONSENT_COOKIE = "bwa_consent"
 INTERNAL_FIELDS = frozenset(
     {"resume_upload_id", "captcha_token", "captcha_answer", CAPTCHA_WIDGET_FIELD, HONEYPOT_FIELD,
-     "phone_country"}
+     "phone_country", "captcha_kind", "h-captcha-response", "cf-turnstile-response"}
 )
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 US_PHONE_RE = re.compile(r"^\d{10}$")
@@ -970,6 +970,17 @@ class Job:
     """Acceptance returns a bare "Thank you!" page with no job or reference."""
     captcha_widget: bool = False
     """Embeds an invisible reCAPTCHA-style badge; only its token is checked, on submit."""
+    captcha_gate: bool = False
+    """A CAPTCHA page in front of the form (``?kind=``, see ``SOLVABLE_CAPTCHAS``): its
+    callback posts the token to ``/jobs/<job>/captcha-verify``; the right token sets the
+    ``bwa_captcha_gate`` cookie to that kind (so passing one widget passes only its own
+    gate) and the page reloads into the form."""
+    solvable_captcha: bool = False
+    """The form carries a solvable CAPTCHA widget (``?kind=``); the POST is accepted only
+    with that widget's expected token (``captcha_expected_token``)."""
+    captcha_step: int | None = None
+    """Step (1-based) of a multistep form that carries a reCAPTCHA v2 checkbox whose
+    expected token the step's POST requires."""
     spa_loading: bool = False
     """Page script renders the form 1.5 s after load, behind a loading indicator."""
     flash_closed: bool = False
@@ -1036,6 +1047,9 @@ class Job:
             "honeypot": self.honeypot,
             "generic_thanks": self.generic_thanks,
             "captcha_widget": self.captcha_widget,
+            "captcha_gate": self.captcha_gate,
+            "solvable_captcha": self.solvable_captcha,
+            "captcha_step": self.captcha_step,
             "spa_loading": self.spa_loading,
             "flash_closed": self.flash_closed,
             "cookie_banner": self.cookie_banner,
@@ -1229,6 +1243,44 @@ JOBS: dict[str, Job] = {
             "only with a non-empty g-recaptcha-response token.",
             STANDARD_FIELDS,
             captcha_widget=True,
+        ),
+        Job(
+            "captcha-gate",
+            "BWA-CG-141",
+            "Security Operations Analyst",
+            "Engineering",
+            "Remote (US)",
+            "A CAPTCHA page in front of the core form (?kind=recaptcha-v2, recaptcha-v2-invisible, "
+            "hcaptcha or turnstile; default recaptcha-v2). The widget's callback posts its token; the "
+            "expected token passes the gate (a cookie) and the page reloads into the form.",
+            _single(*CORE_FIELDS),
+            captcha_gate=True,
+        ),
+        Job(
+            "captcha-form",
+            "BWA-CF-142",
+            "Platform Security Engineer",
+            "Engineering",
+            "Remote (US)",
+            "The core form carrying a solvable CAPTCHA widget (?kind=recaptcha-v2, "
+            "recaptcha-v2-invisible, recaptcha-v3, recaptcha-v2-submit, hcaptcha or turnstile); the "
+            "POST is accepted only with the widget's expected token.",
+            _single(*CORE_FIELDS),
+            solvable_captcha=True,
+        ),
+        Job(
+            "captcha-steps",
+            "BWA-CS-143",
+            "Detection Engineer",
+            "Engineering",
+            "Remote (US)",
+            "Contact information with a reCAPTCHA v2 checkbox, then the resume, then a review page; "
+            "the first step's POST requires the checkbox's expected token.",
+            (
+                Step("Contact information", (FIRST_NAME, LAST_NAME, EMAIL, PHONE, LINKEDIN)),
+                Step("Resume", (RESUME,)),
+            ),
+            captcha_step=1,
         ),
         Job(
             "spa-loading",
@@ -5819,6 +5871,134 @@ def render_captcha_widget(error: str | None) -> str:
     )
 
 
+# --- solvable CAPTCHA widgets (round 14: solved through 2Captcha by a runtime) ------------
+#
+# Fictional site keys. Nothing here talks to Google, hCaptcha or Cloudflare: the badge
+# iframes and api.js are local stubs under /fixture/, shaped like the vendors' URLs so a
+# detector reads the site key from them. A solved token is "fixture-solved:<site key>"
+# (``captcha_expected_token``): the fake 2Captcha transport of the tests returns exactly
+# that for the task's websiteKey, and the server accepts nothing else.
+
+SOLVABLE_CAPTCHAS: dict[str, dict[str, str]] = {
+    "recaptcha-v2": {"key": "6LfixtureV2CheckboxKeyAAAAAAAAAAAAAAAAAAAAA", "field": "g-recaptcha-response",
+                     "class": "g-recaptcha", "size": "normal"},
+    "recaptcha-v2-invisible": {"key": "6LfixtureV2InvisibleKeyAAAAAAAAAAAAAAAAAAAA",
+                               "field": "g-recaptcha-response", "class": "g-recaptcha", "size": "invisible"},
+    "recaptcha-v3": {"key": "6LfixtureV3ScoreKeyAAAAAAAAAAAAAAAAAAAAAAAAA", "field": "g-recaptcha-response",
+                     "class": "", "size": "invisible"},
+    "recaptcha-v2-submit": {"key": "6LfixtureV2SubmitKeyAAAAAAAAAAAAAAAAAAAAAAA",
+                            "field": "g-recaptcha-response", "class": "g-recaptcha", "size": "invisible"},
+    "hcaptcha": {"key": "10000000-ffff-ffff-ffff-00000000f1x7", "field": "h-captcha-response",
+                 "class": "h-captcha", "size": "normal"},
+    "turnstile": {"key": "0x4AAAAAAAFixtureTurnstile01", "field": "cf-turnstile-response",
+                  "class": "cf-turnstile", "size": "normal"},
+}
+CAPTCHA_GATE_COOKIE = "bwa_captcha_gate"
+
+
+def captcha_expected_token(kind: str) -> str:
+    return f"fixture-solved:{SOLVABLE_CAPTCHAS[kind]['key']}"
+
+
+def captcha_kind(value: str | None) -> str:
+    return value if value in SOLVABLE_CAPTCHAS else "recaptcha-v2"
+
+
+def _captcha_badge(kind: str) -> str:
+    key = SOLVABLE_CAPTCHAS[kind]["key"]
+    size = SOLVABLE_CAPTCHAS[kind]["size"]
+    if kind.startswith("recaptcha"):
+        src = f"/fixture/recaptcha/api2/anchor?k={key}&size={size}"
+    elif kind == "hcaptcha":
+        src = f"/fixture/hcaptcha.com/checkbox.html#frame=checkbox&sitekey={key}"
+    else:
+        src = f"/fixture/challenges.cloudflare.com/turnstile/{key}/normal"
+    return (f'<iframe src="{esc(src)}" title="{esc(kind)} widget" width="304" height="78" '
+            'style="border:0"></iframe>')
+
+
+def render_solvable_captcha(kind: str, *, callback: str | None = None) -> str:
+    """The widget of ``kind`` as the vendor's script leaves it on the page: the site-key
+    container (or, for reCAPTCHA v3, api.js?render=), a badge iframe and the hidden
+    response field the vendor fills. ``callback``: its ``data-callback``."""
+    spec = SOLVABLE_CAPTCHAS[kind]
+    field_name, key = spec["field"], spec["key"]
+    cb = f' data-callback="{esc(callback)}"' if callback else ""
+    if kind == "recaptcha-v3":
+        # No widget of its own: the page asks grecaptcha.execute for a token on submit.
+        return (f'<div class="captcha-v3"><script src="/fixture/recaptcha/api.js?render={esc(key)}"></script>'
+                f'<input type="hidden" name="{field_name}" value="">'
+                + _captcha_badge(kind)
+                + "<script>(function () {"
+                  "var form = document.currentScript.closest('form');"
+                  "if (!form) return;"
+                  "form.addEventListener('submit', function (e) {"
+                  f"var field = form.querySelector('[name=\"{field_name}\"]');"
+                  "if (field.value) return;"
+                  "e.preventDefault();"
+                  f"window.grecaptcha.execute('{key}', {{action: 'apply'}}).then(function (token) {{"
+                  "field.value = token; form.submit(); });"
+                  "});"
+                  "})();</script></div>")
+    size = ' data-size="invisible"' if spec["size"] == "invisible" else ""
+    # A hidden label, as on ``captcha-widget``: every non-hidden control of the site has one.
+    textarea = (f'<label for="{field_name}" hidden>CAPTCHA response</label>'
+                f'<textarea name="{field_name}" id="{field_name}" style="display:none"></textarea>'
+                if field_name != "cf-turnstile-response"
+                else f'<input type="hidden" name="{field_name}" value="">')
+    if kind == "recaptcha-v2-submit":
+        # The form's submit button is the widget (``captcha_submit_button``): its callback
+        # writes the token and sends the form.
+        return ('<div class="captcha-solvable">' + textarea + _captcha_badge(kind)
+                + "<script>window.bwaSubmitWithToken = function (token) {"
+                  f"var field = document.getElementById('{field_name}');"
+                  "field.value = token; field.form.submit(); };</script></div>")
+    return (f'<div class="captcha-solvable"><div class="{spec["class"]}" data-sitekey="{esc(key)}"{size}{cb}></div>'
+            + textarea + _captcha_badge(kind) + "</div>")
+
+
+def captcha_submit_button(kind: str) -> str | None:
+    """The submit button of a form whose invisible reCAPTCHA is bound to it, else None."""
+    if kind != "recaptcha-v2-submit":
+        return None
+    key = SOLVABLE_CAPTCHAS[kind]["key"]
+    return (f'<button type="submit" class="g-recaptcha" data-sitekey="{esc(key)}" '
+            'data-callback="bwaSubmitWithToken">Submit application</button>')
+
+
+def render_captcha_gate(job: Job, kind: str, *, with_form: bool = False, delay_ms: int = 0) -> str:
+    """A CAPTCHA page in front of the application form: the widget, and a callback that
+    posts its token and reloads into the form once the site accepts it (and records that
+    it ran in ``window.__bwaCallbackCalled``). ``with_form`` (``?form=email``): the page
+    also holds a small form, which a runtime must not let the callback send.
+    ``delay_ms`` (``?delay_ms=``, at most 9000): the reload waits that long after the
+    site's answer."""
+    verify = f"/jobs/{job.slug}/captcha-verify"
+    extra = (f'<form method="post" action="{esc(verify)}"><label for="gate_email">Email</label>'
+             '<input id="gate_email" name="email" type="email" autocomplete="email">'
+             '<button type="submit">Continue</button></form>') if with_form else ""
+    return (
+        '<h1>Verify you are human</h1>'
+        "<p>Complete the security check to continue to the application.</p>"
+        + render_solvable_captcha(kind, callback="bwaCaptchaPassed")
+        + extra
+        + "<script>window.bwaCaptchaPassed = function (token) {"
+          "window.__bwaCallbackCalled = true;"
+          f"fetch('{verify}', {{method: 'POST', headers: {{'Content-Type': 'application/json'}}, "
+          f"body: JSON.stringify({{kind: '{kind}', token: token}})}})"
+          ".then(function (r) { if (r.ok) setTimeout(function () { location.reload(); }, "
+          f"{max(0, min(int(delay_ms), 9000))}); }});"
+          "};</script>"
+    )
+
+
+CAPTCHA_FIXTURE_JS = (
+    "window.grecaptcha = window.grecaptcha || {ready: function (f) { f(); }, render: function () { return 0; },"
+    "execute: function () { return Promise.resolve('stub-unsolved'); }, getResponse: function () { return ''; }};"
+)
+"""The fixture api.js: a grecaptcha that hands out a token no server accepts."""
+
+
 def render_delayed(form_html: str) -> str:
     """An SPA-style page: a loading indicator first, the form injected by page script
     1.5 s later (no network involved)."""
@@ -5971,6 +6151,8 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/login", "POST", "post_login"),
         (r"/captcha/(?P<token>cap_\d{6})\.svg", "GET", "get_captcha_svg"),
         (r"/captcha/widget\.html", "GET", "get_captcha_widget"),
+        (r"/fixture/(?P<rest>[A-Za-z0-9_./-]+)", "GET", "get_captcha_fixture"),
+        (rf"/jobs/{SLUG}/captcha-verify", "POST", "post_captcha_verify"),
         (r"/closed", "GET", "get_closed"),
         (r"/closed/not-found", "GET", "get_closed_not_found"),
         (r"/postings/with-select", "GET", "get_posting_with_select"),
@@ -6149,6 +6331,14 @@ class Handler(BaseHTTPRequestHandler):
         morsel = cookie.get(CONSENT_COOKIE)
         return bool(morsel and morsel.value in ("accepted", "declined"))
 
+    def _captcha_passed(self, kind: str) -> bool:
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return False
+        morsel = cookie.get(CAPTCHA_GATE_COOKIE)
+        return bool(morsel and morsel.value == kind)
+
     def _data_consented(self) -> bool:
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", ""))
@@ -6269,6 +6459,13 @@ class Handler(BaseHTTPRequestHandler):
         if job.data_consent and not self._data_consented():
             self._render_data_consent(job)
             return
+        if job.captcha_gate and not self._captcha_passed(captcha_kind(self._param("kind"))):
+            delay = self._param("delay_ms") or "0"
+            gate = render_captcha_gate(job, captcha_kind(self._param("kind")),
+                                       with_form=self._param("form") == "email",
+                                       delay_ms=int(delay) if delay.isdigit() else 0)
+            self._send_html(HTTPStatus.OK, page(f"Security check: {job.title}", gate))
+            return
         if job.slug == MODAL_WIZARD:  # the SDUI apply URL: the job view with its dialog open
             self._render_easy_apply(job, auto_open=True)
             return
@@ -6340,6 +6537,11 @@ class Handler(BaseHTTPRequestHandler):
             errors[HONEYPOT_FIELD] = "Your submission was flagged as automated."
         if job.captcha_widget and not (form.get(CAPTCHA_WIDGET_FIELD) or [""])[0].strip():
             errors[CAPTCHA_WIDGET_FIELD] = "Please complete the CAPTCHA."
+        if job.solvable_captcha:
+            kind = captcha_kind((form.get("captcha_kind") or [""])[0])
+            field_name = SOLVABLE_CAPTCHAS[kind]["field"]
+            if (form.get(field_name) or [""])[0] != captcha_expected_token(kind):
+                errors[field_name] = "Please complete the CAPTCHA."
         if errors:
             self.store.add_rejection(job, errors)
             if job.slug == STEPPER_AMBIGUOUS:
@@ -6424,6 +6626,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         if job.captcha_widget:
             fields_html += render_captcha_widget(errors.get(CAPTCHA_WIDGET_FIELD))
+        if job.solvable_captcha:
+            kind = captcha_kind((values.get("captcha_kind") or [self._param("kind")])[0])
+            fields_html += (f'<input type="hidden" name="captcha_kind" value="{esc(kind)}">'
+                            + render_solvable_captcha(kind))
         if job.formless:
             # No <form> element: page script collects the questions and posts them.
             form_html = (
@@ -6435,6 +6641,9 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             submit = '<button type="submit">Submit application</button>'
+            if job.solvable_captcha:
+                kind = captcha_kind((values.get("captcha_kind") or [self._param("kind")])[0])
+                submit = captcha_submit_button(kind) or submit
             if any(f.uploader == "greenhouse-async" for f in fields):
                 # Re-rendered once the upload completes, one level up (see ghUpload).
                 submit = f'<div class="form-actions"><div class="actions-row">{submit}</div></div>'
@@ -6538,6 +6747,9 @@ class Handler(BaseHTTPRequestHandler):
             if draft and f.name in draft["files"]
         }
         values, files, errors = validate(step_fields, form, uploads, retained)
+        if job.captcha_step == n and (form.get("g-recaptcha-response") or [""])[0] != captcha_expected_token(
+                "recaptcha-v2"):
+            errors["g-recaptcha-response"] = "Please complete the CAPTCHA."
         files_meta = self._store_files(files)
         if errors:
             self.store.add_rejection(job, errors, step=n)
@@ -6601,6 +6813,7 @@ class Handler(BaseHTTPRequestHandler):
                 render_field(f, values, errors.get(f.name), retained.get(f.name))
                 for f in fields
             )
+            + (render_solvable_captcha("recaptcha-v2") if job.captcha_step == n else "")
             + f'<button type="submit"{submit_id}>Continue</button>{back}</form>'
         )
         widgets = any(f.scripted for f in fields)
@@ -7189,6 +7402,31 @@ class Handler(BaseHTTPRequestHandler):
             '<p style="margin:.5rem">Fixture badge</p></body></html>'
         )
         self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def get_captcha_fixture(self, rest: str) -> None:
+        # Local stand-ins for the CAPTCHA vendors' scripts and badge frames (round 14).
+        if rest.endswith(".js"):
+            self._send(HTTPStatus.OK, CAPTCHA_FIXTURE_JS.encode("utf-8"), "text/javascript; charset=utf-8")
+            return
+        body = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>CAPTCHA</title></head>'
+                '<body style="margin:0;font:12px system-ui"><p style="margin:.5rem">Fixture CAPTCHA badge</p>'
+                "</body></html>")
+        self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def post_captcha_verify(self, slug: str) -> None:
+        # The gate's callback: the right token for the widget passes the gate (a cookie).
+        job = self._job(slug)
+        raw = self._read_body()
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, ValueError):
+            data = {}
+        kind = captcha_kind(str(data.get("kind") or ""))
+        if not job.captcha_gate or data.get("token") != captcha_expected_token(kind):
+            self._send(HTTPStatus.BAD_REQUEST, b'{"ok": false}', "application/json")
+            return
+        self._send(HTTPStatus.OK, b'{"ok": true}', "application/json",
+                   headers=(("Set-Cookie", f"{CAPTCHA_GATE_COOKIE}={kind}; Path=/; Max-Age=3600; HttpOnly"),))
 
     def get_closed(self) -> None:
         # A job that is gone, worded the way some ATS vendors word it (HTTP 200).

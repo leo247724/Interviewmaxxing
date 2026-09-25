@@ -54,6 +54,7 @@ from .aria import (
     INPUT_SELECT_STATE,
     PHONE_STATE,
 )
+from .captcha import CAPTCHA_DETECT
 from .driver import (
     _FILE_DIGEST,
     DEEP_QUERY,
@@ -239,6 +240,7 @@ _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     UPLOAD_STATE,
     _IN_OWN_POPUP,
     _IN_SHADOW,
+    CAPTCHA_DETECT,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
 
@@ -285,6 +287,10 @@ class _Doc:
 
 class OpenCliDriver:
     """``PageDriver`` over one owned OpenCLI tab."""
+
+    injects_captcha_tokens = False
+    """Only fixed read-only scripts run here: a solved CAPTCHA's token cannot be put into
+    the page, so the person solves the CAPTCHA as before (the solver is never asked)."""
 
     def __init__(self, config: OpenCliConfig | None = None, *, runner: Runner | None = None) -> None:
         self.config = config or OpenCliConfig()

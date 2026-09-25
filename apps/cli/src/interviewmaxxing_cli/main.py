@@ -337,11 +337,26 @@ def _dynamic_options(args: argparse.Namespace) -> Any:
                           writer_effort=args.writer_effort)
 
 
+def _captcha_solver(args: argparse.Namespace) -> Any:
+    """The run's 2Captcha solver (``--captcha-solver``, ``IMX_CAPTCHA_SOLVER``), or None:
+    off, or ``TWOCAPTCHA_API_KEY`` is configured nowhere (then every CAPTCHA stops the run
+    for the person, as without the solver). The key is never printed."""
+    from interviewmaxxing_browser.captcha import DEFAULT_BUDGET_USD, build_solver, solver_choice
+
+    budget = getattr(args, "captcha_budget_usd", None)
+    spend_file = getattr(args, "captcha_spend_file", None)
+    return build_solver(solver_choice(getattr(args, "captcha_solver", None)),
+                        budget_usd=DEFAULT_BUDGET_USD if budget is None else budget,
+                        env_file=Path(args.env_file) if getattr(args, "env_file", None) else None,
+                        ledger=Path(spend_file) if spend_file else None)
+
+
 def _runner(args: argparse.Namespace) -> LocalApplicationRunner:
     kwargs: dict[str, Any] = {}
     if args.ai_routing or args.browser != "playwright":
         kwargs["dynamic_options"] = _dynamic_options(args)
-    return create_runner(_paths(args), headless=args.headless, interaction=_interaction(args), **kwargs)
+    return create_runner(_paths(args), headless=args.headless, interaction=_interaction(args),
+                         captcha_solver=_captcha_solver(args), **kwargs)
 
 
 def cmd_classify(args: argparse.Namespace) -> int:
@@ -547,7 +562,8 @@ def _submission_runner(args: argparse.Namespace) -> LocalApplicationRunner:
         kwargs["dynamic_options"] = _dynamic_options(args)
     return create_submission_runner(
         _paths(args), headless=args.headless,
-        interaction=NoninteractiveInteraction(allow_browser_action=args.act), **kwargs)
+        interaction=NoninteractiveInteraction(allow_browser_action=args.act),
+        captcha_solver=_captcha_solver(args), **kwargs)
 
 
 def _refused(app: Application, message: str, *, as_json: bool, code: int = EXIT_BLOCKED) -> int:
@@ -630,6 +646,7 @@ def cmd_submit_approved(args: argparse.Namespace) -> int:
             ai_routing=args.ai_routing, env_file=Path(args.env_file) if args.env_file else None,
             writer_model=args.writer_model,
             rag_connection_file=Path(args.rag_connection_file) if args.rag_connection_file else None,
+            **_captcha_flag_values(args),
         )
     except ValidationError as exc:
         problems = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
@@ -973,7 +990,8 @@ RETRY_FLAGS: dict[str, str] = {
     "retry_retryable": "retry_retryable", "sync_closed": "sync_closed", "browser": "browser",
     "opencli_profile": "opencli_profile", "ai_routing": "ai_routing", "env_file": "env_file",
     "writer_model": "writer_model", "rag_connection_file": "rag_connection_file",
-    "writer_effort": "writer_effort",
+    "writer_effort": "writer_effort", "captcha_solver": "captcha_solver",
+    "captcha_budget_usd": "captcha_budget_usd",
 }
 """``prepare-batch`` flags (argparse dest -> ``BatchOptions`` name) that a retry takes from
 the retried batch's recorded run options unless they are given again."""
@@ -998,7 +1016,16 @@ def _batch_flag_values(args: argparse.Namespace, paths: LocalPaths) -> dict[str,
         "writer_model": args.writer_model,
         "rag_connection_file": Path(args.rag_connection_file) if args.rag_connection_file else None,
         "writer_effort": args.writer_effort,
+        **_captcha_flag_values(args),
     }
+
+
+def _captcha_flag_values(args: argparse.Namespace) -> dict[str, Any]:
+    from interviewmaxxing_browser.captcha import DEFAULT_BUDGET_USD, solver_choice
+
+    budget = getattr(args, "captcha_budget_usd", None)
+    return {"captcha_solver": solver_choice(getattr(args, "captcha_solver", None)),
+            "captcha_budget_usd": DEFAULT_BUDGET_USD if budget is None else budget}
 
 
 def _cli_prefix(args: argparse.Namespace) -> list[str]:
@@ -1289,6 +1316,24 @@ def _dynamic_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--writer-effort", choices=["low", "medium", "high"],
                    help="reasoning effort for cover letters and narrative answers (default high); "
                         "reviews and short factual decisions stay low")
+    p.add_argument("--captcha-solver", choices=["off", "2captcha"], default=None,
+                   help="solve CAPTCHAs (reCAPTCHA, hCaptcha, Turnstile) through your 2Captcha "
+                        "account; needs TWOCAPTCHA_API_KEY beside the OpenRouter key, and is off "
+                        "without it (default: IMX_CAPTCHA_SOLVER, else off). Solving never submits")
+    p.add_argument("--captcha-budget-usd", type=_budget, default=None, metavar="USD",
+                   help="CAPTCHA spend cap in USD (default 2.00): for this run, or shared by every "
+                        "application of a prepare-batch batch")
+    p.add_argument("--captcha-spend-file", help=argparse.SUPPRESS)
+
+
+def _budget(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an amount in USD, got {text!r}") from None
+    if not 0 <= value <= 100:
+        raise argparse.ArgumentTypeError(f"expected 0..100 USD, got {value}")
+    return value
 
 
 def _int_range(low: int, high: int) -> Callable[[str], int]:

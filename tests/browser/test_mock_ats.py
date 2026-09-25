@@ -522,6 +522,13 @@ class SiteAndMarkupTests(MockATSTestCase):
             "/login",
             [("email", catalog["signin"]["email"]), ("password", catalog["signin"]["password"])],
         )
+        # captcha-gate shows its CAPTCHA page until the widget's token is posted (round 14).
+        passed = self.client.request(
+            "POST", "/jobs/captcha-gate/captcha-verify",
+            json.dumps({"kind": "recaptcha-v2",
+                        "token": mock_ats.captcha_expected_token("recaptcha-v2")}).encode(),
+            {"Content-Type": "application/json"})
+        self.assertEqual(passed.status, 200)
         for job in catalog["jobs"]:
             if job["formless"]:
                 continue  # rendered without a <form> on purpose (a Rippling-style SPA)

@@ -464,7 +464,7 @@ on each that ends at the final review step).
 Retry seven's holds and failures, each reproduced on a fictional mock (tests
 `tests/browser/test_round14_live_fixes.py` and `tests/browser/test_round14_data_consent.py`,
 including preparation-only runs of the runner that end at the final review step). CAPTCHAs
-are solved through 2Captcha behind a flag (see "CAPTCHAs").
+are solved through 2Captcha behind a flag (next section).
 
 - **Questions that appear are answered in the same run.** Round 13 named them ("appeared or
   changed while filling (Are you Hispanic/Latino?); not answered by this packet") but the
@@ -548,6 +548,79 @@ are solved through 2Captcha behind a flag (see "CAPTCHAs").
   statement covers stops the run as before ("Accept the data-processing consent"). Mock
   `jobvite-like` (`?policies=regional` for one policy per location, `?accept=link` for an
   "I Accept" link).
+
+## Round 14: CAPTCHA solving (2Captcha)
+
+Off by default. `--captcha-solver 2captcha` (or `IMX_CAPTCHA_SOLVER=2captcha` for a
+command that does not say) has the reCAPTCHA, hCaptcha and Turnstile widgets a run meets
+solved through the person's 2Captcha account, within `--captcha-budget-usd` (default
+2.00). The flags are on `apply`, `resume`, `prepare-batch`, `submit` and
+`submit-approved`; batch use is in [mass-preparation.md](mass-preparation.md#captchas).
+Code: `packages/browser/src/interviewmaxxing_browser/captcha.py`,
+`GenericApplicationBrowser.solve_captcha` and the runner (`_solve_captcha`). Tests:
+`tests/browser/test_captcha_round14.py` (the mock ATS with a fake 2Captcha transport) and
+`tests/core/test_captcha_round14_cli.py` (flags, key, batch plumbing, the approved submit).
+
+- **The key.** `TWOCAPTCHA_API_KEY` is read like the OpenRouter key, from the same places:
+  the `--env-file` file, else the file `IMX_OPENROUTER_ENV_FILE` names, else the process
+  variable (`credentials.load_optional_key`; only its own line of a file is parsed). A key
+  configured nowhere turns the solver off: every CAPTCHA then stops the run exactly as
+  without the flag, with no error of its own. The key goes only into 2Captcha request
+  bodies (`ApiKey`, redacted in every `repr`); errors carry 2Captcha's error code only.
+  A `prepare-batch` or `submit-approved` job loses every `IMX_*` variable except, with the
+  solver on, `IMX_OPENROUTER_ENV_FILE`, so it finds the key where the batch did.
+- **Detection** (`CAPTCHA_DETECT`, a fixed read-only script, also on OpenCLI's
+  allowlist): `data-sitekey` elements and the widgets' iframes give reCAPTCHA v2 (checkbox,
+  invisible, Enterprise), reCAPTCHA v3 (`api.js?render=<site key>` and its action),
+  hCaptcha and Turnstile, each with its site key, whether it is invisible, bound to the
+  submit button or already answered, and its callback's name.
+- **2Captcha** (API v2, `createTask` then `getTaskResult`): `RecaptchaV2TaskProxyless`
+  (`isInvisible`), `RecaptchaV2EnterpriseTaskProxyless`, `RecaptchaV3TaskProxyless`
+  (`minScore` 0.7, `pageAction`), `HCaptchaTaskProxyless`, `TurnstileTaskProxyless`. The
+  first poll comes after 10 s, then every 5 s, for at most 120 s (`TwoCaptcha`, whose
+  transport, sleep and clock tests replace). A response whose `errorId` is not 0 fails the
+  attempt with its `errorCode` (`ERROR_ZERO_BALANCE`, ...); the cost is `getTaskResult`'s.
+- **Where a token goes** (`PlaywrightDriver.inject_captcha_token`, the one page script
+  that writes: the widget's response fields, `grecaptcha.execute`/`getResponse` for
+  reCAPTCHA, and the callback only when asked; it clicks nothing):
+  - a CAPTCHA page in front of the form (`PageKind.CAPTCHA`): the token and the widget's
+    callback (the page's own "continue"), then the page it leads to is read as `open`
+    reads one. A callback may post the token first and navigate after the site's answer:
+    a page that still shows the widget is read again for up to 10 s
+    (`_CAPTCHA_PASS_S`), and one that still does is a token the site did not take;
+  - a CAPTCHA on a form step before the last: the token only, right before `advance`;
+    the step's own Next goes on;
+  - a CAPTCHA on the final step: never in preparation (a token lasts about two minutes,
+    and the prepared application keeps its note "A CAPTCHA on this form must be
+    solved..."). The approved `submit` answers it right before its gated submit, the token
+    only; the submit that follows is the gated submit as before.
+- **Never solved** (2Captcha is not asked, nothing is spent): an invisible reCAPTCHA
+  bound to the submit button, whose token only its callback hands over and that callback
+  sends the form; a CAPTCHA page that also holds a form (anything to fill), whose callback
+  could send it; any widget in a session that cannot write to the page (OpenCLI runs only
+  fixed read-only scripts: `OpenCliDriver.injects_captcha_tokens = False`); a widget
+  already answered.
+- **Solving never submits.** A callback is called only on a CAPTCHA page with nothing to
+  fill, where no form can be sent by it; on a form only the response field is written.
+  Submission stays gated exactly as before (an authorized approval,
+  `IMX_ALLOW_SUBMISSION=1`, `--yes`).
+- **When it does not work** (over budget, timed out, a 2Captcha error, a token the page
+  does not take, unsupported, more than three solves in one run) the run goes on exactly
+  as without the solver: `NEEDS_INPUT` with "Solve the CAPTCHA" (`USER_ACTION`).
+- **The spend cap** (`CaptchaBudget`): each solve reserves USD 0.003 before its task is
+  created and is settled at the reported cost (0 for a failed task: 2Captcha charges
+  solved tasks only). A solve that would pass the cap is not asked for. A batch's jobs
+  share one ledger, `<batch dir>/captcha-spend.jsonl` (locked appends, passed to each job
+  as the hidden `--captcha-spend-file`), so the cap holds for the batch.
+- **Records.** Each attempt is a `captcha.solve` event: widget kind, outcome (`solved`,
+  `not_accepted`, `unsupported`, `over_budget`, `timeout`, `error`), seconds, cost,
+  2Captcha's error code and the site's host; never the token or the key. An attempt that
+  reached 2Captcha is also a `provider.budget` event (purpose `captcha`,
+  `limits.captcha_budget_usd`), so the outcome message's "Provider cost", `batch-report`'s
+  cost columns and the dashboard's provider cost include it.
+- **Mock.** `captcha-gate` (a CAPTCHA page per widget kind), `captcha-form` (the widget on
+  the form) and `captcha-steps` (the widget on step 1 of 2); see
+  `tests/browser/MOCK_ATS.md`.
 
 ## Uploads, autofill overlays and readback
 
