@@ -15,6 +15,14 @@ fields for the user to operate, except unambiguous selection-only ARIA comboboxe
 menu controls the runtime probed: a complete static option set becomes ``SELECT``
 (values and labels exactly like a native select), a menu that offers nothing until
 the user types becomes ``TYPEAHEAD``. Multi-select menus stay ``UNSUPPORTED``.
+
+Modal wizards. A visible dialog that holds application fields and a Next/Continue/
+Review/Submit control (LinkedIn's Easy Apply, Wellfound, Indeed) is the application
+form: only its own controls and buttons count and the page behind it is ignored. Its
+"Step N of M" text, or else a percentage bar inside it, gives ``ApplicationForm.step``.
+Previously uploaded resumes offered as choices (radio cards named like files) are
+folded into the resume upload field (``FieldBinding.resume_choices``), never asked as
+a question of their own.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from interviewmaxxing_core import (
 from .semantics import classify
 from .signals import (
     ALREADY_APPLIED,
+    APPLY_ENTRY,
     APPLY_LINK,
     CAPTCHA_TEXT,
     CONSENT_GATE_ACTION,
@@ -53,7 +62,17 @@ from .signals import (
     button_intent,
     job_ids,
 )
-from .snapshot import DomButton, DomControl, DomSnapshot
+from .snapshot import DomButton, DomControl, DomDialog, DomForm, DomSnapshot
+from .wizard import (
+    ApplicationFrame,
+    ResumeChoice,
+    application_frame,
+    application_wording,
+    document_name,
+    named_choice,
+    progress_step,
+    sign_in_wording,
+)
 
 TEXT_INPUT_TYPES = frozenset(
     {"text", "email", "tel", "url", "number", "date", "search", "month", "week", "time",
@@ -109,6 +128,10 @@ class FieldBinding:
     popup's button in the form, ``DomControl.upload_anchor``)."""
     pressed: bool = False
     """The options are toggle buttons (``aria-pressed``): clicked, never checked."""
+    resume_choices: tuple[ResumeChoice, ...] = ()
+    """Previously uploaded resumes the site offers beside this resume upload."""
+    attach_by_person: bool = False
+    """A file field handed to the person because this session cannot attach files."""
 
 
 @dataclass(frozen=True)
@@ -150,6 +173,15 @@ class PageModel:
     """Page-wide controls that lead to the application and never submit one."""
     fillable_counts: Mapping[int, int] = field(default_factory=dict)
     """Fillable (non-utility) fields per form index; ``-1`` is outside any form."""
+    dialog_index: int | None = None
+    """The modal dialog (``DomSnapshot.dialogs`` index) that is the application form;
+    only its controls and buttons are in ``snapshot`` then."""
+    application_frame: ApplicationFrame | None = None
+    """An application page on a known ATS host embedded in an iframe, when the page
+    itself shows no application form."""
+    step_source: str | None = None
+    """Where ``ApplicationForm.step`` came from: ``text`` ("Step N of M"),
+    ``aria-current``, ``progress`` (a percentage bar) or None (the session's count)."""
 
     @property
     def form(self) -> ApplicationForm | None:
@@ -163,8 +195,10 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
-_REQUIRED_MARKER = r"(?:[*\u2731\uff0a]|\(required\)|[-\u2013\u2014]\s*required)"
-"""``*``, ``\u2731``, ``\uff0a``, ``(required)``, ``- required`` at the end of question text."""
+_REQUIRED_MARKER = r"(?:[*\u2731\uff0a]|\(required\)|[-\u2013\u2014]\s*required|(?<=[?:.!)])\s*required)"
+"""``*``, ``\u2731``, ``\uff0a``, ``(required)``, ``- required`` at the end of question text,
+or a bare "Required" right after its punctuation (LinkedIn's visually hidden "Required"
+after a legend's question mark)."""
 _TRAILING_MARKERS = re.compile(rf"(?:\s*(?:{_REQUIRED_MARKER}|:))+\s*$", re.IGNORECASE)
 _LEADING_MARKERS = re.compile(r"^(?:\s*[*\u2731\uff0a])+\s*")
 _HAS_REQUIRED_MARKER = re.compile(
@@ -515,10 +549,13 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
                     break
             else:
                 # No question shown anywhere: an option's text or a machine name is
-                # still never the group's label; a readable name ("pronouns") is.
+                # still never the group's label; a readable name ("pronouns") is, and so
+                # is a legend of several words that only looked like a machine name for a
+                # digit or a hyphen ("... up to 25% of the time?").
                 name = first.name
                 readable = bool(name) and not _looks_like_identifier(name) and clean_label(name).lower() not in option_labels
-                label_text = name if readable else ""
+                sentence = " " in derived and derived.lower() not in option_labels
+                label_text = label_text if sentence else name if readable else ""
         question, rest = _take_question(label_text) if consumed else (label_text, None)
         label = clean_label(question)
         help_text = _join_unique(
@@ -782,11 +819,19 @@ def _classify_buttons(
 ) -> list[ClassifiedButton]:
     """``fillable_counts``: fillable fields per form index (-1: controls outside any
     form). An "Apply"/"Apply now" control whose form has fewer than two of them does
-    not submit an application; it leads to one, and is never a submit/next intent."""
+    not submit an application; it leads to one, and is never a submit/next intent.
+    Entry wording ("Easy Apply", "I'm interested", "Start your application") always
+    leads to one, wherever it sits; a toggle (a search filter pill) never does. Inside
+    the application dialog (``DIALOG_FORM_INDEX``) a plain "Apply" is the dialog's own
+    submit (Wellfound's slide-in asks one note, then "Apply")."""
     out: list[ClassifiedButton] = []
     for b in buttons:
-        intent = button_intent(b.text, submits_form=b.submits_form)
-        apply_control = bool(APPLY_LINK.search(b.text)) and fillable_counts.get(b.form_index, 0) < 2
+        entry = bool(APPLY_ENTRY.search(b.text))
+        # A toggle (a filter pill) and entry wording are never a step's submit or next.
+        intent = (ButtonIntent.OTHER if b.toggle or entry
+                  else button_intent(b.text, submits_form=b.submits_form))
+        apply_control = bool(APPLY_LINK.search(b.text)) and not b.toggle and (entry or (
+            b.form_index != DIALOG_FORM_INDEX and fillable_counts.get(b.form_index, 0) < 2))
         out.append(ClassifiedButton(b, ButtonIntent.OTHER if apply_control else intent, apply_control))
     return out
 
@@ -836,6 +881,183 @@ def _qualifies_as_application(
     )
 
 
+DIALOG_FORM_INDEX = 10_000
+"""The form index controls and buttons of the application dialog are grouped under."""
+
+
+def _operable_controls(controls: list[DomControl]) -> tuple[list[DomControl], list[DomControl]]:
+    """(CAPTCHA answer boxes, operable controls): enabled, visible or labelled controls,
+    without password inputs; a toggle-button group (``pressed_options``) as its members."""
+    captcha_controls: list[DomControl] = []
+    operable: list[DomControl] = []
+    for control in controls:
+        if control.kind == "native" and control.type == "password":
+            continue
+        if control.pressed_options and not control.disabled:
+            operable.extend(_pressed_members(control))
+            continue
+        if not _operable(control):
+            continue
+        if _is_captcha(control):
+            captcha_controls.append(control)
+            continue
+        operable.append(control)
+    return captcha_controls, operable
+
+
+def _in_scope(items: list[Any], dialog: DomDialog) -> list[Any]:
+    return [item.model_copy(update={"form_index": DIALOG_FORM_INDEX})
+            for item in items if item.dialog_index == dialog.index]
+
+
+def application_dialog(snapshot: DomSnapshot) -> DomDialog | None:
+    """The visible dialog that is an application wizard: its own controls make an
+    application step (see ``_qualifies_as_application``) with a Next/Continue/Review/
+    Submit control, and it looks like an application (two or more questions, a step or
+    progress indicator, a file field, or application wording in its name). Sign-in and
+    account dialogs never are. With several, a modal one, the last in document order."""
+    displays = {c.id: _display(c) for c in snapshot.controls if c.id and c.aria}
+    found: list[DomDialog] = []
+    for dialog in snapshot.dialogs:
+        if not dialog.visible or sign_in_wording(dialog.label):
+            continue
+        inside = _in_scope(snapshot.controls, dialog)
+        if any(c.kind == "native" and c.type == "password" and c.visible for c in inside):
+            continue
+        fields = [_build_field(group, displays)[0] for group in _groups(_operable_controls(inside)[1])]
+        fillable = _fillable(fields)
+        buttons = _classify_buttons(_in_scope(snapshot.buttons, dialog), {DIALOG_FORM_INDEX: len(fillable)})
+        if (not any(b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT) for b in buttons)
+                or any(sign_in_wording(b.button.text) for b in buttons)):
+            continue
+        final, _, _ = _primary_action(buttons)
+        progress = [p for p in snapshot.progress if p.dialog_index == dialog.index]
+        has_step = dialog.step is not None or progress_step(progress) is not None
+        if not _qualifies_as_application(fields, buttons, final, has_step):
+            continue
+        if not (len(fillable) >= 2 or has_step or application_wording(dialog.label)
+                or any(f.control_type is ControlType.FILE for f in fields)):
+            continue
+        found.append(dialog)
+    modal = [d for d in found if d.modal]
+    return (modal or found)[-1] if found else None
+
+
+def _dialog_scope(snapshot: DomSnapshot, dialog: DomDialog) -> DomSnapshot:
+    """The snapshot as far as the application is concerned: only the dialog's own
+    controls, buttons, alerts and progress (under one synthetic form whose selector is
+    the dialog), and the dialog's own step indicator. Page-level facts (identity,
+    headings, text, links, CAPTCHA) stay."""
+    return snapshot.model_copy(update={
+        "controls": _in_scope(snapshot.controls, dialog),
+        "buttons": _in_scope(snapshot.buttons, dialog),
+        "forms": [*snapshot.forms, DomForm(index=DIALOG_FORM_INDEX, selector=dialog.selector,
+                                           method="dialog", action="", no_validate=False)],
+        "regions": [r for r in snapshot.regions if r.dialog_index == dialog.index],
+        "progress": [p for p in snapshot.progress if p.dialog_index == dialog.index],
+        "step": dialog.step,
+    })
+
+
+_ATTACH_RESUME = "Attach your resume in the browser window"
+_ATTACH_FILE = "Attach the file in the browser window"
+
+
+def _fold_resume_choices(
+    pairs: list[tuple[ApplicationField, FieldBinding]],
+    controls: list[DomControl],
+    *,
+    attach_files: bool,
+    attach_needed: Mapping[str, str],
+    wizard: bool,
+) -> tuple[list[tuple[ApplicationField, FieldBinding]], frozenset[str]]:
+    """Fold previously uploaded resumes (radio choices named like document files) into
+    the step's one resume upload field, and hand the wizard's file fields this session
+    cannot attach to the person. Returns the fields and the selectors of the folded
+    inputs.
+
+    Without file attachment (OpenCLI), a file field of a dialog wizard (``wizard``) or
+    one with resume choices stays automatic only while one of those choices can be
+    used: the one named like ``attach_needed[field id]`` (the pinned file, once known),
+    or any when that is not known yet. Otherwise it becomes an ``UNSUPPORTED`` control
+    ("Attach your resume in the browser window"), required for a resume even when the
+    site does not mark the input required, and complete once the input holds a file or
+    the pinned file's card is selected."""
+    pickers = []
+    for app_field, binding in pairs:
+        if app_field.control_type is ControlType.RADIO and app_field.options:
+            names = [document_name(o.label) for o in app_field.options]
+            if all(names):
+                pickers.append((app_field, binding, names))
+    files = [f for f, _ in pairs if f.control_type is ControlType.FILE]
+    resumes = [f for f in files if f.semantic_type is SemanticType.RESUME] or (files if len(files) == 1 else [])
+    offered = [
+        ResumeChoice(name=str(name), selector=binding.option_selectors[option.value],
+                     label_selector=binding.label_selectors.get(option.value),
+                     checked=option.value in binding.checked_values)
+        for app_field, binding, names in pickers for option, name in zip(app_field.options or [], names, strict=True)
+    ]
+    # A card's own radio may be hidden while its styled label is what the person clicks.
+    known = {c.selector for c in offered}
+    for control in controls:
+        name = document_name(control.label) if control.kind == "native" and control.type == "radio" else None
+        if name and control.selector not in known and not control.disabled and not _operable(control):
+            offered.append(ResumeChoice(name=name, selector=control.selector,
+                                        label_selector=control.label_selector, checked=control.checked))
+            known.add(control.selector)
+    target = resumes[0].id if offered and len(resumes) == 1 else None
+    choices = tuple(offered) if target is not None else ()
+    picked = {id(app_field) for app_field, _, _ in pickers} if target is not None else set()
+    attached = {c.selector: bool(c.files) for c in controls}
+    folded: set[str] = set()
+    out: list[tuple[ApplicationField, FieldBinding]] = []
+    if target is not None:
+        folded.update(c.selector for c in choices)
+    for app_field, binding in pairs:
+        if id(app_field) in picked:
+            folded.update(binding.option_selectors.values())
+            continue
+        if app_field.control_type is ControlType.FILE:
+            mine = choices if app_field.id == target else ()
+            if mine:
+                binding = FieldBinding(**{**binding.__dict__, "resume_choices": mine})
+            needed = attach_needed.get(app_field.id)
+            usable = bool(mine) and (needed is None or len(mine) == 1 or named_choice(mine, needed) is not None)
+            if not attach_files and not usable and (wizard or mine):
+                resume = app_field.semantic_type is SemanticType.RESUME or bool(mine)
+                note = (f"{_ATTACH_RESUME}{f' ({needed})' if needed else ''}." if resume
+                        else f"{_ATTACH_FILE}.")
+                done = attached.get(binding.selector, False) or bool(
+                    needed and any(c.checked and named_choice([c], needed) for c in mine))
+                # The pinned resume is the answer whether or not the site marks the input
+                # required: until the person attaches it, a preselected other resume would
+                # go with the application.
+                app_field = app_field.model_copy(update={
+                    "control_type": ControlType.UNSUPPORTED, "accept": None, "options": None,
+                    "help_text": _join_unique([app_field.help_text, note]),
+                    "required": (resume or app_field.required) and not done,
+                })
+                binding = FieldBinding(**{**binding.__dict__, "control_type": ControlType.UNSUPPORTED,
+                                          "user_completed": done, "attach_by_person": True})
+        out.append((app_field, binding))
+    return out, frozenset(folded)
+
+
+def _entry_message(snapshot: DomSnapshot, buttons: list[ClassifiedButton],
+                   frame: ApplicationFrame | None) -> str | None:
+    """What a job posting offers to reach the application, for classification reports."""
+    parts = []
+    if frame is not None:
+        where = "" if frame.visible else " (in a hidden panel)"
+        parts.append(f"the application form is embedded from {frame.src}{where}")
+    entries = [f"{link.text!r} (link to {link.href[:200]})"
+               for link in snapshot.links if APPLY_LINK.search(link.text)][:2]
+    entries += [f"{b.button.text!r} (button)" for b in buttons if b.apply_control][:2]
+    if entries:
+        parts.append("apply control: " + ", ".join(entries))
+    return "Job posting; " + "; ".join(parts) + "." if parts else None
+
+
 def _primary_action(buttons: list[ClassifiedButton]) -> tuple[bool | None, str | None, str | None]:
     actionable = [b for b in buttons if b.intent is not ButtonIntent.OTHER]
     intents = {b.intent for b in actionable}
@@ -854,23 +1076,35 @@ def build_page(
     fallback_step: int = 0,
     http_status: int | None = None,
     evidence: list[EvidenceRef] | None = None,
+    attach_files: bool = True,
+    attach_needed: Mapping[str, str] | None = None,
 ) -> PageModel:
     """Normalize one snapshot. ``fallback_step`` is used when the page shows no step
-    indicator (the session's own count of steps advanced)."""
-    captcha_controls: list[DomControl] = []
-    operable: list[DomControl] = []
-    for control in snapshot.controls:
-        if control.kind == "native" and control.type == "password":
-            continue
-        if control.pressed_options and not control.disabled:
-            operable.extend(_pressed_members(control))
-            continue
-        if not _operable(control):
-            continue
-        if _is_captcha(control):
-            captcha_controls.append(control)
-            continue
-        operable.append(control)
+    indicator (the session's own count of steps advanced). ``attach_files`` says whether
+    this session can attach files; ``attach_needed`` maps resume fields whose offered
+    resumes cannot be used to the pinned file the person has to attach."""
+    dialog = application_dialog(snapshot)
+    if dialog is not None:
+        snapshot = _dialog_scope(snapshot, dialog)
+    captcha_controls, operable = _operable_controls(snapshot.controls)
+    # Without an application dialog, a visible dialog is a banner, a sign-up or chat
+    # prompt or a picker: its controls and buttons never make up the application form.
+    shown = {d.index: d for d in snapshot.dialogs if d.visible} if dialog is None else {}
+
+    def in_shown_dialog(item: DomControl | DomButton) -> bool:
+        index, hops = item.dialog_index, 0
+        while index >= 0 and hops < 64:
+            if index in shown:
+                return True
+            index = snapshot.dialogs[index].parent if index < len(snapshot.dialogs) else -1
+            hops += 1
+        return False
+
+    operable = [c for c in operable if not in_shown_dialog(c)]
+
+    def has_step(index: int | None) -> bool:
+        return snapshot.step is not None or progress_step(
+            [p for p in snapshot.progress if dialog is not None or p.form_index == index]) is not None
 
     displays = {c.id: _display(c) for c in snapshot.controls if c.id and c.aria}
     per_form: dict[int, list[tuple[ApplicationField, FieldBinding]]] = {}
@@ -880,17 +1114,32 @@ def build_page(
 
     fillable_counts = {index: len(_fillable([f for f, _ in pairs])) for index, pairs in per_form.items()}
     all_buttons = _classify_buttons(snapshot.buttons, fillable_counts)
+    # Apply links and controls count wherever they are; step actions only outside
+    # non-application dialogs.
+    entry_offered = any(APPLY_LINK.search(link.text) for link in snapshot.links) or any(
+        b.apply_control for b in all_buttons)
+    form_buttons = [b for b in all_buttons if not in_shown_dialog(b.button)]
+
+    def actionless(index: int | None, candidate_buttons: list[ClassifiedButton]) -> bool:
+        """Fields with no submit, next or ambiguous control of their own, on a page that
+        offers its own way to the application (an apply link or control): a job page's
+        message box and note field, not an application form."""
+        return entry_offered and not any(
+            b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT, ButtonIntent.AMBIGUOUS)
+            for b in candidate_buttons)
 
     def score(index: int) -> int:
         pairs = per_form.get(index, [])
         has_file = any(f.control_type is ControlType.FILE for f, _ in pairs)
-        acts = [b for b in all_buttons if b.button.form_index == index
+        acts = [b for b in form_buttons if b.button.form_index == index
                 and b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT)]
         return len(pairs) + (5 if has_file else 0) + (3 if acts else 0)
 
     def plausible_application(index: int) -> bool:
         candidate_fields = [f for f, _ in per_form.get(index, [])]
-        candidate_buttons = [b for b in all_buttons if b.button.form_index == index]
+        candidate_buttons = [b for b in form_buttons if b.button.form_index == index]
+        if actionless(index, candidate_buttons):
+            return False
         final, _, _ = _primary_action(candidate_buttons)
         candidate_form = next((f for f in snapshot.forms if f.index == index), None)
         lookup = (candidate_form is not None and candidate_form.method == "get"
@@ -898,9 +1147,9 @@ def build_page(
                       b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT)
                       for b in candidate_buttons))
         return not lookup and _qualifies_as_application(
-            candidate_fields, candidate_buttons, final, snapshot.step is not None)
+            candidate_fields, candidate_buttons, final, has_step(index))
 
-    candidates = set(per_form) | {b.button.form_index for b in all_buttons
+    candidates = set(per_form) | {b.button.form_index for b in form_buttons
                                   if b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT)}
     plausible = [index for index in candidates if plausible_application(index)]
     ambiguous_forms = False
@@ -926,13 +1175,23 @@ def build_page(
         # Non-application lookup helpers have no application data-entry authority.
         form_index = max(candidates, key=lambda index: (score(index), -index)) if candidates else None
     pairs = _dedupe_ids(per_form.get(form_index, [])) if form_index is not None else []
-    buttons = [b for b in all_buttons if b.button.form_index == form_index] if form_index is not None else []
+    pairs, folded = _fold_resume_choices(pairs, snapshot.controls, attach_files=attach_files,
+                                         attach_needed=attach_needed or {}, wizard=dialog is not None)
+    if folded:
+        # Offered resumes are state of the resume field (their labels change with the
+        # selection), never questions or bindings of their own.
+        snapshot = snapshot.model_copy(update={
+            "controls": [c for c in snapshot.controls if c.selector not in folded]})
+    buttons = [b for b in form_buttons if b.button.form_index == form_index] if form_index is not None else []
     is_final, submit_selector, next_selector = _primary_action(buttons)
     dom_form = next((f for f in snapshot.forms if f.index == form_index), None)
 
-    step = fallback_step
+    step, step_source = fallback_step, None
+    percent = progress_step([p for p in snapshot.progress if dialog is not None or p.form_index == form_index])
     if snapshot.step is not None and snapshot.step.current >= 1:
-        step = snapshot.step.current - 1
+        step, step_source = snapshot.step.current - 1, snapshot.step.source
+    elif percent is not None:
+        step, step_source = percent, "progress"
 
     fields = [f for f, _ in pairs]
     has_action = is_final is not None or any(
@@ -942,8 +1201,10 @@ def build_page(
         dom_form is not None and dom_form.method == "get" and len(fields) <= 2
         and not any(b.intent in (ButtonIntent.SUBMIT, ButtonIntent.NEXT) for b in buttons)
     )
-    is_application_form = not lookup_only and _qualifies_as_application(
-        fields, buttons, is_final, snapshot.step is not None)
+    is_application_form = not lookup_only and not actionless(form_index, buttons) and _qualifies_as_application(
+        fields, buttons, is_final, has_step(form_index))
+    frame = (application_frame(snapshot.frames, snapshot.url)
+             if dialog is None and not is_application_form else None)
 
     captcha = _captcha_state(snapshot, captcha_controls, bool(fields))
     # An embedded widget (badge, checkbox, token field) on an otherwise usable form only
@@ -1003,8 +1264,9 @@ def build_page(
         kind = PageKind.JOB_CLOSED
     elif any(APPLY_LINK.search(link.text) for link in snapshot.links) or any(
         b.apply_control for b in all_buttons
-    ):
+    ) or frame is not None:
         kind = PageKind.JOB_DESCRIPTION
+        message = _entry_message(snapshot, all_buttons, frame)
     elif (http_status is not None and http_status >= 400) or any(
         ERROR_HEADING.search(h.text) for h in snapshot.headings if h.level <= 2
     ):
@@ -1044,4 +1306,7 @@ def build_page(
         candidate_fields=fields,
         apply_controls=[b.button for b in all_buttons if b.apply_control],
         fillable_counts=fillable_counts,
+        dialog_index=dialog.index if dialog is not None else None,
+        application_frame=frame,
+        step_source=step_source if form is not None else None,
     )

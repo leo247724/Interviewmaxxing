@@ -704,6 +704,34 @@ class ScenarioTests(MockATSTestCase):
         self.assertEqual(record["fields"]["faa_part_107"], "faa_no")
         self.assertEqual(record["files"]["resume"]["sha256"], RESUME_SHA256)
 
+    def test_changed_after_prepare_gains_a_required_question_from_its_second_load(self) -> None:
+        travel = "Are you willing to travel to client sites up to 25% of the time?"
+        first = self.open_form("changed-after-prepare").form
+        self.assertNotIn("travel_willingness", {c.name for c in first.controls})
+        second = self.open_form("changed-after-prepare").form
+        [control, _no] = second.by_name("travel_willingness")
+        self.assertTrue(control.required)
+        # The server validates the form it served last: the first form's answers alone
+        # are rejected now, and nothing is counted.
+        fill_core(first)
+        page = self.assert_rejected(self.client.submit(first), f"{travel}: Select an answer.")
+        self.assertEqual(self.counts("changed-after-prepare")["accepted_count"], 0)
+        form = page.form
+        form.choose(travel, "Yes")
+        self.assert_confirmed(self.client.submit(form))
+        (record,) = self.counts("changed-after-prepare")["submissions"]
+        self.assertEqual(record["fields"]["travel_willingness"], "travel_yes")
+        self.assertEqual(record["extra_fields"], {})
+        catalog = {job["job_id"]: job for job in self.client.api("GET", "/__test__/jobs")["jobs"]}
+        self.assertEqual(catalog["changed-after-prepare"]["added_on_reload"]["name"],
+                         "travel_willingness")
+        # A reset starts the load count again.
+        self.client.api("POST", "/__test__/reset")
+        form = self.open_form("changed-after-prepare").form
+        self.assertNotIn("travel_willingness", {c.name for c in form.controls})
+        fill_core(form)
+        self.assert_confirmed(self.client.submit(form))
+
     def test_attestations_are_required_unchecked_checkboxes(self) -> None:
         form = self.open_form("attestation").form
         labels = list(USER_INPUTS["attestation"])

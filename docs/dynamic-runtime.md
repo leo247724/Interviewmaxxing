@@ -388,3 +388,86 @@ Mock scenarios `autofill-upload`, `custom-uploader`, `linkedin-autofill` and
 `react-controlled` (`tests/browser/MOCK_ATS.md`) reproduce these pages; the tests are
 `tests/browser/test_uploads*.py`, including a preparation-only run of the real runner on
 `autofill-upload` that ends at `preparation.ready` with our values and the resume attached.
+
+## Dialog wizards, embedded forms and step navigation
+
+Sign-in-gated boards (LinkedIn Easy Apply, Wellfound, Indeed, iCIMS) run in the person's
+Chrome through OpenCLI and put the application in a modal wizard. The same generic
+runtime handles them, with no site adapter:
+
+- **Reaching the form.** `open` takes the posting's own way onwards, at most once per
+  entry: an application page embedded in an iframe (below), an apply link, or an apply
+  control. "Easy Apply", "Quick apply", "I'm interested", "Start your application",
+  "Apply without an account" and "Continue as guest" always lead to an application and are
+  never submit controls; a toggle (a search filter pill that also reads "Easy Apply") is
+  never an apply control. A control that submits a form is clicked only when that form
+  sends nothing typed (at most one question, every typed field empty and optional, such as
+  a job-alert email box, no file or password input). A posting whose only ways onwards
+  are clicks settles once first, so an application frame injected after load is followed
+  instead. After a click the runtime waits, within the settle timeout, until the page is
+  no longer that posting: a dialog opening, a new document, or a client-side route that
+  lands 6 to 10 s later (Dayforce). Links are taken once, compared without query strings
+  (LinkedIn adds a tracking id per load). An anchor in a form whose `href` is `#`, empty or
+  `javascript:` is that form's button, classified by its wording (JazzHR's "Submit
+  Application"). Fields with no submit or next control of their own, on a page that
+  offers an apply link or control, are not an application (a job page's message box).
+  How the form was reached is added to the inspection message.
+- **The dialog is the form.** A visible `role=dialog`/`alertdialog`/`dialog` whose own
+  controls make an application step with a Next/Continue/Review/Submit control, and that
+  looks like an application (two or more questions, a step or progress indicator, a file
+  field, or application wording in its name), is the application form. Only its controls,
+  buttons and alerts count; the page behind is ignored. Sign-in and account dialogs never
+  qualify. Inside it a plain "Apply" is the dialog's own submit (a one-note slide-in).
+  Without an application dialog, a visible dialog (a banner, a sign-up or chat prompt)
+  never contributes fields or step actions to the page's form. A step worded like an
+  autofill offer ("Import from LinkedIn or fill out this form") is still the application.
+  The autofill decline never acts in the application dialog, in a dialog around it, or in
+  one holding a question the form binds. It never uses a decline control that submits a
+  form (a `<form method="dialog">` only closes its dialog) or that loads another document.
+  "Skip" is never a step action, so only `advance` moves such a step on, through its
+  Continue. Menus inside the
+  application dialog are probed like any form's; menus of a dialog nested in it (a phone
+  picker's popup) are not. Native validity is read from the dialog's own controls.
+- **Steps.** Next, Continue and Review advance; the step whose primary action submits
+  ("Submit application") is final, so prepare-only stops there with
+  `preparation.ready`. "Save", "Dismiss", "Download", "Show more" and "Paste resume" are
+  never step actions. `ApplicationForm.step` comes from "Step N of M" (N-1) or an
+  `aria-current` list; a wizard that shows only a percentage bar (LinkedIn: 0, 33, 67,
+  100) is identified by that percentage, so a step keeps one identity on every run and a
+  Next that did not move the bar did not advance. A step rendered in place gets up to
+  3 s to replace the one that was left before it counts as shown again.
+- **Pre-filled values.** A text field the site filled from the person's profile is left
+  as it is when it already says the answer: exactly, an email in another case, or a phone
+  with the same digits or only the national part of ours. A differing value, or any value
+  the site marks invalid, is overwritten. A select already on the answer is not touched.
+- **Resume step without upload.** Resumes the site keeps are offered as cards (radios
+  labelled "Select resume Avery_Quill_Resume.pdf"). They are folded into the resume field,
+  never asked as a question. The card named like the pinned resume file is chosen, or the
+  only card; the selection is read back (exactly that card checked). OpenCLI's Browser
+  Bridge refuses `upload` (`OpenCliConfig.attach_files` is off), so in a dialog wizard with
+  no usable card the resume field becomes a required control for the person, with "Attach
+  your resume in the browser window" (and the pinned file name once known) in its wording.
+  The runner's existing user-action path asks for it (`UNSUPPORTED_CONTROL`); OpenCLI keeps
+  the tab open for the person while that attachment is pending. The field is required
+  even when the site's input is not marked required, since a preselected other resume
+  would otherwise go with the application. A page form's file field over OpenCLI is still
+  tried once and reports what the person can do, as before.
+- **Embedded application pages.** A page with no application form but one iframe showing
+  an application page on a known ATS host (Greenhouse `embed/job_app`, Lever, Workday,
+  iCIMS, Jobvite; or the ATS's own `grnhse_iframe`/`icims_content_iframe` id on the page's
+  origin) is a job description whose form is that page, visible or not (careers pages keep
+  it in a hidden "Application" tab). `open` goes to the frame's `src` like an apply link,
+  before clicking anything. When that page does not show a form on its own, a Playwright
+  session reopens the careers page, reveals the frame and operates the page inside it.
+  `classify` reports the frame's `src` in the message and follows nothing.
+- **Shadow roots.** The inspector reads open shadow roots (LinkedIn has rendered Easy Apply
+  inside `#interop-outlet`'s shadow root since 2026). Selectors of elements there read
+  `host >> inner`, which Playwright resolves, and the fixed read scripts look inside open
+  shadow roots only when the document itself has no match. OpenCLI 1.8.6 cannot act there
+  (its CSS and role/name locators do not enter shadow roots, and its `state` refs for
+  shadow elements are not found by its actions), so an action there is refused with a
+  message for the person instead of being attempted.
+
+Mock scenarios `modal-wizard`, `iframe-embed`, `stepper-ambiguous` and
+`apply-in-alert-form` (`tests/browser/MOCK_ATS.md`) reproduce these structures; the tests
+are `tests/browser/test_wizard*.py`.

@@ -89,6 +89,7 @@ from .annotations import FormAnnotator, SchemaHintLoader, observation_signature,
 from .aria import LookupOutcome, MenuProbe, fill_lookup, fill_phone
 from .driver import (
     _FILE_DIGEST,
+    DEEP_QUERY,
     DriverError,
     NotActionable,
     PageContextLost,
@@ -98,7 +99,7 @@ from .driver import (
     shown_names,
 )
 from .evidence import EvidenceRecorder
-from .normalize import FieldBinding, PageModel, build_page, detect_ats
+from .normalize import TEXT_INPUT_TYPES, FieldBinding, PageModel, build_page, detect_ats
 from .signals import (
     APPLY_LINK,
     CONFIRMATION_LINK,
@@ -114,8 +115,9 @@ from .signals import (
     job_ids,
     lookup_matches,
 )
-from .snapshot import DomButton, DomSnapshot, inspector_script
+from .snapshot import DomButton, DomLink, DomPrompt, DomSnapshot, inspector_script
 from .uploads import UPLOAD_STATE, UploadState
+from .wizard import ResumeChoice, choose_resume
 
 
 class SubmissionRefused(RuntimeError):
@@ -132,8 +134,8 @@ class _Rebound(Exception):
     the field is operated again through its re-resolved binding."""
 
 
-_READ_CONTROL = """(sel) => {
-  const el = document.querySelector(sel);
+_READ_CONTROL = """(sel) => {""" + DEEP_QUERY + """
+  const el = deepOne(sel);
   if (!el) return null;
   if (el.tagName === 'SELECT') return {values: Array.from(el.selectedOptions).map((o) => o.value)};
   if (el.type === 'file') return {files: Array.from(el.files || []).map((f) => ({name: f.name, size: f.size}))};
@@ -141,21 +143,27 @@ _READ_CONTROL = """(sel) => {
   return {value: el.value};
 }"""
 
-_READ_CHECKED = """(sels) => sels.map((s) => {
-  const e = document.querySelector(s);
-  if (!e) return null;
-  // A toggle-button option (Ashby's yes/no) is chosen when it is pressed.
-  if (e.tagName === 'BUTTON' && e.hasAttribute('aria-pressed')) return e.getAttribute('aria-pressed') === 'true';
-  return e.checked;
-})"""
+_READ_CHECKED = """(sels) => { """ + DEEP_QUERY + """
+  return sels.map((s) => {
+    const e = deepOne(s);
+    if (!e) return null;
+    // A toggle-button option (Ashby's yes/no) is chosen when it is pressed.
+    if (e.tagName === 'BUTTON' && e.hasAttribute('aria-pressed')) return e.getAttribute('aria-pressed') === 'true';
+    return e.checked;
+  });
+}"""
 
-_NATIVE_VALIDITY = """({form, button}) => {
-  const f = form ? document.querySelector(form) : null;
-  const b = button ? document.querySelector(button) : null;
-  if (!f || f.noValidate || (b && b.formNoValidate)) return [];
+_NATIVE_VALIDITY = """({form, button}) => {""" + DEEP_QUERY + """
+  const f = form ? deepOne(form) : null;
+  const b = button ? deepOne(button) : null;
+  const isForm = !!f && f.tagName === 'FORM';
+  if (!f || (isForm && f.noValidate) || (b && b.formNoValidate)) return [];
   const out = [];
   const CAPTCHA_TOKENS = ['g-recaptcha-response', 'h-captcha-response', 'cf-turnstile-response'];
-  for (const el of f.elements) {
+  // A dialog wizard is the application form without being a <form>: its own controls.
+  const controls = isForm ? Array.from(f.elements) : Array.from(f.querySelectorAll('input, select, textarea'))
+    .filter((el) => !(el.form && el.form.noValidate));
+  for (const el of controls) {
     if (!el.willValidate || el.validity.valid) continue;  // read-only: no 'invalid' events
     if (CAPTCHA_TOKENS.includes(el.name)) continue;  // filled by the CAPTCHA widget, reported separately
     const label = (el.labels && el.labels[0] ? el.labels[0].innerText : el.name || el.id || el.type);
@@ -165,8 +173,8 @@ _NATIVE_VALIDITY = """({form, button}) => {
   return out;
 }"""
 
-_EFFECTIVE_SUBMISSION = """(sel) => {
-  const b = document.querySelector(sel);
+_EFFECTIVE_SUBMISSION = """(sel) => {""" + DEEP_QUERY + """
+  const b = deepOne(sel);
   if (!b || !b.form) return null;
   const f = b.form;
   return {
@@ -210,6 +218,11 @@ _PROMPT_WAIT_S = 3.0
 _RETYPE_MAX_CHARS = 200
 """Longest text typed key by key again when a re-rendered control dropped it (longer
 text is entered again as one input event)."""
+_STEP_WAIT_S = 3.0
+"""How long a clicked Next may take to replace a step rendered in place (a dialog)."""
+_KEPT_TEXT = "already shows this value; left as it is"
+"""A pre-filled text that says the answer already: nothing is written, so the sweep
+after the fill does not write it again either."""
 
 _COOKIE_TEXT = re.compile(r"cookie", re.IGNORECASE)
 _COOKIE_DECLINE = re.compile(
@@ -269,6 +282,16 @@ class _PendingSubmit:
     next_state: NotSubmittedNext = NotSubmittedNext.FAILED_RETRYABLE
     evidence: list[EvidenceRef] = field(default_factory=list)
     resolved: bool = False
+
+
+def _still_on(before: ApplicationForm, after: PageModel, by_progress: bool) -> bool:
+    """The step just left is shown again: for a wizard identified by its progress bar,
+    the bar has not moved (same scope); otherwise most of the step's fields are back."""
+    if after.form is None:
+        return False
+    if by_progress and after.step_source == "progress":
+        return after.form.scope.key == before.scope.key
+    return _same_step_shown_again(before, after.form)
 
 
 def _validation_errors(form: ApplicationForm) -> list[str]:
@@ -375,14 +398,17 @@ _BUTTONS_WITHIN = """(arg) => {
 # Read-only: which of the given elements lie inside the popups the widget ``owner`` owns
 # now (what its aria-controls/aria-owns name, or a menu button's data-menu-id), each taken
 # up to its outermost ancestor that does not contain the owner: a portal of its own.
-_IN_OWN_POPUP = """(arg) => {
-  const owner = document.querySelector(arg.owner);
+_IN_OWN_POPUP = """(arg) => {""" + DEEP_QUERY + """
+  let owner = null;
+  try { owner = deepOne(arg.owner); } catch (e) { owner = null; }
   const roots = [];
   if (owner) {
+    // Ids resolve in the owner's own tree first (an open shadow root), then the document.
+    const tree = owner.getRootNode();
     const ids = ['aria-controls', 'aria-owns'].flatMap((a) => (owner.getAttribute(a) || '').split(/\\s+/)).filter(Boolean);
     if (!ids.length && owner.getAttribute('data-menu-id')) ids.push(owner.getAttribute('data-menu-id'));
     for (const id of ids) {
-      const popup = document.getElementById(id);
+      const popup = (tree.getElementById ? tree.getElementById(id) : null) || document.getElementById(id);
       if (!popup || popup.contains(owner)) continue;
       let root = popup;
       while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(owner)) {
@@ -393,7 +419,7 @@ _IN_OWN_POPUP = """(arg) => {
   }
   return arg.selectors.map((s) => {
     let el = null;
-    try { el = document.querySelector(s); } catch (e) { el = null; }
+    try { el = deepOne(s); } catch (e) { el = null; }
     return !!el && roots.some((root) => root.contains(el));
   });
 }"""
@@ -432,6 +458,66 @@ def _question_change(before: PageModel, after: PageModel, attached: str) -> str 
         elif now_shape != was_shape:
             return f"the control of {fid!r} changed after the upload"
     return None
+
+
+def _holds_application(model: PageModel, prompt: DomPrompt) -> bool:
+    """Whether a shown dialog is the application itself: the dialog the form lives in
+    (or one around it), or one holding a question the form binds."""
+    if prompt.dialog_index < 0:
+        return False
+    parents = {d.index: d.parent for d in model.snapshot.dialogs}
+
+    def within(index: int | None) -> bool:
+        seen: set[int] = set()
+        while index is not None and index >= 0 and index not in seen:
+            if index == prompt.dialog_index:
+                return True
+            seen.add(index)
+            index = parents.get(index)
+        return False
+
+    if within(model.dialog_index):
+        return True
+    bound = {b.selector for b in model.bindings.values()}
+    return any(c.selector in bound and within(c.dialog_index) for c in model.snapshot.controls)
+
+
+def _same_document_link(link: DomLink, page_url: str) -> bool:
+    """A link that does not load another document ("#", "#apply", javascript:)."""
+    target, page = urlsplit(link.href), urlsplit(page_url)
+    if target.scheme == "javascript":
+        return True
+    return bool(link.href.endswith("#") or target.fragment) and (
+        target.scheme, target.netloc, target.path, target.query) == (page.scheme, page.netloc, page.path, page.query)
+
+
+def _entry_key(url: str) -> str:
+    """An apply link's identity for "already taken": without query and fragment, since
+    boards add per-load tracking parameters (LinkedIn's ``trackingId``)."""
+    parts = urlsplit(url)
+    return parts._replace(query="", fragment="").geturl()
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text)
+
+
+def _shows_same(app_field: ApplicationField, shown: str, wanted: str) -> bool:
+    """Whether a pre-filled text (a site filling in the person's profile) already says
+    ``wanted``: exactly, an email in another case, or a phone number with the same
+    digits or only the national part of ours (the site takes the country code in a
+    field of its own). Never a value the site marks invalid."""
+    if app_field.validation_error:
+        return False
+    if shown.replace("\r\n", "\n") == wanted.replace("\r\n", "\n"):
+        return True
+    if app_field.semantic_type is SemanticType.EMAIL or app_field.input_type == "email":
+        return shown.strip().casefold() == wanted.strip().casefold()
+    if app_field.semantic_type is SemanticType.PHONE or app_field.input_type == "tel":
+        national, ours = _digits(shown), _digits(wanted)
+        return national == ours or (len(national) >= 7 and ours.endswith(national)
+                                    and 1 <= len(ours) - len(national) <= 3)
+    return False
 
 
 class GenericApplicationBrowser:
@@ -503,8 +589,28 @@ class GenericApplicationBrowser:
         """The page structure the current (then the last) fill writes against: the approved
         observation, re-read after this runtime's own uploads and re-renders."""
         self._stable_fill_signature: str | None = None
+        self._attach_needed: dict[tuple[str, str], str] = {}
+        """(document, resume field id) -> the pinned file the person has to attach there,
+        because none of the resumes the site offers can be used and this session cannot
+        attach files."""
+        self._apply_clicked: set[tuple[str, str]] = set()
+        """(document, selector) of apply controls clicked: never clicked twice."""
+        self._followed: set[str] = set()
+        """Apply links and embedded application pages already opened by ``open``."""
 
     # --- inspection -----------------------------------------------------------------
+
+    @property
+    def attaches_files(self) -> bool:
+        """Whether this session can attach files (OpenCLI's Browser Bridge cannot)."""
+        return bool(getattr(self.driver, "attaches_files", True))
+
+    def _build(self, snapshot: DomSnapshot) -> PageModel:
+        needed = {field_id: name for (document, field_id), name in self._attach_needed.items()
+                  if document == snapshot.document}
+        return build_page(snapshot, fallback_step=self._steps_advanced,
+                          http_status=self.driver.last_status,
+                          attach_files=self.attaches_files, attach_needed=needed)
 
     async def _snapshot(self) -> DomSnapshot:
         """One read-only inspection, with the menus probed earlier in this document
@@ -527,7 +633,7 @@ class GenericApplicationBrowser:
         with every menu closed again."""
         if model.form is None:
             return False
-        targets = self.menus.targets(model.snapshot, model.form_index)
+        targets = self.menus.targets(model.snapshot, model.form_index, model.dialog_index)
         return bool(targets) and await self.menus.probe(self.driver, targets)
 
     async def _model(self, *, evidence: str | None = None, html: bool = False,
@@ -541,14 +647,12 @@ class GenericApplicationBrowser:
         for _ in range(3):
             document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY)) if self.annotator else ""
             snapshot = await self._snapshot()
-            model = build_page(snapshot, fallback_step=self._steps_advanced,
-                               http_status=self.driver.last_status)
+            model = self._build(snapshot)
             if probe:
                 probe = False
                 if await self._probe(model):
                     snapshot = await self._snapshot()
-                    model = build_page(snapshot, fallback_step=self._steps_advanced,
-                                       http_status=self.driver.last_status)
+                    model = self._build(snapshot)
             # This runtime's uploads are restored before annotation, so the provider
             # annotates, and later resolves reuse, the form this runtime returns.
             model = await self._with_uploads(model)
@@ -566,8 +670,7 @@ class GenericApplicationBrowser:
             )
             form = semantic_only(original, annotated)
             fresh_snapshot = await self._snapshot()
-            fresh = await self._with_uploads(build_page(
-                fresh_snapshot, fallback_step=self._steps_advanced, http_status=self.driver.last_status))
+            fresh = await self._with_uploads(self._build(fresh_snapshot))
             if (document != str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
                     or observation_signature(model, include_values=True)
                     != observation_signature(fresh, include_values=True)):
@@ -707,23 +810,27 @@ class GenericApplicationBrowser:
         """A structural read of the page: no menu probing, no semantic annotation (menus
         probed earlier and this runtime's own uploads kept, see ``_with_uploads``)."""
         snapshot = await self._snapshot()
-        return await self._with_uploads(build_page(
-            snapshot, fallback_step=self._steps_advanced, http_status=self.driver.last_status))
+        return await self._with_uploads(self._build(snapshot))
 
     async def _decline_autofill(self, model: PageModel) -> bool:
         """Decline one visible offer to autofill the application (a dialog saying
         "Autofill your application?") with its own decline control ("No thanks", "Not
         now", "Close"), at most once per offer and document, then wait (bounded) for it
         to go away. The offer's accept control is never clicked; ``observe`` never
-        declines. Returns whether a click happened."""
+        declines. A dialog that is (or holds) the application is never an offer, whatever
+        it says ("Import from LinkedIn or fill out this form"): its Skip, Continue and
+        Dismiss are the form's own, and only ``advance`` moves it on. Returns whether a
+        click happened."""
         if self._observing or not model.snapshot.prompts:
             return False
         origin = model.snapshot.document.split(" ")[0]
         for prompt in model.snapshot.prompts:
             key = (origin, normalize_text(prompt.text)[:300])
-            if key in self._declined:
+            if key in self._declined or _holds_application(model, prompt):
                 continue
-            selector = autofill_decline(prompt.text, [(b.text, b.selector) for b in prompt.buttons])
+            # A control that submits a form or loads another document declines nothing.
+            selector = autofill_decline(prompt.text, [(b.text, b.selector) for b in prompt.buttons
+                                                      if not (b.submits or b.navigates)])
             if selector is None:
                 continue
             self._declined.add(key)
@@ -843,24 +950,42 @@ class GenericApplicationBrowser:
         return self._last
 
     async def open(self, url: str) -> PageInspection:
-        """Navigate to ``url`` exactly as supplied; follow an apply *link* (never a
-        form submission) from a job posting to the application form."""
+        """Navigate to ``url`` exactly as supplied and follow the posting's own way to
+        the application form: an embedded application page on a known ATS host (opened
+        like a link), an apply link, or an apply control (a button that opens a dialog
+        wizard or navigates, clicked at most once per document, never one that could
+        send anything of the candidate's). How the form was reached is recorded in the
+        inspection message."""
         self._steps_advanced = 0
         self._filled = None
         self._context_lost = False
         self._fill_document = None
+        self._attach_needed = {}
+        self._apply_clicked = set()
+        self._followed = set()
         await self.driver.goto(url)
         model = await self._await_ready()
         consent_done = await self._dismiss_cookie_banner(model)
         if consent_done:
             model = await self._await_ready()
         posting_identity = self._posting_identity = model.inspection.job_identity
-        for _ in range(2):
+        notes: list[str] = []
+        for _ in range(3):
             if model.inspection.kind is not PageKind.JOB_DESCRIPTION:
                 break
-            if not await self._follow_apply(model):
+            model = await self._settle_posting(model)
+            posting = model
+            followed = await self._follow_apply(model)
+            if followed is None:
                 break
-            model = await self._await_ready()
+            how, note = followed
+            notes.append(note)
+            model = await (self._await_ready() if how == "frame" else self._await_opened(posting))
+            if how == "frame" and model.inspection.kind is not PageKind.APPLICATION_FORM:
+                framed = await self._open_in_frame(posting)
+                if framed is not None:
+                    model = framed
+                    notes.append("it does not load on its own, so it is operated inside the frame")
             if not consent_done:
                 consent_done = await self._dismiss_cookie_banner(model)
                 if consent_done:
@@ -874,6 +999,14 @@ class GenericApplicationBrowser:
             inspection = (await self._model(evidence=label)).inspection
         if inspection.job_identity is None and posting_identity is not None:
             inspection = inspection.model_copy(update={"job_identity": posting_identity})
+        if notes and inspection.kind not in USER_ACTION_PAGES:
+            # How the form (or the page instead of it) was reached; a page that asks the
+            # person to act (sign in, a consent, a CAPTCHA) keeps the site's own message.
+            lead = ("Reached the form: " if inspection.kind is PageKind.APPLICATION_FORM
+                    else "Taken from the posting (no application form yet): ")
+            reached = lead + "; then ".join(notes) + "."
+            inspection = inspection.model_copy(update={
+                "message": " ".join(m for m in (inspection.message, reached) if m)})
         return inspection
 
     async def observe(self, url: str) -> PageInspection:
@@ -882,30 +1015,139 @@ class GenericApplicationBrowser:
         self._observing = True
         try:
             await self.driver.goto(url)
-            await self._await_ready()
+            await self._settle_posting(await self._await_ready())
             return await self.inspect()
         finally:
             self._observing = False
 
-    async def _follow_apply(self, model: PageModel) -> bool:
-        link = next((lk for lk in model.snapshot.links if APPLY_LINK.search(lk.text)), None)
-        if link is not None:
-            await self.driver.goto(link.href)
-            return True
-        # An apply control leads to the form. One that submits a form is clicked only
-        # when that form has no fillable field at all (a navigation form), never when
-        # anything on the page could be sent with it.
-        button = next(
-            (b for b in model.apply_controls
-             if not b.disabled
-             and (not b.submits_form or model.fillable_counts.get(b.form_index, 0) == 0)),
-            None,
-        )
-        if button is None:
+    async def _settle_posting(self, model: PageModel) -> PageModel:
+        """A posting whose only ways onwards are clicks gets one bounded settle first:
+        careers pages inject the ATS's application frame after load (Greenhouse's embed
+        script), and that frame is followed instead of clicking anything."""
+        if (model.inspection.kind is not PageKind.JOB_DESCRIPTION or model.application_frame is not None
+                or any(kind in ("frame", "link") for kind, _ in self._entries(model))):
+            return model
+        await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
+        return await self._model()
+
+    def _entries(self, model: PageModel) -> list[tuple[str, Any]]:
+        """The ways onwards this posting offers that ``open`` has not taken yet, best
+        first: its embedded application page, apply links, then apply controls."""
+        document = model.snapshot.document
+        entries: list[tuple[str, Any]] = []
+        frame = model.application_frame
+        if frame is not None and _entry_key(frame.src) not in self._followed:
+            entries.append(("frame", frame))
+        for link in model.snapshot.links:
+            if not APPLY_LINK.search(link.text):
+                continue
+            if _same_document_link(link, model.snapshot.url):
+                if (document, link.selector) not in self._apply_clicked:
+                    entries.append(("script-link", link))
+            elif _entry_key(link.href) not in self._followed:
+                entries.append(("link", link))
+        entries += [("button", b) for b in model.apply_controls
+                    if not b.disabled and (document, b.selector) not in self._apply_clicked]
+        return entries
+
+    async def _follow_apply(self, model: PageModel) -> tuple[str, str] | None:
+        """Take one step from a posting towards its application form. Returns how
+        (``frame`` or ``link``: a navigation; ``click``: an apply control was clicked)
+        and a note for the inspection message, or None when there is nothing to take."""
+        document = model.snapshot.document
+        for kind, entry in self._entries(model):
+            if kind == "frame":
+                # Before anything is clicked: the form lives in an embedded ATS page (often
+                # in a hidden "Application" tab) that the top document cannot see into.
+                self._followed.add(_entry_key(entry.src))
+                await self.driver.goto(entry.src)
+                return "frame", f"opened the application page embedded in {model.snapshot.url} ({entry.src})"
+            if kind == "link":
+                self._followed.add(_entry_key(entry.href))
+                await self.driver.goto(entry.href)
+                return "link", f"followed the apply link {entry.text!r}"
+            # A script link ("#", javascript:) acts only when clicked. A control that
+            # submits a form is clicked only when the submission sends nothing of the
+            # candidate's (see ``_navigation_form``).
+            if kind == "button" and entry.submits_form and not await self._navigation_form(model, entry):
+                continue
+            self._apply_clicked.add((document, entry.selector))
+            await self.driver.click(entry.selector)
+            await self.driver.settle(self.settle_timeout_s)
+            return "click", f"clicked {entry.text!r}"
+        return None
+
+    async def _navigation_form(self, model: PageModel, button: DomButton) -> bool:
+        """A form whose apply button may be clicked (a posting page wrapped in one form,
+        as legacy portals do): it has at most one fillable question, every typed field
+        in it is empty and optional (a job-alert email box, a search box), and it has no
+        file or password input and would not open elsewhere. Submitting it then sends
+        nothing of the candidate's; it only navigates."""
+        if model.fillable_counts.get(button.form_index, 0) > 1:
             return False
-        await self.driver.click(button.selector)
-        await self.driver.settle(self.settle_timeout_s)
-        return True
+        typed = [c for c in model.snapshot.controls
+                 if c.form_index == button.form_index and not c.disabled and (c.visible or c.label_visible)
+                 and (c.tag == "textarea" or (c.kind == "native" and c.type in TEXT_INPUT_TYPES)
+                      or c.kind == "custom")]
+        if any(c.required or c.value.strip() or c.has_value for c in typed):
+            return False
+        effective = await self.driver.evaluate(_EFFECTIVE_SUBMISSION, button.selector)
+        return (isinstance(effective, dict) and not effective.get("hasFile")
+                and not effective.get("hasPassword") and effective.get("target") in ("", "_self"))
+
+    async def _await_opened(self, posting: PageModel) -> PageModel:
+        """After an apply link or control was taken: wait, within ``settle_timeout_s``,
+        while the page is still a posting with no new way onwards (a dialog wizard still
+        opening, LinkedIn's apply URL opening its dialog after load, a client-side route
+        that lands 6 to 10 s after the click as on Dayforce), then let it get ready. A
+        page still showing only the taken entries at the deadline is returned as it is."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.settle_timeout_s
+        model = await self._model()
+        while model.inspection.kind is PageKind.JOB_DESCRIPTION and loop.time() < deadline:
+            entries = self._entries(model)
+            if any(kind == "frame" for kind, _ in entries):
+                break  # an embedded application page appeared: it is followed, not waited for
+            if model.snapshot.document != posting.snapshot.document and entries:
+                break  # another page, with a way onwards of its own
+            await asyncio.sleep(max(0.0, min(_READY_POLL_S, deadline - loop.time())))
+            model = await self._model()
+        return await self._await_ready() if model.inspection.kind is PageKind.UNKNOWN else model
+
+    async def _open_in_frame(self, posting: PageModel) -> PageModel | None:
+        """The embedded application page did not show a form when opened on its own
+        (it requires its careers page): open the careers page again and operate the page
+        inside its frame, when the driver can (Playwright). None otherwise."""
+        frame = posting.application_frame
+        enter = getattr(self.driver, "enter_frame", None)
+        if frame is None or enter is None:
+            return None
+        await self.driver.goto(posting.snapshot.url)
+        model = await self._await_ready()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.settle_timeout_s
+        revealed = False
+        while True:
+            shown = model.application_frame
+            if shown is not None and shown.src == frame.src and shown.visible:
+                break
+            if not revealed and shown is not None:
+                # The frame sits in a hidden "Application" panel: its apply control shows it.
+                revealed = True
+                button = next((b for b in model.apply_controls if not b.disabled and not b.submits_form), None)
+                if button is not None:
+                    await self.driver.click(button.selector)
+            if loop.time() >= deadline:
+                return None
+            await asyncio.sleep(_READY_POLL_S)
+            model = await self._model()
+        try:
+            await enter(frame.src)
+        except DriverError:
+            return None
+        self.menus.reset()
+        model = await self._await_ready()
+        return model if model.inspection.kind is PageKind.APPLICATION_FORM else None
 
     # --- fill -----------------------------------------------------------------------
 
@@ -946,6 +1188,11 @@ class GenericApplicationBrowser:
             raise ValueError(
                 "the page no longer shows the inspected form step; re-inspect and resolve again"
             )
+        held = self._unusable_resumes(form, packet, model, only)
+        if held:
+            # Nothing was written: the next inspection hands these fields to the person.
+            raise ValueError("the resume must be attached in the browser window ("
+                             + "; ".join(held) + "); re-inspect the step")
         self._fill_document = str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
         errors_before = set(current.page_errors)
         results: dict[str, FieldFillResult] = {}
@@ -975,6 +1222,7 @@ class GenericApplicationBrowser:
                     if touched:
                         halted, accepted = await self._settle_after_upload(app_field.id, accepted)
                     if (answer is not None and result.status is FieldFillStatus.FILLED
+                            and result.detail != _KEPT_TEXT
                             and isinstance(answer.value, TextValue) and self._plain_text(app_field)):
                         written[app_field.id] = answer.value.text
                     await self._assert_fill_context()
@@ -1375,6 +1623,47 @@ class GenericApplicationBrowser:
                                    detail="cleared a pre-checked box the user has not agreed to")
         return FieldFillResult(field_id=app_field.id, status=FieldFillStatus.SKIPPED)
 
+    def _unusable_resumes(self, form: ApplicationForm, packet: ApplicationPacket, model: PageModel,
+                          only: frozenset[str] | None) -> list[str]:
+        """Resume uploads this session cannot fill: none of the resumes the site offers
+        is the pinned file (or the only one) and files cannot be attached here. Each is
+        recorded for this document, so re-inspection makes it the person's to attach."""
+        if self.attaches_files:
+            return []
+        held = []
+        for app_field in form.fields:
+            binding = model.bindings.get(app_field.id)
+            answer = packet.answer_for(app_field.id)
+            if (binding is None or answer is None or app_field.control_type is not ControlType.FILE
+                    or not binding.resume_choices or not isinstance(answer.value, FileValue)
+                    or (only is not None and app_field.id not in only)):
+                continue
+            pinned = answer.value.artifact.filename
+            choice, reason = choose_resume(binding.resume_choices, pinned)
+            if choice is None:
+                self._attach_needed[(model.snapshot.document, app_field.id)] = pinned
+                held.append(f"{app_field.label}: {reason}")
+        return held
+
+    async def _use_resume(self, fid: str, binding: FieldBinding, choice: ResumeChoice,
+                          reason: str) -> FieldFillResult:
+        """Select one of the resumes the site already has and read the selection back:
+        exactly that choice is checked."""
+        selectors = [c.selector for c in binding.resume_choices]
+        before = await self.driver.evaluate(_READ_CHECKED, selectors)
+        if not (isinstance(before, list) and before[selectors.index(choice.selector)] is True):
+            label = choice.label_selector
+            # A card's radio usually sits under its styled label, which is what takes the
+            # click; the radio itself only when there is no label.
+            await self._write(lambda: self.driver.click(label) if label else self.driver.set_checked(
+                choice.selector, True))
+        after = await self.driver.evaluate(_READ_CHECKED, selectors)
+        chosen = [c.name for c, checked in zip(binding.resume_choices, after or [], strict=False) if checked]
+        if chosen == [choice.name]:
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED, detail=f"chose {reason}")
+        return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
+                               detail=f"selected resumes read back as {chosen!r}, not {choice.name!r}")
+
     async def _read(self, selector: str) -> dict[str, Any]:
         value = await self.driver.evaluate(_READ_CONTROL, selector)
         return value if isinstance(value, dict) else {}
@@ -1400,6 +1689,11 @@ class GenericApplicationBrowser:
             await self._write(type_phone)
             return result(*phone[0])
         if isinstance(value, TextValue) and ctype in (ControlType.TEXT, ControlType.TEXTAREA):
+            shown = (await self._read(binding.selector)).get("value")
+            if isinstance(shown, str) and shown.strip() and _shows_same(app_field, shown, value.text):
+                # A value the site filled in itself (from the person's profile) that says
+                # the same is kept as it is; one that differs is overwritten below.
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED, detail=_KEPT_TEXT)
             # Typed with real input events (a trusted insertText), never by assigning the
             # value, so a React-controlled input updates its state.
             await self._write(lambda: self.driver.fill(binding.selector, value.text))
@@ -1436,6 +1730,9 @@ class GenericApplicationBrowser:
                 if selected == [value.value] and (binding.aria or {}).get("probed"):
                     self.menus.confirm(binding.selector, value.value)
                 return result(selected == [value.value], selected)
+            if (await self._read(binding.selector)).get("values") == [value.value]:
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
+                                       detail="already selected; left as it is")
             await self._write(lambda: self.driver.select_values(binding.selector, [value.value]))
             got = (await self._read(binding.selector)).get("values")
             return result(got == [value.value], got)
@@ -1602,7 +1899,9 @@ class GenericApplicationBrowser:
         checked). After attaching, a spinner or "Uploading..." is waited out (bounded);
         the readback accepts the file in the input (name and size), or, once the uploader
         emptied or replaced its input, a visible chip naming it or an upload notice
-        without an error. The driver verified the attached bytes when it could read them."""
+        without an error. The driver verified the attached bytes when it could read them.
+        A resume the site already keeps (``binding.resume_choices``) is chosen instead
+        when one is the pinned file or the only one."""
         fid = app_field.id
         artifact = value.artifact
         name = Path(artifact.path).name
@@ -1624,6 +1923,15 @@ class GenericApplicationBrowser:
             return FieldFillResult(
                 field_id=fid, status=FieldFillStatus.FAILED,
                 detail=f"{artifact.filename} is missing or changed since it was verified"), False
+        if binding.resume_choices:
+            # The site keeps uploaded resumes: use the pinned file's own card (or the
+            # only one) instead of uploading it again.
+            choice, reason = choose_resume(binding.resume_choices, artifact.filename)
+            if choice is not None:
+                return await self._use_resume(fid, binding, choice, reason), False
+            if not self.attaches_files:
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
+                                       detail=f"{reason}; attach your resume in the browser window"), False
         before = await self._upload_state(binding.selector, [name])
         if (before.holds(name, artifact.size_bytes)
                 and await self._holds_pinned(binding.selector, artifact)):
@@ -1759,11 +2067,20 @@ class GenericApplicationBrowser:
             return NavigationResult(advanced=False, inspection=model.inspection,
                                     validation_errors=list(invalid))
         await self._assert_fill_context()
+        by_progress = model.step_source == "progress"
         await self.driver.click(form.next_selector)
         await self.driver.settle(self.settle_timeout_s)
         self._steps_advanced += 1
         after = await self._model()
-        if after.form is not None and _same_step_shown_again(form, after.form):
+        # A dialog wizard renders its next step in place, sometimes after a request of
+        # its own: while the step just left is still shown without errors, wait a moment.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + min(self.settle_timeout_s, _STEP_WAIT_S)
+        while (_still_on(form, after, by_progress) and after.form is not None
+               and not _validation_errors(after.form) and loop.time() < deadline):
+            await asyncio.sleep(_READY_POLL_S)
+            after = await self._model()
+        if after.form is not None and _still_on(form, after, by_progress):
             self._steps_advanced -= 1
             after = await self._model(evidence=f"step-{form.step}-rejected")
             assert after.form is not None
