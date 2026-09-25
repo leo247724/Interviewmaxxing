@@ -91,6 +91,13 @@ _CONSENT = _rx(
 )
 # A choice question (a Yes/No select or radio) is consent only when it asks for it: a
 # consent act, not merely a consent topic ("Have you worked in performance marketing?").
+_HEARD_ABOUT = _rx(
+    r"\b(?:how|where) did you (?:first )?(?:hear|learn|find out) (?:about|of)\b|"
+    r"\bhow did you find (?:us|out about|this (?:job|role|position|opportunity))\b"
+)
+"""A referral question on any control ("How did you hear about Base Power Company?")."""
+_PROFILE_URLS = frozenset({SemanticType.LINKEDIN, SemanticType.GITHUB, SemanticType.WEBSITE})
+"""The candidate's own profile URLs: typed into one text input, never a choice's type."""
 _CONSENT_ACT = _rx(
     r"\bconsent|\bagree|acknowledg|authori[sz]|permission|\bopt(?:[- ]?in)\b|\bi accept\b|"
     r"\baccept (?:the|our|these)\b|\bwould you like to receive\b|\bsign me up\b"
@@ -152,6 +159,11 @@ def classify(
             return SemanticType.RESUME
         return SemanticType.UNKNOWN
 
+    # "How did you hear about us?" is the referral question whatever the control and
+    # whatever its options say ("Company website", "LinkedIn").
+    if _HEARD_ABOUT.search(label):
+        return SemanticType.REFERRAL_SOURCE
+
     if control_type is ControlType.CHECKBOX:
         statement = f"{label} {help_text}"
         for pattern, semantic in _RULES[:5]:  # protected attributes first
@@ -162,7 +174,7 @@ def classify(
         if _ATTESTATION.search(statement):
             return SemanticType.ATTESTATION
         for pattern, semantic in _RULES[5:]:
-            if pattern.search(label):
+            if semantic not in _PROFILE_URLS and pattern.search(label):
                 return semantic
         # An unexplained first-person statement ("I am ...") is a personal attestation.
         if _FIRST_PERSON.search(label):
@@ -199,6 +211,8 @@ def classify(
         return SemanticType.PHONE
 
     for pattern, semantic in _RULES:
+        if semantic in _PROFILE_URLS and control_type is not ControlType.TEXT:
+            continue  # a profile URL is typed into one text input, never chosen
         if pattern.search(label) or pattern.search(identifiers):
             if semantic is SemanticType.RESUME or semantic is SemanticType.COVER_LETTER:
                 if control_type is ControlType.TEXTAREA and semantic is SemanticType.COVER_LETTER:

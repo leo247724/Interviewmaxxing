@@ -286,7 +286,13 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   Compyl's sponsorship question was two fields labelled "Yes" and "No"); radios need
   only different names. The field id is the question's field path. Separately named
   checkboxes of one fieldset ("terms_consent", "privacy_consent") stay separate
-  questions.
+  questions. Such a group is typed by its question and field path, never by an option's
+  name.
+- **Semantic types of choices.** A profile URL type (LinkedIn, GitHub, website) belongs
+  only to a single text input, never to a choice. "How did you hear about …" wording is
+  the referral question on any control, whatever its options say ("Company website",
+  "LinkedIn"). Before this, Base Power Company's checkbox group came out typed WEBSITE
+  and the resolver held it.
 - **Yes/no toggle buttons.** A question drawn as buttons with `aria-pressed` over a
   checkbox that only mirrors "yes" (Ashby's yes/no, the checkbox `display:none`) is a
   `RADIO` whose options are the buttons, clicked (unless already pressed) and read back

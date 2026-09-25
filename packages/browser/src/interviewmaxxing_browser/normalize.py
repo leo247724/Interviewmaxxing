@@ -599,8 +599,10 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
     semantic = classify(
         label=label,
         help_text=help_text or "",
-        name=first.name,
-        element_id=first.id,
+        # Options grouped by their question box are named after their own text ("Company
+        # website"): the question's identifier is its field path, never an option's name.
+        name=first.question_for if first.choice_group else first.name,
+        element_id="" if first.choice_group else first.id,
         autocomplete=first.autocomplete,
         input_type=input_type,
         control_type=control_type,
