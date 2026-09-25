@@ -431,16 +431,20 @@ Cover letters after four batches of three (Base Power, Maximus, Superhuman), all
 | batch | code | result |
 | --- | --- | --- |
 | 1 | 776b6f8 | three shipped or held; the read-only judge graded all three **D** (attribution clauses, generic company facts, side projects as proof, bare year ranges) and ranked ten fixes |
-| 2 | 4cb0bdb | ten fixes applied; **Maximus READY** (321 words, 15 calls, USD 0.66, rubric PASSED, humanizer REWRITTEN, lint clean); Base Power and Superhuman held (bridging claims; one date range) |
+| 2 | 4cb0bdb | ten fixes applied; **Maximus READY** (321 words, 15 calls, USD 0.66, rubric PASSED, humanizer REWRITTEN, lint clean); the judge graded it **A** (every HARD line passes; A+ needs more sentences true only of Maximus); Base Power and Superhuman held (bridging claims; one date range) |
 | 3 | 7efb864 | all three held: side projects as full sentences, "in 2024" for work spanning 2024-03 to 2025-05 (the round's own date rule, reverted) |
-| 4 | fd7c4a1 | **Base Power READY** (284 words, 15 calls, USD 0.98, rubric PASSED on the shipped text, humanizer REWRITTEN); Maximus and Superhuman held on `Review HTTP_402` |
+| 4 | fd7c4a1 | **Base Power READY** (284 words, 15 calls, USD 0.98, rubric PASSED on the shipped text, humanizer REWRITTEN); the judge graded it **C** (one HARD miss: the posting's About line is its only Base-only sentence, and the proof is told four times); Maximus and Superhuman held on `Review HTTP_402` |
 
 Spend over the four batches: USD 11.45 in 258 provider calls. The loop stopped when OpenRouter
 answered HTTP 402: the account shows USD 0.85 of its 125 credits left, so batch 5, retry eight and
-any preparation that writes a narrative wait on a top-up. The judge is grading the two READY letters
-(`.imx/rag-writing/cover-letters/batch-4/JUDGE.md`). The worker's own reading of Base Power is B/B+:
-every HARD line passes; the soft misses are two stacked scale figures in the proof, the
-offline-conversion rebuild told four times, and no tradeoff because the passage states none.
+any preparation that writes a narrative wait on a top-up. The read-only judge graded the two READY letters against the rubric
+(`.imx/rag-writing/cover-letters/batch-4/JUDGE.md`): Maximus A, Base Power C, both up from D in
+batch 1. Of batch 1's ten fixes, six landed, three partly (employer named once, one metric, one
+proof) and one not (units: a bare "400k"). The ten new fixes, ranked, are WP12 round 7: tell the
+proof once, the company fact as one plain clause in the posting's nouns rather than its About
+sentence, pair every story figure with the verified claim that states it, a first move built from
+the job chunk that matches the proof, money or cases as the hook metric, and a humanizer that may
+not narrow a claim's scope.
 
 **Retry seven (16:11, fourth wave with the standing policies imported).** 14 run, 2 more prepared:
 **22 of 40 prepared**, 9 held, 3 failed; 6 skipped as needing only the person (CAPTCHA, consent
