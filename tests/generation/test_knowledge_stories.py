@@ -353,3 +353,79 @@ def test_a_stated_year_outside_the_linked_role_is_flagged_and_the_resume_dates_w
     review = st.facts_review(index, candidate_id="default")
     assert review["stories"][0]["note"] and "outside the linked resume role" in review["stories"][0]["note"]
     assert "**check:**" in st.facts_review_markdown(review)
+
+
+# --- round 2, items 4-5: text documents, sources, resume figure flags ------------------------------
+
+
+SEO_STORY = (
+    "I managed SEO for a portfolio of client accounts at a link-building agency in 2025, "
+    "leading a team of 4 SEO specialists and reporting to the head of delivery. "
+    "We grew organic sessions by 60% across the portfolio and cut churn from 9% to 4%. "
+    "I built the reporting in Looker Studio and ran weekly reviews with each client."
+)
+
+
+def text_document(tmp_path: Path, name: str, heading: str) -> Path:
+    path = tmp_path / name
+    path.write_text(f"{heading}\n\n{SEO_STORY[:120]}\n{SEO_STORY[120:]}\n\nA second paragraph of the same story.\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(("name", "heading"), [
+    ("story.md", "## Stories 04 - SEO account management at Linkforge"),
+    ("story.md", "**Stories 04 - SEO account management at Linkforge**"),
+    ("story.txt", "Stories 04 - SEO account management at Linkforge"),
+])
+def test_text_and_markdown_documents_read_like_a_docx(tmp_path: Path, name: str, heading: str) -> None:
+    path = text_document(tmp_path, name, heading)
+    document = st.read_stories(path)
+    [story] = document.stories
+    assert (story.number, story.title) == (4, "SEO account management at Linkforge")
+    assert story.sentences[0].startswith("I managed SEO for a portfolio") and story.sentences[-1] == "A second paragraph of the same story."
+    assert len(story.sentences) == 4 and story.body.count("\n") == 0
+    assert document.file_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    plain = tmp_path / "plain.md"
+    plain.write_text("# My SEO year\n\n" + SEO_STORY + "\n", encoding="utf-8")
+    [fallback] = st.read_stories(plain).stories
+    assert (fallback.number, fallback.title) == (1, "My SEO year")
+    with pytest.raises(st.StoryParseError, match=r"must be a \.docx"):
+        st.read_stories(tmp_path / "story.rtf")
+    binary = tmp_path / "bad.txt"
+    binary.write_bytes(b"\xff\xfe not text")
+    with pytest.raises(st.StoryParseError, match="UTF-8"):
+        st.read_stories(binary)
+
+
+def test_a_second_source_links_by_name_and_flags_a_team_size_difference(tmp_path: Path) -> None:
+    path = text_document(tmp_path, "story.md", "## Stories 04 - SEO account management at Linkforge")
+    document = st.read_stories(path)
+    [story] = document.stories
+    [analysis] = document.analyses
+    roles = [*_roles(), st.ResumeRole("exp_links", "Linkforge", "SEO Project Manager", "2025-07", "2026-05", False,
+                                       ("Led a team of 5 SEO specialists for agency clients.",))]
+    link = st.match_role_by_name(story, analysis, roles)
+    assert link is not None and (link.resume_role_id, link.method) == ("exp_links", "employer_name")
+    index = st.build_story_index(document, verified_at=NOW, links={story.story_id: link}, source_id="candidate-stories-seo")
+    assert index.source_id == "candidate-stories-seo" and index.facts
+    assert all("story_source: candidate-stories-seo" in f.evidence for f in index.facts)
+    assert all(st.story_source_of(f) == "candidate-stories-seo" for f in index.facts)
+    assert st.story_source_of(index.facts[0].model_copy(update={"evidence": ["Story 04: x"]})) == "candidate-stories"
+    assert st.story_source_of(index.facts[0].model_copy(update={"source": "resume"})) is None
+    assert all("2025-07 to 2026-05" in str(f.value) for f in index.facts)
+    assert st.team_sizes("a team of 4 SEO specialists and 12 clients") == {4}
+    assert st.team_sizes("Led 5 SEO specialists; team of 5") == {5}
+    assert st.resume_quantity_differences(story, link, roles) == [
+        {"kind": "team size", "story": [4], "resume": [5], "resume_role_id": "exp_links"}]
+    assert st.resume_quantity_differences(story, None, roles) == []
+    same = [st.ResumeRole("exp_links", "Linkforge", "SEO Project Manager", "2025-07", "2026-05", False,
+                          ("Led a team of 4 SEO specialists.",))]
+    assert st.resume_quantity_differences(story, link, same) == []
+    review = st.facts_review(index, candidate_id="default", roles=roles)
+    assert review["source_id"] == "candidate-stories-seo"
+    assert review["stories"][0]["resume_differences"][0]["kind"] == "team size"
+    assert "team size of [4]" in review["stories"][0]["note"] and "states [5]" in review["stories"][0]["note"]
+    markdown = st.facts_review_markdown(review)
+    assert "Source: `candidate-stories-seo`" in markdown and "**check:**" in markdown
+    # The story's own figure stays in its facts; nothing is resolved here.
+    assert any("team of 4" in str(f.value) for f in index.facts)

@@ -432,6 +432,7 @@ class StoryIndex:
     skipped: tuple[dict[str, Any], ...]
     links: Mapping[str, StoryRoleLink] | None = None
     """Resume role links by story id (``resolve_period`` dates the facts and headers)."""
+    source_id: str = DEFAULT_STORY_SOURCE
 
     def link_for(self, story_id: str) -> StoryRoleLink | None:
         return (self.links or {}).get(story_id)
@@ -497,6 +498,58 @@ def read_docx(path: Path) -> list[Paragraph]:
                 runs.append(Run(text, bold))
         paragraphs.append(Paragraph(tuple(runs), heading))
     return paragraphs
+
+
+_MARKDOWN_HEADING = re.compile(
+    r"^\s*(?:#{1,6}\s*|\*\*)?\s*(stor(?:y|ies)\s*#?\s*\d{1,3}\s*[-\u2013\u2014:.]\s*.+?)\s*(?:\*\*)?\s*$",
+    re.IGNORECASE)
+TEXT_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
+
+
+def read_text_document(path: Path) -> list[Paragraph]:
+    """Paragraphs of a plain-text or Markdown stories file: a line reading "Stories NN -
+    title" (Markdown marks allowed) or any other heading line is a heading paragraph;
+    the lines up to the next blank line form one body paragraph. The words are not
+    changed."""
+    try:
+        if path.stat().st_size > MAX_DOCX_BYTES:
+            raise StoryParseError("The stories file exceeds its size limit")
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise StoryParseError("The stories file is unavailable or is not UTF-8 text") from None
+    paragraphs: list[Paragraph] = []
+    block: list[str] = []
+
+    def flush() -> None:
+        if block:
+            paragraphs.append(Paragraph((Run(" ".join(block), False),)))
+            block.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        match = _MARKDOWN_HEADING.match(stripped)
+        if match:
+            flush()
+            paragraphs.append(Paragraph((Run(match.group(1), True),), heading=True))
+        elif stripped.startswith("#"):
+            flush()
+            paragraphs.append(Paragraph((Run(stripped.lstrip("#").strip(), False),), heading=True))
+        else:
+            block.append(stripped)
+    flush()
+    return paragraphs
+
+
+def read_document(path: Path) -> list[Paragraph]:
+    """A .docx, or a .md/.txt file, as paragraphs of runs."""
+    if path.suffix.casefold() in TEXT_SUFFIXES:
+        return read_text_document(path)
+    if path.suffix.casefold() == ".docx":
+        return read_docx(path)
+    raise StoryParseError("The stories file must be a .docx, .md or .txt document")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -668,6 +721,33 @@ def match_role_by_name(story: Story, analysis: StoryAnalysis,
     role = matches[0]
     return StoryRoleLink(analysis.story_id, role.id, role.company, role.title, role.start,
                          role.end, role.current, "employer_name")
+
+
+_TEAM_SIZE = re.compile(
+    r"\bteam of (\d{1,3})\b|\b(\d{1,3}) (?:direct reports|reports|specialists|people|members|"
+    r"marketers|analysts|coordinators|engineers|writers|designers|buyers)\b", re.IGNORECASE)
+
+
+def team_sizes(text: str) -> set[int]:
+    """Team sizes a text states ("team of 4", "5 SEO specialists")."""
+    return {int(a or b) for a, b in _TEAM_SIZE.findall(text)}
+
+
+def resume_quantity_differences(story: Story, link: StoryRoleLink | None,
+                                roles: Sequence[ResumeRole]) -> list[dict[str, Any]]:
+    """Figures the story states differently from the linked resume role's bullets, for
+    the person to settle; nothing is resolved or changed here. Team sizes so far."""
+    if link is None:
+        return []
+    role = next((role for role in roles if role.id == link.resume_role_id), None)
+    if role is None:
+        return []
+    story_sizes = team_sizes(story.body)
+    resume_sizes = team_sizes(" ".join(role.bullets))
+    if story_sizes and resume_sizes and story_sizes.isdisjoint(resume_sizes):
+        return [{"kind": "team size", "story": sorted(story_sizes), "resume": sorted(resume_sizes),
+                 "resume_role_id": role.id}]
+    return []
 
 
 def stated_years(story: Story) -> list[str]:
@@ -877,8 +957,8 @@ def fact_context(analysis: StoryAnalysis, period: str | None,
 
 
 def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[StoryChunk], *,
-                        verified_at: datetime,
-                        link: StoryRoleLink | None = None) -> tuple[list[CandidateFact], list[dict[str, Any]]]:
+                        verified_at: datetime, link: StoryRoleLink | None = None,
+                        source_id: str = DEFAULT_STORY_SOURCE) -> tuple[list[CandidateFact], list[dict[str, Any]]]:
     """Atomic, user-authored facts from a story's concrete first-person sentences, each
     with ``story:<chunk id>`` provenance. Values are the sentences as written (numbers
     are never changed) plus the story's employer and resolved period; a vague sentence
@@ -893,7 +973,7 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
     conflicting_years = ([year for year in stated_years(story) if link is not None and not link.contains_year(year)]
                          if discrepancy else [])
     context = fact_context(analysis, period, link)
-    provenance_lines = [f"period_source: {period_source}"]
+    provenance_lines = [f"period_source: {period_source}", f"story_source: {source_id}"]
     if link is not None:
         provenance_lines.append(f"resume_role_id: {link.resume_role_id}")
     verification = FactVerification(status=VerificationStatus.VERIFIED,
@@ -950,16 +1030,18 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
 
 def read_stories(path: Path) -> StoryDocument:
     """The document's stories and their analyses: the first phase, before any linking."""
+    stories = parse_stories(read_document(path))
     data = path.read_bytes()
-    stories = parse_stories(read_docx(path))
     return StoryDocument(hashlib.sha256(data).hexdigest(), len(data), tuple(stories),
                          tuple(analyse_story(story) for story in stories))
 
 
 def build_story_index(source: Path | StoryDocument, *, verified_at: datetime,
-                      links: Mapping[str, StoryRoleLink] | None = None) -> StoryIndex:
+                      links: Mapping[str, StoryRoleLink] | None = None,
+                      source_id: str = DEFAULT_STORY_SOURCE) -> StoryIndex:
     """Stories, analyses, chunks and facts of one document; no text leaves in receipts.
-    ``links`` (by story id) date the linked stories' chunks and facts with the resume."""
+    ``links`` (by story id) date the linked stories' chunks and facts with the resume;
+    ``source_id`` names the stories source the facts belong to (``story_source``)."""
     document = read_stories(source) if isinstance(source, Path) else source
     chunks: list[StoryChunk] = []
     facts: list[CandidateFact] = []
@@ -969,14 +1051,15 @@ def build_story_index(source: Path | StoryDocument, *, verified_at: datetime,
         link = (links or {}).get(analysis.story_id)
         story_chunks = chunk_story(story, analysis, link)
         story_facts, story_skipped = extract_story_facts(story, analysis, story_chunks,
-                                                         verified_at=verified_at, link=link)
+                                                         verified_at=verified_at, link=link,
+                                                         source_id=source_id)
         chunks.extend(chunk for chunk in story_chunks if chunk.id not in seen)
         seen.update(chunk.id for chunk in story_chunks)
         facts.extend(fact for fact in story_facts if fact.id not in {f.id for f in facts})
         skipped.extend(story_skipped)
     return StoryIndex(document.file_sha256, document.file_bytes, document.stories,
                       document.analyses, tuple(chunks), tuple(facts), tuple(skipped),
-                      dict(links or {}))
+                      dict(links or {}), source_id)
 
 
 def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
@@ -1026,12 +1109,34 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
     }
 
 
-def facts_review(index: StoryIndex, *, candidate_id: str) -> dict[str, Any]:
+def story_source_of(fact: CandidateFact) -> str | None:
+    """The stories source a story fact belongs to (its ``story_source`` evidence line);
+    the default source for a story fact that predates the line; None for other facts."""
+    if not fact.source.startswith("story:"):
+        return None
+    for line in fact.evidence:
+        if line.startswith("story_source: "):
+            return line[len("story_source: "):]
+    return DEFAULT_STORY_SOURCE
+
+
+def facts_review(index: StoryIndex, *, candidate_id: str,
+                 roles: Sequence[ResumeRole] = ()) -> dict[str, Any]:
     """The full fact list for the user's private review (contains story text)."""
     stories = []
     for story, a in zip(index.stories, index.analyses, strict=True):
         link = index.link_for(a.story_id)
         period, period_source, discrepancy = resolve_period(story, link)
+        differences = resume_quantity_differences(story, link, roles)
+        notes = []
+        if discrepancy:
+            notes.append("The story states a year outside the linked resume role's dates; the resume "
+                         "dates were used and the sentence stating the year yields no fact. Correct "
+                         "the story or the resume if one is wrong.")
+        for difference in differences:
+            notes.append(f"The story states a {difference['kind']} of {difference['story']} but the "
+                         f"resume's linked role states {difference['resume']}; not resolved here, "
+                         "settle it in the story or the resume.")
         stories.append({
             "number": a.number, "story_id": a.story_id, "title": a.title,
             "employer": a.employer, "project": a.project, "role": a.role,
@@ -1041,13 +1146,13 @@ def facts_review(index: StoryIndex, *, candidate_id: str) -> dict[str, Any]:
                              "method": link.method, "confidence": link.confidence,
                              "probability": link.probability} if link else None),
             "stated_year_outside_resume_role": discrepancy,
-            "note": ("The story states a year outside the linked resume role's dates; the resume "
-                     "dates were used. Correct the story or the resume if one is wrong."
-                     if discrepancy else None),
+            "resume_differences": differences,
+            "note": " ".join(notes) if notes else None,
             "tools": list(a.tools), "skills": list(a.skills),
             "themes": list(a.themes), "outcomes": list(a.outcomes)})
     return {
         "candidate_sha256": _sha256(candidate_id), "file_sha256": index.file_sha256,
+        "source_id": index.source_id,
         "facts": [{"id": fact.id, "key": fact.key, "value": fact.value, "source": fact.source,
                    "evidence": list(fact.evidence),
                    "verification": fact.verification.model_dump(mode="json")}
@@ -1061,7 +1166,7 @@ def facts_review_markdown(review: Mapping[str, Any],
                           derived: Sequence[CandidateFact] = ()) -> str:
     """A readable version of the review for the person: stories with their link and
     period, then every fact, then the derived years facts."""
-    lines = ["# Story facts for review", ""]
+    lines = ["# Story facts for review", "", f"Source: `{review.get('source_id', DEFAULT_STORY_SOURCE)}`", ""]
     for story in review["stories"]:
         role = story["resume_role"]
         lines.append(f"## Story {story['number']:02d}: {story['title']}")
@@ -1101,12 +1206,48 @@ def dumps_receipt(receipt: dict[str, Any]) -> str:
 
 
 __all__ = [
-    "DEFAULT_STORY_SOURCE", "MAX_CHUNK_CHARS", "MAX_CHUNK_WORDS", "MIN_CHUNK_WORDS",
-    "STORY_CHUNK_ID", "Paragraph", "ResumeRole", "Run", "Story", "StoryAnalysis", "StoryChunk",
-    "StoryDocument", "StoryIndex", "StoryParseError", "StoryRoleLink", "analyse_story",
-    "build_story_index", "chunk_header", "chunk_metadata", "chunk_story", "company_tokens",
-    "extract_story_facts", "fact_context", "facts_review", "facts_review_markdown",
-    "find_skills", "find_themes", "find_tools", "match_role_by_name", "numbers_in",
-    "parse_chunk_header", "parse_stories", "read_docx", "read_stories", "resolve_period",
-    "resume_roles", "split_sentences", "stated_years", "story_index_receipt",
+    "DEFAULT_STORY_SOURCE",
+    "MAX_CHUNK_CHARS",
+    "MAX_CHUNK_WORDS",
+    "MIN_CHUNK_WORDS",
+    "STORY_CHUNK_ID",
+    "Paragraph",
+    "ResumeRole",
+    "Run",
+    "Story",
+    "StoryAnalysis",
+    "StoryChunk",
+    "StoryDocument",
+    "StoryIndex",
+    "StoryParseError",
+    "StoryRoleLink",
+    "analyse_story",
+    "build_story_index",
+    "chunk_header",
+    "chunk_metadata",
+    "chunk_story",
+    "company_tokens",
+    "extract_story_facts",
+    "fact_context",
+    "facts_review",
+    "facts_review_markdown",
+    "find_skills",
+    "find_themes",
+    "find_tools",
+    "match_role_by_name",
+    "numbers_in",
+    "parse_chunk_header",
+    "parse_stories",
+    "read_document",
+    "read_docx",
+    "read_stories",
+    "read_text_document",
+    "resolve_period",
+    "resume_quantity_differences",
+    "resume_roles",
+    "split_sentences",
+    "stated_years",
+    "story_index_receipt",
+    "story_source_of",
+    "team_sizes",
 ]

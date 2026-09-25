@@ -106,6 +106,10 @@ CUSTOM_TYPES = frozenset({SemanticType.UNKNOWN, SemanticType.CUSTOM_TEXT,
     SemanticType.CUSTOM_MULTISELECT})
 MIN_CONFIDENCE = 0.90
 MIN_PROBABILITY = 0.95
+REVIEW_EVIDENCE_LIMIT = 24
+"""Canonical facts, beyond the selected ones, handed to the independent evidence review:
+the ones competing with the most selected facts. The review's record cap (128) is never
+reached, so it cannot hold a field by itself."""
 PROFILE_URL_IDENTITY = frozenset({SemanticType.LINKEDIN, SemanticType.GITHUB, SemanticType.WEBSITE})
 TIMEFRAME_INSENSITIVE_IDENTITY = PROFILE_URL_IDENTITY | {
     SemanticType.EMAIL, SemanticType.PHONE, SemanticType.FIRST_NAME, SemanticType.LAST_NAME,
@@ -2740,12 +2744,22 @@ class DynamicPacketResolver:
             confidence = min([confidence, *scores.values()])
             if confidence < MIN_PROBABILITY:
                 if allow_strong_review and confidence > 1 - MIN_PROBABILITY:
+                    # The selected facts and the canonical facts competing with the most of
+                    # them, never the whole fact store: bounded evidence, bounded request.
+                    chosen_ids = {fact.id for fact in selected}
+                    competing_count = {other.id: sum(competing(chosen, other) for chosen in selected)
+                                       for other in others}
+                    ranked = sorted((other for other in others if other.id not in chosen_ids),
+                                    key=lambda other: (-competing_count[other.id], other.id))
+                    reviewed_facts = [*selected, *ranked[:REVIEW_EVIDENCE_LIMIT]]
                     self._strong_review(context, question=
                         "Do these verified candidate facts contain any direct factual contradiction? "
                         "Independent employment, education, project and skill claims may coexist; "
                         "use their canonical group relations and retain explicit global counterclaims.",
-                        facts=[contextual(fact) for fact in all_facts.values()],
-                        purpose="evidence_consistency")
+                        facts=[contextual(fact) for fact in reviewed_facts],
+                        purpose="evidence_consistency",
+                        scope={"selected_fact_ids": [fact.id for fact in selected],
+                               "competing_total": len(ranked), "limit": REVIEW_EVIDENCE_LIMIT})
                     with self._lock:
                         if len(self._consistency_reviews) >= 16:
                             self._consistency_reviews.pop(next(iter(self._consistency_reviews)))
@@ -2757,13 +2771,15 @@ class DynamicPacketResolver:
     def _strong_review(self, context: PacketContext, *, question: str,
                        facts: list[dict[str, Any]], purpose: Literal["evidence_consistency", "draft_grounding"],
                        job_evidence: list[dict[str, str]] | None = None,
-                       sentences: list[Any] | None = None) -> None:
+                       sentences: list[Any] | None = None,
+                       scope: dict[str, Any] | None = None) -> None:
         review = getattr(self.writer, "review", None)
         if not callable(review):
             raise AIHold("Narrative is not fully supported or complete at the current confidence; "
                          "a stronger independent reviewer is not configured")
         trace = self._trace({"stage": "strong_review", "purpose": purpose,
-            "question": question, "fact_ids": [fact["id"] for fact in facts], "status": "REVIEWING"})
+            "question": question, "fact_ids": [fact["id"] for fact in facts], "status": "REVIEWING",
+            **(scope or {})})
         try:
             result = review(question=question, facts=facts,
                 job=({} if purpose == "evidence_consistency" else

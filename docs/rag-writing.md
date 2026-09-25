@@ -234,6 +234,30 @@ that the run does not produce again is removed through `LocalCandidateStore.remo
 before the new ones are merged, so a fact that was dated wrongly disappears. `--dry-run`
 links by name only and calls no provider; `--no-links` skips the Jev decision.
 
+A linked story's resume dates are authoritative downstream too: the story evidence
+handed to the writer carries a note ("The resume dates this role … ; these dates supersede
+any year the passage itself states"), the writer prompt dates the work by them, the
+transient stand-ins that grounding and the independent review see carry the same line,
+and the story consistency check tells Jev that a difference between the passage's year
+and the resume dates is not a contradiction. So a draft that uses the resume dates is not
+held by the chunk's own year.
+
+The script also reads `.md` and `.txt` stories (a heading line, "Stories NN - title" with
+or without Markdown marks, then paragraphs up to the next blank line; the words are not
+changed) and can hold several documents as separate sources (`--source-id … --keep-others`).
+Each story fact records its source (`story_source: <id>` in the evidence), and
+re-indexing one source replaces only that source's facts. The review file flags a figure
+the story states differently from the linked resume role's bullets (team sizes so far)
+without resolving it.
+
+**Bounded review evidence.** The independent evidence-consistency review no longer
+receives the whole fact store: it gets the selected facts plus the canonical facts that
+compete with the most of them, at most 24 (`REVIEW_EVIDENCE_LIMIT`; the `strong_review`
+trace records the selected ids, the competing total and the limit). With a hundred-fact
+profile the review's 128-record cap is never
+reached, so the cap cannot hold a field by itself; the writer still sees at most eight
+relevant facts and four story chunks.
+
 **Motivation questions.** A WRITER-routed text question whose wording asks about the
 applicant's interest, motivation or fit ("What interests you about Acme?", "Why do you
 want to work here?", "What draws you to this role?", "Why this company?"; see

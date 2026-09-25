@@ -46,10 +46,13 @@ from interviewmaxxing_generation.knowledge.stories import (
     build_story_index,
     facts_review,
     facts_review_markdown,
+    find_skills,
+    find_tools,
     match_role_by_name,
     read_stories,
     resume_roles,
     story_index_receipt,
+    story_source_of,
 )
 from interviewmaxxing_generation.knowledge.timeline import DERIVED_SOURCE, derive_experience_years
 from interviewmaxxing_selection.credentials import load_api_key
@@ -63,8 +66,19 @@ def _unchanged(existing: CandidateFact | None, fact: CandidateFact) -> bool:
             == (fact.key, fact.value, fact.source, list(fact.evidence)))
 
 
-def _replaced_provenance(fact: CandidateFact) -> bool:
-    return fact.source.startswith("story:") or fact.source == DERIVED_SOURCE
+def _merge(store: LocalCandidateStore, candidate: str, profile: CandidateProfile,
+           new_facts: list[CandidateFact], stale: list[str]) -> tuple[CandidateProfile, dict[str, int]]:
+    """Remove the stale facts, merge the changed new ones; unchanged facts keep their
+    verification time. Returns the profile and the counts."""
+    if stale:
+        profile = store.remove_facts(candidate, stale)
+    changed = [fact for fact in new_facts if not _unchanged(profile.find_fact(fact.id), fact)]
+    known = {fact.id for fact in profile.facts}
+    if changed:
+        profile = store.upsert_facts(candidate, changed)
+    return profile, {"removed": len(stale), "added": sum(1 for fact in changed if fact.id not in known),
+                     "updated": sum(1 for fact in changed if fact.id in known),
+                     "unchanged": len(new_facts) - len(changed)}
 
 
 def _write_private_text(path: Path, text: str) -> None:
@@ -77,7 +91,7 @@ def _write_private_text(path: Path, text: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--file", type=Path, required=True, help="the stories .docx")
+    parser.add_argument("--file", type=Path, required=True, help="the stories .docx, .md or .txt")
     parser.add_argument("--candidate", default=os.environ.get("IMX_CANDIDATE_ID", "default"))
     parser.add_argument("--home", type=Path)
     parser.add_argument("--env-file", type=Path, help="OpenRouter credential env file (embeddings, Jev)")
@@ -137,10 +151,15 @@ def main() -> int:
                                     "resume_role_id": link.resume_role_id})
             if link is not None:
                 links[analysis.story_id] = link
-        index = build_story_index(document, verified_at=now, links=links)
-        story_areas = {analysis.story_id: [*analysis.tools, *analysis.skills]
-                       for analysis in document.analyses}
-        derived = (derive_experience_years(profile, today=datetime.now(UTC).date(), verified_at=now,
+        index = build_story_index(document, verified_at=now, links=links, source_id=args.source_id)
+        # The preview of the derived years uses this document's facts (the areas their
+        # sentences name), exactly what the real run reads back from the profile.
+        story_areas: dict[str, list[str]] = {}
+        for fact in index.facts:
+            story_id = fact.id.split("_")[1]
+            story_areas.setdefault(story_id, []).extend([*find_tools(str(fact.value)), *find_skills(str(fact.value))])
+        today = datetime.now(UTC).date()
+        derived = (derive_experience_years(profile, today=today, verified_at=now,
                                            story_links=links, story_areas=story_areas)
                    if profile is not None else [])
         receipt: dict[str, Any] = {
@@ -164,23 +183,26 @@ def main() -> int:
                 source_id=args.source_id, replace_others=not args.keep_others)
             if not args.no_facts:
                 assert profile is not None
-                new_facts = [*index.facts, *derived]
-                new_ids = {fact.id for fact in new_facts}
-                stale = [fact.id for fact in profile.facts
-                         if _replaced_provenance(fact) and fact.id not in new_ids]
-                if stale:
-                    profile = store.remove_facts(args.candidate, stale)
-                changed = [fact for fact in new_facts
-                           if not _unchanged(profile.find_fact(fact.id), fact)]
-                known = {fact.id for fact in profile.facts}
-                if changed:
-                    profile = store.upsert_facts(args.candidate, changed)
+                # This source's story facts replace the earlier ones of the same source;
+                # other sources' story facts stay.
+                story_ids = {fact.id for fact in index.facts}
+                stale_story = [fact.id for fact in profile.facts
+                               if story_source_of(fact) == args.source_id and fact.id not in story_ids]
+                profile, story_counts = _merge(store, args.candidate, profile, list(index.facts), stale_story)
+                # Years of experience come from the whole profile (every stories source's
+                # linked facts), so they are derived after the story facts are merged.
+                derived = derive_experience_years(profile, today=today, verified_at=now)
+                derived_ids = {fact.id for fact in derived}
+                stale_derived = [fact.id for fact in profile.facts
+                                 if fact.source == DERIVED_SOURCE and fact.id not in derived_ids]
+                profile, derived_counts = _merge(store, args.candidate, profile, derived, stale_derived)
+                receipt["derived_years_facts"] = {
+                    "count": len(derived), "keys": [fact.key for fact in derived],
+                    "values": {fact.key: fact.value for fact in derived}}
                 receipt["profile"] = {
-                    "facts_removed": len(stale),
-                    "facts_added": sum(1 for fact in changed if fact.id not in known),
-                    "facts_updated": sum(1 for fact in changed if fact.id in known),
-                    "facts_unchanged": len(new_facts) - len(changed),
-                    "story_facts": len(index.facts), "derived_facts": len(derived),
+                    "story_facts": story_counts, "derived_facts": derived_counts,
+                    "story_facts_of_this_source": len(index.facts),
+                    "story_facts_all_sources": sum(1 for fact in profile.facts if story_source_of(fact)),
                     "verified_facts_total": len(profile.verified_facts()),
                     "facts_total": len(profile.facts),
                 }
@@ -190,7 +212,7 @@ def main() -> int:
             args.receipt.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             write_json_private(args.receipt, receipt)
         if args.facts_review is not None and review_markdown is not None:
-            review = facts_review(index, candidate_id=args.candidate)
+            review = facts_review(index, candidate_id=args.candidate, roles=roles)
             review["derived_years_facts"] = [fact.model_dump(mode="json") for fact in derived]
             args.facts_review.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             write_json_private(args.facts_review, review)
