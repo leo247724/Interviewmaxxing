@@ -584,10 +584,11 @@ FACT_REVIEW_QUESTION = (
     "Do these verified candidate facts contain any direct factual contradiction? "
     "Independent employment, education, project and skill claims may coexist; "
     "use their canonical group relations and retain explicit global counterclaims.")
-RUBRIC_PASSES = 1
+RUBRIC_PASSES = 2
 """Improvement drafts for the letter review's rubric findings on a grounded cover letter; an
-improvement that fails a check is dropped and the grounded letter stands (one pass keeps a
-letter near 15 calls and USD 0.60, the lead's target)."""
+improvement that fails a check is dropped and the grounded letter stands. The second pass runs
+only when the first one cut the open issues (a converging letter), so most letters stay near the
+lead's target of 15 calls and USD 0.60."""
 DROP_REJECTED_FEEDBACK = (
     "The independent review rejected the sentences named below: drop each rejected sentence "
     "instead of rephrasing it, keep the other sentences and their citations, and add nothing new.")
@@ -4358,7 +4359,10 @@ class DynamicPacketResolver:
             draft, scores = self._letter_rubric(draft, scores, trace=trace, improve=improve)
             trace["sentences"] = [sentence.model_dump(mode="json") for sentence in draft.sentences]
         humanized: list[dict[str, Any]] = []
-        if self.humanize and isinstance(self.writer, NarrativeWriter):
+        rubric_state = trace.get("rubric")
+        failing = (purpose == "cover_letter" and isinstance(rubric_state, dict)
+                   and rubric_state.get("status") != "PASSED")
+        if self.humanize and isinstance(self.writer, NarrativeWriter) and not failing:
             def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
                 # Cached; same evidence. The first check allowed the Opus evidence review, so
                 # this one must too: without it an uncertain Jev verdict that review already
@@ -4534,6 +4538,15 @@ class DynamicPacketResolver:
                               grounding={key: grounding.get(key) for key in ("status", "independent_review")})
             draft, scores = improved, improved_scores
             graded = grounding.get("rubric_review") or {"rubric": "PASS", "review_issues": []}
+            if (number + 1 < RUBRIC_PASSES and graded.get("rubric") != "PASS"
+                    and len(graded.get("review_issues") or []) >= len(issues)):
+                # Not converging: grade this draft and stop rather than spend another pass.
+                issues = list(graded.get("review_issues") or [])
+                passes.append({"rubric": graded.get("rubric"), "issue_count": len(issues), "review_issues": issues,
+                               "improvement": "STOPPED_NOT_CONVERGING"})
+                trace["rubric"].update(issue_count=len(issues), review_issues=issues,
+                                       owner_question=graded.get("owner_question") or "")
+                break
         trace["rubric"]["status"] = "RESIDUAL"
         return draft, scores
 

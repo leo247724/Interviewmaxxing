@@ -79,12 +79,12 @@ def job_from_listing(listing: JobListing) -> JobRecord:
 
 async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question: str,
                         purpose: Literal["answer", "cover_letter"], env_file: Path,
-                        connection_file: Path, max_usd: float = 3.0) -> dict[str, Any]:
+                        connection_file: Path, max_usd: float = 5.0) -> dict[str, Any]:
     """A synthetic, local question for drafting, never a browser-ready inspection. The fixed
     budget covers a cover letter's whole round-6 flow: its rubric review and corrective
     rewrites, the story passages' review and up to three reviewed no-slop rewrites (limits on
     reservations, which are upper bounds; the receipt records the actual cost)."""
-    budget = CallBudget(max_calls=64, max_usd=max_usd)
+    budget = CallBudget(max_calls=80, max_usd=max_usd)
     router, resolver = build_ai_runtime(env_file=env_file,
         writer_model="anthropic/claude-opus-5.5", budget=budget,
         rag_connection_file=connection_file)

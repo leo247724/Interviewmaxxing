@@ -1697,6 +1697,10 @@ class LetterWriter:
             grade = (self.rubric.pop(0) if len(self.rubric) > 1 else self.rubric[0]) if self.rubric else "PASS"
             if isinstance(grade, Exception):
                 raise grade
+            if isinstance(grade, tuple) and len(grade) == 2:  # ("FAIL", number of issues)
+                return SimpleNamespace(verdict="SUPPORTED", issues=[], reference_ids=[], rubric="FAIL",
+                                       rubric_issues=[f"Rubric line {n + 3}: an open issue." for n in range(grade[1])],
+                                       owner_question="")
             if isinstance(grade, tuple):  # a grounding verdict, its issues and references
                 verdict, issues, references = grade
                 return SimpleNamespace(verdict=verdict, issues=issues, reference_ids=references, rubric="PASS",
@@ -2260,3 +2264,29 @@ def test_a_letter_without_a_passing_grade_holds_and_asks_the_owner(candidate, mo
                                     Retriever(list(candidate.facts), job_evidence=[POSTING]), Writer(letter),
                                     Jev(semantic="COVER_LETTER"))
     assert held(packet, ctx) and "no rubric grade" in packet.missing_inputs[0].prompt
+
+
+
+def test_a_second_improvement_runs_only_while_the_letter_converges(candidate, mock_job):
+    letter = rubric_letter("fact.bakery", POSTING["id"])
+    retriever = lambda: Retriever(list(candidate.facts), job_evidence=[POSTING])  # noqa: E731
+    writer = LetterWriter([letter], rubric=[("FAIL", 2), ("FAIL", 1), "PASS"])
+    packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and len(writer.calls) == 3  # two improvements: 2 issues, then 1, then none
+    rubric = next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]
+    assert rubric["status"] == "PASSED" and [p.get("improvement") for p in rubric["passes"]] == [
+        "ACCEPTED", "ACCEPTED", None]
+
+
+def test_a_letter_that_will_hold_spends_nothing_on_the_no_slop_pass(candidate, mock_job):
+    letter = rubric_letter("fact.bakery", POSTING["id"])
+    sloppy = [dict(sentence) for sentence in letter]
+    sloppy[4] = {**sloppy[4], "text": SLOP_LETTER_EDIT}
+    failing = {**REVIEW_OK, "rubric": "FAIL", "rubric_issues": ["Line 4: name what the employer sells."],
+               "owner_question": ""}
+    transport = Transport(write=[ready(sloppy)], humanize=[ready(letter)], review=[failing])
+    packet, _, ctx = resolve(letter_context(candidate, mock_job), Retriever(list(candidate.facts), job_evidence=[POSTING]),
+                             real_writer(transport, budget=CallBudget(max_usd=4.0)), Jev(semantic="COVER_LETTER"),
+                             humanize=True)
+    assert held(packet, ctx) and "humanize" not in transport.roles
+    assert transport.roles == ["write", "review", "write", "review"]
