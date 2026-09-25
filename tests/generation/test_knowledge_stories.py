@@ -496,7 +496,8 @@ def test_plural_sentences_stay_story_evidence_and_never_become_facts(tmp_path: P
     assert any(v.startswith("I set up conversion tracking") for v in values)
     assert not any("ARR" in v or "biggest deal" in v or "together" in v for v in values)
     plural = [entry for entry in index.skipped if entry["reason"] == "plural_subject_only"]
-    assert plural and all(entry["key"] is None and "ARR" not in json.dumps(entry) for entry in plural)
+    assert len(plural) == 2  # the ARR result and the managed-and-reported sentence
+    assert all(entry["key"] is None and "ARR" not in json.dumps(entry) for entry in plural)
     assert any("We grew ARR 3x" in chunk.text for chunk in index.chunks)  # the chunks keep the team's work
     assert all(not fact.is_verified for fact in index.facts)
     receipt = st.story_index_receipt(index)

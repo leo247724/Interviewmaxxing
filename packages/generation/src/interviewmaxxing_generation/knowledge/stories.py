@@ -1105,8 +1105,11 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
         tools = find_tools(sentence)
         key = _fact_key(sentence, tools)
         if key is None:
-            if _PLURAL_PERSON.search(sentence) and _ACTION.search(sentence):
-                # "We grew ARR 3x": the team's work, story evidence in the chunks only.
+            if _PLURAL_PERSON.search(sentence) and (
+                    _ACTION.search(sentence) or tools
+                    or (re.search(r"\d", sentence) and _RESULT.search(sentence))):
+                # "We grew ARR 3x": the team's work, story evidence in the chunks only;
+                # counted so the receipt shows what the singular rule left out.
                 skipped.append({"story": analysis.number, "reason": "plural_subject_only",
                                 "chars": len(sentence), "key": None})
             continue
