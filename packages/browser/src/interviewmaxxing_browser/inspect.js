@@ -19,24 +19,43 @@
   const unique = (sel) => {
     try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; }
   };
+  // A menu button standing in for a hidden native select (menuProxy: BambooHR's Fabric
+  // select) is the control; its select only names it (label, name, required) and is
+  // never a control of its own.
+  const menuToggles = new Map();
+  for (const b of document.querySelectorAll("button[aria-haspopup]")) {
+    const proxy = menuProxy(b);
+    if (proxy) menuToggles.set(b, proxy);
+  }
   // Menus a combobox or picker owns (listbox, menu, dialog), as the outermost element of
   // each that does not contain its owner. Wherever a widget renders an open menu (a
   // body portal or inside the form), it belongs to that widget: it never adds text to
   // another control and never shifts another element's position in a selector.
   const popupRoots = new Set();
+  // The popups of menu toggles, whose own search box is part of the menu, not a field.
+  const togglePopups = new Set();
+  const addPopup = (owner, id) => {
+    const popup = document.getElementById(id);
+    if (!popup || popup.contains(owner)) return;
+    let root = popup;
+    while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(owner)) {
+      root = root.parentElement;
+    }
+    popupRoots.add(root);
+    if (menuToggles.has(owner)) togglePopups.add(root);
+  };
   for (const owner of document.querySelectorAll("[aria-controls], [aria-owns]")) {
     if (owner.getAttribute("role") !== "combobox" && !owner.hasAttribute("aria-haspopup")) continue;
     for (const attr of ["aria-controls", "aria-owns"]) {
-      for (const id of (owner.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) {
-        const popup = document.getElementById(id);
-        if (!popup || popup.contains(owner)) continue;
-        let root = popup;
-        while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(owner)) {
-          root = root.parentElement;
-        }
-        popupRoots.add(root);
-      }
+      for (const id of (owner.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) addPopup(owner, id);
     }
+  }
+  for (const toggle of menuToggles.keys()) for (const id of comboRefs(toggle)) addPopup(toggle, id);
+  // A date input's calendar (Ashby's react-datepicker popper, opened inside the input's
+  // own field box while it has focus) is a popup as well: it never adds text to the
+  // question and never shifts a selector.
+  for (const c of document.querySelectorAll('[class*="datepicker-popper"], [class*="calendar-popup"], .flatpickr-calendar')) {
+    if (!Array.from(popupRoots).some((p) => p.contains(c))) popupRoots.add(c);
   }
   const selectorFor = (el) => {
     if (el.id && unique("#" + CSS.escape(el.id))) return "#" + CSS.escape(el.id);
@@ -148,7 +167,7 @@
   // state or actions, not question wording, so they are left out of its label and
   // description; its fingerprint then stays the same after an upload.
   const FILE_NAMES = /[\w\-()[\]]+\.(?:pdf|docx?|txt|rtf|odt|pages|png|jpe?g|gif|heic|html?)\b/gi;
-  const UPLOAD_STATE = /^(?:uploading|uploaded|upload (?:complete|successful|failed)|analy[sz]ing|parsing|processing|scanning|success|done|failed|couldn'?t|could not|remove|replace|change|delete|retry)\b/i;
+  const UPLOAD_STATE = /^(?:uploading|uploaded|upload (?:complete|successful|failed)|analy[sz]ing|parsing|processing|scanning|success|done|failed|couldn'?t|could not|remove|replace|change|delete|retry|no files? (?:selected|chosen|attached|uploaded))\b/i;
   const FILE_SIZE = /^\(?\d+(?:[.,]\d+)?\s*(?:bytes?|[kmg]i?b)\)?$/i;
   const squashText = (t) => String(t || "").replace(/\s+/g, " ").trim();
   // A text node that is upload state: a status word, a file size, or a file chip (a
@@ -220,6 +239,59 @@
     }
     return "";
   };
+  // A file input kept outside every form in an upload popup (Jobvite appends one
+  // "Attachment Options" dialog per upload button to <body>) belongs to the one popup
+  // button inside a form that names the same document as the popup ("Add Resume*" and
+  // "Type or Paste Resume"; "Add Cover Letter"). That button stands in for the input: its
+  // name is the question, its form and requiredness are the input's. Nothing is clicked.
+  const DOC_KINDS = [["resume", /\b(?:r[eé]sum[eé]|cv)\b/i], ["cover letter", /\bcover\s+letter\b/i]];
+  const docKinds = (text) => DOC_KINDS.filter(([, rx]) => rx.test(text || "")).map(([kind]) => kind);
+  const triggerName = (b) => squashText(labelOf(b)[0] || textOf(b));
+  // All of a (hidden) popup's text, one text node apart from the next.
+  const popupText = (root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const parts = [];
+    while (walker.nextNode()) parts.push(walker.currentNode.nodeValue);
+    return parts.join(" ");
+  };
+  let popupUploads = null;
+  const popupTriggerOf = (el) => {
+    if (!popupUploads) {
+      popupUploads = new Map();
+      const inputs = new Map();
+      for (const input of document.querySelectorAll('input[type="file"]')) {
+        const popup = input.form || input.closest("form") ? null : input.closest('[role="dialog"]');
+        if (popup) inputs.set(popup, [...(inputs.get(popup) || []), input]);
+      }
+      const buttons = inputs.size ? Array.from(document.querySelectorAll(
+        'form [aria-haspopup]:not([aria-haspopup="false"]):not([aria-haspopup="listbox"])')) : [];
+      const claimed = new Map();
+      for (const [popup, found] of inputs) {
+        const kinds = docKinds(popupText(popup));
+        if (found.length !== 1 || kinds.length !== 1) continue;
+        const matches = buttons.filter((b) => !popup.contains(b) && docKinds(triggerName(b)).join() === kinds[0]);
+        if (matches.length !== 1) continue;
+        popupUploads.set(found[0], matches[0]);
+        claimed.set(matches[0], (claimed.get(matches[0]) || 0) + 1);
+      }
+      // One button, one popup: a button two popups name belongs to neither.
+      for (const [input, b] of [...popupUploads]) if (claimed.get(b) > 1) popupUploads.delete(input);
+    }
+    return popupUploads.get(el) || null;
+  };
+  // Where such an upload shows its file: the button's nearest ancestor with an id of its
+  // own that holds no visible question, else the widest such ancestor.
+  const triggerBoxOf = (b) => {
+    const fields = 'input:not([type=hidden]),select,textarea,[role=combobox],[role=textbox]';
+    let box = null;
+    for (let n = b.parentElement, d = 0; n && d < 8 && n !== document.body && n.tagName !== "FORM";
+      n = n.parentElement, d++) {
+      if (Array.from(n.querySelectorAll(fields)).some(visible)) break;
+      box = n;
+      if (n.id && unique("#" + CSS.escape(n.id))) return "#" + CSS.escape(n.id);
+    }
+    return box ? selectorFor(box) : "";
+  };
 
   // ---- forms and their controls --------------------------------------------------
   const forms = Array.from(document.forms);
@@ -229,8 +301,12 @@
   const comboProxy = (el) => el.tagName === "INPUT" && el.getAttribute("aria-hidden") === "true" &&
     el.tabIndex === -1 && !!el.parentElement &&
     Array.from(el.parentElement.querySelectorAll('[role="combobox"]')).some((c) => c !== el);
+  // So is a menu toggle's proxy select, and the search box in a toggle's menu.
+  const proxySelects = new Set(menuToggles.values());
+  const inTogglePopup = (el) => { for (const p of togglePopups) if (p.contains(el)) return true; return false; };
   const nativeControls = Array.from(document.querySelectorAll("input, select, textarea"))
-    .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el));
+    .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el) &&
+      !proxySelects.has(el) && !inTogglePopup(el));
 
   // A phone field's own country picker (an intl-tel-input flag, which may be a combobox
   // named "Country", or a dialog button before the number) belongs to that field: its
@@ -242,12 +318,21 @@
   }
   const inPhonePicker = (el) => { for (const p of phonePickerNodes) if (p === el || p.contains(el)) return true; return false; };
 
+  // A date input's calendar popup (Ashby's react-datepicker: a month listbox of day
+  // options and unnamed month buttons, shown only while the input has focus) belongs to
+  // that input: never a question, never a page button.
+  const CALENDAR = '[class*="datepicker__month"], [class*="datepicker-popper"], [class*="datepicker__header"], ' +
+    '[class*="calendar-popup"], [class*="DayPicker"], .flatpickr-calendar';
   const customWidgets = [];
   for (const el of document.querySelectorAll("[role], [contenteditable]")) {
     // A <button> with a widget role (e.g. role="combobox") is a custom control, not an action.
     if (NATIVE.has(el.tagName)) continue;
-    if (inPhonePicker(el)) continue;
+    if (inPhonePicker(el) || inTogglePopup(el)) continue;
+    if (el.closest(CALENDAR)) continue;
     const role = el.getAttribute("role");
+    // A list inside a popup a combobox owns is that combobox's, never a question of its
+    // own: Ashby's lookup names a wrapper around its suggestion listbox (a portal).
+    if (["listbox", "menu", "tree", "grid"].includes(role) && Array.from(popupRoots).some((p) => p.contains(el))) continue;
     const editable = el.hasAttribute("contenteditable") && el.isContentEditable;
     if (!(CUSTOM_ROLES.has(role) || editable)) continue;
     // A list that is not shown is a closed popup (some menus leave theirs in the
@@ -257,6 +342,10 @@
     if (customWidgets.some((w) => w.contains(el))) continue;
     customWidgets.push(el);
   }
+  for (const toggle of menuToggles.keys()) {
+    if (inPhonePicker(toggle) || toggle.closest(CALENDAR) || customWidgets.some((w) => w.contains(toggle))) continue;
+    customWidgets.push(toggle);
+  }
   // Popups (listbox, menu) owned by a combobox, or by a role-less input with a popup,
   // belong to it.
   const ownedIds = new Set();
@@ -265,16 +354,115 @@
     for (const attr of ["aria-controls", "aria-owns"]) {
       for (const id of (w.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) ownedIds.add(id);
     }
+    if (menuToggles.has(w)) for (const id of comboRefs(w)) ownedIds.add(id);
   }
   const ownedEls = new Set(Array.from(ownedIds).map((id) => document.getElementById(id)).filter(Boolean));
   const widgets = customWidgets.filter((w) => !(w.id && ownedIds.has(w.id)));
   const fieldEls = new Set([...nativeControls, ...widgets]);
 
+  // A yes/no question drawn as toggle buttons (Ashby: two buttons with aria-pressed and a
+  // display:none checkbox beside them that mirrors "yes"): the buttons are the question's
+  // options, operated by clicking and read back by aria-pressed; they are not page
+  // buttons. Only buttons that cannot submit a form by themselves (no form owner, or
+  // type="button").
+  const pressedOptionsOf = (el) => {
+    if (el.type !== "checkbox" || !el.parentElement) return [];
+    const buttons = Array.from(el.parentElement.children).filter((b) => b.tagName === "BUTTON" && b.hasAttribute("aria-pressed"));
+    if (buttons.length < 2 || buttons.some((b) => !squashText(textOf(b)) || (b.form && b.type !== "button"))) return [];
+    return buttons;
+  };
+  const pressedButtons = new Set();
+  for (const el of nativeControls) for (const b of pressedOptionsOf(el)) pressedButtons.add(b);
+
+  // Options of one question that do not share a name (Ashby: a checkbox or radio group
+  // fieldset whose options are named after their own text, name="Yes"/name="No", or not
+  // named at all): the question's box groups them. Only when every option of the box has
+  // a distinct name that is empty or its own label's text (radios: any distinct names),
+  // so separately named consents in one fieldset stay separate questions.
+  const choiceBoxCache = new Map();
+  const choiceBox = (el) => {
+    if (!(el.type === "radio" || el.type === "checkbox")) return null;
+    const box = el.closest('fieldset, [role="radiogroup"], [role="group"]');
+    if (!box) return null;
+    if (choiceBoxCache.has(box)) return choiceBoxCache.get(box);
+    const inside = nativeControls.filter((o) => box.contains(o));
+    const names = inside.map((o) => o.name || "");
+    const ownText = (o) => squashText(Array.from(o.labels || []).map((l) => textOf(l)).join(" ")).toLowerCase();
+    const grouped = inside.length > 1 && inside.every((o) => o.type === el.type)
+      && new Set(names.filter(Boolean)).size === names.filter(Boolean).length
+      && (el.type === "radio" || inside.every((o) => !o.name || squashText(o.name).toLowerCase() === ownText(o)));
+    choiceBoxCache.set(box, grouped ? box : null);
+    return grouped ? box : null;
+  };
   const groupMembers = (el) => {
+    const box = choiceBox(el);
+    if (box) return nativeControls.filter((o) => box.contains(o));
     if (!(el.type === "radio" || el.type === "checkbox") || !el.name) return [el];
     return nativeControls.filter((o) => o.type === el.type && o.name === el.name && o.form === el.form);
   };
   const containerCache = new Map();
+  // The question a control's own box states without labelling it (see questionOf).
+  const QUESTION_HEADING = 'h1,h2,h3,h4,h5,h6,[role="heading"]';
+  const ownLabel = (f) => !!(f.labels && f.labels.length) || f.hasAttribute("aria-labelledby") || f.hasAttribute("aria-label");
+  const labelsNothing = (l) => {
+    const target = l.getAttribute("for");
+    if (target) return !document.getElementById(target);
+    return !l.querySelector("input, select, textarea, [role]");
+  };
+  // A required marker drawn by CSS (Ashby: `._required_…::after { content: "*" }`) is part
+  // of the question as shown.
+  const drawn = (el, text) => {
+    const star = (pseudo) => /^["'][*✱∗]["']$/.test((getComputedStyle(el, pseudo).content || "").trim());
+    return (star("::before") ? "* " : "") + text + (star("::after") ? " *" : "");
+  };
+  const questionOf = (members, container) => {
+    // 1. A <label> in the control's own box that labels nothing: Ashby writes
+    //    <label for="<field path>"> while the input has no id at all.
+    if (container) {
+      const orphan = Array.from(container.querySelectorAll("label")).find((l) => visible(l) && labelsNothing(l)
+        && (l.compareDocumentPosition(members[0]) & Node.DOCUMENT_POSITION_FOLLOWING));
+      if (orphan && textOf(orphan)) return [drawn(orphan, textOf(orphan).slice(0, 500)), orphan.getAttribute("for") || ""];
+    }
+    // 2. The heading its block opens with (Breezy: <h3> just before the input, before a
+    //    group's options, or first in a block its controls share), when no other field in
+    //    that block has a label of its own (then the heading is a section's, not its own).
+    //    A checkbox that states its own text (Breezy's SMS consent after the phone input)
+    //    does not take a heading that opens another field first.
+    const statement = members.length === 1 && members[0].type === "checkbox" && !!container && !!squashText(textOf(container));
+    let passed = false;
+    let child = members[0];
+    if (members.length > 1) {
+      let c = members[0].parentElement;
+      while (c && !members.every((m) => c.contains(m))) c = c.parentElement;
+      if (!c) return ["", ""];
+      child = c;
+    }
+    for (let parent = child.parentElement, depth = 0; parent && depth < 4; child = parent, parent = parent.parentElement, depth++) {
+      if (parent === document.body || parent.tagName === "FORM" || parent.tagName === "FIELDSET") break;
+      if (Array.from(fieldEls).some((f) => parent.contains(f) && !members.includes(f) && ownLabel(f))) break;
+      for (let sib = child.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        if (!visible(sib)) continue;
+        const inner = sib.querySelectorAll(QUESTION_HEADING);
+        const holds = Array.from(fieldEls).some((f) => sib.contains(f));
+        const heading = sib.matches(QUESTION_HEADING) ? sib
+          : inner.length === 1 && !holds && squashText(textOf(sib)) === squashText(textOf(inner[0])) ? inner[0] : null;
+        if (heading) return passed && statement ? ["", ""] : [textOf(heading).slice(0, 500), ""];
+        if (holds && Array.from(fieldEls).some((f) => sib.contains(f) && ownLabel(f))) return ["", ""];
+        passed = passed || holds;
+      }
+    }
+    return ["", ""];
+  };
+  // The largest box around a control that holds no other field: an unlabelled option's
+  // own text (Breezy: <li><input type=checkbox><span>Implants</span></li>).
+  const ownBox = (el) => {
+    let box = null;
+    for (let p = el.parentElement; p && p !== document.body && p.tagName !== "FORM"; p = p.parentElement) {
+      if (Array.from(fieldEls).some((f) => f !== el && p.contains(f))) break;
+      box = p;
+    }
+    return box;
+  };
   const containerFor = (members, stopAt) => {
     const key = members[0];
     if (containerCache.has(key)) return containerCache.get(key);
@@ -368,26 +556,40 @@
   // exclusive box (or its group's container). Stops at another field's block; skips
   // headings (section context) and live regions. A question shown before an unlabeled control.
   const precedingTextOf = (members, container) => {
-    let start = container;
-    if (!start) {
-      start = members[0];
-      while (start.parentElement && start.parentElement !== document.body && start.parentElement.tagName !== "FORM") {
-        const parent = start.parentElement;
-        let exclusive = true;
-        for (const f of fieldEls) if (f !== members[0] && parent.contains(f)) { exclusive = false; break; }
-        if (!exclusive) break;
-        start = parent;
+    // A box that opens its parent takes the text before the parent (Lever: <div>Pronouns</div>
+    // <div class="application-field"><ul>…the options…</ul>…</div>).
+    const opens = (n) => { for (let s = n.previousElementSibling; s; s = s.previousElementSibling) if (visible(s)) return false; return true; };
+    const before = (start) => {
+      for (let depth = 0; depth < 3 && opens(start) && start.parentElement && start.parentElement !== document.body
+           && start.parentElement.tagName !== "FORM"; depth++) {
+        start = start.parentElement;
       }
+      for (let sib = start.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        if (popupRoots.has(sib) || !visible(sib)) continue;
+        if (sib.matches('script,style,template,button,label,legend,h1,h2,h3,h4,h5,h6,[role="heading"],[role="alert"],[role="status"],[aria-live]')) continue;
+        for (const f of fieldEls) if (sib.contains(f)) return "";
+        if (sib.querySelector("button, a[href]")) continue;
+        const t = textOf(sib, popupRoots);
+        if (t) return t.slice(0, 500);
+      }
+      return "";
+    };
+    if (container) return before(container);
+    let start = members[0];
+    while (start.parentElement && start.parentElement !== document.body && start.parentElement.tagName !== "FORM") {
+      const parent = start.parentElement;
+      let exclusive = true;
+      for (const f of fieldEls) if (f !== members[0] && parent.contains(f)) { exclusive = false; break; }
+      if (!exclusive) break;
+      start = parent;
     }
-    for (let sib = start.previousElementSibling; sib; sib = sib.previousElementSibling) {
-      if (popupRoots.has(sib) || !visible(sib)) continue;
-      if (sib.matches('script,style,template,button,label,legend,h1,h2,h3,h4,h5,h6,[role="heading"],[role="alert"],[role="status"],[aria-live]')) continue;
-      for (const f of fieldEls) if (sib.contains(f)) return "";
-      if (sib.querySelector("button, a[href]")) continue;
-      const t = textOf(sib, popupRoots);
-      if (t) return t.slice(0, 500);
-    }
-    return "";
+    const own = before(start);
+    if (own || members.length === 1) return own;
+    // A group whose options share their box with another field (Lever's pronouns and their
+    // "Custom" input): the text before the options' common box.
+    let common = members[0].parentElement;
+    while (common && !members.every((m) => common.contains(m))) common = common.parentElement;
+    return common && common !== document.body && common.tagName !== "FORM" ? before(common) : "";
   };
 
   // A menu control's shown value or placeholder (a React select's "Select..." or "+1")
@@ -406,6 +608,12 @@
     const exclude = new Set([...ownedEls, ...popupRoots]);
     for (const m of members) for (const l of m.labels || []) exclude.add(l);
     for (const m of members) for (const d of byIds(m.getAttribute("aria-describedby"))) exclude.add(d);
+    const pressed = pressedOptionsOf(el);
+    for (const b of pressed) exclude.add(b);  // its options, not text around it
+    // A group's unlabelled options state their text in their own boxes: option text, not
+    // text around the group.
+    const unlabelled = members.length > 1 ? members.filter((m) => !(m.labels && m.labels.length)) : [];
+    for (const m of unlabelled) { const b = ownBox(m); if (b) exclude.add(b); }
     const fs = el.closest("fieldset");
     if (fs) for (const d of byIds(fs.getAttribute("aria-describedby"))) exclude.add(d);
     const combo = comboLike(el);
@@ -420,8 +628,12 @@
       const g = el.closest('[role="group"]');
       if (g) for (const n of byIds(g.getAttribute("aria-labelledby"))) exclude.add(n);
     }
-    const [adjacent, adjacentErrors] = adjacentText(container, exclude, upload);
-    const [label, labelSource] = upload ? fileLabelOf(el) : labelOf(el);
+    // An upload popup's input takes its question and form from its button (popupTriggerOf);
+    // the popup's own text (its menu of sources) is not about the question.
+    const trigger = upload ? popupTriggerOf(el) : null;
+    const [adjacent, adjacentErrors] = trigger ? [[], []] : adjacentText(container, exclude, upload);
+    const [label, labelSource] = trigger ? [triggerName(trigger), "trigger"]
+      : upload ? fileLabelOf(el) : labelOf(el);
     const [legend, legendSelector, legendDescribed] = legendOf(el);
     const [groupLabel, groupDescribed] = groupLabelOf(el);
     const errTarget = byIds(el.getAttribute("aria-errormessage"))[0];
@@ -443,13 +655,17 @@
       legend_described: legendDescribed,
       group_label: groupLabel,
       group_described: groupDescribed,
-      section_context: sectionContextOf(el),
-      preceding: precedingTextOf(members, container),
+      section_context: sectionContextOf(trigger || el),
+      preceding: trigger ? "" : precedingTextOf(members, container),
+      ...(([q, qFor]) => ({question: q, question_for: qFor}))(trigger ? ["", ""] : questionOf(members, container)),
       adjacent,
       adjacent_errors: adjacentErrors,
+      option_text: unlabelled.includes(el) && !label ? (() => { const b = ownBox(el); return b ? textOf(b).slice(0, 300) : ""; })() : "",
+      choice_group: (() => { const b = choiceBox(el); return b ? selectorFor(b) : ""; })(),
+      pressed_options: pressed.map((b) => ({ label: squashText(textOf(b)), selector: selectorFor(b), pressed: b.getAttribute("aria-pressed") === "true" })),
       label_selector: el.labels && el.labels.length ? selectorFor(el.labels[0]) : null,
       required: el.required || el.getAttribute("aria-required") === "true" ||
-        !!(el.closest('[aria-required="true"]')),
+        !!(el.closest('[aria-required="true"]')) || (!!trigger && trigger.getAttribute("aria-required") === "true"),
       disabled: el.disabled || el.getAttribute("aria-disabled") === "true",
       visible: visible(el),
       label_visible: labelVisible(el),
@@ -472,21 +688,27 @@
         : [],
       invalid: el.getAttribute("aria-invalid") === "true",
       image_alts: imgAlts(fs || container),
-      form_index: formIndex(el),
+      form_index: trigger ? forms.indexOf(trigger.form || trigger.closest("form")) : formIndex(el),
       has_value: false,
       aria: ariaObserve(el) || comboFacts(el),
       phone_picker: !picker ? "" : picker.kind === "combobox" ? "combobox:" + (picker.node.id || "") : picker.kind,
-      upload_trigger: upload ? uploadTriggerOf(el, container) : "",
+      upload_trigger: !upload ? "" : trigger ? (textOf(trigger) || triggerName(trigger)).slice(0, 120)
+        : uploadTriggerOf(el, container),
+      upload_anchor: trigger ? triggerBoxOf(trigger) : "",
     };
   };
 
   const describeCustom = (el) => {
+    // A menu toggle is named (label, name) and made required by its proxy select.
+    const proxy = menuToggles.get(el) || null;
     const container = containerFor([el], el.closest("form"));
     const exclude = new Set([...byIds(el.getAttribute("aria-labelledby")), ...byIds(el.getAttribute("aria-describedby")),
       ...popupRoots]);
     for (const id of ownedIds) { const o = document.getElementById(id); if (o) exclude.add(o); }
+    if (proxy) for (const n of [...(proxy.labels || []), ...byIds(proxy.getAttribute("aria-describedby"))]) exclude.add(n);
     const [adjacent, adjacentErrors] = adjacentText(container, exclude);
-    const [label, labelSource] = labelOf(el);
+    const proxyLabel = proxy ? labelOf(proxy) : ["", "none"];
+    const [label, labelSource] = proxyLabel[0] ? proxyLabel : labelOf(el);
     const [legend, legendSelector, legendDescribed] = legendOf(el);
     const owned = [el, ...byIds(el.getAttribute("aria-controls")), ...byIds(el.getAttribute("aria-owns"))];
     const selectedOption = owned.some((n) => n.querySelector('[aria-selected="true"]'));
@@ -497,15 +719,15 @@
     return {
       kind: "custom",
       tag: el.tagName.toLowerCase(),
-      type: el.getAttribute("role") || "contenteditable",
-      name: hiddenInput ? hiddenInput.getAttribute("name") || "" : "",
+      type: el.getAttribute("role") || (proxy ? "combobox" : "contenteditable"),
+      name: proxy ? proxy.getAttribute("name") || "" : hiddenInput ? hiddenInput.getAttribute("name") || "" : "",
       id: el.id || "",
       selector: selectorFor(el),
       role: el.getAttribute("role") || "",
       autocomplete_list: false,
       label,
       label_source: labelSource,
-      described: described(el),
+      described: proxy ? [...described(el), ...described(proxy)] : described(el),
       error_message: "",
       legend,
       legend_selector: legendSelector,
@@ -514,10 +736,12 @@
       group_described: [],
       section_context: sectionContextOf(el),
       preceding: precedingTextOf([el], container),
+      ...(([q, qFor]) => ({question: q, question_for: qFor}))(questionOf([el], container)),
       adjacent,
       adjacent_errors: adjacentErrors,
       label_selector: null,
-      required: el.getAttribute("aria-required") === "true",
+      required: el.getAttribute("aria-required") === "true" ||
+        !!(proxy && (proxy.required || proxy.getAttribute("aria-required") === "true")),
       disabled: el.getAttribute("aria-disabled") === "true",
       visible: visible(el),
       label_visible: false,
@@ -531,7 +755,7 @@
       max_length: null,
       multiple: false,
       options: [],
-      invalid: el.getAttribute("aria-invalid") === "true",
+      invalid: el.getAttribute("aria-invalid") === "true" || !!(proxy && proxy.getAttribute("aria-invalid") === "true"),
       image_alts: [],
       form_index: form ? forms.indexOf(form) : -1,
       has_value: hasValue,
@@ -566,8 +790,8 @@
   };
   const buttons = [];
   for (const el of document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
-    if (!visible(el) || inPopup(el) || comboButton(el)) continue;
-    if (CUSTOM_ROLES.has(el.getAttribute("role") || "")) continue; // a widget, reported as a control
+    if (!visible(el) || inPopup(el) || comboButton(el) || el.closest(CALENDAR) || pressedButtons.has(el)) continue;
+    if (CUSTOM_ROLES.has(el.getAttribute("role") || "") || menuToggles.has(el)) continue; // a widget, reported as a control
     // A picker trigger (a phone widget's "Change country" button) opens a dialog or
     // list; it is part of a control, never a step action, and its label is state.
     if (el.tagName === "BUTTON" && (el.getAttribute("type") || "submit").toLowerCase() === "button" &&

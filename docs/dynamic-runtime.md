@@ -102,8 +102,10 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   Escape, one toggle click on a click-opened control, then a press outside every control
   (pointer and mouse press events on the page body, never a click on anything; Rippling's
   popovers close only that way). The step that closed a document's previous menu goes
-  first. A menu the probe cannot observe or close stays `UNSUPPORTED`, even while it
-  shows its list; probing stops for that document. A complete static option set becomes a canonical `SELECT` (values and
+  first. Inside a dialog (a wizard step) the control's own toggle goes first and nothing
+  is pressed outside, since Escape or an outside press may close the dialog. A menu the
+  probe cannot observe or close stays `UNSUPPORTED`, even while it shows its list;
+  probing stops for that document. A complete static option set becomes a canonical `SELECT` (values and
   labels exactly like a native select); an input whose menu offers nothing until
   something is typed becomes a `TYPEAHEAD`; multi-select menus and anything ambiguous,
   virtualized past 5 scrolls or over 500 options stay `UNSUPPORTED` for the user.
@@ -123,11 +125,19 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   position in a selector, and its buttons, links, headings and live regions are not the
   page's. react-select's hidden required proxy input (`aria-hidden`, `tabindex=-1`,
   rendered only while a required select is empty) is part of its select, not a
-  question.
+  question. A list inside such a popup is part of it too, even when `aria-controls`
+  names a wrapper around it (Ashby's location lookup mounts its suggestions in a portal
+  of its own). While a widget is being operated (between typing into a lookup and
+  choosing its suggestion, or opening a menu and choosing), a difference confined to
+  the popup the widget owns at that moment is not a page change. That covers what its
+  `aria-controls`/`aria-owns` names, up to that popup's own container, and the element
+  paths the mounted popup shifts in later questions. The rest of the guard is unchanged.
 - **Selecting.** A probed menu is opened the recorded way, its listbox re-resolved after
   opening, and the one matching option (freshly derived from the owned listbox) clicked.
-  Only when an input menu of more than 20 options does not render that option is it
-  filtered by typing. The label is tried first, then its name without a trailing code or
+  A menu that already shows exactly the chosen option (pre-filled, like BambooHR's
+  "United States") is verified by its display and not operated. Only when an input
+  menu of more than 20 options does not render that option is it filtered by typing;
+  typed text is cleared again if nothing matches. The label is tried first, then its name without a trailing code or
   parenthetical ("United States" of "United States +1": Greenhouse filters on the
   country's name), then its first word. A menu still open after the choice is closed the
   way the probe closed it. Readback:
@@ -138,13 +148,29 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   `aria-activedescendant`, or exactly one option whose class names the selection
   (react-select's `select__option--is-selected`). A confirmed choice keeps naming the
   "+1" display in that document. A display that names no option at all is re-resolved
-  the same way; the reopened menu's own selection decides. A display naming another
-  option, or nothing, is `VERIFICATION_MISMATCH`.
+  the same way; the reopened menu's own selection decides, but only when the display is
+  consistent with the chosen label (its letters and digits, in order, within the
+  label's: "+ 1" or "United States" for "United States +1") and, where the menu exposes
+  both, `aria-selected` and `aria-activedescendant` name the same option. APG and
+  Downshift menus mark the option they highlight on opening (the first) as selected, so a
+  click that did not take behind a placeholder ("Country *") is never confirmed. A
+  display naming another option, or nothing, is `VERIFICATION_MISMATCH`.
+- **Menu buttons over a hidden select (BambooHR).** A role-less
+  `button[aria-haspopup][data-menu-id]` beside an `aria-hidden`, `tabindex=-1` select
+  that holds only the current value is one field. Its label, name and required flag come
+  from the select and its `<label for>`, and it is operated through the button. The
+  select, the button and its "Clear Selection" are never reported separately or as page
+  actions. The button is probed like other menus. Its menu is the element whose id is the
+  button's `data-menu-id`, a `role=menu` whose menu items are the options, and a menu
+  not rendered yet is no menu. The menu's search box and the hidden portal it leaves
+  behind are part of the widget. A display inside an element whose class names a
+  placeholder, or "Select" framed by dashes ("–Select–"), is a placeholder.
 - **Lookups.** A `TYPEAHEAD` answer is typed (about 30 ms per character). Suggestions are
   read from the owned listbox once stable for 400 ms. The wait is at most 6 s, or 3 s
   while nothing appears: Rippling loads its place search on the first query. A shown
   list counts even when the input never exposes `aria-expanded`, as Rippling's location
-  input doesn't. Suggestions are matched with
+  input doesn't. A link beside the suggestions (a "powered by …" attribution) does not
+  make the list unusable. Suggestions are matched with
   US state abbreviations and United States synonyms spelled out: the typed place must
   equal a whole comma segment ("Austin" never matches "Austintown") and every other typed
   word must begin a word of the suggestion. A suggestion typed verbatim always wins.
@@ -170,7 +196,29 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   and no progress bar. The file question then keeps its approved wording while the
   uploader shows that file, and the file is not attached again on a second fill.
   A hidden file input labelled with its button's verb ("Attach") takes its question from
-  its uploader group ("Resume/CV").
+  its uploader group ("Resume/CV"). One named only by a developer's token (BambooHR's
+  `aria-label="file-input"`) takes the short question its uploader box states ("Resume
+  *", "Cover Letter"); "No file selected" is state, not question text. A file input
+  outside every form in an upload popup (`[role=dialog]`; Jobvite's "Attachment Options"
+  appended to `<body>`) belongs to the one popup button in a form that names the same
+  document (résumé or cover letter). It takes that button's name ("Add Resume"), form
+  and requiredness, and the button's box is the uploader's container; the input is
+  attached directly and nothing in the popup is clicked.
+
+  The file is verified against the element it was set on. When the page removed that
+  element, or the selector now names several elements or one that is not a file input
+  (Teamtailor's Dropzone hands the id to a fresh input and to a hidden URL field in its
+  preview), the uploader container recorded before attaching is read instead. While the
+  uploader shows the upload in progress ("Uploading…", a progress bar) the readback
+  waits, up to 15 s. An uploaded question that stays bound to a fresh input keeps its
+  approved binding while the uploader shows the file, and hidden inputs inside our own
+  uploader's container are not page changes (visible new controls still are). An attach
+  accepted on the uploader's display alone, because the page kept no readable copy of the
+  bytes, says so in its detail ("the attached bytes were not verified"). An uploader
+  that shortens the name ("resume_av…quill.pdf") or shows a count ("1 file selected")
+  still counts as showing the file, so a second fill never uploads again. Teamtailor and
+  Workable upload the file to their storage the moment it is attached, even in a
+  preparation-only run.
 - **Passing states and own changes.** Before every write the page must still show the
   approved questions, bindings and actions. A difference is waited out for up to 1 s,
   because Greenhouse disables its "Autofill my application" button while it handles a
@@ -191,7 +239,58 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   be as approved, and the approved observation then moves to the page as it now is.
 - **Closed postings.** "Job not found", "The job you requested was not found", "posting
   not found", "job does not exist" and "no longer open" (Greenhouse's redirect for a
-  closed job) classify `JOB_CLOSED`, as "no longer available" already did.
+  closed job) classify `JOB_CLOSED`, as "no longer available" already did. Without an
+  HTTP 404/410 the wording must persist: the page settles and is read again for 2 s,
+  and a later reading that is no longer closed wins. An SPA may render "Job not found"
+  before its data arrives.
+- **Consent pages (Jobvite).** A data-processing consent page in front of the form
+  (Jobvite's "Data Consent": such a heading, one or two choice questions, no way to
+  apply) is `SIGN_IN_REQUIRED` with a message to accept the consent in the browser. The
+  runtime never chooses a policy or clicks "I Accept"; choosing Jobvite's default policy
+  already posts the consent. The runner asks, `wait_for_user` returns once the form
+  shows, and the item reads "Accept the data-processing consent". A form reached after
+  the person acted, with no job identity of its own, takes the identity of the posting
+  `open()` loaded when it is on the same origin at the posting's path or one segment
+  below it, as `open()` does after following an apply link.
+- **Uploads and annotation.** A file question kept after its uploader replaced the input
+  is restored before the form is annotated, so the provider annotates, and later
+  resolves reuse, exactly the form the runtime returns.
+- **Waiting for the user** never opens a menu, including the final read after the wait.
+- **Questions, not placeholders or ids.** A field's label is the question the page shows:
+  its label, legend or accessible name. Without one, the question its own box states
+  comes next: a `<label>` that labels nothing (Ashby's title `for` a field path no element
+  has, as on its date picker; a required "*" its CSS draws with `::after` counts as
+  shown), or the heading its block opens with (Breezy's `<h3>`
+  before the input, the options or a salary block's currency, amount and period), unless
+  another field of that block has its own label. A checkbox stating its own text (Breezy's
+  SMS consent after the phone input) keeps it over a heading that opens another field.
+  After that comes the text before the control, climbing out of boxes that open their
+  parent (Lever's "Pronouns" before its options), for machine-named controls only. A
+  placeholder that only says what to do ("Type here...", "Pick date...", "Type your
+  response") is never a label; it stays the placeholder. Neither is an identifier
+  (`section_…_question_3`, `field-12`, `startDate`), an accessible name that is a
+  developer's token ("file-input"), or an option's text: a group whose only name is an
+  option ("White (not Hispanic or Latino)", "Yes") takes the question shown for it, else
+  a readable name, else none. An unlabelled option (Breezy's `<li><input
+  type=checkbox><span>Google Ads</span>`) is named by its own text.
+- **Options without a shared name.** Radios or checkboxes of one fieldset (or
+  `role=radiogroup`/`group`) whose names are all different are one question when each
+  name is empty or the option's own text (Ashby's `name="Yes"`/`name="No"` checkboxes:
+  Compyl's sponsorship question was two fields labelled "Yes" and "No"); radios need
+  only different names. The field id is the question's field path. Separately named
+  checkboxes of one fieldset ("terms_consent", "privacy_consent") stay separate
+  questions.
+- **Yes/no toggle buttons.** A question drawn as buttons with `aria-pressed` over a
+  checkbox that only mirrors "yes" (Ashby's yes/no, the checkbox `display:none`) is a
+  `RADIO` whose options are the buttons, clicked (unless already pressed) and read back
+  by `aria-pressed`. The buttons are not page buttons. Only buttons that cannot submit a
+  form by themselves count (no form owner, or `type=button`): Ashby's are
+  `type=submit` outside any `<form>`. Before this, such a required question was not in
+  the model at all.
+- **Calendar popups.** A date input's calendar (react-datepicker's popper, opened inside
+  the input's own field box while it has focus) is a popup: its month list, day options,
+  month buttons and text never become questions, question text, page buttons or selector
+  positions, so an open calendar changes nothing the fill guard compares.
 - **User agent.** Headless Playwright sessions present the browser's own user agent with
   a Linux desktop platform segment (`(X11; Linux x86_64)`; product and version tokens
   unchanged): react-select leaves out `aria-selected` and `aria-activedescendant` when
@@ -204,7 +303,10 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
 
 Mock scenarios `react-select`, `div-combobox`, `typeahead`, `phone-widget` and
 `multiselect-react` (`tests/browser/MOCK_ATS.md`) reproduce these widgets; the tests are
-`tests/browser/test_custom_widgets*.py`.
+`tests/browser/test_custom_widgets*.py`. Round 7 added `/forms/breezy-like`,
+`/forms/ashby-like` (placeholders, orphan titles, a date picker, name-per-option groups,
+yes/no buttons, a lookup whose suggestions mount a portal), `bamboohr-like`,
+`teamtailor-like`, `jobvite-like`, `flash-closed` and `react-controlled-narrative`.
 
 ## Uploads, autofill overlays and readback
 
@@ -261,8 +363,12 @@ without site adapters:
   insertText), never by assigning the value, so React-controlled inputs update their
   state. A mismatching readback is read once more after a settle, with the control
   re-resolved by its field id (same question fingerprint); if the re-rendered control lost
-  the value it is typed once more key by key (text over 200 characters as one input event)
-  and read back; only then is it `VERIFICATION_MISMATCH`. Before each write, after the
+  the value it is typed once more key by key and read back; only then is it
+  `VERIFICATION_MISMATCH`. A textarea, text containing a line break or tab, and text over
+  200 characters are written again as one input event instead (typing a newline would
+  press Enter; the contract allows `\n`, `\r` and `\t` in a textarea). A Playwright
+  error counts as a lost page only by its own message, not by its call log, which always
+  mentions waiting for navigations. Before each write, after the
   1 s passing-state settle above, a transient re-render (the form's controls briefly
   missing, a busy marker) is waited out (at most 3 s more) instead of aborting; a
   re-render that regenerated only selectors re-reads the form and the field is operated

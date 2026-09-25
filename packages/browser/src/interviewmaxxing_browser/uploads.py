@@ -26,8 +26,15 @@ UPLOAD_STATE = r"""({selector, names, anchor}) => {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
-  let el = null;
-  try { el = document.querySelector(selector); } catch (e) { el = null; }
+  let found = [];
+  try { found = Array.from(document.querySelectorAll(selector)); } catch (e) { found = []; }
+  let anchored = null;
+  if (anchor) { try { const a = document.querySelectorAll(anchor); if (a.length === 1) anchored = a[0]; } catch (e) { anchored = null; } }
+  // When the selector now names another kind of element or several, the input the file
+  // was set on is gone (an uploader handed its id on to a fresh input and to a hidden
+  // field of its preview): its container recorded before attaching is read instead.
+  const replaced = found.length > 1 || (found.length === 1 && found[0].type !== 'file');
+  const el = replaced && anchored ? null : (found[0] || null);
   const wanted = names.map((n) => squash(n).toLowerCase()).filter(Boolean);
   const mentions = (t) => { const s = squash(t).toLowerCase(); return wanted.some((n) => s.includes(n)); };
   const files = el && el.files ? Array.from(el.files).map((f) => ({name: f.name, size: f.size})) : [];
@@ -43,9 +50,7 @@ UPLOAD_STATE = r"""({selector, names, anchor}) => {
   }
   // Without the input (an uploader replaced it with the file's name), its container as
   // recorded before attaching, when that still names exactly one element.
-  let anchored = null;
-  if (!el && anchor) { try { const found = document.querySelectorAll(anchor); if (found.length === 1) anchored = found[0]; } catch (e) { anchored = null; } }
-  const box = scope || anchored || (el && el.form) || document.body;
+  const box = scope || (el ? null : anchored) || (el && el.form) || document.body;
   const chip = mentions(box.innerText);
   let notice = null;
   const DONE = /\b(?:uploaded|attached|upload(?:ed)? (?:complete|successful)|success(?:ful(?:ly)?)?)\b/i;

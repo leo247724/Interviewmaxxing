@@ -105,6 +105,17 @@ PENDING = _rx(r"still processing|being processed|cannot confirm|can't confirm|pe
 ERROR_HEADING = _rx(
     r"something went wrong|error|not found|unavailable|try again later|bad gateway|timed? ?out"
 )
+DATA_CONSENT_GATE = _rx(
+    r"^\s*(?:data(?: privacy| protection| processing)? consent|"
+    r"(?:candidate|applicant) (?:data|privacy) consent|"
+    r"consent to (?:the )?(?:processing|use|collection) of (?:your )?(?:personal )?(?:data|information))\s*$"
+)
+"""The heading of a data-processing consent page in front of an application (Jobvite's
+"Data Consent"): the person chooses a policy (a location of residence and language) and
+accepts it before the site shows the form."""
+CONSENT_GATE_ACTION = "accept its data-processing consent"
+"""Wording in the message of a consent gate's inspection (``SIGN_IN_REQUIRED``), by which
+``user_action_needs`` names the user's action."""
 CAPTCHA_TEXT = _rx(
     r"captcha|verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|not a robot|"
     r"characters (?:shown|in the image)|security check|checking your browser"

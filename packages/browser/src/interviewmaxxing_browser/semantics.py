@@ -85,8 +85,15 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
 _CONSENT = _rx(
     r"consent|privacy|data (?:processing|protection)|processing of (?:my|your) (?:personal )?data|"
     r"terms (?:of|and)|terms & conditions|gdpr|marketing|newsletter|subscribe|contact me|"
+    r"text messages?|\bsms\b|"
     r"keep my application|"
     r"retain my|store my"
+)
+# A choice question (a Yes/No select or radio) is consent only when it asks for it: a
+# consent act, not merely a consent topic ("Have you worked in performance marketing?").
+_CONSENT_ACT = _rx(
+    r"\bconsent|\bagree|acknowledg|authori[sz]|permission|\bopt(?:[- ]?in)\b|\bi accept\b|"
+    r"\baccept (?:the|our|these)\b|\bwould you like to receive\b|\bsign me up\b"
 )
 _ATTESTATION = _rx(
     r"\bcertif(?:y|ies|ied)\b|attest|affirm|declar|true and (?:complete|correct|accurate)|"
@@ -169,7 +176,7 @@ def classify(
         for pattern, semantic in _RULES[:8]:  # protected, sponsorship, authorization, salary
             if pattern.search(label):
                 return semantic
-        if _CONSENT.search(statement):
+        if _CONSENT.search(statement) and _CONSENT_ACT.search(statement):
             return SemanticType.CONSENT
         if _ATTESTATION.search(statement):
             return SemanticType.ATTESTATION

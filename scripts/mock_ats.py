@@ -99,7 +99,9 @@ class Field:
     # backed by a hidden input, deliberately not a native control). Script-driven
     # widgets whose value lives only in page state (see WIDGETS_JS): react_select,
     # react_multi, react_async (lookup), div_combobox, search_combobox,
-    # remote_lookup (role-less lookup input), rippling_phone and intl_tel.
+    # remote_lookup (role-less lookup input), rippling_phone and intl_tel; fab_select
+    # (BambooHR: a menu button over a hidden proxy <select> that holds only the chosen
+    # option's id, which the form posts).
     # Custom uploaders mounted by page script (see SCENARIO_JS) and validated like
     # file: custom_file (a styled button and drop zone over a hidden, unlabeled
     # input) and label_file (a visually hidden input wrapped in its label).
@@ -120,13 +122,16 @@ class Field:
     display: str | None = None
     """``dial``: a react_select shows only the dial code of the chosen label; ``dial-name``
     also shows a flag in each option and filters on the country's name only (Greenhouse).
-    ``separate``: an intl_tel shows its dial code apart from the number (Workable)."""
+    ``separate``: an intl_tel shows its dial code apart from the number (Workable).
+    ``ids``: a fab_select's menu items take their option's id as element id (BambooHR's
+    State menu); otherwise they are numbered ``menu-item-<n>``."""
     open_on: str | None = None
     """``click`` (default), ``keyboard`` (focus + ArrowDown only) or ``focus``."""
     remote: str | None = None
     """Suggestion URL prefix of a lookup (the query is appended)."""
     prefill: str | None = None
-    """Initial value of a search combobox (a chosen value, like "+1 US")."""
+    """Initial value of a search combobox (a chosen value, like "+1 US"), or the option id a
+    fab_select shows already (BambooHR's Country)."""
     idle: str | None = None
     """Notice a search combobox shows when opened before anything is typed."""
     show_all: bool = False
@@ -143,7 +148,7 @@ class Field:
     """A popover div_combobox named by aria-labelledby (else only by the paragraph before it)."""
     clearable: bool = False
     """An inline react_select that shows a "Clear selection" button while it holds a value
-    (Greenhouse's ClearIndicator)."""
+    (Greenhouse's ClearIndicator); a fab_select's "Clear Selection" button likewise."""
     links_phone: bool = False
     """A dial-code react_select that sets the phone widget's country when chosen and then
     focuses the phone number (Greenhouse's phone fieldset)."""
@@ -152,8 +157,11 @@ class Field:
     uploader: str | None = None
     """A file field behind a script uploader whose file lives in page state: ``greenhouse``
     (a hidden input behind "Attach", replaced by the file's name once it takes a file),
-    ``greenhouse-async`` (the same, re-rendered seconds after the attach) or ``dropzone``
-    (Workable: the input is emptied and the file's name shown)."""
+    ``greenhouse-async`` (the same, re-rendered seconds after the attach), ``dropzone``
+    (Workable: the input is emptied and the file's name shown) or ``teamtailor`` (Dropzone
+    under a Stimulus controller: the script-made input takes its label's id; a file hides
+    it, a fresh input replaces it and a preview whose hidden URL input reuses the id shows
+    "Uploading…" until the upload ends)."""
 
     @property
     def multi(self) -> bool:
@@ -187,7 +195,7 @@ class Field:
 
 WIDGET_KINDS = frozenset({
     "react_select", "react_multi", "react_async", "div_combobox", "search_combobox",
-    "remote_lookup", "rippling_phone", "intl_tel",
+    "remote_lookup", "rippling_phone", "intl_tel", "fab_select",
 })
 UPLOADER_KINDS = frozenset({"custom_file", "label_file"})
 FILE_KINDS = frozenset({"file"}) | UPLOADER_KINDS
@@ -481,6 +489,11 @@ runs; 2.5 s later the block re-renders with the file's name (the input and its b
 gone) and the page's action area re-renders too (the submit button's path shifts)."""
 WK_RESUME = Field("resume", "Resume", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="dropzone")
 WK_PHONE = Field("phone", "Phone", "intl_tel", True, autocomplete="tel", display="separate")
+TT_RESUME = Field("resume", "Upload resume", "file", True, accept=".pdf,.doc,.docx,.txt",
+                  uploader="teamtailor")
+TT_FILES = Field("files", "Additional files", "file", uploader="teamtailor")
+"""Teamtailor's uploaders: ``#candidate_resume_remote_url`` is Dropzone's hidden input
+(the label's id handed to it by page script), not an import field."""
 GH_COUNTRY = Field("country", "Country", "react_select", True, DIAL_CODES, display="dial-name",
                    inline=True, links_phone=True)
 """Greenhouse's phone-fieldset Country: its value shows a flag and "+" and the code as two
@@ -501,6 +514,43 @@ RS_INLINE_SPONSORSHIP = Field(
 )
 RS_INLINE_HEARD = Field("question_9003", "How did you hear about us?", "react_select",
                         options=HEARD_OPTIONS, inline=True)
+# BambooHR's Fabric selects post an id (the proxy <select>'s single option); the menu only
+# shows labels. State menu items carry the state's id as their element id, as live.
+FAB_PLACEHOLDER = "\N{EN DASH}Select\N{EN DASH}"
+BH_COUNTRIES = _options(
+    ("1", "United States"), ("2", "Canada"), ("3", "Australia"), ("4", "United Kingdom"),
+    ("5", "Ireland"), ("6", "Germany"), ("7", "France"), ("8", "Mexico"), ("9", "India"),
+    ("10", "New Zealand"),
+)
+BH_STATE = Field("state.value", "State", "fab_select", True,
+                 _options(*((str(i + 1), name) for i, name in enumerate(US_STATE_NAMES))),
+                 dom_id="fab-select341", clearable=True, display="ids")
+BH_COUNTRY = Field("countryId.value", "Country", "fab_select", True, BH_COUNTRIES,
+                   dom_id="fab-select343", prefill="1", clearable=True)
+BH_EDUCATION = Field("educationLevelId", "Highest Education Obtained", "fab_select",
+                     options=_options(("21", "High School"), ("22", "Associate's Degree"),
+                                      ("23", "Bachelor's Degree"), ("24", "Master's Degree"),
+                                      ("25", "Doctorate")),
+                     dom_id="educationLevelId")
+JV_RESUME = Field("resume", "Add Resume", "file", True, accept=".pdf,.doc,.docx,.txt", uploader="jobvite")
+"""Jobvite's résumé: a "Select" button (aria-haspopup, named by the "Add Resume*" heading)
+opens an "Attachment Options" popup that page script appends to <body>, so its visually
+hidden file input is outside the form. A chosen file hides the button and lists its name."""
+JV_REFERRED = Field(
+    "referred", "Were you referred to this role by a current Brambleway employee?", "select", True,
+    _options(("not_referred", "No, I was not referred"),
+             ("referred", "Yes, I was referred by a Brambleway employee")),
+)
+JV_SPONSORSHIP = Field(
+    "sponsorship",
+    "Do you now or in the future will you require sponsorship for work in the United States?",
+    "select", True,
+    _options(("sp_current", "Yes, I CURRENTLY require work sponsorship"),
+             ("sp_future", "Yes, I will require FUTURE work sponsorship"),
+             ("sp_never", "No, I will NOT ever require any work sponsorship")),
+)
+JV_CONSENT_COOKIE = "bwa_jv_consent"
+JV_POLICY_ID = "policy-7d1f"
 
 # --- upload and autofill scenarios (page behaviour in SCENARIO_JS) ----------------------
 
@@ -551,6 +601,9 @@ class Job:
     """Embeds an invisible reCAPTCHA-style badge; only its token is checked, on submit."""
     spa_loading: bool = False
     """Page script renders the form 1.5 s after load, behind a loading indicator."""
+    flash_closed: bool = False
+    """The page shows "Job not found" (HTTP 200) until its data arrives 800 ms later, then
+    the posting and its form (an SPA's first render)."""
     cookie_banner: bool = False
     """A modal cookie-consent dialog covers the page (main is inert) until dismissed."""
     formless: bool = False
@@ -564,6 +617,10 @@ class Job:
     fixture_identity: bool = False
     """Accepts only the fixture candidate's own identity values and resume file, so values
     page script wrote (a resume parser, LinkedIn) are rejected (fixture_identity_errors)."""
+    data_consent: bool = False
+    """Jobvite: the apply URL shows a "Data Consent" page (choose a location of residence
+    and language, then "I Accept") until the consent is accepted; accepting posts it back to
+    the apply URL, which records it and returns the form."""
 
     @property
     def multistep(self) -> bool:
@@ -593,11 +650,13 @@ class Job:
             "generic_thanks": self.generic_thanks,
             "captcha_widget": self.captcha_widget,
             "spa_loading": self.spa_loading,
+            "flash_closed": self.flash_closed,
             "cookie_banner": self.cookie_banner,
             "formless": self.formless,
             "autofill": self.autofill,
             "validity": self.validity,
             "fixture_identity": self.fixture_identity,
+            "data_consent": self.data_consent,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -877,6 +936,17 @@ JOBS: dict[str, Job] = {
             validity=True,
         ),
         Job(
+            "flash-closed",
+            "BWA-OPS-130",
+            "Marketing Operations Specialist",
+            "Marketing",
+            "Remote (US)",
+            "The standard form behind an SPA whose first render says \"Job not found\" (HTTP "
+            "200) for 800 ms before its data arrives.",
+            STANDARD_FIELDS,
+            flash_closed=True,
+        ),
+        Job(
             "phone-dialcode-collision",
             "BWA-GH-129",
             "Growth Operations Manager",
@@ -890,6 +960,21 @@ JOBS: dict[str, Job] = {
                     RS_INLINE_AUTHORIZATION),
         ),
         Job(
+            "bamboohr-like",
+            "BWA-BH-181",
+            "Paid Media Manager",
+            "Marketing",
+            "Austin, TX (Hybrid)",
+            "A BambooHR-style address block of Fabric selects: a role-less menu button "
+            "(aria-haspopup, data-menu-id, an aria-label repeating what it shows) over a hidden "
+            "proxy <select> that holds only the chosen option's id and that the <label> names. "
+            "The menu is a body portal (a search box and a role=menu of menu items) that opens "
+            "on click, Enter, Space or ArrowDown, closes on Escape or a toggle click (never on "
+            "an outside press) and stays in the document hidden. Country already shows "
+            "\"United States\"; State shows \"\N{EN DASH}Select\N{EN DASH}\".",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, BH_STATE, BH_COUNTRY, BH_EDUCATION),
+        ),
+        Job(
             "workable-like",
             "BWA-WK-127",
             "Demand Generation Manager",
@@ -900,6 +985,31 @@ JOBS: dict[str, Job] = {
             "drag-and-drop résumé uploader that empties its input once it takes the file and "
             "shows the file's name.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, WK_PHONE, WK_RESUME),
+        ),
+        Job(
+            "teamtailor-like",
+            "BWA-TT-171",
+            "Growth Marketing Lead",
+            "Marketing",
+            "Remote (US)",
+            "A Teamtailor-style form: Dropzone résumé and additional-files uploaders whose "
+            "script-made hidden input takes its label's id. A chosen file hides the input; a "
+            "fresh input replaces it and gets the id back only when the upload ends, and the "
+            "preview shows \"Uploading…\" for 1.2 s next to a hidden URL input with the same id.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, PHONE, TT_RESUME, TT_FILES),
+        ),
+        Job(
+            "jobvite-like",
+            "BWA-JV-190",
+            "Paid Media Manager",
+            "Marketing",
+            "Remote (US)",
+            "A Jobvite-style posting: Apply leads to a \"Data Consent\" page (choose a location of "
+            "residence and language, then \"I Accept\", which posts back to the apply URL and "
+            "returns the form), and the résumé's \"Select\" button opens an attachment popup that "
+            "page script appends to <body>, its hidden file input outside the form.",
+            _single(JV_RESUME, FIRST_NAME, LAST_NAME, EMAIL, PHONE, JV_REFERRED, JV_SPONSORSHIP),
+            data_consent=True,
         ),
         Job(
             "div-combobox-orphan",
@@ -962,10 +1072,21 @@ JOBS: dict[str, Job] = {
             _single(FIRST_NAME, LAST_NAME, EMAIL, PHONE, RESUME),
             fixture_identity=True,
         ),
+        Job(
+            "react-controlled-narrative",
+            "BWA-RC-134",
+            "Lifecycle Content Manager",
+            "Marketing",
+            "Denver, CO (Hybrid)",
+            "react-controlled with a multi-line narrative textarea inside the React root: a "
+            "script-set value is reverted and the first typed change re-renders the fields.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, WHY_BRAMBLEWAY),
+        ),
     )
 }
 SCENARIO_JOBS = frozenset(
-    {"autofill-upload", "custom-uploader", "linkedin-autofill", "react-controlled"}
+    {"autofill-upload", "custom-uploader", "linkedin-autofill", "react-controlled",
+     "react-controlled-narrative"}
 )
 """Jobs whose apply page runs SCENARIO_JS (keyed by the job id), which defines window.__mock."""
 REACT_ROOT_FIELDS = frozenset({"first_name", "last_name", "email", "phone"})
@@ -1110,6 +1231,14 @@ class Store:
             )
             self._save()
 
+    def add_consent(self, job: Job, policy: str) -> None:
+        """A data-processing consent accepted on a Jobvite-style consent page."""
+        with self.lock:
+            self.data.setdefault("consents", []).append(
+                {"job_id": job.slug, "at": _now(), "policy": policy}
+            )
+            self._save()
+
     def get_submission(self, submission_id: str) -> dict[str, Any] | None:
         with self.lock:
             return next(
@@ -1145,6 +1274,7 @@ class Store:
                 "rejected_count": len(rejs),
                 "submissions": subs,
                 "rejections": rejs,
+                "consents": [c for c in self.data.get("consents", []) if job_id in (None, c["job_id"])],
             }
 
     # multistep drafts
@@ -1279,7 +1409,7 @@ def parse_multipart(
 
 def _required_message(f: Field) -> str:
     if f.kind in ("select", "radio", "custom_combobox", "react_select", "div_combobox",
-                  "search_combobox", "react_async", "remote_lookup"):
+                  "search_combobox", "react_async", "remote_lookup", "fab_select"):
         return "Select an answer."
     if f.kind == "checkbox":
         return "Check this box to continue."
@@ -1498,6 +1628,11 @@ dl.review dd{margin:0}
 
 
 WIDGET_STYLE = """
+.tt-upload label{display:block;font-weight:600;margin-bottom:.3rem}
+.tt-trigger{position:relative;border:2px dashed #8a94a6;border-radius:6px;padding:1rem;overflow:hidden}
+.tt-preview{border:1px solid #cbd5e0;border-radius:6px;padding:.6rem 1rem}
+.tt-bar{height:6px;background:#e2e8f0}
+.tt-hidden{display:none}
 .select__control{display:flex;align-items:center;border:1px solid #8a94a6;border-radius:4px;min-height:38px;background:#fff}
 .select__value-container{display:grid;flex:1;padding:2px 8px;align-items:center}
 .select__value-container--is-multi{display:flex;flex-wrap:wrap;position:relative}
@@ -1525,6 +1660,19 @@ input.select__input{border:0;padding:0;margin:0;background:transparent;width:100
 .rip-popper .rip-list{position:static;border:0;margin:0}
 .rip-popper p{margin:0}
 .rip-option--active{background:#deebff}
+.fab-field{margin:1.25rem 0}
+.fab-field label{display:block;font-weight:600;margin-bottom:.3rem}
+.fab-Select{position:relative}
+.fab-SelectToggle__container{display:flex;align-items:center;gap:.3rem}
+button.fab-SelectToggle{min-width:16rem;text-align:left;border:1px solid #8a94a6;border-radius:4px;background:#fff;padding:.45rem}
+.fab-SelectToggle__placeholder{color:#4a5568}
+.fab-SelectToggle__toggleButton svg{width:0;height:0}
+select.fab-proxy{position:absolute;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;pointer-events:none}
+.fab-portal{position:absolute;z-index:50;flex-direction:column;background:#fff;border:1px solid #8a94a6;border-radius:4px;width:18rem}
+.fab-MenuVessel__search{padding:6px}
+.fab-MenuList__scrollContainer{max-height:240px;overflow-y:auto}
+.fab-MenuOption{padding:6px 12px}
+.fab-MenuOption--active{background:#deebff}
 .rip-phone{display:flex;gap:.5rem}
 .rip-phone .rip-country{position:relative;width:8rem}
 .iti{position:relative;display:flex;gap:.5rem;align-items:center}
@@ -2160,7 +2308,9 @@ WIDGETS_JS = r"""(function () {
       var wrapper = group.querySelector(".file-upload__wrapper");
       wrapper.textContent = "";
       var chip = el("div", {"class": "file-upload__filename"});
-      chip.appendChild(el("span", {}, st.value.name));
+      // Fixture control (hooks.chipText): the chip shows a shortened or other text.
+      var shown = hooks.chipText && hooks.chipText[cfg.name] !== undefined ? hooks.chipText[cfg.name] : st.value.name;
+      chip.appendChild(el("span", {}, shown));
       var remove = el("button", {type: "button", "class": "btn btn--icon", "aria-label": "Remove file"}, "\u00d7");
       remove.addEventListener("click", function () { st.value = null; wrapper.innerHTML = chooser; bind(group); });
       chip.appendChild(remove);
@@ -2172,6 +2322,7 @@ WIDGETS_JS = r"""(function () {
       input.addEventListener("change", function () {
         if (!input.files.length) return;
         st.value = input.files[0];
+        window.__filesTaken = (window.__filesTaken || 0) + 1;  // each is an upload
         if (!cfg.async) { showChip(group); return; }
         // As live: the input keeps the file while the upload runs; seconds later the
         // block re-renders (a new element) with the file's name, and so does the page's
@@ -2230,15 +2381,272 @@ WIDGETS_JS = r"""(function () {
     });
   }
 
+  // Teamtailor's uploader: Dropzone makes the hidden file input and the controller hands it
+  // the label's id. A chosen file disables and hides it; Dropzone then replaces it with a
+  // fresh input (no id), and the preview built from the template (the name hidden behind
+  // "Uploading…", a hidden URL input reusing the id) is added. When the upload ends
+  // (hooks.uploadDelayMs, default 1200 ms) the name shows, the URL input gets the stored
+  // file's address and the fresh input gets the id back.
+  function ttUpload(root) {
+    var cfg = config(root);
+    var st = state[cfg.name] = {value: null};
+    var trigger = root.querySelector("[data-target=trigger]");
+    var previews = root.querySelector("[data-target=previews]");
+    var template = root.querySelector("template[data-target=preview]");
+    var label = root.querySelector("label").firstChild.textContent;
+    var input = null;
+    function accessible() {  // the controller's makeHiddenInputAccessible
+      input.id = cfg.id;
+      input.style.cssText = "position:absolute;top:0;left:0;height:100%;width:100%;cursor:pointer;opacity:0";
+      input.setAttribute("aria-label", "Drop your file or upload, " + label);
+    }
+    function required() {  // the controller's toggleRequired (on connect, add and remove)
+      if (!cfg.required) return;
+      input.required = true;
+      input.disabled = st.value !== null;
+    }
+    function mount() {  // Dropzone's setupHiddenFileInput
+      if (input) input.remove();
+      input = el("input", {type: "file", "class": "dz-hidden-input"});
+      if (cfg.accept) input.setAttribute("accept", cfg.accept);
+      input.style.cssText = "visibility:hidden;position:absolute;top:0;left:0;height:0;width:0";
+      trigger.appendChild(input);
+      input.addEventListener("change", function () {
+        Array.prototype.forEach.call(input.files, add);
+        mount();
+      });
+    }
+    function add(file) {
+      st.value = file;
+      window.__filesTaken = (window.__filesTaken || 0) + 1;  // each is an upload
+      required();
+      trigger.classList.add("tt-hidden");
+      var preview = template.content.firstElementChild.cloneNode(true);
+      preview.querySelector("[data-dz-name]").textContent = file.name;
+      Array.prototype.forEach.call(preview.querySelectorAll("[data-dz-remove]"), function (x) {
+        x.addEventListener("click", function () {
+          st.value = null; preview.remove(); trigger.classList.remove("tt-hidden"); required(); accessible();
+        });
+      });
+      previews.appendChild(preview);
+      setTimeout(function () {
+        if (!preview.isConnected) return;
+        preview.querySelector("[data-target=progress]").remove();
+        preview.querySelector("[data-target=name]").classList.remove("tt-hidden");
+        var url = preview.querySelector("input[type=text]");
+        url.disabled = false;
+        url.value = "https://files.example.test/tmp/" + encodeURIComponent(file.name);
+        accessible();
+      }, hooks.uploadDelayMs !== undefined ? hooks.uploadDelayMs : 1200);
+    }
+    mount();
+    accessible();
+    required();
+  }
+
+  // Jobvite's attachment button: "Select" opens an "Attachment Options" popup that the
+  // directive appends to <body>, outside the form. Its visually hidden file input takes the
+  // file into page state (the site uploads it at once and keeps it in the input), the popup
+  // closes, and the file's name and a Remove link replace the button.
+  var jvInputs = 0;
+  function jvUpload(root) {
+    var cfg = config(root);
+    var st = state[cfg.name] = {value: null};
+    var button = root.querySelector("button");
+    var list = root.querySelector(".jv-file-list");
+    var id = "file-input-" + (jvInputs++);
+    var popup = el("div", {"class": "jv-add-attachment", role: "dialog", "aria-label": "Attachment Options",
+                           "aria-hidden": "true", tabindex: "-1"});
+    popup.hidden = true;
+    popup.appendChild(el("div", {"class": "jv-add-attachment-item"})).appendChild(
+      el("span", {role: "button", tabindex: "0"}, "Dropbox"));
+    var item = popup.appendChild(el("div", {"class": "jv-add-attachment-item"}));
+    item.appendChild(el("label", {"for": id})).appendChild(el("span", {role: "button", tabindex: "0"}, "File"));
+    var input = item.appendChild(el("input", {id: id, type: "file", accept: cfg.accept,
+      style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0"}));
+    popup.appendChild(el("div", {"class": "jv-add-attachment-item"})).appendChild(
+      el("span", {role: "button", tabindex: "0"}, "Type or Paste " + cfg.document));
+    var close = popup.appendChild(el("a", {"class": "jv-close", href: ""}, "Close"));
+    document.body.appendChild(popup);
+    var show = function (open) {
+      popup.hidden = !open;
+      popup.setAttribute("aria-hidden", String(!open));
+      button.setAttribute("aria-expanded", String(open));
+    };
+    button.addEventListener("click", function () { show(popup.hidden); });
+    close.addEventListener("click", function (e) { e.preventDefault(); show(false); });
+    input.addEventListener("change", function () {
+      if (!input.files.length) return;
+      st.value = input.files[0];
+      window.__filesTaken = (window.__filesTaken || 0) + 1;  // each is an upload
+      show(false);
+      button.parentNode.hidden = true;
+      list.textContent = "";
+      var li = list.appendChild(el("li"));
+      li.appendChild(el("span", {"class": "jv-file-name"}, st.value.name));
+      var remove = li.appendChild(el("a", {href: "", "aria-label": "Remove " + cfg.document}, "Remove"));
+      remove.addEventListener("click", function (e) {
+        e.preventDefault();
+        st.value = null;
+        list.textContent = "";
+        button.parentNode.hidden = false;
+      });
+    });
+  }
+
+  // BambooHR's Fabric select: a role-less menu button over a hidden proxy <select> that
+  // holds only the chosen option's id. The menu (a search box and a role=menu of menu
+  // items) is a body portal rendered on the first opening and only hidden afterwards; it
+  // opens on click, Enter, Space or ArrowDown and closes on Escape or a toggle click, never
+  // on an outside press or a blur. Fixture controls: hooks.selectNext[name] takes the next
+  // item, hooks.fabIgnore[name] ignores a click on an item (the menu still closes).
+  var fabItems = 73;  // menu items are numbered from one page-wide counter as menus open
+  function fabSelect(root) {
+    var cfg = config(root);
+    var toggle = root.querySelector("button.fab-SelectToggle");
+    var proxy = root.querySelector("select");
+    var value = cfg.initial;
+    var portal = null, menu = null, search = null, isOpen = false, active = -1, base = 0;
+    var PLACEHOLDER = String.fromCharCode(8211) + "Select" + String.fromCharCode(8211);  // en dashes
+    var itemId = function (i) { return cfg.ids ? cfg.options[i][0] : "menu-item-" + (base + i); };
+    var labelOf = function (v) {
+      var hit = cfg.options.filter(function (o) { return o[0] === v; })[0];
+      return hit ? hit[1] : "";
+    };
+    function render() {
+      var shown = value === null ? "" : labelOf(value);
+      var guts = toggle.querySelector(".fab-SelectToggle__guts");
+      guts.replaceChild(el("div", {"class": shown ? "fab-SelectToggle__content" : "fab-SelectToggle__placeholder"},
+        shown || PLACEHOLDER), guts.firstChild);
+      toggle.setAttribute("aria-label", cfg.label + " " + (shown || PLACEHOLDER));
+      proxy.textContent = "";
+      proxy.appendChild(el("option", {value: shown ? value : ""}));
+      var holder = toggle.parentNode.querySelector(".fab-SelectToggle__clearButtonContainer");
+      if (cfg.clearable && shown && !holder) {
+        holder = el("div", {"class": "fab-SelectToggle__clearButtonContainer"});
+        var clear = el("button", {type: "button", tabindex: "0", "aria-label": "Clear Selection", "class": "fab-clear"});
+        clear.appendChild(el("span", {"aria-hidden": "true"}, String.fromCharCode(215)));
+        clear.addEventListener("click", function () { value = null; render(); });
+        holder.appendChild(clear);
+        toggle.parentNode.appendChild(holder);
+      } else if (holder && !shown) {
+        holder.remove();
+      }
+    }
+    function filter() {
+      var q = norm(search.value);
+      Array.prototype.forEach.call(menu.querySelectorAll("[role=menuitem]"), function (item) {
+        item.style.display = !q || norm(item.textContent).indexOf(q) >= 0 ? "" : "none";
+      });
+    }
+    function mark() {
+      Array.prototype.forEach.call(menu.querySelectorAll("[role=menuitem]"), function (item, i) {
+        item.className = "fab-MenuOption" + (i === active ? " fab-MenuOption--active" : "");
+      });
+      [menu, search].forEach(function (node) {
+        if (active >= 0) node.setAttribute("aria-activedescendant", itemId(active));
+        else node.removeAttribute("aria-activedescendant");
+      });
+    }
+    function keys(e) {
+      var n = cfg.options.length;
+      if (e.key === "Escape") {
+        e.preventDefault(); close();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        active = active < 0 ? 0 : (active + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        mark();
+      } else if (e.key === "Enter" && active >= 0) {
+        e.preventDefault(); choose(active);
+      }
+    }
+    function build() {
+      base = fabItems;
+      fabItems += cfg.options.length;
+      portal = el("div", {"data-fabric-component": "Select Menu", "data-helium-id": cfg.menu, "class": "fab-portal"});
+      var vessel = el("div", {"class": "fab-MenuVessel", "data-menu-id": cfg.menu});
+      var list = el("div", {"class": "fab-MenuVessel__list"});
+      var box = el("div", {"class": "fab-MenuVessel__search"});
+      var wrap = el("label", {"class": "fab-MenuSearch"});
+      search = el("input", {"aria-label": "Search", "class": "fab-MenuSearch__input", placeholder: "Search...", type: "text"});
+      wrap.appendChild(search);
+      box.appendChild(wrap);
+      menu = el("div", {id: cfg.menu, role: "menu", tabindex: "-1", "class": "fab-MenuList",
+        "aria-owns": cfg.options.map(function (o, i) { return itemId(i); }).join(" ")});
+      var scroller = el("div", {"class": "fab-MenuList__scrollContainer"});
+      cfg.options.forEach(function (o, i) {
+        var item = el("div", {"class": "fab-MenuOption", id: itemId(i), role: "menuitem", tabindex: "-1"});
+        var content = el("div", {"class": "fab-MenuOption__content"});
+        var row = el("div", {"class": "fab-MenuOption__row"});
+        row.appendChild(el("div", {}, o[1]));
+        content.appendChild(row);
+        item.appendChild(content);
+        item.addEventListener("mousedown", function (e) { e.preventDefault(); });
+        item.addEventListener("click", function () { choose(i); });
+        scroller.appendChild(item);
+      });
+      menu.appendChild(scroller);
+      list.appendChild(box);
+      list.appendChild(menu);
+      vessel.appendChild(list);
+      portal.appendChild(vessel);
+      search.addEventListener("keydown", keys);
+      search.addEventListener("input", filter);
+      menu.addEventListener("keydown", keys);
+      document.body.appendChild(portal);
+    }
+    function open() {
+      if (isOpen) return;
+      if (!portal) build();
+      var r = toggle.getBoundingClientRect();
+      portal.style.top = (window.scrollY + r.bottom + 2) + "px";
+      portal.style.left = (window.scrollX + r.left) + "px";
+      portal.style.visibility = "visible";
+      portal.style.display = "flex";
+      isOpen = true;
+      toggle.setAttribute("aria-expanded", "true");
+      active = value === null ? -1 : cfg.options.map(function (o) { return o[0]; }).indexOf(value);
+      search.value = "";
+      filter();
+      mark();
+      search.focus();
+    }
+    function close() {
+      if (!isOpen) return;
+      isOpen = false;
+      portal.style.visibility = "hidden";
+      portal.style.display = "none";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.focus();
+    }
+    function choose(i) {
+      if (!(hooks.fabIgnore && hooks.fabIgnore[cfg.name])) {
+        value = cfg.options[shift(cfg.name, i, cfg.options.length)][0];
+        render();
+      }
+      close();
+    }
+    // Enter and Space reach the button as a click.
+    toggle.addEventListener("click", function () { if (isOpen) close(); else open(); });
+    toggle.addEventListener("keydown", function (e) {
+      if (isOpen && e.key === "Escape") { e.preventDefault(); close(); }
+      else if (!isOpen && e.key === "ArrowDown") { e.preventDefault(); open(); }
+    });
+    render();
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-mount]"), function (holder) {
     holder.innerHTML = JSON.parse(holder.getAttribute("data-widget-mount")).html;
   });
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=react-select]"), reactSelect);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=div-combobox]"), divCombobox);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=fab-select]"), fabSelect);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=search-combobox]"), searchCombobox);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=intl-tel]"), intlTel);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=gh-upload]"), ghUpload);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=dropzone]"), dropzone);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=tt-upload]"), ttUpload);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=jv-upload]"), jvUpload);
   Array.prototype.forEach.call(document.forms, function (form) {
     form.addEventListener("formdata", function (e) {
       Object.keys(state).forEach(function (name) {
@@ -2284,6 +2692,163 @@ VALIDITY_JS = r"""(function () {
   });
   update();
   setInterval(update, 100);
+})();"""
+
+
+JV_CONSENT_JS = r"""(function () {
+  "use strict";
+  // Jobvite's consent form: choosing a policy shows it with "I Accept" (it submits the form
+  // with the policy ids, and the site remembers the consent) and "I Decline" (back to the
+  // posting); choosing nothing shows "Back" again.
+  var select = document.getElementById("jv-country-select");
+  var policy = document.getElementById("jv-policy");
+  var back = document.getElementById("jv-back");
+  var actions = document.getElementById("jv-accept-reject");
+  select.addEventListener("change", function () {
+    actions.textContent = "";
+    var chosen = !!select.value;
+    policy.hidden = !chosen;
+    back.hidden = chosen;
+    if (!chosen) return;
+    var accept = document.createElement("button");
+    accept.type = "submit";
+    accept.className = "jv-button jv-button-primary";
+    accept.textContent = "I Accept";
+    accept.addEventListener("click", function () { document.cookie = "bwa_jv_consent=accepted; path=/"; });
+    var decline = document.createElement("a");
+    decline.className = "jv-button";
+    decline.href = back.querySelector("a").getAttribute("href");
+    decline.textContent = "I Decline";
+    var ids = document.createElement("input");
+    ids.type = "hidden";
+    ids.name = "policyIds";
+    ids.value = JSON.stringify({consentPolicyId: select.value});
+    actions.append(accept, " ", decline, ids);
+  });
+})();"""
+
+
+ASHBY_LIKE_JS = r"""(function () {
+  "use strict";
+  // /forms/ashby-like. The date input opens a react-datepicker-like calendar inside its
+  // field entry while focused (a month listbox of day options and two unnamed month
+  // buttons); a click on a day writes MM/DD/YYYY, and a typed date is kept when it parses
+  // as M/D/YYYY (else cleared) once the input loses focus or Enter/Tab/Escape is pressed.
+  var input = document.querySelector(".ashby-application-form-input-date");
+  var entry = input.closest(".ashby-application-form-field-entry");
+  var popper = null;
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function close() { if (popper) { popper.remove(); popper = null; } }
+  function commit() {
+    var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(input.value.trim());
+    input.value = m ? pad(m[1]) + "/" + pad(m[2]) + "/" + m[3] : "";
+  }
+  function open() {
+    if (popper) return;
+    popper = document.createElement("div");
+    popper.className = "react-datepicker-popper ashby-application-form-input-date-popup";
+    // Like react-datepicker: positioned above the input (top-start), out of the flow.
+    entry.style.position = "relative";
+    popper.setAttribute("data-placement", "top-start");
+    popper.style.cssText = "position:absolute;bottom:100%;left:0;z-index:5;background:#fff;border:1px solid #ccc";
+    var days = "";
+    for (var d = 1; d <= 30; d++) {
+      days += '<div class="react-datepicker__day" tabindex="-1" role="option" aria-selected="false" ' +
+        'aria-label="Choose September ' + d + ', 2026" data-day="' + d + '">' + d + "</div>";
+    }
+    popper.innerHTML = '<div class="react-datepicker"><div class="react-datepicker__month-container">' +
+      '<div class="react-datepicker__header"><h4><span>September 2026</span></h4>' +
+      '<button data-direction="previous"></button><button data-direction="next"></button></div>' +
+      '<div class="react-datepicker__month" role="listbox" aria-label="month  2026-09">' +
+      '<div class="react-datepicker__week">' + days + "</div></div></div></div>";
+    popper.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    popper.addEventListener("click", function (e) {
+      var day = e.target.closest("[data-day]");
+      if (day) { input.value = "09/" + pad(day.dataset.day) + "/2026"; close(); }
+    });
+    entry.appendChild(popper);
+  }
+  input.addEventListener("focus", open);
+  input.addEventListener("click", open);
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" || e.key === "Tab" || e.key === "Enter") { commit(); close(); }
+  });
+  input.addEventListener("blur", function () { commit(); close(); });
+  // The location lookup mounts its suggestion portal on focus, as Ashby renders its list
+  // into a portal of its own: appended to <body> (?portal=inline: right after the field
+  // entry, before the later questions), holding the listbox and a "Powered by Google" link.
+  // aria-controls names the portal's wrapper (?owns=listbox: the listbox itself).
+  // Suggestions come from /__fixture__/cities for two or more typed characters; a click
+  // writes the suggestion into the input and removes the portal, as do Escape and blur.
+  var params = new URLSearchParams(location.search);
+  var lookup = document.querySelector(".ashby-application-form-input-autocomplete");
+  var portal = null;
+  function unmount() {
+    if (portal) { portal.remove(); portal = null; }
+    lookup.setAttribute("aria-expanded", "false");
+    lookup.removeAttribute("aria-controls");
+  }
+  function mount() {
+    if (portal) return;
+    portal = document.createElement("div");
+    portal.id = "ashby-location-portal";
+    portal.className = "ashby-autocomplete-portal";
+    portal.innerHTML = '<div class="ashby-autocomplete-menu"><div role="listbox" id="ashby-location-listbox"></div>' +
+      '<div class="ashby-autocomplete-footer"><a href="https://maps.example.test/attribution" target="_blank">Powered by Google</a></div></div>';
+    portal.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    portal.addEventListener("click", function (e) {
+      var option = e.target.closest("[role=option]");
+      if (!option) return;
+      e.preventDefault();
+      lookup.value = option.textContent;
+      unmount();
+    });
+    if (params.get("portal") === "inline") {
+      lookup.closest(".ashby-application-form-field-entry").after(portal);
+    } else {
+      document.body.appendChild(portal);
+    }
+    lookup.setAttribute("aria-controls", params.get("owns") === "listbox" ? "ashby-location-listbox" : portal.id);
+  }
+  var pending = 0;
+  lookup.addEventListener("focus", mount);
+  lookup.addEventListener("input", function () {
+    mount();
+    var query = lookup.value.trim();
+    var ticket = ++pending;
+    var list = portal.querySelector("[role=listbox]");
+    if (query.length < 2) { list.innerHTML = ""; lookup.setAttribute("aria-expanded", "false"); return; }
+    fetch("/__fixture__/cities?style=long&q=" + encodeURIComponent(query)).then(function (r) { return r.json(); }).then(function (cities) {
+      if (ticket !== pending || !portal) return;
+      list.innerHTML = cities.map(function (c, i) {
+        return '<div role="option" id="ashby-location-option-' + i + '" aria-selected="false">' + c + "</div>";
+      }).join("");
+      lookup.setAttribute("aria-expanded", cities.length ? "true" : "false");
+    });
+  });
+  lookup.addEventListener("keydown", function (e) { if (e.key === "Escape") unmount(); });
+  lookup.addEventListener("blur", unmount);
+  // Options named after their own text act as one group (React re-renders the others).
+  document.querySelectorAll("fieldset").forEach(function (box) {
+    var radios = Array.prototype.slice.call(box.querySelectorAll("input[type=radio]"));
+    radios.forEach(function (r) {
+      r.addEventListener("change", function () {
+        radios.forEach(function (o) { if (o !== r) o.checked = false; });
+      });
+    });
+  });
+  // Yes/no: two type="submit" buttons with aria-pressed; the hidden checkbox mirrors "yes".
+  document.querySelectorAll(".ashby-application-form-input-yesno").forEach(function (box) {
+    var buttons = box.querySelectorAll("button[aria-pressed]");
+    var mirror = box.querySelector("input[type=checkbox]");
+    buttons.forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        e.preventDefault();
+        buttons.forEach(function (o) { o.setAttribute("aria-pressed", String(o === b)); });
+        mirror.checked = b.dataset.option === "yes";
+      });
+    });
+  });
 })();"""
 
 
@@ -2577,16 +3142,19 @@ SCENARIO_JS = r"""(function () {
   function reactControlled() {
     var root = byId("react-root");
     var blocks = Array.prototype.map.call(root.children, function (block) { return block.outerHTML; });
-    var inputs = function () { return root.querySelectorAll("input[name]"); };
+    var inputs = function () { return root.querySelectorAll("input[name], textarea[name]"); };
     var state = mock.state = {};
     Array.prototype.forEach.call(inputs(), function (input) { state[input.name] = input.value; });
     mock.renders = 0;
     var loseFirst = params.get("lose_first") === "1";
     var typed = false, scheduled = false;
+    var syncRevert = params.get("revert") === "sync";
     root.addEventListener("input", function (e) {
       var name = e.target.name;
       if (!e.isTrusted || !name || !(name in state)) return;
       if (typed || !loseFirst) state[name] = e.target.value;  // else typed before hydration: lost
+      // ?revert=sync: like React, a controlled control shows its state again at once.
+      else if (syncRevert) e.target.value = state[name];
       typed = true;
       if (!scheduled) {
         scheduled = true;
@@ -2620,7 +3188,8 @@ SCENARIO_JS = r"""(function () {
     "autofill-upload": autofillUpload,
     "custom-uploader": customUploader,
     "linkedin-autofill": linkedinAutofill,
-    "react-controlled": reactControlled
+    "react-controlled": reactControlled,
+    "react-controlled-narrative": reactControlled
   };
   scenarios[scenario]();
 })();"""
@@ -2675,6 +3244,35 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
     err = (f'<p class="error" id="{esc(dom)}-error"><span class="visually-hidden">Error: </span>'
            f"{esc(error)}</p>") if error else ""
     options = [[o.value, o.label] for o in f.options]
+
+    if f.kind == "fab_select":
+        # BambooHR markup (Fabric): the <label> names the hidden proxy <select>, which holds
+        # only the chosen option's id; the menu button beside it repeats the label and what
+        # it shows in its aria-label. Page script renders the menu on its first opening.
+        chosen = current if current is not None else f.prefill
+        shown = next((o.label for o in f.options if o.value == chosen), "")
+        menu = dom.replace("fab-select", "fab-menu") if dom.startswith("fab-select") else f"fab-menu-{dom}"
+        settings = {"name": f.name, "menu": menu, "label": f.label, "options": options,
+                    "initial": chosen if shown else None, "clearable": f.clearable,
+                    "ids": f.display == "ids"}
+        content = (f'<div class="fab-SelectToggle__content">{esc(shown)}</div>' if shown
+                   else f'<div class="fab-SelectToggle__placeholder">{FAB_PLACEHOLDER}</div>')
+        asterisk = '<span aria-hidden="true" class="fab-asterisk"> *</span>' if f.required else ""
+        return (
+            '<div class="field fab-field" data-fabric-component="SelectField InputWrapper">'
+            f'<div class="fab-labelWrapper"><label for="{esc(dom)}">{esc(f.label)}{asterisk}</label></div>{err}'
+            f'<div class="fab-box"><div class="fab-Select" data-fabric-component="Select"'
+            f'{_widget_attrs("fab-select", settings)}><div style="display: inline-block;">'
+            f'<div class="fab-SelectToggle__container"><button data-menu-id="{esc(menu)}" '
+            'aria-expanded="false" aria-haspopup="true" '
+            f'aria-label="{esc(f.label)} {esc(shown or FAB_PLACEHOLDER)}" tabindex="0" aria-disabled="false" '
+            f'class="fab-SelectToggle" type="button"><div class="fab-SelectToggle__guts">{content}'
+            '<div class="fab-SelectToggle__toggleButton"><svg aria-hidden="true" viewBox="0 0 320 512"></svg>'
+            "</div></div></button></div></div>"
+            f'<select aria-hidden="true" class="chzn-ignore fab-proxy" id="{esc(dom)}" name="{esc(f.name)}" '
+            f'readonly{" required" if f.required else ""} tabindex="-1">'
+            f'<option value="{esc(chosen) if shown and chosen else ""}"></option></select></div></div></div>'
+        )
 
     if f.kind in ("react_select", "react_multi", "react_async"):
         multi = f.kind == "react_multi"
@@ -2922,9 +3520,10 @@ def _field_layout(job: Job, blocks: list[tuple[Field, str]]) -> str:
     joined = "".join(block for _, block in blocks)
     if job.slug == "linkedin-autofill":
         return LINKEDIN_APPLY_HTML + joined
-    if job.slug == "react-controlled":
-        inside = "".join(block for f, block in blocks if f.name in REACT_ROOT_FIELDS)
-        outside = "".join(block for f, block in blocks if f.name not in REACT_ROOT_FIELDS)
+    if job.slug in ("react-controlled", "react-controlled-narrative"):
+        root_fields = REACT_ROOT_FIELDS | {"why_brambleway"}
+        inside = "".join(block for f, block in blocks if f.name in root_fields)
+        outside = "".join(block for f, block in blocks if f.name not in root_fields)
         return f'<div id="react-root">{inside}</div>{outside}'
     return joined
 
@@ -3095,6 +3694,42 @@ def render_field(
                 '<p class="file-upload__filetypes">Accepted file types: pdf, doc, docx, txt</p>'
                 f"</div></div>{err}</div></div>"
             )
+        if f.uploader == "teamtailor":
+            # Teamtailor markup: Dropzone mounts the input (see ttUpload); the preview
+            # template carries the stored file's URL input under the same id.
+            dom = f"candidate_{f.name}_remote_url"
+            marker = ('<sup aria-hidden="true">*</sup><span class="visually-hidden">Required</span>'
+                      if f.required else "")
+            upload_config = {"name": f.name, "id": dom, "accept": f.accept or "", "required": f.required}
+            return (
+                f'<div class="field"><div class="tt-upload" id="upload_{f.name}_field"'
+                f'{_widget_attrs("tt-upload", upload_config)}>'
+                f'<label for="{dom}">{esc(f.label)}{marker}</label>{err}'
+                '<div class="tt-trigger" data-target="trigger"><div><span class="dz-message">'
+                "Drop your file or <u>upload</u></span></div></div>"
+                '<div data-target="previews"></div>'
+                '<template data-target="preview"><div class="tt-preview">'
+                '<div class="tt-hidden" data-target="name"><a data-dz-name href="javascript:void(0);"></a>'
+                '<button type="button" title="Clear file selection" data-dz-remove>&times;</button></div>'
+                '<div data-target="progress"><div><span>Uploading…</span>'
+                '<a href="javascript:void(0);" data-dz-remove>&times;</a></div>'
+                '<div class="tt-bar"><span></span></div></div>'
+                f'<input value="" class="tt-hidden" disabled type="text" name="candidate[{f.name}_remote_url]" '
+                f'id="{dom}"></div></template></div></div>'
+            )
+        if f.uploader == "jobvite":
+            # Jobvite markup: the heading names a Select button that opens an attachment
+            # popup; page script appends the popup, file input included, to <body> (jvUpload).
+            upload_config = {"name": f.name, "document": "Resume", "accept": f.accept or ""}
+            return (
+                f'<div class="field jv-apply-section"><h3 class="jv-step-header" id="jv-{f.name}-header">'
+                f'{esc(f.label)}{"*" if f.required else ""}</h3>{err}'
+                f'<div class="jv-apply-with" id="attach-{f.name}"{_widget_attrs("jv-upload", upload_config)}>'
+                '<div class="jv-select"><button type="button" class="jv-button" aria-haspopup="true" '
+                f'aria-labelledby="jv-{f.name}-header" aria-expanded="false" '
+                f'aria-required="{str(f.required).lower()}">Select</button></div>'
+                '<ul class="jv-file-list"></ul></div></div>'
+            )
         if f.uploader == "dropzone":
             return (
                 f'<div class="field"><label for="input_files_input_{f.name}">{esc(f.label)}'
@@ -3195,6 +3830,21 @@ def render_delayed(form_html: str) -> str:
     )
 
 
+def render_flash_closed(body_html: str) -> str:
+    """An SPA whose first render says "Job not found" (HTTP 200) until its data arrives
+    800 ms later; then the posting and its form replace it (no network involved)."""
+    return (
+        '<div id="not-found"><h1>Job not found</h1><p>The job you requested was not found.</p></div>'
+        f'<template id="posting-template">{body_html}</template>'
+        "<script>setTimeout(function () {"
+        'var notFound = document.getElementById("not-found");'
+        'var template = document.getElementById("posting-template");'
+        "notFound.replaceWith(template.content.cloneNode(true));"
+        "template.remove();"
+        "}, 800);</script>"
+    )
+
+
 def render_cookie_banner() -> str:
     """A modal consent dialog over the whole viewport. The page's ``main`` is inert and
     aria-hidden while it is shown; accepting or declining removes it, restores ``main``
@@ -3285,6 +3935,8 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/postings/with-select", "GET", "get_posting_with_select"),
         (r"/forms/unlabeled-custom-questions", "GET", "get_unlabeled_custom_questions"),
         (r"/forms/choices-without-values", "GET", "get_choices_without_values"),
+        (r"/forms/breezy-like", "GET", "get_breezy_like"),
+        (r"/forms/ashby-like", "GET", "get_ashby_like"),
         (r"/postings/apply-wording", "GET", "get_apply_wording_posting"),
         (r"/postings/go-apply", "POST", "post_go_apply"),
         (r"/__fixture__/cities", "GET", "get_fixture_cities"),
@@ -3446,6 +4098,35 @@ class Handler(BaseHTTPRequestHandler):
         morsel = cookie.get(CONSENT_COOKIE)
         return bool(morsel and morsel.value in ("accepted", "declined"))
 
+    def _data_consented(self) -> bool:
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return False
+        morsel = cookie.get(JV_CONSENT_COOKIE)
+        return bool(morsel and morsel.value == "accepted")
+
+    def _render_data_consent(self, job: Job) -> None:
+        """Jobvite's "Data Consent" page (a posting's apply URL until the consent is
+        accepted): choosing the policy shows it with "I Accept" (a submit button that posts
+        the policy ids back to the apply URL) and "I Decline" (a link to the posting)."""
+        body = (
+            f'<h1 class="jv-logo">{COMPANY} Careers</h1>'
+            '<article class="jv-page-body"><h3>Data Consent</h3>'
+            f'<form name="consentForm" class="jv-form" method="POST" action="/jobs/{job.slug}/apply">'
+            '<div><label for="jv-country-select">Location of Residence and Language:</label></div>'
+            '<select id="jv-country-select" required>'
+            '<option value="" selected>Select your location of residence and language</option>'
+            f'<option value="{JV_POLICY_ID}">Global {COMPANY.upper()} APPLICANT AND CANDIDATE PRIVACY '
+            "POLICY</option></select>"
+            f'<div id="jv-back"><a class="jv-button" href="/jobs/{job.slug}">Back</a></div>'
+            '<div id="jv-policy" hidden><p class="jv-policy-text">This fictional privacy policy '
+            f"explains how {COMPANY} processes the personal data in your application.</p>"
+            '<div id="jv-accept-reject"></div></div></form></article>'
+            f"<script>{JV_CONSENT_JS}</script>"
+        )
+        self._send_html(HTTPStatus.OK, page(f"{COMPANY} Careers", body))
+
     # public pages
     def get_index(self) -> None:
         items = "".join(
@@ -3501,6 +4182,9 @@ class Handler(BaseHTTPRequestHandler):
         if job.requires_signin and not self._signed_in():
             self._redirect_to_login(job)
             return
+        if job.data_consent and not self._data_consented():
+            self._render_data_consent(job)
+            return
         if job.multistep:
             self._render_step(job, None, 1, {}, {}, None, HTTPStatus.OK)
         else:
@@ -3513,6 +4197,15 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect_to_login(job)
             return
         form, uploads = self._read_form()
+        if job.data_consent and form.get("policyIds"):
+            # Jobvite: "I Accept" posts the chosen policy back to the apply URL, which
+            # records the consent and returns the form.
+            self.store.add_consent(job, form["policyIds"][0])
+            self._render_single(job, {}, {}, {}, None, HTTPStatus.OK)
+            return
+        if job.data_consent and not self._data_consented():
+            self._render_data_consent(job)  # no application is taken before the consent
+            return
         if job.multistep:
             self._post_step(job, None, 1, form, uploads)
             return
@@ -3644,7 +4337,11 @@ class Handler(BaseHTTPRequestHandler):
             form_html += f'<script data-scenario="{esc(job.slug)}">{SCENARIO_JS}</script>'
         if job.spa_loading and status == HTTPStatus.OK:
             form_html = render_delayed(form_html)
-        body = _job_heading(job) + render_error_summary(entries) + form_html
+        # Jobvite's apply page names the job by its title only (no job id on the page).
+        heading = f"<h2>{esc(job.title)}</h2>" if job.data_consent else _job_heading(job)
+        body = heading + render_error_summary(entries) + form_html
+        if job.flash_closed and status == HTTPStatus.OK:
+            body = render_flash_closed(body)
         main_attrs, after_main = "", ""
         if job.cookie_banner and not self._consented():
             main_attrs, after_main = ' inert aria-hidden="true"', render_cookie_banner()
@@ -4032,6 +4729,155 @@ class Handler(BaseHTTPRequestHandler):
             + '<button type="submit">Submit application</button></form>'
         )
         self._send_html(HTTPStatus.OK, page("Apply: Marketing Operations Lead", body))
+
+    def get_breezy_like(self) -> None:
+        # A Breezy HR application as it renders live: no <label> anywhere. Each question is
+        # an <h3> (with a "*" span) before its control, custom questions are named
+        # section_<digits>_question_<n>, choice options sit in <ul class="options"> (the
+        # checkboxes have neither labels nor values), an SMS consent checkbox states its
+        # own text after the phone input, and the desired salary block has a currency
+        # select, an input and an unnamed pay-period select under one heading.
+        section = "section_1787064635874_question"
+
+        def heading(text: str, required: bool = True) -> str:
+            star = '<span title="Required" class="required">*</span>' if required else ""
+            return f'<h3><span class="polygot">{esc(text)}</span>{star}</h3>'
+
+        def question(text: str, control: str, kind: str = "") -> str:
+            return f'<li class="question"><div class="{kind}">{heading(text)}{control}</div></li>'
+
+        def options(name: str, labels: list[str], kind: str) -> str:
+            if kind == "radio":
+                items = "".join(
+                    f'<li class="option"><label><input type="radio" value="{esc(o)}" name="{name}" '
+                    f'required><span>{esc(o)}</span></label></li>' for o in labels)
+            else:
+                items = "".join(
+                    f'<li class="option"><input type="checkbox" name="{name}"><span>{esc(o)}</span></li>'
+                    for o in labels)
+            return f'<ul class="options">{items}</ul>'
+
+        divider = '<div class="form-divider"></div>'
+        body = (
+            "<h1>Director of Paid Media</h1>"
+            f'<p class="meta">{COMPANY} · Marketing · Remote (US) · Job ID BWA-BZ-172</p>'
+            '<form method="post" action="/forms/breezy-like" name="form" novalidate>'
+            '<div class="section"><div class="section-header"><h2>Personal Details</h2></div>'
+            + heading("Full Name") + '<input name="cName" type="text" placeholder="Full Name" required>'
+            + divider + heading("Email Address")
+            + '<input name="cEmail" type="email" placeholder="Email Address" required>'
+            + divider + heading("Phone Number", required=False)
+            + '<input name="cPhoneNumber" type="text" placeholder="Phone Number">'
+            '<ul class="options"><li class="option consent-form"><input type="checkbox" name="smsConsent">'
+            f"<span>By providing your phone number you agree to receive informational text messages "
+            f"from {COMPANY}. Message &amp; data rates may apply, reply STOP to opt out at any time."
+            "</span></li></ul>" + divider
+            + '<div class="desired-salary">' + heading("Desired Salary")
+            + '<span><select name="salaryCurrency"><option value="USD">US Dollar ($)</option>'
+            '<option value="CAD">Canadian Dollar ($)</option><option value="EUR">Euro (€)</option>'
+            '</select></span><input name="cSalary" type="text" placeholder="Desired Salary" required>'
+            '<select><option value="hourly">Hourly</option><option value="weekly">Weekly</option>'
+            '<option value="monthly">Monthly</option><option value="yearly" selected>Yearly</option>'
+            "</select></div></div>"
+            '<div class="section questions"><div class="section-header"><h2>Questions</h2></div><ul>'
+            + question("How many years have you spent leading a team of media buyers?",
+                       f'<input type="text" name="{section}_0" required>')
+            + question("What is your target salary for this role?",
+                       f'<input type="text" name="{section}_1" required>')
+            + question("Briefly describe the largest paid media budget you have owned.",
+                       f'<textarea name="{section}_2" required></textarea>')
+            + question("Have you managed paid media for more than 100 client accounts at one time?",
+                       options(f"{section}_3", ["Yes", "No"], "radio"), "multiplechoice")
+            + question("Which ad platforms have you managed budgets on?",
+                       options(f"{section}_4", ["Google Ads", "Meta", "LinkedIn", "TikTok"], "checkbox"),
+                       "checkboxes")
+            + "</ul></div>"
+            '<div class="section questions"><p>Completing this survey is voluntary.</p><ul>'
+            '<li class="question"><div class="multiplechoice"><h3 class="polygot">Race or Ethnicity</h3>'
+            '<ul class="options">'
+            + "".join(
+                f'<li class="option"><input id="race_{v}" type="radio" name="race_ethnicity" value="{v}">'
+                f'<label for="race_{v}"><span class="polygot">{esc(t)}</span></label></li>'
+                for v, t in (("white", "White (not Hispanic or Latino)"),
+                             ("black", "Black or African-American (not Hispanic or Latino)"),
+                             ("hispanic", "Hispanic or Latino"), ("decline", "I don't wish to answer")))
+            + "</ul></div></li></ul></div>"
+            '<button type="submit">Submit Application</button></form>'
+        )
+        self._send_html(HTTPStatus.OK, page("Apply: Director of Paid Media", body))
+
+    def get_ashby_like(self) -> None:
+        # An Ashby application as it renders live: no <form> (page script posts it), each
+        # question a field entry whose title is a <label for="<field path>">. Custom text
+        # questions take that id; a date picker's input has no id or name, so its label
+        # labels nothing, and it opens a react-datepicker calendar (a month listbox of day
+        # options and two unnamed month buttons) inside its entry while focused. A radio
+        # group shares one name; a checkbox group (and a second radio group) names each
+        # option after its own text ("Yes", "No"); a yes/no question is two type="submit"
+        # buttons with aria-pressed over a display:none checkbox. Placeholders only say
+        # what to do ("Type here...", "Pick date...").
+        entry = "ashby-application-form-field-entry"
+        title = "ashby-application-form-question-title"
+        referral, work, visa, relocate = (
+            "7c1e2a90-5b3d-4f6e-8a1b-2c3d4e5f6a7b_25b7ff0a-0000-4000-8000-00000000a001",
+            "0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f",
+            "cc031c31-0000-4000-8000-00000000a003",
+            "c60ace77-0000-4000-8000-00000000a004",
+        )
+
+        def text(path: str, label: str, placeholder: str = "Type here...", *, required: bool = True) -> str:
+            req = " required" if required else ""
+            return (f'<div class="{entry}" data-field-path="{path}"><label class="{title}" for="{path}">'
+                    f'{esc(label)}</label><input type="text" id="{path}" name="{path}" '
+                    f'placeholder="{esc(placeholder)}"{req}></div>')
+
+        def group(kind: str, path: str, question: str, opts: list[str], name: str | None) -> str:
+            items = "".join(
+                f'<div class="ashby-application-form-input-{kind}-group-option"><span>'
+                f'<input type="{kind}" id="{path}-labeled-{kind}-{i}" name="{esc(name or o)}"></span>'
+                f'<label for="{path}-labeled-{kind}-{i}">{esc(o)}</label></div>'
+                for i, o in enumerate(opts))
+            return (f'<div data-field-path="{path}"><fieldset class="{entry} '
+                    f'ashby-application-form-input-{kind}-group"><label class="{title}" for="{path}">'
+                    f"{esc(question)}</label>{items}</fieldset></div>")
+
+        body = (
+            "<h1>Performance Marketing Manager</h1>"
+            f'<p class="meta">{COMPANY} · Marketing · Remote (US) · Job ID BWA-AS-173</p>'
+            '<div id="form" class="ashby-application-form-container">'
+            + text("_systemfield_name", "Name")
+            + text("_systemfield_email", "Email", "hello@example.com...")
+            # The location lookup: its title labels nothing (the input has no id), and its
+            # suggestion list mounts in a portal of its own (ASHBY_LIKE_JS).
+            + f'<div class="{entry}" data-field-path="_systemfield_location"><label class="{title}" '
+            'for="_systemfield_location">Location</label><div class="ashby-autocomplete-container">'
+            '<input class="ashby-application-form-input-autocomplete" placeholder="Start typing..." '
+            'aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" role="combobox" value="">'
+            "</div></div>"
+            + text("bad815aa-0000-4000-8000-00000000a005", "What is your expected salary?")
+            + f'<div class="{entry}" data-field-path="52938440-0000-4000-8000-00000000a006">'
+            f'<label class="{title}" for="52938440-0000-4000-8000-00000000a006">If you were to receive '
+            "an offer, what is the earliest you could start?</label>"
+            '<div class="react-datepicker-wrapper"><div class="react-datepicker__input-container">'
+            '<input type="text" placeholder="Pick date..." class="ashby-application-form-input-date">'
+            "</div></div></div>"
+            + group("radio", referral, "How did you first hear about us?",
+                    ["Referral (Friend or Colleague)", "Recruiter Outreach", "Job board", "LinkedIn"],
+                    referral)
+            + group("radio", work, "How would you like to work?", ["On-site", "Hybrid", "Remote"], None)
+            + group("checkbox", visa, "Will you now or in the future require sponsorship?", ["Yes", "No"], None)
+            # Required, as Ashby marks it: a class whose ::after draws the "*".
+            + f'<div class="{entry}" data-field-path="{relocate}"><label class="{title} _required_f7cvd_91" '
+            f'for="{relocate}">Are you willing to relocate to Denver?</label>'
+            '<div class="ashby-application-form-input-yesno">'
+            '<button type="submit" aria-pressed="false" data-option="yes">Yes</button>'
+            '<button type="submit" aria-pressed="false" data-option="no">No</button>'
+            f'<input type="checkbox" tabindex="-1" name="{relocate}" style="display:none"></div></div>'
+            '<button type="button" class="ashby-application-form-submit-button">Submit Application</button>'
+            "</div><script>" + ASHBY_LIKE_JS + "</script>"
+        )
+        self._send_html(HTTPStatus.OK, page("Apply: Performance Marketing Manager", body,
+                                            '<style>._required_f7cvd_91::after { content: "*"; color: #b00; }</style>'))
 
     def get_apply_wording_posting(self) -> None:
         # The `standard` posting with one apply control of the requested wording and

@@ -62,6 +62,7 @@ from .runtime import (
     _BUTTONS_WITHIN,
     _DOCUMENT_IDENTITY,
     _EFFECTIVE_SUBMISSION,
+    _IN_OWN_POPUP,
     _NATIVE_VALIDITY,
     _READ_CHECKED,
     _READ_CONTROL,
@@ -216,6 +217,7 @@ _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
     COMBO_STATE, PHONE_STATE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN, _BUTTONS_WITHIN, UPLOAD_STATE,
+    _IN_OWN_POPUP,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
 
@@ -449,7 +451,7 @@ class OpenCliDriver:
         digest = result.get("sha256")
         return digest if isinstance(digest, str) and len(digest) == 64 else None
 
-    async def set_files(self, selector: str, path: Path) -> None:
+    async def set_files(self, selector: str, path: Path) -> bool:
         wanted = [{"name": path.name, "size": path.stat().st_size}]
         pinned = hashlib.sha256(path.read_bytes()).hexdigest()
         before = await self._control(selector)
@@ -458,7 +460,7 @@ class OpenCliDriver:
             # user). Only the actual bytes decide; an unverifiable file is never accepted.
             digest = await self._attached_digest(selector)
             if digest == pinned:
-                return
+                return True
             raise CapabilityUnsupported(
                 f"the file attached to {selector} is not the pinned {path.name} "
                 f"({'different contents' if digest else 'contents could not be verified'}); "
@@ -480,12 +482,13 @@ class OpenCliDriver:
         self._check_match(envelope, f"upload {selector}")
         after = await self._files(selector)
         if after in ([], None) and await file_shown(self, selector, path.name, anchor=anchor):
-            return  # the uploader took the file from its input (or replaced it) and shows it
+            return False  # the uploader took the file and shows it; its bytes are not readable
         after = await self._control(selector)
         if after.get("files") != wanted:
             raise UnverifiedAction(f"upload {selector}: the field holds {after.get('files')!r}")
         if await self._attached_digest(selector) != pinned:
             raise UnverifiedAction(f"upload {selector}: the attached bytes are not the pinned file")
+        return True
 
     async def _files(self, selector: str) -> Any:
         state = await self.evaluate(_CONTROL_STATE, selector)

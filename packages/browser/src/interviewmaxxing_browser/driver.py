@@ -17,8 +17,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from playwright.async_api import ElementHandle, Page, Request, Response
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page, Request, Response
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 
@@ -68,7 +68,11 @@ class PageDriver(Protocol):
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None: ...
 
-    async def set_files(self, selector: str, path: Path) -> None: ...
+    async def set_files(self, selector: str, path: Path) -> bool | None:
+        """Attach ``path`` and verify it. Returns whether the attached bytes themselves
+        were verified (False: accepted on the uploader's own display of the file, the
+        page having kept no readable copy of the bytes; None: not reported)."""
+        ...
 
     async def click(self, selector: str, *, trial: bool = False) -> None:
         """Click once without waiting for navigation. ``trial`` checks actionability
@@ -120,6 +124,13 @@ _CONTEXT_LOST = re.compile(
     re.IGNORECASE,
 )
 
+
+def _context_lost(exc: Exception) -> bool:
+    """A Playwright error caused by the document going away. Only the error's own
+    message counts: its call log always ends "waiting for scheduled navigations to
+    finish", so a click that merely did not take would read as a navigation."""
+    return _CONTEXT_LOST.search(str(exc).split("Call log:")[0]) is not None
+
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -144,6 +155,15 @@ def reject_control_characters(text: str, selector: str) -> None:
 _FILE_DIGEST = (
     "async (sel) => { const el = document.querySelector(sel); if (!el || !el.files || !el.files.length) "
     "return null; if (!(globalThis.crypto && globalThis.crypto.subtle)) return null; const buf = await el.files[0].arrayBuffer(); "
+    "const d = await crypto.subtle.digest('SHA-256', buf); "
+    "return {origin: String(performance.timeOrigin), url: location.href, sha256: Array.from(new Uint8Array(d))"
+    ".map((b) => b.toString(16).padStart(2, '0')).join('')}; }"
+)
+# The same for one element (the input a file was just set on): null once the page removed
+# it from the document, since a detached input's files are nobody's upload.
+_ELEMENT_DIGEST = (
+    "async (el) => { if (!el.isConnected || !el.files || !el.files.length) return null; "
+    "if (!(globalThis.crypto && globalThis.crypto.subtle)) return null; const buf = await el.files[0].arrayBuffer(); "
     "const d = await crypto.subtle.digest('SHA-256', buf); "
     "return {origin: String(performance.timeOrigin), url: location.href, sha256: Array.from(new Uint8Array(d))"
     ".map((b) => b.toString(16).padStart(2, '0')).join('')}; }"
@@ -173,22 +193,36 @@ FILE_ANCHOR = (
 )
 
 # Read-only: whether a file input's uploader shows the file's name and no error alert or
-# progress: the input's own container (see FILE_ANCHOR), or the anchor when the input is
-# gone. Also the number of files the input itself holds (null without the input).
+# progress (a progress bar, or "Uploading…"-style text): the input's own container (see
+# FILE_ANCHOR), or the anchor when the input is gone. The input is gone when the element
+# the file was set on (``attached``, when the driver holds it) left the document, or when
+# the selector now names another kind of element or several: an uploader may hand the
+# input's id on to a fresh input and to a hidden field of its preview (Teamtailor's
+# Dropzone). Also the number of files the input itself holds (null without the input).
 FILE_SHOWN = (
-    "(arg) => { const el = document.querySelector(arg.selector); "
+    "(arg) => { let found = []; try { found = [...document.querySelectorAll(arg.selector)]; } catch (e) { found = []; } "
+    "let anchored = null; if (arg.anchor) { try { const a = document.querySelectorAll(arg.anchor); "
+    "if (a.length === 1) anchored = a[0]; } catch (e) { anchored = null; } } "
+    "const attached = arg.attached && arg.attached.nodeType === 1 ? arg.attached : null; "
+    "const replaced = found.length > 1 || (found.length === 1 && found[0].type !== 'file'); "
+    "let el = found[0] || null; "
+    "if (attached && attached.isConnected) el = attached; else if ((attached || replaced) && anchored) el = null; "
     "const norm = (t) => String(t || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase(); "
     "const fields = 'input:not([type=hidden]),select,textarea,[role=combobox],[role=textbox]'; let box = null; "
     "if (el) { for (let n = el.parentElement, d = 0; n && d < 8 && n !== document.body && n.tagName !== 'FORM'; "
     "n = n.parentElement, d++) { if ([...n.querySelectorAll(fields)].some((f) => f !== el)) break; box = n; } } "
-    "if (!box && arg.anchor) { const found = document.querySelectorAll(arg.anchor); if (found.length === 1) box = found[0]; } "
+    "if (!box) box = anchored; "
     "if (!box) return {shown: false, alert: false, busy: false, files: el && el.files ? el.files.length : null}; "
     "const seen = (e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); "
     "return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; }; "
+    "const BUSY = /^(?:uploading|parsing|processing|analy[sz]ing|scanning|loading|autofilling|reading|please wait)\\b/; "
+    "let working = [...box.querySelectorAll('[role=progressbar]')].some(seen); "
+    "const texts = document.createTreeWalker(box, NodeFilter.SHOW_TEXT); "
+    "for (let t = texts.nextNode(); t && !working; t = texts.nextNode()) { const s = norm(t.nodeValue); "
+    "working = !!s && s.length <= 80 && BUSY.test(s) && !!t.parentElement && seen(t.parentElement); } "
     "return {origin: String(performance.timeOrigin), url: location.href, "
     "files: el && el.files ? el.files.length : null, "
-    "shown: !!arg.name && norm(box.innerText).includes(norm(arg.name)), "
-    "busy: [...box.querySelectorAll('[role=progressbar]')].some(seen), "
+    "shown: (arg.names || []).some((n) => !!n && norm(box.innerText).includes(norm(n))), busy: working, "
     "alert: [...box.querySelectorAll('[role=alert],[aria-invalid=true]')].some((a) => seen(a) && "
     "(a.getAttribute('aria-invalid') === 'true' || norm(a.textContent)))}; }"
 )
@@ -234,21 +268,46 @@ async def file_anchor(driver: PageDriver, selector: str) -> str | None:
     return anchor if isinstance(anchor, str) else None
 
 
+def shown_names(name: str) -> list[str]:
+    """How an uploader may show a file just attached: its name, its name cut short
+    ("resume-avery-…pdf": the first half of the stem, at least 8 characters), or a count
+    ("1 file selected")."""
+    stem = Path(name).stem
+    forms = [name, "1 file"]
+    if len(stem) >= 8:
+        forms.append(stem[:max(8, len(stem) // 2)])
+    return forms
+
+
+UPLOAD_BUSY_S = 15.0
+"""How long ``file_shown`` keeps waiting while the uploader shows its upload in progress."""
+
+
 async def file_shown(driver: PageDriver, selector: str, name: str, *, anchor: str | None = None,
-                     wait_s: float = 3.0, emptied: bool = True) -> bool:
+                     wait_s: float = 3.0, emptied: bool = True, attached: Any = None) -> bool:
     """Whether a file input's uploader took the file: its container, or ``anchor`` when
-    the input is gone, shows ``name`` with no error alert once any progress bar is done,
-    and (with ``emptied``) the input itself holds no file (it was emptied, or replaced by
-    the file's name). Waits (bounded) for the widget to render."""
+    the input is gone (``attached``, the element the file was set on, left the document,
+    or the selector now names another element or several), shows ``name`` with no error
+    alert once any progress is done, and (with ``emptied``) the input itself holds no
+    file (it was emptied, or replaced by the file's name). Waits ``wait_s`` for the widget
+    to render, and longer while it shows the upload in progress (a progress bar,
+    "Uploading…"), up to ``UPLOAD_BUSY_S`` in all."""
     loop = asyncio.get_running_loop()
-    end = loop.time() + wait_s
+    start = loop.time()
+    end = start + wait_s
+    arg: dict[str, Any] = {"selector": selector, "names": shown_names(name), "anchor": anchor}
+    if attached is not None:
+        arg["attached"] = attached
     while True:
-        state = await driver.evaluate(FILE_SHOWN, {"selector": selector, "name": name, "anchor": anchor})
+        state = await driver.evaluate(FILE_SHOWN, arg)
         if isinstance(state, dict) and state.get("alert"):
             return False
         if isinstance(state, dict) and state.get("shown") and not state.get("busy"):
             return not emptied or state.get("files") in (0, None)
-        if loop.time() >= end:
+        now = loop.time()
+        if wait_s > 0 and isinstance(state, dict) and state.get("busy"):
+            end = max(end, min(start + UPLOAD_BUSY_S, now + wait_s))
+        if now >= end:
             return False
         await asyncio.sleep(0.1)
 
@@ -320,7 +379,7 @@ class PlaywrightDriver:
         try:
             return await self.page.evaluate(expression, arg)
         except PlaywrightError as exc:
-            if _CONTEXT_LOST.search(str(exc)):
+            if _context_lost(exc):
                 raise PageContextLost(f"page context unavailable: {exc}") from exc
             raise DriverError(f"page read failed: {exc}") from exc
 
@@ -329,9 +388,7 @@ class PlaywrightDriver:
 
     def _guard(self, before: tuple[int, int], what: str, exc: Exception | None = None) -> None:
         """Raise ``PageContextLost`` when the document changed during ``what``."""
-        lost = before != self._doc_mark() or (
-            exc is not None and _CONTEXT_LOST.search(str(exc)) is not None
-        )
+        lost = before != self._doc_mark() or (exc is not None and _context_lost(exc))
         if lost:
             raise PageContextLost(f"the page navigated while {what}; re-inspect before continuing")
 
@@ -404,47 +461,61 @@ class PlaywrightDriver:
             raise NotActionable(f"could not set {selector} via its label: {exc}") from exc
         self._guard(before, f"setting {selector}")
 
-    async def set_files(self, selector: str, path: Path) -> None:
+    async def set_files(self, selector: str, path: Path) -> bool:
         """Attach ``path`` to the file input directly (hidden inputs behind an "Attach"
         button or a drop zone included) and verify it: the bytes the input holds; or, when
         the uploader emptied or replaced its input, the bytes it was handed with its
         input/change event (when the page can hash them) and its own display of the
-        file's name without an error (``file_shown``)."""
+        file's name without an error (``file_shown``). Everything is read from the element
+        the file was set on: once the uploader removed it, the selector may name a fresh
+        input or another field that took over its id. Returns whether the bytes were
+        verified (False: accepted on that display alone)."""
         pinned = hashlib.sha256(path.read_bytes()).hexdigest()
         before = self._doc_mark()
         anchor = await file_anchor(self, selector)
         locator = self.page.locator(selector)
         delivered: Any = None
+        attached: ElementHandle | None = None
         try:
-            capture = await locator.evaluate_handle(_ARM_FILE_CAPTURE, timeout=self._timeout_ms)
             try:
-                await locator.set_input_files(str(path), timeout=self._timeout_ms)
-                delivered = await capture.evaluate(_CAPTURED_DIGEST)
-            finally:
-                with contextlib.suppress(PlaywrightError):
-                    await capture.evaluate("(box) => box.dispose()")
-                with contextlib.suppress(PlaywrightError):
-                    await capture.dispose()
-        except PlaywrightError as exc:
-            self._guard(before, f"attaching a file to {selector}", exc)
-            raise NotActionable(f"could not attach a file to {selector}: {exc}") from exc
-        self._guard(before, f"attaching a file to {selector}")
-        held = await self.evaluate(_FILE_DIGEST, selector)
-        self._guard(before, f"verifying the file attached to {selector}")
-        if isinstance(held, dict):
-            # The input still holds a file: its own bytes decide.
-            if held.get("sha256") == pinned:
-                return
-            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
-        if isinstance(delivered, dict) and delivered.get("sha256") != pinned:
-            raise DriverError(f"the bytes delivered to {selector} are not {path.name}")
-        if held is None and await file_shown(self, selector, path.name, anchor=anchor):
-            # The uploader took the file (the bytes it was handed are this exact path's,
-            # verified above when the page could hash them) and emptied or replaced its
-            # input; it shows the file's name and no error.
+                attached = await locator.element_handle(timeout=self._timeout_ms)
+                capture = await attached.evaluate_handle(_ARM_FILE_CAPTURE)
+                try:
+                    await attached.set_input_files(str(path), timeout=self._timeout_ms)
+                    delivered = await capture.evaluate(_CAPTURED_DIGEST)
+                finally:
+                    with contextlib.suppress(PlaywrightError):
+                        await capture.evaluate("(box) => box.dispose()")
+                    with contextlib.suppress(PlaywrightError):
+                        await capture.dispose()
+            except PlaywrightError as exc:
+                self._guard(before, f"attaching a file to {selector}", exc)
+                raise NotActionable(f"could not attach a file to {selector}: {exc}") from exc
+            self._guard(before, f"attaching a file to {selector}")
+            try:
+                held = await attached.evaluate(_ELEMENT_DIGEST)
+            except PlaywrightError as exc:
+                self._guard(before, f"verifying the file attached to {selector}", exc)
+                raise DriverError(f"could not read the file attached to {selector}: {exc}") from exc
             self._guard(before, f"verifying the file attached to {selector}")
-            return
-        raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+            if isinstance(held, dict):
+                # The input still holds a file: its own bytes decide.
+                if held.get("sha256") == pinned:
+                    return True
+                raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+            if isinstance(delivered, dict) and delivered.get("sha256") != pinned:
+                raise DriverError(f"the bytes delivered to {selector} are not {path.name}")
+            if held is None and await file_shown(self, selector, path.name, anchor=anchor, attached=attached):
+                # The uploader took the file (the bytes it was handed are this exact path's,
+                # verified above when the page could hash them) and emptied or replaced its
+                # input; it shows the file's name and no error.
+                self._guard(before, f"verifying the file attached to {selector}")
+                return isinstance(delivered, dict)
+            raise DriverError(f"the attached bytes in {selector} could not be verified as {path.name}")
+        finally:
+            if attached is not None:
+                with contextlib.suppress(PlaywrightError):
+                    await attached.dispose()
 
     async def click(self, selector: str, *, trial: bool = False) -> None:
         if not trial:

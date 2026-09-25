@@ -37,6 +37,14 @@ class DomFile(_Raw):
     size: int
 
 
+class DomPressedOption(_Raw):
+    """One toggle button (``aria-pressed``) of a yes/no question drawn as buttons."""
+
+    label: str
+    selector: str
+    pressed: bool = False
+
+
 class DomControl(_Raw):
     kind: str
     """``native`` (input/select/textarea) or ``custom`` (ARIA widget, contenteditable)."""
@@ -63,6 +71,22 @@ class DomControl(_Raw):
     preceding: str = ""
     """Visible text of the nearest previous sibling block of the control's own box (or
     of its group's container): a question shown before an unlabeled control."""
+    question: str = ""
+    """The question its own box states without labelling it: a ``<label>`` that labels
+    nothing (Ashby's ``for`` a stable field path no element has), else the heading its
+    block opens with (Breezy's ``<h3>``) when no other field there has a label."""
+    question_for: str = ""
+    """That label's ``for`` value: the field's stable id when the control has none."""
+    option_text: str = ""
+    """An unlabelled radio or checkbox group member's own text (the box around it that
+    holds no other field): the option's label, never the group's question."""
+    choice_group: str = ""
+    """Selector of the question box (a fieldset or ``[role=radiogroup]``) that groups
+    options without a shared name (Ashby's ``name="Yes"``/``name="No"`` checkboxes)."""
+    pressed_options: list[DomPressedOption] = Field(default_factory=list)
+    """A checkbox that only mirrors a yes/no question drawn as toggle buttons (Ashby: two
+    ``aria-pressed`` buttons over a ``display:none`` checkbox): the buttons, which are the
+    question's options. Only buttons that cannot submit a form by themselves."""
     label_selector: str | None
     required: bool
     disabled: bool
@@ -98,6 +122,11 @@ class DomControl(_Raw):
     to it (its label, an "Upload"/"Attach" button or link in its own box, or a control
     naming it in ``aria-controls``); "" when there is none. A hidden input with a
     trigger is still an operable upload control (it is attached directly)."""
+    upload_anchor: str = ""
+    """For a file input in an upload popup outside every form (Jobvite's "Attachment
+    Options", opened by a button in the form): a selector of that button's box, where the
+    uploader shows the attached file; "" otherwise (the runtime then finds the input's
+    own container)."""
 
 
 class DomButton(_Raw):

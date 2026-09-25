@@ -24,14 +24,21 @@ from interviewmaxxing_core import (
     SemanticType,
 )
 
+from .signals import CONSENT_GATE_ACTION
+
 ATTESTATION_TYPES = frozenset({SemanticType.ATTESTATION, SemanticType.CONSENT})
 
 
 def user_action_needs(inspection: PageInspection) -> list[MissingInput]:
-    """A ``USER_ACTION`` item for a sign-in or CAPTCHA page, else nothing."""
+    """A ``USER_ACTION`` item for a sign-in or CAPTCHA page, else nothing. A data-processing
+    consent page in front of the form is reported as ``SIGN_IN_REQUIRED`` (the user passes
+    it the same way); its item says to accept the consent."""
     if inspection.kind not in USER_ACTION_PAGES:
         return []
-    what = "Sign in" if inspection.kind is PageKind.SIGN_IN_REQUIRED else "Solve the CAPTCHA"
+    if CONSENT_GATE_ACTION in (inspection.message or ""):
+        what = "Accept the data-processing consent"
+    else:
+        what = "Sign in" if inspection.kind is PageKind.SIGN_IN_REQUIRED else "Solve the CAPTCHA"
     return [
         MissingInput(
             field_id=None,

@@ -95,6 +95,7 @@ from .driver import (
     PageDriver,
     file_anchor,
     file_shown,
+    shown_names,
 )
 from .evidence import EvidenceRecorder
 from .normalize import FieldBinding, PageModel, build_page, detect_ats
@@ -140,7 +141,13 @@ _READ_CONTROL = """(sel) => {
   return {value: el.value};
 }"""
 
-_READ_CHECKED = """(sels) => sels.map((s) => { const e = document.querySelector(s); return e ? e.checked : null; })"""
+_READ_CHECKED = """(sels) => sels.map((s) => {
+  const e = document.querySelector(s);
+  if (!e) return null;
+  // A toggle-button option (Ashby's yes/no) is chosen when it is pressed.
+  if (e.tagName === 'BUTTON' && e.hasAttribute('aria-pressed')) return e.getAttribute('aria-pressed') === 'true';
+  return e.checked;
+})"""
 
 _NATIVE_VALIDITY = """({form, button}) => {
   const f = form ? document.querySelector(form) : null;
@@ -182,6 +189,10 @@ _FLICKER_S = 1.0
 the approved observation counts as a changed page."""
 _FLICKER_POLL_S = 0.1
 _READY_SETTLE_S = 5.0
+_CLOSED_CONFIRM_S = 2.0
+_TYPED_CONTROLS = re.compile(r"[\r\n\t]")
+"""Characters a retype enters with ``fill``, never as key presses."""
+"""How long closed wording must persist, without HTTP 404/410, to count as closed."""
 """Upper bound on the network/document settle inside one readiness wait."""
 _OVERLAY_WAIT_S = 8.0
 """Upper bound on waiting out loading overlays (a "Loading..." autofill button, a busy
@@ -322,6 +333,13 @@ def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
     buttons = [b.model_copy(update={"disabled": False, "selector": identity[b.selector]})
                for b in model.snapshot.buttons if b.selector not in skip_buttons]
     controls = [c for c in model.snapshot.controls if c.selector not in skip_controls]
+    if stable:
+        # Element paths this inspector reports beyond the ones observation_signature
+        # leaves out: an option group's box, toggle-button options, an uploader's box.
+        controls = [c.model_copy(update={
+            "choice_group": "", "upload_anchor": "",
+            "pressed_options": [o.model_copy(update={"selector": ""}) for o in c.pressed_options]})
+            for c in controls]
     snapshot = model.snapshot.model_copy(update={"buttons": buttons, "controls": controls})
     inspection = model.inspection
     if model.form is not None:
@@ -345,6 +363,33 @@ _BUTTONS_WITHIN = """(arg) => {
     let button = null;
     try { button = document.querySelector(s); } catch (e) { button = null; }
     return !!button && boxes.some((box) => box.contains(button));
+  });
+}"""
+
+
+# Read-only: which of the given elements lie inside the popups the widget ``owner`` owns
+# now (what its aria-controls/aria-owns name, or a menu button's data-menu-id), each taken
+# up to its outermost ancestor that does not contain the owner: a portal of its own.
+_IN_OWN_POPUP = """(arg) => {
+  const owner = document.querySelector(arg.owner);
+  const roots = [];
+  if (owner) {
+    const ids = ['aria-controls', 'aria-owns'].flatMap((a) => (owner.getAttribute(a) || '').split(/\\s+/)).filter(Boolean);
+    if (!ids.length && owner.getAttribute('data-menu-id')) ids.push(owner.getAttribute('data-menu-id'));
+    for (const id of ids) {
+      const popup = document.getElementById(id);
+      if (!popup || popup.contains(owner)) continue;
+      let root = popup;
+      while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(owner)) {
+        root = root.parentElement;
+      }
+      roots.push(root);
+    }
+  }
+  return arg.selectors.map((s) => {
+    let el = null;
+    try { el = document.querySelector(s); } catch (e) { el = null; }
+    return !!el && roots.some((root) => root.contains(el));
   });
 }"""
 
@@ -425,6 +470,9 @@ class GenericApplicationBrowser:
         self._steps_advanced = 0
         self._last: PageModel | None = None
         self._identity: JobIdentityObservation | None = None
+        self._posting_identity: JobIdentityObservation | None = None
+        """What the page ``open()`` loaded first showed (a posting's identity), see
+        ``_continuing_posting``."""
         self._filled: tuple[str, str] | None = None  # (scope key, form fingerprint)
         self._context_lost = False
         """The document was replaced mid-fill; fresh inspection and refill are required."""
@@ -435,6 +483,8 @@ class GenericApplicationBrowser:
         """The form the current (then the last) fill is authorized against."""
         self._uploader_buttons: frozenset[str] = frozenset()
         """Buttons of ``_fill_model`` inside the containers of this runtime's uploads."""
+        self._uploader_helpers: frozenset[str] = frozenset()
+        """Hidden controls of ``_fill_model`` inside those containers (see ``_helpers_within``)."""
         self._uploads: dict[str, _Upload] = {}
         """Files attached in this document whose input the uploader emptied or replaced."""
         self._pending: _PendingSubmit | None = None
@@ -494,6 +544,9 @@ class GenericApplicationBrowser:
                     snapshot = await self._snapshot()
                     model = build_page(snapshot, fallback_step=self._steps_advanced,
                                        http_status=self.driver.last_status)
+            # This runtime's uploads are restored before annotation, so the provider
+            # annotates, and later resolves reuse, the form this runtime returns.
+            model = await self._with_uploads(model)
             if self.annotator is None or model.form is None:
                 break
             if document != str(await self.driver.evaluate(_DOCUMENT_IDENTITY)):
@@ -508,8 +561,8 @@ class GenericApplicationBrowser:
             )
             form = semantic_only(original, annotated)
             fresh_snapshot = await self._snapshot()
-            fresh = build_page(fresh_snapshot, fallback_step=self._steps_advanced,
-                               http_status=self.driver.last_status)
+            fresh = await self._with_uploads(build_page(
+                fresh_snapshot, fallback_step=self._steps_advanced, http_status=self.driver.last_status))
             if (document != str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
                     or observation_signature(model, include_values=True)
                     != observation_signature(fresh, include_values=True)):
@@ -520,7 +573,6 @@ class GenericApplicationBrowser:
             break
         else:
             raise PageContextLost("form changed repeatedly during semantic annotation; inspect again")
-        model = await self._with_uploads(model)
         refs: list[EvidenceRef] = []
         if evidence:
             refs = await self._evidence.capture(
@@ -540,9 +592,11 @@ class GenericApplicationBrowser:
     async def _with_uploads(self, model: PageModel) -> PageModel:
         """Keep a file question this runtime answered in this document as it was approved
         while its uploader shows that file: the uploader may replace the input with the
-        file's name (Greenhouse unmounts the input and its Attach and cloud buttons) or
-        show the name beside it (Workable). The question is still on the page, answered;
-        the name it shows is the answer, not new wording."""
+        file's name (Greenhouse unmounts the input and its Attach and cloud buttons), show
+        the name beside it (Workable), or mount a fresh input that takes over the question
+        (Teamtailor's Dropzone: the same question, bound to another element). The
+        question is still on the page, answered; the name it shows is the answer, not new
+        wording, and the new input is not a new control to attach to again."""
         form = model.form
         if not self._uploads or form is None:
             return model
@@ -553,7 +607,8 @@ class GenericApplicationBrowser:
             if upload.document != model.snapshot.document:
                 continue
             present = next((i for i, f in enumerate(fields) if f.id == field_id), None)
-            if present is not None and fields[present].fingerprint == upload.field.fingerprint:
+            if (present is not None and fields[present].fingerprint == upload.field.fingerprint
+                    and bindings.get(field_id) == upload.binding):
                 continue
             if not await file_shown(self.driver, upload.binding.selector, upload.name,
                                     anchor=upload.anchor, wait_s=0.0, emptied=False):
@@ -561,6 +616,7 @@ class GenericApplicationBrowser:
             changed = True
             if present is not None:
                 fields[present] = upload.field
+                bindings[field_id] = upload.binding
                 continue
             fields.insert(upload.index if 0 <= upload.index <= len(fields) else len(fields), upload.field)
             bindings[field_id] = upload.binding
@@ -601,6 +657,8 @@ class GenericApplicationBrowser:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.settle_timeout_s
         model = await self._model()
+        if model.inspection.kind is PageKind.JOB_CLOSED:
+            model = await self._confirm_closed(model, deadline)
         if model.inspection.kind is not PageKind.UNKNOWN:
             return model
         await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
@@ -614,6 +672,26 @@ class GenericApplicationBrowser:
                 break
             previous = key
         return model
+
+    async def _confirm_closed(self, model: PageModel, deadline: float) -> PageModel:
+        """Closed wording is final only when the server says so (HTTP 404/410) or when it
+        persists: an SPA may render "Job not found" before its data arrives, and an
+        error fallback may use that wording. The page settles and is read again for
+        ``_CLOSED_CONFIRM_S``; a later reading that is no longer closed wins."""
+        if self.driver.last_status in (404, 410):
+            return model
+        loop = asyncio.get_running_loop()
+        await self.driver.settle(max(0.0, min(_READY_SETTLE_S, deadline - loop.time())))
+        end = min(deadline, loop.time() + _CLOSED_CONFIRM_S)
+        while True:
+            model = await self._model()
+            if model.inspection.kind is not PageKind.JOB_CLOSED:
+                return model
+            if loop.time() >= end and not model.snapshot.loading_indicator:
+                return model
+            if loop.time() >= deadline:
+                return model
+            await asyncio.sleep(_READY_POLL_S)
 
     @staticmethod
     def _readiness_key(model: PageModel) -> tuple[str, int, int]:
@@ -771,7 +849,7 @@ class GenericApplicationBrowser:
         consent_done = await self._dismiss_cookie_banner(model)
         if consent_done:
             model = await self._await_ready()
-        posting_identity = model.inspection.job_identity
+        posting_identity = self._posting_identity = model.inspection.job_identity
         for _ in range(2):
             if model.inspection.kind is not PageKind.JOB_DESCRIPTION:
                 break
@@ -998,6 +1076,7 @@ class GenericApplicationBrowser:
         self._active_fill_signature = _guard_signature(model)
         self._stable_fill_signature = _guard_signature(model, stable=True)
         self._uploader_buttons = await self._buttons_within(model, self._upload_anchors(model))
+        self._uploader_helpers = await self._helpers_within(model, self._upload_anchors(model))
 
     def _current_binding(self, field_id: str) -> FieldBinding:
         model = self._fill_model
@@ -1041,7 +1120,7 @@ class GenericApplicationBrowser:
             self.menus.reset()
             raise PageContextLost("the page changed while filling; re-inspect before continuing")
 
-    async def _assert_fill_freshness(self, *, rebind: bool = False) -> bool:
+    async def _assert_fill_freshness(self, *, rebind: bool = False, widget: str | None = None) -> bool:
         """Check trusted DOM constraints before every mutation, never reclassify.
 
         This also runs between individual checkbox-group writes. An earlier input
@@ -1055,6 +1134,10 @@ class GenericApplicationBrowser:
         re-render that only regenerated selectors (the same questions, constraints,
         options, actions and context) is re-read and True is returned: the write must
         then go through the control re-resolved by its field id, never a stale selector.
+        With ``widget`` (the check between the steps of operating that control), a
+        difference confined to the popup the widget owns (its menu or suggestion list and
+        that list's own container) is tolerated. Selectors that the mounted popup shifts
+        are tolerated as well; the approved observation stays as it is.
         Anything else aborts the fill.
         """
         await self._assert_fill_context()
@@ -1078,15 +1161,43 @@ class GenericApplicationBrowser:
         if rebind and _guard_signature(fresh, stable=True) == self._stable_fill_signature:
             await self._set_fill_model(fresh)
             return True
+        if widget is not None and await self._only_own_popup_changed(fresh, widget):
+            # Ashby mounts a lookup's suggestion list in a portal of its own while it is
+            # operated: the page returns to the approved observation once it closes.
+            return False
         raise PageContextLost(
             "questions, bindings, actions, or employer context changed while filling; "
             "remaining answers were not attempted; re-inspect and resolve again"
         )
 
-    async def _check_before_action(self) -> None:
+    async def _check_before_action(self, widget: str | None = None) -> None:
         """The freshness check between the steps of one widget operation (opening a
-        menu, choosing its option): selectors may not change there."""
-        await self._assert_fill_freshness()
+        menu, choosing its option). Apart from the widget's own popup, nothing may
+        change there."""
+        await self._assert_fill_freshness(widget=widget)
+
+    async def _only_own_popup_changed(self, fresh: PageModel, widget: str) -> bool:
+        """Whether ``fresh`` differs from the approved observation only inside the popup
+        that ``widget`` owns now (``_IN_OWN_POPUP``: a suggestion list, its portal) and in
+        the selectors that popup shifts while it is mounted. The widget itself must still
+        be bound where it was."""
+        if self._stable_fill_signature is None or widget not in {c.selector for c in fresh.snapshot.controls}:
+            return False
+        controls = [c.selector for c in fresh.snapshot.controls]
+        buttons = [b.selector for b in fresh.snapshot.buttons]
+        try:
+            inside = await self.driver.evaluate(
+                _IN_OWN_POPUP, {"owner": widget, "selectors": [*controls, *buttons]})
+        except PageContextLost:
+            raise
+        except DriverError:
+            return False  # unknown: nothing is tolerated
+        if not isinstance(inside, list) or len(inside) != len(controls) + len(buttons):
+            return False
+        own_controls = {s for s, flag in zip(controls, inside[:len(controls)], strict=True) if flag}
+        own_buttons = {s for s, flag in zip(buttons, inside[len(controls):], strict=True) if flag}
+        return (_guard_signature(fresh, skip_controls=own_controls, skip_buttons=own_buttons, stable=True)
+                == self._stable_fill_signature)
 
     def _transient(self, model: PageModel) -> bool:
         """The page looks mid re-render: the form or some of the fill's controls are
@@ -1145,9 +1256,19 @@ class GenericApplicationBrowser:
     async def _buttons_within(self, model: PageModel, anchors: Sequence[str]) -> frozenset[str]:
         """Selectors of ``model``'s buttons that lie inside the given uploader containers
         now (read-only; only meaningful while the page still matches ``model``)."""
-        if not anchors or not model.snapshot.buttons:
+        return await self._within(anchors, [b.selector for b in model.snapshot.buttons])
+
+    async def _helpers_within(self, model: PageModel, anchors: Sequence[str]) -> frozenset[str]:
+        """Selectors of ``model``'s hidden controls (never shown, so never questions) inside
+        the given uploader containers now: an uploader's own inputs, such as the fresh
+        input Dropzone mounts after taking a file and a preview's field for the stored
+        file's URL (Teamtailor)."""
+        return await self._within(anchors, [c.selector for c in model.snapshot.controls if not c.visible])
+
+    async def _within(self, anchors: Sequence[str], selectors: list[str]) -> frozenset[str]:
+        """Which of ``selectors`` lie inside the given uploader containers now (read-only)."""
+        if not anchors or not selectors:
             return frozenset()
-        selectors = [b.selector for b in model.snapshot.buttons]
         try:
             inside = await self.driver.evaluate(_BUTTONS_WITHIN, {"anchors": list(anchors), "selectors": selectors})
         except PageContextLost:
@@ -1164,9 +1285,12 @@ class GenericApplicationBrowser:
         it is (text, kind, form, request), not by where it sits or whether it is enabled."""
         uploaded = {u.binding.selector for u in self._uploads.values()
                     if u.document == fresh.snapshot.document}
-        inside = await self._buttons_within(fresh, self._upload_anchors(fresh))
-        return (_guard_signature(approved, skip_buttons=self._uploader_buttons, skip_controls=uploaded)
-                == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded))
+        anchors = self._upload_anchors(fresh)
+        inside = await self._buttons_within(fresh, anchors)
+        helpers = await self._helpers_within(fresh, anchors)
+        return (_guard_signature(approved, skip_buttons=self._uploader_buttons,
+                                 skip_controls=uploaded | self._uploader_helpers)
+                == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded | helpers))
 
     async def _only_uploads_changed(self, fresh: PageModel) -> bool:
         """Whether ``fresh`` differs from the approved observation only inside the
@@ -1183,8 +1307,10 @@ class GenericApplicationBrowser:
         uploaded = {u.binding.selector for u in self._uploads.values()
                     if u.document == fresh.snapshot.document}
         inside = await self._buttons_within(fresh, anchors)
-        return (_guard_signature(approved, skip_buttons=self._uploader_buttons, skip_controls=uploaded)
-                == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded))
+        helpers = await self._helpers_within(fresh, anchors)
+        return (_guard_signature(approved, skip_buttons=self._uploader_buttons,
+                                 skip_controls=uploaded | self._uploader_helpers)
+                == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded | helpers))
 
     async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
         if await self._assert_fill_freshness(rebind=True):
@@ -1279,7 +1405,7 @@ class GenericApplicationBrowser:
             async def look_up() -> None:
                 outcomes.append(await fill_lookup(
                     self.driver, binding.selector, value.text, dict(binding.aria or {}),
-                    lookup_matches, before_action=self._check_before_action))
+                    lookup_matches, before_action=partial(self._check_before_action, binding.selector)))
 
             await self._write(look_up)
             outcome = outcomes[0]
@@ -1299,7 +1425,7 @@ class GenericApplicationBrowser:
                 async def select_accessible() -> None:
                     selected.extend(await self.driver.select_accessible(
                         binding.selector, [value.value], dict(binding.aria or {}),
-                        before_action=self._check_before_action))
+                        before_action=partial(self._check_before_action, binding.selector)))
 
                 await self._write(select_accessible)
                 if selected == [value.value] and (binding.aria or {}).get("probed"):
@@ -1314,9 +1440,19 @@ class GenericApplicationBrowser:
             got = (await self._read(binding.selector)).get("values")
             return result(isinstance(got, list) and set(got) == set(wanted), got)
         if isinstance(value, ChoiceValue) and ctype is ControlType.RADIO:
-            await self._write(lambda: self.driver.set_checked(
-                binding.option_selectors[value.value], True,
-                label_selector=binding.label_selectors.get(value.value)))
+            option = binding.option_selectors[value.value]
+            if binding.pressed:
+                # A toggle-button option is clicked once unless it is pressed already
+                # (clicking it again could release it).
+                async def press() -> None:
+                    if not (await self.driver.evaluate(_READ_CHECKED, [option]))[0]:
+                        await self.driver.click(option, trial=True)
+                        await self.driver.click(option)
+
+                await self._write(press)
+            else:
+                await self._write(lambda: self.driver.set_checked(
+                    option, True, label_selector=binding.label_selectors.get(value.value)))
             return await self._verify_group(fid, binding, {value.value})
         if isinstance(value, MultiChoiceValue) and ctype is ControlType.CHECKBOX_GROUP:
             wanted_set = {c.value for c in value.choices}
@@ -1357,7 +1493,8 @@ class GenericApplicationBrowser:
             got = (await self._read(fresh)).get("value")
             if same(got):
                 return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED)
-            await self._write(lambda: self._retype(fresh, text))
+            multiline = app_field.control_type is ControlType.TEXTAREA
+            await self._write(lambda: self._retype(fresh, text, multiline=multiline))
             got = (await self._read(fresh)).get("value")
             if not same(got):
                 again = await self._reresolve(fid)
@@ -1390,14 +1527,16 @@ class GenericApplicationBrowser:
                 return None
             await asyncio.sleep(0.15)
 
-    async def _retype(self, selector: str, text: str) -> None:
-        """Empty the control the way a person does and type ``text`` key by key (long
-        text is entered as one input event)."""
+    async def _retype(self, selector: str, text: str, *, multiline: bool = False) -> None:
+        """Empty the control the way a person does and type ``text`` key by key. A
+        TEXTAREA, text with a newline, carriage return or tab, and long text are entered
+        as one input event instead: ``type_text`` refuses control characters (a newline
+        typed is the Enter key), and ``fill`` inserts them without pressing a key."""
         await self.driver.clear_text(selector)
-        if len(text) <= _RETYPE_MAX_CHARS:
-            await self.driver.type_text(selector, text, delay_s=0.01)
-        else:
+        if multiline or _TYPED_CONTROLS.search(text) or len(text) > _RETYPE_MAX_CHARS:
             await self.driver.fill(selector, text)
+        else:
+            await self.driver.type_text(selector, text, delay_s=0.01)
 
     async def _sweep(self, accepted: ApplicationForm, written: Mapping[str, str],
                      results: dict[str, FieldFillResult]) -> None:
@@ -1464,10 +1603,18 @@ class GenericApplicationBrowser:
         name = Path(artifact.path).name
         taken = self._uploads.get(fid)
         if (taken is not None and taken.name == name
-                and taken.document == str(await self.driver.evaluate(_DOCUMENT_IDENTITY))
-                and await file_shown(self.driver, binding.selector, name, anchor=taken.anchor, wait_s=0.0)):
-            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
-                                   detail="the uploader already shows this file"), False
+                and taken.document == str(await self.driver.evaluate(_DOCUMENT_IDENTITY))):
+            # Attached by this session in this document: not attached again (each attach is
+            # a fresh upload) while nothing shows an error or progress and the uploader
+            # still holds it, shows it (possibly as a shortened name, "resume-avery-…pdf",
+            # or "1 file"), or has replaced its input.
+            held = await self._upload_state(binding.selector, shown_names(name), taken.anchor)
+            if held.error is None and not held.busy:
+                detail = ("already attached; not attached again" if held.holds(name, artifact.size_bytes)
+                          else "the uploader already shows this file" if held.shown
+                          else "the uploader already holds this file" if not held.connected else None)
+                if detail is not None:
+                    return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED, detail=detail), False
         if not artifact.verify():
             return FieldFillResult(
                 field_id=fid, status=FieldFillStatus.FAILED,
@@ -1477,12 +1624,19 @@ class GenericApplicationBrowser:
                 and await self._holds_pinned(binding.selector, artifact)):
             return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
                                    detail="already attached; not attached again"), False
-        anchor = await file_anchor(self.driver, binding.selector)
+        # An upload popup's input shows the file by its button in the form, not in the popup.
+        anchor = binding.upload_anchor or await file_anchor(self.driver, binding.selector)
         if anchor and self._fill_model is not None:
-            # The approved buttons this uploader owns (Attach, cloud pickers): it may
-            # replace them once it takes the file, now or seconds later.
+            # The approved buttons and hidden inputs this uploader owns (Attach, cloud
+            # pickers): it may replace them once it takes the file, now or seconds later.
             self._uploader_buttons |= await self._buttons_within(self._fill_model, [anchor])
-        await self._write(lambda: self.driver.set_files(binding.selector, Path(artifact.path)))
+            self._uploader_helpers |= await self._helpers_within(self._fill_model, [anchor])
+        verified: list[bool | None] = []
+
+        async def attach() -> None:
+            verified.append(await self.driver.set_files(binding.selector, Path(artifact.path)))
+
+        await self._write(attach)
         if not artifact.verify():
             return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
                                    detail="the pinned file changed while attaching it"), True
@@ -1504,8 +1658,10 @@ class GenericApplicationBrowser:
             # The uploader took the file and emptied or replaced its input (Workable,
             # Greenhouse, a drop zone); it shows the file's name or an upload notice.
             self._uploads[fid] = upload
-            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
-                                   detail="the uploader shows the file; its input is empty or replaced"), True
+            detail = "the uploader shows the file; its input is empty or replaced"
+            if verified and verified[0] is False:
+                detail += "; the attached bytes were not verified (the page kept no readable copy)"
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED, detail=detail), True
         return FieldFillResult(
             field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
             detail=f"reads back {state.files!r} and the page shows no chip or notice for {name}"), True
@@ -1517,7 +1673,7 @@ class GenericApplicationBrowser:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + min(self.settle_timeout_s, _UPLOAD_WAIT_S)
         while True:
-            state = await self._upload_state(selector, [name], anchor)
+            state = await self._upload_state(selector, shown_names(name), anchor)
             done = state.error is not None or (not state.busy and state.confirms(name, size))
             if done or loop.time() >= deadline:
                 return state
@@ -1889,7 +2045,26 @@ class GenericApplicationBrowser:
             if deadline is not None and loop.time() >= deadline:
                 break
             await asyncio.sleep(self.poll_interval_s)
-        return (await self._model(evidence="after-user-action")).inspection
+        inspection = (await self._model(evidence="after-user-action", probe=False)).inspection
+        return self._continuing_posting(inspection)
+
+    def _continuing_posting(self, inspection: PageInspection) -> PageInspection:
+        """A form the user reached by passing a page in front of it (a sign-in wall,
+        Jobvite's data consent) that shows no job identity of its own gets the identity of
+        the posting ``open()`` loaded, as ``open()`` gives it to the form an apply link
+        leads to, but only while the form continues that posting: same origin, and its
+        path is the posting's or one segment below it (".../job/<id>/apply")."""
+        posting = self._posting_identity
+        if (posting is None or not posting.observed_url or inspection.job_identity is not None
+                or inspection.kind is not PageKind.APPLICATION_FORM):
+            return inspection
+        base, here = urlsplit(posting.observed_url), urlsplit(inspection.observed_url)
+        root, path = base.path.rstrip("/"), here.path.rstrip("/")
+        below = path[len(root):] if path.startswith(root) else None
+        if ((here.scheme, here.netloc) != (base.scheme, base.netloc) or below is None
+                or (below and not (below.startswith("/") and below.count("/") == 1))):
+            return inspection
+        return inspection.model_copy(update={"job_identity": posting})
 
     async def reconcile(
         self,

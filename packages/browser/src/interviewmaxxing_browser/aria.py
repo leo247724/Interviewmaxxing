@@ -5,8 +5,9 @@ comboboxes with one uniquely owned listbox and a complete unambiguous option set
 supported directly. Menu controls whose options only exist while they are open
 (React selects, Rippling-style comboboxes) are probed once per document: opened,
 enumerated through their own ``aria-controls`` listbox, closed again and verified
-unchanged. Lookups (location, state and country searches) are recognised by an empty
-menu. Every page script here is fixed trusted code, never provider-generated.
+unchanged. A role-less menu button over a hidden proxy ``<select>`` (BambooHR's Fabric
+select) is such a control too: its menu of menu items is found through ``data-menu-id``.
+Lookups (location, state and country searches) are recognised by an empty menu. Every page script here is fixed trusted code, never provider-generated.
 Bindings are ephemeral observations of a document, not reusable selector recipes.
 """
 
@@ -111,8 +112,37 @@ const ariaSame = (got, expected) => got && expected &&
 const comboFieldSel = 'input:not([type=hidden]),select,textarea,[role=combobox],[role=radiogroup],' +
   '[role=checkbox],[role=switch],[role=textbox],[role=spinbutton],[role=slider],[contenteditable=true]';
 const comboPopup = (el) => (el.getAttribute('aria-haspopup') || '').toLowerCase();
+// A role-less menu button standing in for a hidden native <select> (BambooHR's Fabric
+// select: a button[aria-haspopup] naming its menu by data-menu-id beside an aria-hidden,
+// tabindex -1 select that holds only the current value and that the <label> names). The
+// button is the control and the select its proxy; null for any other element.
+const menuProxy = (el) => {
+  if (!el || el.tagName !== 'BUTTON' || el.type !== 'button' || el.getAttribute('role')) return null;
+  if (!['true', 'menu', 'listbox'].includes(comboPopup(el))) return null;
+  const menuId = el.getAttribute('data-menu-id') || '';
+  if (!menuId && !ariaRefs(el).length) return null;
+  const inMenu = (f) => { const m = f.closest('[data-menu-id]'); return !!m && m !== el && m.getAttribute('data-menu-id') === menuId; };
+  for (let n = el.parentElement, depth = 0; n && depth < 4; n = n.parentElement, depth++) {
+    if (n === document.body || n.tagName === 'FORM' || n.tagName === 'FIELDSET') return null;
+    const fields = [...n.querySelectorAll('input:not([type=hidden]),select,textarea')].filter((f) => !inMenu(f));
+    if (!fields.length) continue;
+    const toggles = [...n.querySelectorAll('button[aria-haspopup]')].filter((b) => comboPopup(b) !== 'false');
+    const proxy = fields[0];
+    return fields.length === 1 && toggles.length === 1 && proxy.tagName === 'SELECT' && !proxy.multiple &&
+      proxy.getAttribute('aria-hidden') === 'true' && proxy.tabIndex === -1 ? proxy : null;
+  }
+  return null;
+};
+// The popup a menu control names: aria-controls or aria-owns, else a proxy toggle's
+// data-menu-id (Fabric leaves out aria-controls), which is the menu element's id.
+const comboRefs = (el) => {
+  const refs = ariaRefs(el);
+  if (refs.length || !menuProxy(el)) return refs;
+  return [el.getAttribute('data-menu-id')].filter(Boolean);
+};
 const comboLike = (el) => {
   if (!el || !el.isConnected || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') return false;
+  if (menuProxy(el)) return !el.closest('a[href]');
   if (el.getAttribute('role') !== 'combobox' && comboPopup(el) !== 'listbox') return false;
   if (el.tagName === 'INPUT' && !['', 'text', 'search'].includes((el.getAttribute('type') || '').toLowerCase())) return false;
   if (el.tagName === 'BUTTON' && el.type !== 'button') return false;
@@ -153,7 +183,8 @@ const comboDisplayNodes = (el) => {
     return ariaVisible(n) && r.top - 1 <= mid && mid <= r.bottom + 1;
   });
 };
-const comboPlaceholderText = /^(?:(?:please\s+)?(?:select|choose|pick)(?:\s+(?:an?|one|your|the)\b.{0,40})?|search|(?:type|start typing)\b.{0,40}|-+\s*(?:select|choose)\b.{0,40})\s*(?:\.\.\.|…|:)?\s*-*$/i;
+// "-- Select --", and BambooHR's "Select" between en dashes (any dash punctuation, \p{Pd}).
+const comboPlaceholderText = /^(?:(?:please\s+)?(?:select|choose|pick)(?:\s+(?:an?|one|your|the)\b.{0,40})?|search|(?:type|start typing)\b.{0,40}|\p{Pd}+\s*(?:select|choose)\b.{0,40})\s*(?:\.\.\.|…|:)?\s*\p{Pd}*$/iu;
 const comboDisplay = (el) => {
   if (el.tagName === 'INPUT') {
     if (el.value) return {text: ariaText(el.value), placeholder: false};
@@ -171,7 +202,16 @@ const comboDisplay = (el) => {
     if (!(skip && skip !== el && el.contains(skip))) parts.push(t);
   }
   const text = ariaJoin(parts);
-  return {text, placeholder: !text || comboPlaceholderText.test(text)};
+  // Text shown by an element the widget names a placeholder (Fabric's
+  // fab-SelectToggle__placeholder, "Select" between en dashes) is no value.
+  const named = (t) => {
+    for (let n = t.parentElement; n && n !== el; n = n.parentElement) {
+      if (/placeholder/i.test(n.getAttribute('class') || '')) return true;
+    }
+    return false;
+  };
+  const shown = parts.filter((t) => ariaText(t.nodeValue));
+  return {text, placeholder: !text || comboPlaceholderText.test(text) || (shown.length > 0 && shown.every(named))};
 };
 // Stable facts of a menu control whose options are not observable yet. Only value
 // (the display text, '' for a placeholder) and expanded are state.
@@ -184,37 +224,50 @@ const comboFacts = (el) => {
     dialog: !!el.closest('[role=dialog],dialog'),
     value: shown.placeholder ? '' : shown.text, expanded: el.getAttribute('aria-expanded') === 'true'};
 };
-// Never the aria-label: menus put their placeholder or shown value there (Rippling: "Select").
-const comboIdentity = (el) => ({tag: el.tagName, id: el.id, name: el.getAttribute('name') || '',
-  role: el.getAttribute('role') || '', haspopup: comboPopup(el),
-  labelledby: el.getAttribute('aria-labelledby') || '',
-  labels: el.labels ? [...el.labels].map((l) => ariaText(l.textContent)) : []});
-// The listbox this control owns right now, read only through its aria-controls or
-// aria-owns reference (never a page-wide option scan).
+// Never the aria-label: menus put their placeholder or shown value there (Rippling: "Select";
+// Fabric: "Country United States"). A proxy's toggle is named by its select's name and labels.
+const comboIdentity = (el) => {
+  const proxy = menuProxy(el);
+  const labels = el.labels && el.labels.length ? el.labels : proxy && proxy.labels ? proxy.labels : [];
+  return {tag: el.tagName, id: el.id, name: el.getAttribute('name') || (proxy && proxy.getAttribute('name')) || '',
+    role: el.getAttribute('role') || '', haspopup: comboPopup(el),
+    labelledby: el.getAttribute('aria-labelledby') || '',
+    labels: [...labels].map((l) => ariaText(l.textContent))};
+};
+// The listbox (or menu of menu items) this control owns right now, read only through its
+// aria-controls or aria-owns reference, or a proxy toggle's data-menu-id (never a
+// page-wide option scan).
 const comboMenu = (el) => {
-  const refs = ariaRefs(el);
+  const refs = comboRefs(el);
   if (!refs.length) return null;
   if (refs.length > 1) return {error: 'several owned popups'};
   const found = document.querySelectorAll('#' + CSS.escape(refs[0]));
+  // A menu named only by data-menu-id is rendered the first time it opens.
+  if (!found.length && !ariaRefs(el).length) return null;
   if (found.length !== 1) return {error: 'owned popup is missing or ambiguous'};
   let box = found[0];
-  if (box.getAttribute('role') !== 'listbox') {
-    const inner = box.querySelectorAll('[role=listbox]');
+  const lists = '[role=listbox],[role=menu]';
+  if (!box.matches(lists)) {
+    const inner = box.querySelectorAll(lists);
     if (inner.length !== 1) return {error: 'owned popup is not a single listbox'};
     box = inner[0];
   }
-  const nodes = [...box.querySelectorAll('[role=option]')].filter((o) => o.closest('[role=listbox]') === box);
+  // A role=menu popup (Fabric) lists its choices as menu items.
+  const item = box.getAttribute('role') === 'menu' ? '[role=menuitem],[role=menuitemradio]' : '[role=option]';
+  const checked = (o) => o.getAttribute('role') === 'menuitemradio' && o.hasAttribute('aria-checked');
+  const nodes = [...box.querySelectorAll(item)].filter((o) => o.closest(lists) === box);
   const options = nodes.slice(0, 600).map((o, index) => ({
     index, id: o.id || '', selector: ariaUniqueId(o.id) ? '#' + CSS.escape(o.id) : '',
     label: ariaText(o.getAttribute('aria-label') || o.textContent),
     value: o.hasAttribute('data-value') ? o.getAttribute('data-value') : null,
-    selected: o.getAttribute('aria-selected') === 'true', marked: o.hasAttribute('aria-selected'),
+    selected: o.getAttribute('aria-selected') === 'true' || (checked(o) && o.getAttribute('aria-checked') === 'true'),
+    marked: o.hasAttribute('aria-selected') || checked(o),
     // A class token naming the selection (react-select's select__option--is-selected).
     classed: [...o.classList].some((t) => /selected/i.test(t) && !/(?:un|de|non|not[-_]?)selected/i.test(t)),
     disabled: o.getAttribute('aria-disabled') === 'true' || o.hasAttribute('disabled'),
-    visible: ariaVisible(o), nested: !!o.querySelector('[role=option]')}));
+    visible: ariaVisible(o), nested: !!o.querySelector(item)}));
   const notice = ariaText([...box.childNodes].filter((n) => !(n.nodeType === 1 &&
-    (n.matches('[role=option]') || n.querySelector('[role=option]')))).map((n) => n.textContent).join(' '));
+    (n.matches(item) || n.querySelector(item)))).map((n) => n.textContent).join(' '));
   const sizes = nodes.map((o) => Number(o.getAttribute('aria-setsize'))).filter((n) => n > 0);
   let scroller = null;
   for (let n = box, i = 0; n && i < 3 && n !== document.body; n = n.parentElement, i++) {
@@ -232,8 +285,11 @@ const comboMenu = (el) => {
   return {id: box.id || '', selector: ariaUniqueId(box.id) ? '#' + CSS.escape(box.id) : '',
     visible: ariaVisible(box), count: nodes.length, options,
     multiselectable: box.getAttribute('aria-multiselectable') === 'true',
-    bad: !!box.querySelector('input,select,textarea,a[href],button,[role=button],[contenteditable=true],' +
-      '[role=listbox],[role=checkbox],[role=radio]'),
+    bad: !!box.querySelector('input,select,textarea,button,[role=button],[contenteditable=true],' +
+      '[role=listbox],[role=menu],[role=checkbox],[role=radio]') ||
+      [...box.querySelectorAll('a[href]')].some((a) => a.closest(item)),
+    // A link beside the options (a lookup's "powered by …" attribution) is not an option.
+    links: [...box.querySelectorAll('a[href]')].filter((a) => !a.closest(item)).length,
     notice, loading: box.getAttribute('aria-busy') === 'true' || /\b(?:loading|searching)\b/i.test(notice),
     setsize: sizes.length ? Math.max(...sizes) : null, scrollable: !!scroller, covered};
 };
@@ -316,6 +372,7 @@ COMBO_STATE = "(arg) => {" + ARIA_HELPERS + """
     disabled: !!el.disabled || !!el.closest('[aria-disabled=true]'),
     expanded: el.getAttribute('aria-expanded') === 'true', focused: document.activeElement === el,
     display: shown.text, placeholder: shown.placeholder,
+    dialog: !!el.closest('[role=dialog],dialog,[aria-modal=true]'),
     input: el.tagName === 'INPUT' ? el.value : null,
     activedescendant: el.getAttribute('aria-activedescendant') || '',
     fields: arg.fields ? comboFieldSet(el) : null, menu: comboMenu(el)};
@@ -572,7 +629,7 @@ async def _close_menu(driver: PageDriver, selector: str, read: Reader, method: s
     ``aria-expanded`` is false (a keyboard-opened list may stay in the DOM): Escape; one
     toggle click on a click-opened control; a press outside every control (a popover
     that ignores both). ``closer``, the step that closed this page's menus before, goes
-    first. Returns whether the menu is closed and the step that closed it (``""`` when
+    first. Inside a dialog the toggle goes first and nothing is pressed outside. Returns whether the menu is closed and the step that closed it (``""`` when
     it was not open). Raises ``CapabilityUnsupported`` (after the other steps) when this
     session cannot press keys or outside the menu."""
     from .driver import CapabilityUnsupported
@@ -584,6 +641,11 @@ async def _close_menu(driver: PageDriver, selector: str, read: Reader, method: s
     if closer in steps:
         steps.remove(closer)
         steps.insert(0, closer)
+    if state.get("dialog"):
+        # Inside a dialog, Escape and a press outside may close the dialog itself (a
+        # wizard step): the control's own toggle goes first, and nothing is pressed
+        # outside.
+        steps = [step for step in ("toggle", "escape") if step in steps]
     unsupported: CapabilityUnsupported | None = None
     for step in steps:
         try:
@@ -621,7 +683,7 @@ def _classify(opened: dict[str, Any], before: Mapping[str, Any], selector: str,
     assert isinstance(menu, dict)
     base = replace(base, listbox_id=str(menu.get("id") or ""))
     lookup = replace(lookup, listbox_id=base.listbox_id)
-    if menu.get("bad"):
+    if menu.get("bad") or menu.get("links"):
         return replace(base, reason="the menu holds other controls")
     options = menu.get("options") or []
     if not options:
@@ -771,7 +833,7 @@ class MenuProbe:
             and control.visible and not control.disabled
             and not facts.get("expanded") and not facts.get("dialog")
             and not facts.get("multiselectable")
-            and (facts.get("haspopup") in ("listbox", "true") or facts.get("autocomplete") == "list")
+            and (facts.get("haspopup") in ("listbox", "true", "menu") or facts.get("autocomplete") == "list")
         )
 
     def targets(self, snapshot: DomSnapshot, form_index: int | None) -> list[DomControl]:
@@ -936,7 +998,8 @@ def _probed_options(state: Mapping[str, Any], binding: Mapping[str, Any]) -> lis
     from .driver import NotActionable
 
     menu = state.get("menu")
-    if not isinstance(menu, dict) or menu.get("error") or menu.get("multiselectable") or menu.get("bad"):
+    if not isinstance(menu, dict) or menu.get("error") or menu.get("multiselectable") or menu.get("bad") \
+            or (menu.get("links") and binding.get("kind") != "lookup"):
         raise NotActionable("the menu does not expose one single-choice listbox")
     pattern = str(binding.get("listbox_id_pattern") or "")
     if pattern and not re.fullmatch(pattern, str(menu.get("id") or "")):
@@ -984,6 +1047,11 @@ async def _select_probed(
     await fresh()
     state = await read()
     _check_probed(state, binding)
+    shows = "" if state.get("placeholder") else str(state.get("display") or "")
+    if not state.get("expanded") and display_matches(shows, label, labels) == "equal":
+        # It already shows exactly this option (pre-filled, BambooHR's "United States"):
+        # verified by its display, and not operated again.
+        return [str(wanted["value"])]
     state, method = await _open_menu(driver, selector, read, state, method)
     _check_probed(state, binding)
     if not _open(state):
@@ -1006,7 +1074,8 @@ async def _select_probed(
         return found[0]
 
     target = pick(shown)
-    if target is None and binding.get("editable") and len(all_options) > _FILTER_THRESHOLD:
+    typed = target is None and bool(binding.get("editable")) and len(all_options) > _FILTER_THRESHOLD
+    if typed:
         # The option is not rendered: filter the long input menu by typing. Sites filter
         # on an option's name, not on what decorates it ("+1", a flag), so the label is
         # tried, then its name without a trailing code, then its first word.
@@ -1020,6 +1089,8 @@ async def _select_probed(
             if target is not None:
                 break
     if target is None:
+        if typed:
+            await driver.clear_text(selector)  # leave no filter text behind
         await _close_menu(driver, selector, read, method, closer)
         raise NotActionable("the menu has no unique visible option with that label")
     if identity_check is not None:
@@ -1046,8 +1117,13 @@ async def _select_probed(
     confirmed, confirmation = False, ""
     # A display that names no option at all (read from decoration, or text split oddly)
     # is not the field's value: the reopened menu's own selection decides, as it does
-    # when only a suffix is shown. A display naming another option stays a mismatch.
-    unnamed = bool(display) and relation is None and shown_index is None
+    # when only a suffix is shown, but only when the display could be our choice (its
+    # letters and digits appear in the label in order: "+ 1" for "United States (+1)").
+    # An unrecognised placeholder ("Country *") or a display naming another option stays
+    # a mismatch: APG and Downshift menus mark the option they highlight on opening
+    # aria-selected, so a click that did not take would otherwise read as confirmed.
+    unnamed = (bool(display) and relation is None and shown_index is None
+               and _consistent(display, label))
     if closed and (relation is not None or unnamed):
         # Only a suffix is shown (a dial code, possibly shared by several options): the
         # reopened menu's own selection state must name the chosen option.
@@ -1074,6 +1150,13 @@ async def _select_probed(
     return observed or [f"display {display!r}"]
 
 
+def _consistent(display: str, label: str) -> bool:
+    """The display's letters and digits appear in the label's, in order."""
+    shown = [c for c in display.casefold() if c.isalnum()]
+    wanted = iter(c for c in label.casefold() if c.isalnum())
+    return bool(shown) and all(any(c == w for w in wanted) for c in shown)
+
+
 def _filter_queries(label: str) -> list[str]:
     """What to type into a long input menu to show one option: its label, its name
     without a trailing code or parenthetical ("United States" of "United States +1"),
@@ -1095,11 +1178,15 @@ def _selection_names(options: Sequence[Mapping[str, Any]], activedescendant: str
     option, like react-select's ``select__option--is-selected``, which it keeps on Apple
     platforms where it leaves out both attributes). No signal is no confirmation."""
     flagged = [o for o in options if o.get("selected")]
+    active = [o for o in options if activedescendant and o.get("id") == activedescendant]
     if flagged or any(o.get("marked") for o in options):
         if len(flagged) != 1:
             return False, f"aria-selected marks {len(flagged)} options"
+        if len(active) == 1 and active[0] is not flagged[0]:
+            # A highlight marked aria-selected (APG, Downshift) is not a selection.
+            return False, (f"aria-selected on {flagged[0]['label']!r} but aria-activedescendant "
+                           f"on {active[0]['label']!r}")
         return _norm(str(flagged[0]["label"])) == _norm(label), f"aria-selected on {flagged[0]['label']!r}"
-    active = [o for o in options if activedescendant and o.get("id") == activedescendant]
     if len(active) == 1:
         return (_norm(str(active[0]["label"])) == _norm(label),
                 f"aria-activedescendant on {active[0]['label']!r}")

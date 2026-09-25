@@ -44,6 +44,8 @@ from .signals import (
     ALREADY_APPLIED,
     APPLY_LINK,
     CAPTCHA_TEXT,
+    CONSENT_GATE_ACTION,
+    DATA_CONSENT_GATE,
     ERROR_HEADING,
     JOB_CLOSED,
     ButtonIntent,
@@ -102,6 +104,11 @@ class FieldBinding:
     """Document-current ARIA selection binding, never a provider-authored selector."""
     user_completed: bool = False
     """An UNSUPPORTED control the user has already operated."""
+    upload_anchor: str | None = None
+    """A file input's uploader box when it is not the input's own container (an upload
+    popup's button in the form, ``DomControl.upload_anchor``)."""
+    pressed: bool = False
+    """The options are toggle buttons (``aria-pressed``): clicked, never checked."""
 
 
 @dataclass(frozen=True)
@@ -200,18 +207,44 @@ def _looks_like_identifier(text: str) -> bool:
     return bool(_IDENTIFIER.search(text)) or (" " not in text and not text.isalpha())
 
 
-def _fallback_label(control: DomControl) -> tuple[str, list[str], str | None]:
-    """Label text for a control without a label, placeholder or accessible name.
+_GENERIC_PLACEHOLDER = re.compile(
+    r"^(?:(?:please\s+)?(?:type|enter|write|pick|choose|select|search|start typing|click)"
+    r"(?:\s+(?:here|your (?:response|answer)|a date|date|text|an? (?:option|answer|value|response)))?"
+    r"|(?:your\s+)?(?:answer|response)(?:\s+here)?)\s*(?:\.\.\.|\u2026)?$",
+    re.IGNORECASE,
+)
+"""A placeholder that only says what to do ("Type here...", "Type your response", "Pick
+date...", "Start typing..."): it names no question and is never a label."""
 
-    The inspector can only name such a control after its ``name``/``id``. When that is
-    a machine identifier and visible question text sits next to the control (a
-    ``<div>Question \u2731</div>`` before an unlabeled Lever input), that text is the
-    question; any text after its required marker stays help text. Returns the label
-    text, the adjacent parts left for help text and the described text consumed."""
+
+def _descriptive_placeholder(control: DomControl) -> str:
+    text = _squash(control.placeholder)
+    return "" if not text or _GENERIC_PLACEHOLDER.match(text) else text
+
+
+def _fallback_label(control: DomControl) -> tuple[str, list[str], str | None]:
+    """Label text for a control without a label or accessible name.
+
+    What the control's own box states comes first (``question``: a label that labels
+    nothing, its block's heading). Otherwise the inspector can only name the control
+    after its ``name``/``id``. A readable one names it, unless a placeholder names it
+    better ("First name"). When it is a machine identifier and visible question text
+    sits next to the control (a ``<div>Question \u2731</div>`` before an unlabeled
+    Lever input), that text is the question; any text after its required marker stays
+    help text; then its description, then the text before it. A placeholder that only
+    says what to do ("Type your response") and a machine identifier
+    (``section_1787064635874_question_0``, ``cSalary``) are never labels: then the label
+    is empty and the placeholder stays the placeholder. Returns the label text, the
+    adjacent parts left for help text and the described text consumed."""
     adjacent = [_squash(t) for t in control.adjacent if _squash(t)]
+    if _squash(control.question):
+        return _squash(control.question), adjacent, None
     identifier = control.name or control.id
+    placeholder = _descriptive_placeholder(control)
+    if not identifier:
+        return placeholder, adjacent, None
     if not _looks_like_identifier(identifier):
-        return identifier, adjacent, None
+        return placeholder or identifier, adjacent, None
     if adjacent:
         question, rest = _take_question(adjacent[0])
         return question, [*([rest] if rest else []), *adjacent[1:]], None
@@ -220,12 +253,12 @@ def _fallback_label(control: DomControl) -> tuple[str, list[str], str | None]:
         return described, adjacent, described
     if _squash(control.preceding):
         return _take_question(control.preceding)[0], adjacent, None
-    return identifier, adjacent, None
+    return placeholder, adjacent, None
 
 
 _UPLOAD_TRIGGER_WORDING = re.compile(
     r"^(?:(?:attach|upload|browse|choose|select|add)(?: (?:a|your|my))?"
-    r"(?: (?:files?|resume|r\u00e9sum\u00e9|cv|resume/cv|cover letter|documents?))?"
+    r"(?: (?:files?|resume|résumé|cv|resume/cv|cover letter|documents?))?"
     r"|(?:drag (?:and|&) )?drop(?: (?:a |your )?files?)?(?: here)?(?: or (?:browse|select|choose)(?: (?:a )?files?)?)?)$",
     re.IGNORECASE,
 )
@@ -233,12 +266,29 @@ _UPLOAD_TRIGGER_WORDING = re.compile(
 label saying only this names the action, not the question."""
 
 
+_MACHINE_TOKEN = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)+$|^[a-z]+(?:[A-Z][a-z0-9]*)+$")
+"""A developer's name for an element used as its accessible name (BambooHR's
+``aria-label="file-input"``, ``resume_upload``, ``fileInput``)."""
+
+
 def _upload_question(control: DomControl) -> str | None:
     """For a file input whose own label is empty or only its trigger's wording (a
-    visually hidden "Attach" label), the question its group names ("Resume/CV")."""
-    if control.type != "file" or not control.group_label:
+    visually hidden "Attach" label), the question its group names ("Resume/CV"). One
+    named only by a machine token (BambooHR's ``aria-label="file-input"``) takes the
+    group's question, else the short question its uploader box states ("Resume *",
+    "Cover Letter" beside "Choose File")."""
+    if control.type != "file":
         return None
     own = clean_label(control.label)
+    if own and _MACHINE_TOKEN.match(own):
+        if control.group_label:
+            return control.group_label
+        stated = next((_squash(t) for t in control.adjacent if _squash(t)), "")
+        question = _take_question(stated)[0] if stated else ""
+        short = len(clean_label(question).split()) <= 5
+        return question if question and (short or _has_required_marker(stated)) else None
+    if not control.group_label:
+        return None
     if own and not _UPLOAD_TRIGGER_WORDING.match(own):
         return None
     return control.group_label
@@ -313,6 +363,18 @@ def _is_captcha(control: DomControl) -> bool:
          *(d.text for d in control.legend_described), *control.image_alts]
     )
     return bool(CAPTCHA_TEXT.search(text))
+
+
+def _pressed_members(control: DomControl) -> list[DomControl]:
+    """A yes/no question drawn as toggle buttons over a hidden checkbox that only mirrors
+    "yes" (Ashby): one radio member per button, grouped by the checkbox, so the buttons
+    are the question's options (clicked, and read back by ``aria-pressed``)."""
+    group = f"pressed:{control.selector}"
+    return [control.model_copy(update={
+        "tag": "button", "type": "radio", "selector": option.selector, "label": option.label,
+        "label_source": "button", "value": option.label, "checked": option.pressed,
+        "label_selector": None, "visible": True, "choice_group": group, "pressed_options": [],
+    }) for option in control.pressed_options]
 
 
 def _operable(control: DomControl) -> bool:
@@ -392,7 +454,9 @@ def _groups(controls: list[DomControl]) -> list[_Group]:
     groups: dict[tuple[int, str, str], _Group] = {}
     ordered: list[_Group] = []
     for i, control in enumerate(controls):
-        if control.kind == "native" and control.type in ("radio", "checkbox") and control.name:
+        if control.kind == "native" and control.type in ("radio", "checkbox") and control.choice_group:
+            key = (control.form_index, control.type, "\x00" + control.choice_group)
+        elif control.kind == "native" and control.type in ("radio", "checkbox") and control.name:
             key = (control.form_index, control.type, control.name)
         else:
             key = (control.form_index, "#", str(i))
@@ -432,7 +496,8 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
 
     values = _member_values(group.members)
     if is_group:
-        option_labels = {clean_label(m.label).lower() for m in group.members if m.label}
+        option_labels = {clean_label(m.label or m.option_text).lower() for m in group.members
+                         if m.label or m.option_text}
         label_text = first.legend or first.group_label or first.label or first.name
         adjacent = [_squash(t) for t in first.adjacent if _squash(t)]
         described = [t for m in group.members for t in _non_errors(m.described)]
@@ -442,12 +507,18 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
             # The group has no question of its own: its "label" is an option's text
             # (a yes/no group) or a machine name. The visible question shown next to
             # or before the group is the question.
-            for candidate in (*adjacent, *_non_errors(first.legend_described),
+            for candidate in (first.question, *adjacent, *_non_errors(first.legend_described),
                               *_non_errors(first.group_described), *described, first.preceding):
                 cleaned = clean_label(candidate)
                 if cleaned and cleaned.lower() not in option_labels:
                     label_text, consumed = candidate, _squash(candidate)
                     break
+            else:
+                # No question shown anywhere: an option's text or a machine name is
+                # still never the group's label; a readable name ("pronouns") is.
+                name = first.name
+                readable = bool(name) and not _looks_like_identifier(name) and clean_label(name).lower() not in option_labels
+                label_text = name if readable else ""
         question, rest = _take_question(label_text) if consumed else (label_text, None)
         label = clean_label(question)
         help_text = _join_unique(
@@ -464,18 +535,20 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         )
         selector = first.legend_selector or first.selector
         options = [
-            FieldOption(value=value, label=clean_label(m.label) or value,
+            FieldOption(value=value, label=clean_label(m.label) or clean_label(m.option_text) or value,
                         selector=m.selector, disabled=m.disabled)
             for m, value in zip(group.members, values, strict=True)
         ]
         required = any(m.required for m in group.members) or _has_required_marker(question)
     else:
         upload_question = _upload_question(first) if control_type is ControlType.FILE else None
+        # An accessible name that is a developer's token ("file-input") names nothing.
+        machine = first.label_source in ("aria-label", "title") and bool(_MACHINE_TOKEN.match(clean_label(first.label)))
         if upload_question:
             label_text, consumed = upload_question, None
             adjacent = [_without_question(t, upload_question) for t in first.adjacent]
-        elif first.label or first.placeholder:
-            label_text, adjacent, consumed = first.label or first.placeholder, list(first.adjacent), None
+        elif first.label and not machine:
+            label_text, adjacent, consumed = first.label, list(first.adjacent), None
         else:
             label_text, adjacent, consumed = _fallback_label(first)
         label = clean_label(label_text)
@@ -510,7 +583,10 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         user_completed = True
         required = False  # already operated by the user; the runtime never touches it
 
-    field_id = first.name or first.id or f"field-{_slug(label)}"
+    # Options grouped by their question box are named after their own text ("Yes"), so the
+    # question's stable id (Ashby's field path) names the group.
+    field_id = (first.question_for or first.name or first.id if first.choice_group
+                else first.name or first.id or first.question_for) or f"field-{_slug(label)}"
     input_type = first.type if control_type is ControlType.TEXT else None
     accept = (
         [a.strip() for a in first.accept.split(",") if a.strip()] or None
@@ -572,6 +648,8 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         value=str(operated["value"]) if operated else first.value,
         aria=operated,
         user_completed=user_completed,
+        upload_anchor=first.upload_anchor or None,
+        pressed=first.tag == "button" and first.type == "radio",
     )
     return app_field, binding
 
@@ -713,6 +791,35 @@ def _classify_buttons(
     return out
 
 
+_CONSENT_CHOICES = frozenset({ControlType.SELECT, ControlType.RADIO, ControlType.CHECKBOX,
+                              ControlType.UNSUPPORTED})
+
+
+def _consent_gate(snapshot: DomSnapshot, fields: list[ApplicationField]) -> str | None:
+    """The message for a data-processing consent page in front of the application form
+    (Jobvite's "Data Consent": a location of residence and language to choose, then "I
+    Accept"), else None. Its heading says so, its only questions (one or two) are the
+    consent's own choices, and it offers no way to apply (a posting with a consent banner
+    is still a posting). Accepting a consent is the person's decision, and choosing the
+    policy may already send it (Jobvite posts a default policy as soon as it is chosen), so
+    the page is the user's to act on, like a sign-in wall; nothing on it is chosen or
+    clicked."""
+    if not any(DATA_CONSENT_GATE.match(h.text) for h in snapshot.headings):
+        return None
+    if not 1 <= len(fields) <= 2 or any(f.control_type not in _CONSENT_CHOICES for f in fields):
+        return None
+    if any(APPLY_LINK.search(t) for t in (*(lk.text for lk in snapshot.links),
+                                          *(b.text for b in snapshot.buttons))):
+        return None
+    site = "Jobvite" if detect_ats(snapshot.url) == "jobvite" else "The site"
+    choice = next((clean_label(f.label) for f in fields
+                   if f.control_type is not ControlType.CHECKBOX and clean_label(f.label)), "")
+    how = f" (choose your {choice.lower()}, then accept)" if choice else ""
+    return (f"{site} asks you to {CONSENT_GATE_ACTION} before the application form{how}. "
+            "Accept it yourself in the browser window, then continue; a consent is never "
+            "accepted automatically.")
+
+
 def _qualifies_as_application(
     fields: list[ApplicationField], buttons: list[ClassifiedButton],
     final: bool | None, has_step: bool,
@@ -754,6 +861,9 @@ def build_page(
     operable: list[DomControl] = []
     for control in snapshot.controls:
         if control.kind == "native" and control.type == "password":
+            continue
+        if control.pressed_options and not control.disabled:
+            operable.extend(_pressed_members(control))
             continue
         if not _operable(control):
             continue
@@ -857,6 +967,11 @@ def build_page(
     elif captcha.present and not captcha.solved and not captcha_pending:
         kind = PageKind.CAPTCHA
         message = f"{captcha.detail}. Solve it in the browser to continue."
+    elif (consent := _consent_gate(snapshot, fields)) is not None:
+        # A consent gate is the user's to pass, like a sign-in wall (the only page kind the
+        # runner asks the user to act on and waits for); its form is never filled.
+        kind = PageKind.SIGN_IN_REQUIRED
+        message = consent
     elif ambiguous_forms:
         kind = PageKind.UNKNOWN
         message = ("Multiple plausible application forms are visible; their purpose is ambiguous. "
