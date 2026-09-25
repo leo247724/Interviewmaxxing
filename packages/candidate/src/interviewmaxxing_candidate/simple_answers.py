@@ -33,6 +33,7 @@ from interviewmaxxing_core import (
     new_id,
     normalize_work_arrangement,
 )
+from interviewmaxxing_core.answer_policies import ANSWER_POLICY_KEYS, ANSWER_POLICY_QUESTIONS
 
 from .answers import question_key, value_key
 
@@ -286,6 +287,55 @@ _MONTH_NAMES = (
 )
 
 
+_POLICY_ID_PREFIXES = {question: f"answer_policy_{key}" for key, question in ANSWER_POLICY_QUESTIONS.items()}
+"""A policy's saved answer id names its key, so an answer citing it references the policy."""
+
+
+class AnswerPolicies(BaseModel):
+    """The person's standing answers by class of question (round 12): Yes, No or null each.
+
+    Each non-null policy imports as an untyped GLOBAL saved answer to its
+    ``ANSWER_POLICY_QUESTIONS`` statement; routing applies it to a question that one Jev
+    decision places in its class, when no saved answer or fact settles the question. Null
+    adds nothing and never erases an earlier policy."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    claims_experience_asked: str | None = None
+    """"Do you have / Have you done, led, worked with or managed …?" experience, skill and
+    platform questions (Yes: every application was vetted before it entered the batch)."""
+    meets_experience_thresholds: str | None = None
+    """"N+ years", "at least N years", "N or more years" of marketing experience: with Yes,
+    Yes when N is within the stated years (the total or the area's own fact), No above."""
+    certifies_truth: str | None = None
+    """"I certify the information I provided is true, accurate and complete"."""
+    not_current_or_former_employee: str | None = None
+    """Current or former employee, worked at or with the company or its affiliates,
+    interviewed with it before (No)."""
+    sanctioned_locations: str | None = None
+    """Located in, resident in or a national of a sanctioned place (Cuba, Iran, North Korea,
+    Syria, Crimea …) (No)."""
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _text_or_null(cls, value: object) -> object:
+        # A JSON true or 1 gets the same message as any other value, not a type error.
+        if value is not None and not isinstance(value, str):
+            raise ValueError('Use "Yes", "No", or null for this answer policy.')
+        return value
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _yes_or_no(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        choices = {"yes": "Yes", "no": "No"}
+        if value.strip().casefold() not in choices:
+            raise ValueError('Use "Yes", "No", or null for this answer policy.')
+        return choices[value.strip().casefold()]
+
+
+
 class SimpleAnswers(BaseModel):
     """All keys are present in a complete snapshot; null means no stored answer.
 
@@ -381,11 +431,18 @@ class SimpleAnswers(BaseModel):
     work_arrangement_preference: str | None = None
     consent_sms_messages: str | None = None
     interview_accommodations: str | None = None
+    answer_policies: AnswerPolicies = Field(default_factory=AnswerPolicies)
+    """Standing answers by class of question (round 12); a null section is no policy."""
+
+    @field_validator("answer_policies", mode="before")
+    @classmethod
+    def _no_policies(cls, value: object) -> object:
+        return AnswerPolicies() if value is None else value
 
     @field_validator("*", mode="after")
     @classmethod
-    def _blank_to_none(cls, value: str | None) -> str | None:
-        return (value.strip() or None) if value is not None else None
+    def _blank_to_none(cls, value: object) -> object:
+        return (value.strip() or None) if isinstance(value, str) else value
 
     @field_validator(
         "requires_visa_sponsorship", "referred_by_current_employee", "above_age_18",
@@ -499,7 +556,29 @@ class SimpleAnswers(BaseModel):
             value = newest[0].value
             if isinstance(value, str):
                 data[key] = value
+        data["answer_policies"] = cls._exported_policies(profile)
         return cls.model_validate(data)
+
+    @staticmethod
+    def _exported_policies(profile: CandidateProfile) -> dict[str, str | None]:
+        """The newest GLOBAL answer of each policy (round 12), None when there is none."""
+        policies: dict[str, str | None] = dict.fromkeys(ANSWER_POLICY_KEYS)
+        for key in ANSWER_POLICY_KEYS:
+            prototype = SavedAnswer(
+                id="map_export", scope=AnswerScope.GLOBAL, question=ANSWER_POLICY_QUESTIONS[key],
+                value="", confirmed_at=profile.identity.verified_at,
+            )
+            matching = [a for a in profile.saved_answers if question_key(a) == question_key(prototype)]
+            if not matching:
+                continue
+            latest = max(a.confirmed_at for a in matching)
+            newest = [a for a in matching if a.confirmed_at == latest]
+            if len({value_key(a.value) for a in newest}) != 1:
+                raise ValueError(f"Resolve conflicting saved answers for answer_policies.{key} "
+                                 "before export.")
+            if isinstance(newest[0].value, str):
+                policies[key] = newest[0].value
+        return policies
 
     def career_motivation_fact(self, *, confirmed_at: datetime,
                                current: CandidateProfile | None = None) -> CandidateFact | None:
@@ -547,11 +626,14 @@ class SimpleAnswers(BaseModel):
                     f"{boundary.title()} date {part}\nEducation",
                     f"{part.title()}\nEducation {boundary} date",
                 ]))
+        # Round 12: each standing answer policy is an untyped GLOBAL answer to its statement.
+        specs += [(None, ANSWER_POLICY_QUESTIONS[key], getattr(self.answer_policies, key), [])
+                  for key in ANSWER_POLICY_KEYS]
         for semantic, question, value, phrases in specs:
             if value is None:
                 continue
             answer = SavedAnswer(
-                id=new_id("simple_answer"),
+                id=new_id(_POLICY_ID_PREFIXES.get(question, "simple_answer")),
                 scope=AnswerScope.GLOBAL,
                 semantic_type=semantic, question=question, value=value,
                 match_phrases=phrases,

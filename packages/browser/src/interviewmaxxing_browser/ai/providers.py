@@ -153,6 +153,16 @@ class CallBudget:
             self.max_usd = min(FORM_CAP_USD, self.reserved_usd + FORM_BASE_USD
                                + FORM_WRITER_USD * writers)
 
+    def allow_calls(self, calls: int, usd: float) -> None:
+        """Room for a pass whose calls are counted before it starts (round 12: one answer-
+        policy decision per open screener), on top of the form's allowance, when the budget
+        scales with the form; capped like ``allow_form``."""
+        if not self.scales_with_form or calls <= 0:
+            return
+        with self._lock:
+            self.max_calls = min(FORM_CAP_CALLS, max(self.max_calls, self.calls) + calls)
+            self.max_usd = min(FORM_CAP_USD, max(self.max_usd, self.reserved_usd) + max(0.0, usd))
+
     def reserve(self, body: bytes, upper_cost: float) -> None:
         with self._lock:
             if len(body) > self.max_request_bytes:
