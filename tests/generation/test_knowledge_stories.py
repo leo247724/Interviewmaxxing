@@ -184,14 +184,17 @@ def test_facts_are_verbatim_user_authored_and_never_invent_numbers(stories_docx:
     index = st.build_story_index(stories_docx, verified_at=NOW)
     _bakery, ovenboard, quiet = index.stories
     chunk_ids = {c.id for c in index.chunks}
-    assert index.facts and not index.skipped
+    assert index.facts
+    assert {entry["reason"] for entry in index.skipped} == {"plural_subject_only"}  # "We tested landing pages ..."
+    assert not any("3% to 7%" in str(fact.value) for fact in index.facts)  # the team's work stays story evidence
+    assert any("3% to 7%" in chunk.text for chunk in index.chunks)
     for fact in index.facts:
         story = next(s for s in index.stories if fact.id.startswith(f"sf_{s.story_id}_"))
         assert st.numbers_in(str(fact.value)) <= st.numbers_in(story.body), fact.id
         assert fact.key in {"employment", "achievement", "experience", "skills", "project", "education"}
         assert fact.source in chunk_ids and fact.source.startswith("story:")
-        assert fact.is_verified and fact.verification.method is not None
-        assert fact.verification.method.value == "USER_STATED" and fact.verification.verified_at == NOW
+        # Extracted, not confirmed: UNVERIFIED until the person imports it (CONTRACTS 3).
+        assert not fact.is_verified and fact.verification.method is None and fact.verification.verified_at is None
         assert fact.evidence[0].startswith(f"Story {story.number:02d}: ")
     values = {k: [str(f.value) for f in index.facts if f.key == k] for k in {f.key for f in index.facts}}
     assert "Marketing manager, regional bakery chain (2024)" in values["employment"]
@@ -233,7 +236,8 @@ def test_receipt_carries_counts_ids_and_hashes_only(stories_docx: Path) -> None:
     assert receipt["stories"][0]["title_sha256"] == hashlib.sha256(index.stories[0].title.encode()).hexdigest()
     assert all(re.fullmatch(r"story:[0-9a-f]{64}", cid) for cid in receipt["chunk_ids"])
     review = st.facts_review(index, candidate_id="default")
-    assert len(review["facts"]) == len(index.facts) and review["facts"][0]["verification"]["status"] == "VERIFIED"
+    assert len(review["facts"]) == len(index.facts) and review["facts"][0]["verification"]["status"] == "UNVERIFIED"
+    assert "stated_years" not in receipt["stories"][0] and receipt["stories"][0]["stated_year_count"] == 1
     assert review["stories"][0]["employer"] == "regional bakery chain"
 
 
@@ -322,7 +326,7 @@ def test_linked_stories_carry_the_resume_dates_in_headers_facts_and_receipts(sto
     receipt = st.story_index_receipt(index)
     row = receipt["stories"][0]
     assert row["link"] == {"method": "jev_match", "resume_role_id": "exp_bakery", "confidence": 0.93, "probability": 0.97}
-    assert (row["period_source"], row["stated_years"], row["stated_year_outside_resume_role"]) == ("resume_role", ["2024"], False)
+    assert (row["period_source"], row["stated_year_count"], row["stated_year_outside_resume_role"]) == ("resume_role", 1, False)
     assert receipt["stories"][1]["link"] is None and receipt["stories"][1]["period_source"] == "none"
     assert receipt["facts_by_period_source"] == {"none": len(tool_facts), "resume_role": len(facts)}
     assert receipt["linked_stories"] == 1 and receipt["stated_year_discrepancies"] == 0
@@ -345,7 +349,8 @@ def test_a_stated_year_outside_the_linked_role_is_flagged_and_the_resume_dates_w
     assert facts and all("2021-01 to 2022-12" in str(f.value) and "2024" not in str(f.value) for f in facts)
     # The sentence that states the conflicting year yields no fact; it stays in the chunks.
     assert not any("$120,000" in str(f.value) for f in facts)
-    assert [(entry["reason"], entry["story"]) for entry in index.skipped] == [("stated_year_conflicts_with_resume_role", 1)]
+    assert [(entry["reason"], entry["story"]) for entry in index.skipped] == [
+        ("stated_year_conflicts_with_resume_role", 1), ("plural_subject_only", 1)]  # "We tested landing pages ..."
     assert any("in 2024" in c.text for c in index.chunks if c.story_id == bakery.story_id)
     receipt = st.story_index_receipt(index)
     assert receipt["stated_year_discrepancies"] == 1
@@ -458,7 +463,7 @@ def test_duration_claims_state_their_minimum_months() -> None:
 def test_a_sentence_claiming_more_tenure_than_the_resume_yields_no_fact(tmp_path: Path) -> None:
     body = ("I managed a $40,000 paid search budget for a florist in 2023 and grew orders by 20%. "
             "Over the course of almost 2 years my team and I generated 7 figures in revenue. "
-            "After 6 months of testing we doubled the lead volume.")
+            "After 6 months of testing I doubled the lead volume.")
     path = docx(tmp_path / "tenure.docx", [[("Stories 01 - Paid search for a florist", True), (body, False)]])
     document = st.read_stories(path)
     [story] = document.stories
@@ -475,3 +480,64 @@ def test_a_sentence_claiming_more_tenure_than_the_resume_yields_no_fact(tmp_path
     assert "**check:**" in st.facts_review_markdown(review)
     unlinked = st.build_story_index(document, verified_at=NOW)
     assert any("almost 2 years" in str(f.value) for f in unlinked.facts) and not unlinked.skipped
+
+
+# --- round 4: unverified facts, singular first person, adjacent years, confirmation ------------
+
+
+def test_plural_sentences_stay_story_evidence_and_never_become_facts(tmp_path: Path) -> None:
+    body = ("I ran paid search for a regional bakery chain in 2024. We grew ARR 3x and our team of 6 "
+            "closed the biggest deal of the year. We managed the account together and reported weekly. "
+            "I set up conversion tracking in Google Ads.")
+    path = docx(tmp_path / "plural.docx", [[("Stories 01 - Growth", True), (body, False)]])
+    index = st.build_story_index(path, verified_at=NOW)
+    values = [str(fact.value) for fact in index.facts]
+    assert any(v.startswith("I ran paid search") for v in values)
+    assert any(v.startswith("I set up conversion tracking") for v in values)
+    assert not any("ARR" in v or "biggest deal" in v or "together" in v for v in values)
+    plural = [entry for entry in index.skipped if entry["reason"] == "plural_subject_only"]
+    assert len(plural) == 2  # the ARR result and the managed-and-reported sentence
+    assert all(entry["key"] is None and "ARR" not in json.dumps(entry) for entry in plural)
+    assert any("We grew ARR 3x" in chunk.text for chunk in index.chunks)  # the chunks keep the team's work
+    assert all(not fact.is_verified for fact in index.facts)
+    receipt = st.story_index_receipt(index)
+    assert "ARR" not in json.dumps(receipt) and receipt["skipped"] == list(index.skipped)
+
+
+def test_an_unlinked_story_dates_facts_only_by_adjacent_or_explicit_years(tmp_path: Path) -> None:
+    apart = ("I joined a regional agency in 2019 and planned the paid search budget. "
+             "By 2023 I reported weekly results to the owner.")
+    path = docx(tmp_path / "apart.docx", [[("Stories 01 - Years apart", True), (apart, False)]])
+    story = st.parse_stories(st.read_docx(path))[0]
+    assert st.stated_years(story) == ["2019", "2023"] and st.stated_year_span(story) is None
+    assert st.resolve_period(story, None) == (None, "none", False)
+    index = st.build_story_index(path, verified_at=NOW)
+    assert index.facts and all("period_source: none" in fact.evidence for fact in index.facts)
+    assert not any("2019\u20132023" in str(fact.value) for fact in index.facts)
+    adjacent = ("I joined a regional agency in 2022 and planned the paid search budget. "
+                "In 2023 I reported weekly results to the owner. In 2024 I planned the whole account.")
+    story = st.parse_stories(st.read_docx(docx(tmp_path / "adjacent.docx",
+                                              [[("Stories 01 - Adjacent", True), (adjacent, False)]])))[0]
+    assert st.stated_year_span(story) == "2022\u20132024"
+    explicit = "From 2019 to 2023 I planned the paid search budget of a regional agency and reported weekly."
+    story = st.parse_stories(st.read_docx(docx(tmp_path / "explicit.docx",
+                                              [[("Stories 01 - Explicit", True), (explicit, False)]])))[0]
+    assert st.stated_year_span(story) == "2019\u20132023"
+    assert st.resolve_period(story, None) == ("2019\u20132023", "story", False)
+    receipt = st.story_index_receipt(index)
+    assert receipt["stories"][0]["stated_year_count"] == 2 and "stated_years" not in receipt["stories"][0]
+
+
+def test_confirmable_facts_take_the_import_shape_for_unverified_facts_only(stories_docx: Path) -> None:
+    from interviewmaxxing_core import FactVerification, VerificationMethod, VerificationStatus
+
+    index = st.build_story_index(stories_docx, verified_at=NOW)
+    rows = st.confirmable_facts(index.facts)
+    assert rows and all(set(row) == {"id", "key", "value", "evidence"} for row in rows)
+    assert [row["id"] for row in rows] == [fact.id for fact in index.facts]
+    confirmed = index.facts[0].model_copy(update={"verification": FactVerification(
+        status=VerificationStatus.VERIFIED, method=VerificationMethod.USER_STATED, verified_at=NOW)})
+    assert st.confirmable_facts([confirmed, *index.facts[1:]]) == rows[1:]
+    review = st.facts_review(index, candidate_id="default")
+    markdown = st.facts_review_markdown(review, [])
+    assert "import-facts" in markdown and "| UNVERIFIED |" in markdown

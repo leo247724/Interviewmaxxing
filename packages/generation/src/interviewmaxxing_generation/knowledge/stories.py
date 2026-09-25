@@ -19,6 +19,7 @@ import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -27,7 +28,6 @@ from interviewmaxxing_core import (
     CandidateFact,
     CandidateProfile,
     FactVerification,
-    VerificationMethod,
     VerificationStatus,
 )
 
@@ -99,7 +99,14 @@ _RESULT = re.compile(
     r"\broas\b|\bquality score\b|\bfrom\s+\S+\s+to\s+\S+|\bincreas|\breduc|\blower|\bimprov|"
     r"\bsav(?:e|ed|es|ing)\b|\bgenerat|\bgrew\b|\bdoubl|\btripl|\brecord\b|\bhours?\b|\bdecreas",
     re.IGNORECASE)
-_FIRST_PERSON = re.compile(r"\b(?:I|I've|I'd|I'm|my|me|myself|we|we've|our|us)\b", re.IGNORECASE)
+_FIRST_PERSON = re.compile(r"\b(?:I|I've|I'd|I'm|my|me|myself)\b")
+"""The applicant speaking for themselves: only such sentences (or resume-style ones that
+open with a verb) may become the applicant's own facts; "we", "our" and "us" describe a
+team's work and stay story evidence (WP12 round 4, H5)."""
+_ANY_PERSON = re.compile(r"\b(?:I|I've|I'd|I'm|my|me|myself|we|we've|our|us)\b", re.IGNORECASE)
+"""First person singular or plural: what the analysis reads as the story's actions."""
+_PLURAL_PERSON = re.compile(r"\b(?:we|we've|our|us)\b", re.IGNORECASE)
+_YEAR_RANGE = re.compile(r"\b((?:19|20)\d{2})\s*(?:-|\u2013|\u2014|to|through|until|and)\s*((?:19|20)\d{2})\b")
 _LEADING_VERB = re.compile(
     r"^(?:[A-Z][a-z]+ed|Led|Ran|Built|Grew|Drove|Oversaw|Won|Set|Took|Wrote|Spent|Cut|Made)\b")
 _OWN_SUBJECT = re.compile(r"^(?:the|this|our)\s+(?:software|product|agent|system|tool)\b", re.IGNORECASE)
@@ -676,9 +683,9 @@ def analyse_story(story: Story) -> StoryAnalysis:
     role_match = _ROLE_POSITION.search(body) or _ROLE.search(body)
     role = _normalize(role_match.group(1)).casefold() if role_match else None
     situation = [story.sentences[0], *(s for s in story.sentences[1:8] if _SITUATION.search(s))][:3]
-    actions = [s for s in story.sentences if _FIRST_PERSON.search(s) and _ACTION.search(s)][:20]
+    actions = [s for s in story.sentences if _ANY_PERSON.search(s) and _ACTION.search(s)][:20]
     outcomes = [s for s in story.sentences if re.search(r"\d", s) and _RESULT.search(s)
-                and (_FIRST_PERSON.search(s) or _LEADING_VERB.match(s) or _OWN_SUBJECT.match(s))][:12]
+                and (_ANY_PERSON.search(s) or _LEADING_VERB.match(s) or _OWN_SUBJECT.match(s))][:12]
     tools = find_tools(body)
     return StoryAnalysis(
         story_id=story.story_id, number=story.number, title=story.title, employer=employer,
@@ -821,19 +828,39 @@ def stated_years(story: Story) -> list[str]:
     return sorted(set(_YEAR.findall(story.body)))
 
 
+def stated_year_span(story: Story) -> str | None:
+    """The years an unlinked story's facts may carry: its one stated year; the span of
+    its stated years when they are adjacent (2022, 2023, 2024) or the story states an
+    explicit range ("2019 to 2023", "2019\u20132023"); otherwise none, because years
+    stated apart ("in 2019 ... by 2023") do not date every sentence in between."""
+    years = stated_years(story)
+    if not years:
+        return None
+    if len(years) == 1:
+        return years[0]
+    ordered = [int(year) for year in years]
+    adjacent = all(later - earlier <= 1 for earlier, later in pairwise(ordered))
+    explicit = any(int(match.group(1)) <= int(match.group(2)) for match in _YEAR_RANGE.finditer(story.body))
+    if adjacent or explicit:
+        return f"{years[0]}\u2013{years[-1]}"
+    return None
+
+
 def resolve_period(story: Story, link: StoryRoleLink | None) -> tuple[str | None, str, bool]:
     """The period a story's facts and headers carry, where it comes from, and whether
     the story states a year outside the linked role's dates.
 
     A linked story carries the resume role's dates (the canonical profile is
-    authoritative); an unlinked story carries a year only when it states one; otherwise
-    none. Never a default year."""
+    authoritative); an unlinked story carries its one stated year, or the span of
+    adjacent or explicitly ranged years (``stated_year_span``); otherwise none. Never a
+    default year."""
     years = stated_years(story)
     if link is not None and link.period:
         discrepancy = any(not link.contains_year(year) for year in years)
         return link.period, "resume_role", discrepancy
-    if years:
-        return (years[0] if len(years) == 1 else f"{years[0]}\u2013{years[-1]}"), "story", False
+    span = stated_year_span(story)
+    if span is not None:
+        return span, "story", False
     return None, "none", False
 
 
@@ -1026,12 +1053,15 @@ def fact_context(analysis: StoryAnalysis, period: str | None,
 def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[StoryChunk], *,
                         verified_at: datetime, link: StoryRoleLink | None = None,
                         source_id: str = DEFAULT_STORY_SOURCE) -> tuple[list[CandidateFact], list[dict[str, Any]]]:
-    """Atomic, user-authored facts from a story's concrete first-person sentences, each
-    with ``story:<chunk id>`` provenance. Values are the sentences as written (numbers
+    """Atomic, user-authored facts from a story's concrete first-person singular
+    sentences, each with ``story:<chunk id>`` provenance and UNVERIFIED until the person
+    confirms it through the facts import. Values are the sentences as written (numbers
     are never changed) plus the story's employer and resolved period; a vague sentence
-    yields nothing. A linked story's facts carry the resume role's dates and record
-    ``resume_role_id`` in their evidence; an unlinked story's facts carry a year only
-    when the story states one. Returns the facts and the sentences skipped for length."""
+    or one about "we"/"our" work yields nothing (the chunks keep it as story evidence).
+    A linked story's facts carry the resume role's dates and record ``resume_role_id`` in
+    their evidence; an unlinked story's facts carry a year only when the story states one
+    (or an adjacent or explicit span). ``verified_at`` is the run time, used for the
+    tenure checks. Returns the facts and the sentences skipped, with the reason."""
     facts: list[CandidateFact] = []
     skipped: list[dict[str, Any]] = []
     body = story.body
@@ -1043,8 +1073,9 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
     provenance_lines = [f"period_source: {period_source}", f"story_source: {source_id}"]
     if link is not None:
         provenance_lines.append(f"resume_role_id: {link.resume_role_id}")
-    verification = FactVerification(status=VerificationStatus.VERIFIED,
-                                    method=VerificationMethod.USER_STATED, verified_at=verified_at)
+    # Extracted, not confirmed: the person confirms a story fact through the facts import
+    # (CONTRACTS 3: VERIFIED means the person stated or confirmed it, never a run clock).
+    verification = FactVerification(status=VerificationStatus.UNVERIFIED)
     sections = [chunk for chunk in chunks if chunk.kind == "section"]
 
     def provenance(sentence: str) -> str:
@@ -1074,6 +1105,13 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
         tools = find_tools(sentence)
         key = _fact_key(sentence, tools)
         if key is None:
+            if _PLURAL_PERSON.search(sentence) and (
+                    _ACTION.search(sentence) or tools
+                    or (re.search(r"\d", sentence) and _RESULT.search(sentence))):
+                # "We grew ARR 3x": the team's work, story evidence in the chunks only;
+                # counted so the receipt shows what the singular rule left out.
+                skipped.append({"story": analysis.number, "reason": "plural_subject_only",
+                                "chars": len(sentence), "key": None})
             continue
         if len(sentence) > MAX_FACT_CHARS:
             skipped.append({"story": analysis.number, "reason": "sentence_too_long",
@@ -1158,7 +1196,7 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
             "fact_count": fact_count,
             "has_employer": analysis.employer is not None, "has_project": analysis.project is not None,
             "has_role": analysis.role is not None,
-            "stated_years": stated_years(story), "period_source": period_source,
+            "stated_year_count": len(stated_years(story)), "period_source": period_source,
             "period_set": period is not None, "stated_year_outside_resume_role": discrepancy,
             "link": ({"method": link.method, "resume_role_id": link.resume_role_id,
                       "confidence": link.confidence, "probability": link.probability}
@@ -1243,6 +1281,18 @@ def facts_review(index: StoryIndex, *, candidate_id: str,
     }
 
 
+CONFIRM_FILE_NOTE = ("Delete the facts you do not confirm; import the rest with "
+                     "scripts/rag_answers.py import-facts --file <this file>, then index-profile")
+
+
+def confirmable_facts(facts: Sequence[CandidateFact]) -> list[dict[str, Any]]:
+    """The facts a review offers for confirmation, in the facts-import format (id, key,
+    value, evidence; the import records the person's confirmation and its own
+    provenance). Only unverified facts are listed; confirmed ones need nothing."""
+    return [{"id": fact.id, "key": fact.key, "value": fact.value, "evidence": list(fact.evidence)}
+            for fact in facts if not fact.is_verified]
+
+
 def facts_review_markdown(review: Mapping[str, Any],
                           derived: Sequence[CandidateFact] = ()) -> str:
     """A readable version of the review for the person: stories with their link and
@@ -1263,16 +1313,24 @@ def facts_review_markdown(review: Mapping[str, Any],
         if story.get("note"):
             lines.append(f"- **check:** {story['note']}")
         lines.append("")
-    lines += ["## Facts", "", "| id | key | value | provenance |", "|---|---|---|---|"]
+    lines += ["## Facts", "",
+              "Every story fact is UNVERIFIED until you confirm it: keep the rows you confirm in the "
+              "`.confirm.json` written beside this file, delete the rest, then run "
+              "`uv run --no-sync python scripts/rag_answers.py import-facts --file <that file>` and "
+              "`index-profile`. Unconfirmed facts are never used to answer a form.", "",
+              "| id | key | value | provenance | status |", "|---|---|---|---|---|"]
     for fact in review["facts"]:
         value = str(fact["value"]).replace("|", "/")
-        lines.append(f"| `{fact['id']}` | {fact['key']} | {value} | `{fact['source']}` |")
+        status = fact.get("verification", {}).get("status", "UNVERIFIED")
+        lines.append(f"| `{fact['id']}` | {fact['key']} | {value} | `{fact['source']}` | {status} |")
     if derived:
         lines += ["", "## Derived years of experience (resume timeline)", "",
-                  "| id | key | years | basis |", "|---|---|---|---|"]
+                  "The total across dated roles is verified (it only restates the confirmed role "
+                  "dates); each per-area fact is UNVERIFIED until you confirm it the same way.", "",
+                  "| id | key | years | status | basis |", "|---|---|---|---|---|"]
         for fact in derived:
             basis = "; ".join(fact.evidence).replace("|", "/")
-            lines.append(f"| `{fact.id}` | {fact.key} | {fact.value} | {basis} |")
+            lines.append(f"| `{fact.id}` | {fact.key} | {fact.value} | {fact.verification.status.value} | {basis} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -1287,6 +1345,7 @@ def dumps_receipt(receipt: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "CONFIRM_FILE_NOTE",
     "DEFAULT_STORY_SOURCE",
     "MAX_CHUNK_CHARS",
     "MAX_CHUNK_WORDS",
@@ -1308,6 +1367,7 @@ __all__ = [
     "chunk_metadata",
     "chunk_story",
     "company_tokens",
+    "confirmable_facts",
     "duration_claims",
     "extract_story_facts",
     "fact_context",
@@ -1329,6 +1389,7 @@ __all__ = [
     "resume_roles",
     "role_tenure_months",
     "split_sentences",
+    "stated_year_span",
     "stated_years",
     "story_index_receipt",
     "story_source_of",

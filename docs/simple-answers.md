@@ -6,7 +6,8 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-thirty-nine explicit reusable answers, stored through the existing saved-answer system.
+thirty-nine explicit reusable answers, stored through the existing saved-answer system,
+and one statement key, `career_motivation`, stored as a verified fact (below).
 Each starts as `null`; nothing is filled in for you.
 
 | Map key | Example wording on a form |
@@ -57,6 +58,7 @@ Each starts as `null`; nothing is filled in for you.
 | `non_compete_agreement` | Have you signed any non-competition or non-solicitation agreement …? |
 | `uses_ai_tools` | Have you used AI tools to help prepare this application? |
 | `familiar_with_company` | Before applying, how familiar were you with this company? |
+| `career_motivation` | Not a form question: two or three sentences about what you look for in a role, written once and cited by "What interests you about …?" narratives |
 | `county` | County / County of residence |
 | `acknowledge_privacy_notice` | I have read and understand the employer's applicant privacy notice and data processing terms. |
 | `certify_information_true` | The information I provide in this application is true, complete and accurate. |
@@ -105,7 +107,8 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The thirty-nine additional reusable-answer keys may be omitted or `null`;
+contact value. The thirty-nine additional reusable-answer keys and `career_motivation`
+may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
 strings become `null`; phone and postal codes remain strings to preserve formatting
@@ -226,3 +229,16 @@ veteran” does not imply that the person never served in the military.
 Other protected attributes, salary, consent and narratives
 keep their scoped saved-answer / user-input route. No values are inferred from
 these defaults. A job-search salary floor is not an answer to desired salary.
+
+## `career_motivation`: what you look for in a role
+
+`career_motivation` is the one key that is not an answer to a form question. Write two or
+three sentences, once, about what you look for in a role (the kind of work, the way results
+are measured, the environment). Import stores it as a verified, user-stated candidate fact
+(`id` and `key` `career_motivation`, source `user:simple-answers`, never a saved answer), so
+the writer may cite it: an interest, motivation or "why us" narrative states, as its
+reason, the alignment between the job description's cited requirements and your cited
+experience, and cites this statement when one exists. With `null` the reason must come from a cited story
+passage about this kind of work, else the question holds; a null never erases an earlier statement, an unchanged one keeps its
+verification time, and export reads the statement back from the profile. The import
+report lists `facts_updated` (keys only, never the text).

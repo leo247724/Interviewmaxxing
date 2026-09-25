@@ -3,18 +3,25 @@
 Screeners ask "How many years of paid media experience do you have?"; the resume states
 dated roles, not totals. This module derives them deterministically: the total years
 across all dated roles (overlapping periods merged) and, per area, the years of the roles
-whose resume bullets, title or linked story name that area. Every duration is rounded
-down to whole years and never exceeds the timeline; areas under a full year yield no
-fact, so the question holds rather than answering "0". Facts carry the provenance
-``derived:experience_timeline``, deterministic ids and the key convention the factual
-resolver already reads (``years_experience`` and ``years_experience.<area>``).
+whose title names the area (the whole role) plus the bullets that state their own
+duration ("ran paid social for 18 months": that duration, never the whole role). A bullet
+that merely mentions an area ("piloted TikTok Ads in Q4") dates nothing. Every duration is
+rounded down to whole years and never exceeds the timeline; an area under a full year
+yields no fact, so the question holds rather than answering "0".
+
+The total only restates the person's confirmed role dates, so it is VERIFIED
+(``USER_CONFIRMED``); each per-area fact is an extraction and is written UNVERIFIED until
+the person confirms it through the facts import (CONTRACTS 3: a verification is the
+person's, never a run clock). Facts carry the provenance ``derived:experience_timeline``,
+deterministic ids and the key convention the factual resolver already reads
+(``years_experience`` and ``years_experience.<area>``).
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from interviewmaxxing_core import (
@@ -25,16 +32,19 @@ from interviewmaxxing_core import (
     VerificationStatus,
 )
 
-from .stories import StoryRoleLink, find_skills, find_tools, resume_roles
+from .stories import _WORD_NUMBERS, find_skills, find_tools, resume_roles
 
 DERIVED_SOURCE = "derived:experience_timeline"
 TOTAL_KEY = "years_experience"
 AREA_PREFIX = "years_experience."
-MIN_STORY_AREA_YEARS = 2
-"""An area only a linked story names (never a resume role's title or bullets) needs this
-many whole years to become a fact; a single tool a story mentions for one year adds
-noise without helping a screener. Resume-named areas need one full year."""
+CONFIRMATION_NOTE = "Unverified until confirmed through the facts import (scripts/rag_answers.py import-facts)"
 _DATE = re.compile(r"^(\d{4})(?:-(\d{2}))?$")
+_STATED_DURATION = re.compile(
+    r"\b(?:(?P<qual>over|more than|almost|nearly|about|around|approximately|roughly|under|less than)\s+)?"
+    r"(?:(?P<n>\d+(?:\.\d+)?|" + "|".join(_WORD_NUMBERS) + r")\+?|(?P<article>an?))\s*"
+    r"(?P<unit>years?|yrs?|months?)\b", re.IGNORECASE)
+_STATED_RANGE = re.compile(r"\b((?:19|20)\d{2})\s*(?:-|\u2013|\u2014|to|through|until)\s*((?:19|20)\d{2}|present|now|today)\b",
+                           re.IGNORECASE)
 AREA_FAMILIES: dict[str, frozenset[str]] = {
     # A role that names a member area is a role in the family; questions ask for the
     # family ("paid media") more often than for the product a bullet names.
@@ -67,6 +77,29 @@ def with_families(areas: set[str]) -> set[str]:
     return expanded
 
 
+def stated_duration_months(text: str, *, today: date | None = None) -> int | None:
+    """The duration a resume bullet states for its own work, in whole months: "18
+    months" is 18, "3 years" 36, "over 2 years" 24, "about a year" 12, "2021 to 2023"
+    24 (a year range counts the years between its ends); "under a year" states no
+    usable duration. None when the bullet states none: a mention dates nothing."""
+    months: list[int] = []
+    for match in _STATED_DURATION.finditer(text):
+        qual = (match.group("qual") or "").casefold()
+        if qual in ("under", "less than"):
+            continue
+        raw = (match.group("n") or "1").casefold()
+        number = _WORD_NUMBERS.get(raw) or float(raw)
+        unit = match.group("unit").casefold()
+        months.append(int(number * 12) if unit.startswith(("year", "yr")) else int(number))
+    for match in _STATED_RANGE.finditer(text):
+        start = int(match.group(1))
+        end_text = match.group(2).casefold()
+        end = (today or date.today()).year if end_text in ("present", "now", "today") else int(end_text)
+        if end >= start:
+            months.append((end - start) * 12)
+    return max(months) if months else None
+
+
 @dataclass(frozen=True)
 class RoleSpan:
     role_id: str
@@ -75,13 +108,19 @@ class RoleSpan:
     """Months since year 0 of the first month."""
     end: int
     """Months since year 0 of the last month (inclusive)."""
-    areas: frozenset[str]
-    resume_areas: frozenset[str] = frozenset()
-    """The areas the resume role's own title and bullets name (with their families)."""
+    title_areas: frozenset[str] = frozenset()
+    """The areas the role's title names (with their families): the whole role."""
+    bullet_areas: Mapping[str, int] = field(default_factory=dict)
+    """Area -> months, from the bullets that state their own duration (with families),
+    capped at the role's length."""
 
     @property
     def months(self) -> int:
         return self.end - self.start + 1
+
+    @property
+    def areas(self) -> frozenset[str]:
+        return self.title_areas | frozenset(self.bullet_areas)
 
 
 def _month_index(value: str | None) -> int | None:
@@ -114,23 +153,10 @@ def area_slug(area: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", area.casefold()).strip("_")
 
 
-def role_spans(profile: CandidateProfile, *, today: date,
-               story_links: Mapping[str, StoryRoleLink] | None = None,
-               story_areas: Mapping[str, Sequence[str]] | None = None) -> list[RoleSpan]:
-    """Dated resume roles with the areas each names: its title and verified bullets,
-    plus the tools and skills of the stories linked to it."""
-    linked: dict[str, set[str]] = {}
-    for story_id, link in (story_links or {}).items():
-        linked.setdefault(link.resume_role_id, set()).update((story_areas or {}).get(story_id, ()))
-    # Story facts already in the profile name their resume role in their evidence, so
-    # every indexed stories source counts, whichever run derived the years.
-    for fact in profile.verified_facts():
-        if not fact.source.startswith("story:") or not isinstance(fact.value, str):
-            continue
-        role_id = next((line[len("resume_role_id: "):] for line in fact.evidence
-                        if line.startswith("resume_role_id: ")), None)
-        if role_id:
-            linked.setdefault(role_id, set()).update(find_skills(fact.value), find_tools(fact.value))
+def role_spans(profile: CandidateProfile, *, today: date) -> list[RoleSpan]:
+    """Dated resume roles with the areas each dates: the title's areas for the whole
+    role, and a bullet's areas for the duration the bullet itself states. Stories never
+    date an area: a linked story's tools are that story's evidence, not a timeline."""
     spans = []
     now = today.year * 12 + (today.month - 1)
     for role in resume_roles(profile):
@@ -138,11 +164,17 @@ def role_spans(profile: CandidateProfile, *, today: date,
         end = now if role.current and not role.end else _month_index(role.end)
         if start is None or end is None or end < start:
             continue
-        text = " ".join([role.title, *role.bullets])
-        resume_areas = with_families(set(find_skills(text)) | set(find_tools(text)))
-        areas = with_families(resume_areas | linked.get(role.id, set()))
-        spans.append(RoleSpan(role.id, role.company, start, min(end, now),
-                              frozenset(areas), frozenset(resume_areas)))
+        end = min(end, now)
+        length = end - start + 1
+        title_areas = with_families(set(find_skills(role.title)) | set(find_tools(role.title)))
+        bullet_areas: dict[str, int] = {}
+        for bullet in role.bullets:
+            months = stated_duration_months(bullet, today=today)
+            if months is None or months < 1:
+                continue
+            for area in with_families(set(find_skills(bullet)) | set(find_tools(bullet))) - title_areas:
+                bullet_areas[area] = max(bullet_areas.get(area, 0), min(months, length))
+        spans.append(RoleSpan(role.id, role.company, start, end, frozenset(title_areas), bullet_areas))
     return spans
 
 
@@ -153,48 +185,48 @@ def _describe(spans: Sequence[RoleSpan]) -> str:
                      for span in sorted(spans, key=lambda s: s.start))
 
 
-def derive_experience_years(profile: CandidateProfile, *, today: date, verified_at: datetime,
-                            story_links: Mapping[str, StoryRoleLink] | None = None,
-                            story_areas: Mapping[str, Sequence[str]] | None = None,
-                            ) -> list[CandidateFact]:
-    """Whole years of experience in total and per area, rounded down; nothing under a
-    full year, nothing above the timeline, and an area only a story names needs
-    ``MIN_STORY_AREA_YEARS``."""
-    spans = role_spans(profile, today=today, story_links=story_links, story_areas=story_areas)
+def derive_experience_years(profile: CandidateProfile, *, today: date, verified_at: datetime) -> list[CandidateFact]:
+    """Whole years of experience in total (VERIFIED: it restates the confirmed role dates)
+    and per area (UNVERIFIED until the person confirms it), rounded down; nothing under a
+    full year and nothing above the timeline."""
+    spans = role_spans(profile, today=today)
     if not spans:
         return []
-    verification = FactVerification(status=VerificationStatus.VERIFIED,
-                                    method=VerificationMethod.USER_CONFIRMED, verified_at=verified_at)
     facts: list[CandidateFact] = []
     total_months = merged_months([(span.start, span.end) for span in spans])
     total_years = total_months // 12
     if total_years >= 1:
         facts.append(CandidateFact(
             id="derived_" + TOTAL_KEY, key=TOTAL_KEY, value=total_years, source=DERIVED_SOURCE,
-            verification=verification, evidence=[
+            verification=FactVerification(status=VerificationStatus.VERIFIED,
+                                          method=VerificationMethod.USER_CONFIRMED, verified_at=verified_at),
+            evidence=[
                 f"Derived from the resume experience timeline: {len(spans)} dated roles, "
                 f"{total_months} months with overlaps merged, rounded down to whole years",
                 "roles: " + _describe(spans)]))
     areas = sorted({area for span in spans for area in span.areas}, key=str.casefold)
     for area in areas:
-        named = [span for span in spans if area in span.areas]
-        months = merged_months([(span.start, span.end) for span in named])
-        years = min(months // 12, total_years)
-        resume_named = any(area in span.resume_areas for span in named)
-        if years < 1 or (not resume_named and years < MIN_STORY_AREA_YEARS):
+        titled = [span for span in spans if area in span.title_areas]
+        dated = [(span, span.bullet_areas[area]) for span in spans if area in span.bullet_areas]
+        months = merged_months([(span.start, span.end) for span in titled]) + sum(m for _, m in dated)
+        years = min(min(months, total_months) // 12, total_years)
+        if years < 1:
             continue
         slug = area_slug(area)
         if not slug:
             continue
+        basis = [f"{span.company}: title, {span.months} months" for span in sorted(titled, key=lambda s: s.start)]
+        basis += [f"{span.company}: a bullet stating {m} months" for span, m in sorted(dated, key=lambda item: item[0].start)]
         facts.append(CandidateFact(
             id="derived_" + TOTAL_KEY + "_" + slug, key=AREA_PREFIX + slug, value=years,
-            source=DERIVED_SOURCE, verification=verification, evidence=[
-                f"Years of {area} experience derived from the resume roles that name it: "
-                f"{months} months with overlaps merged, rounded down to whole years",
-                "roles: " + _describe(named)]))
+            source=DERIVED_SOURCE, verification=FactVerification(status=VerificationStatus.UNVERIFIED),
+            evidence=[
+                f"Years of {area} experience from the resume roles whose title names it and the "
+                f"bullets that state their own duration: {months} months, rounded down to whole years",
+                "basis: " + "; ".join(basis), CONFIRMATION_NOTE]))
     return facts
 
 
-__all__ = ["AREA_FAMILIES", "AREA_PREFIX", "DERIVED_SOURCE", "MIN_STORY_AREA_YEARS", "TOTAL_KEY",
+__all__ = ["AREA_FAMILIES", "AREA_PREFIX", "CONFIRMATION_NOTE", "DERIVED_SOURCE", "TOTAL_KEY",
            "RoleSpan", "area_slug", "derive_experience_years", "merged_months", "role_spans",
-           "with_families"]
+           "stated_duration_months", "with_families"]

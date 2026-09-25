@@ -146,11 +146,19 @@ def _cited(draft: NarrativeDraft) -> tuple[set[str], set[str]]:
             {eid for s in draft.sentences for eid in s.job_evidence_ids})
 
 
+def _citation_sets(draft: NarrativeDraft) -> set[tuple[frozenset[str], frozenset[str]]]:
+    """Each cited sentence's exact (fact ids, job evidence ids) pair: the unit a rewrite
+    must keep together, so a metric cannot travel to a sentence cited by other facts."""
+    return {(frozenset(s.fact_ids), frozenset(s.job_evidence_ids)) for s in draft.sentences
+            if s.fact_ids or s.job_evidence_ids}
+
+
 def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
-                  purpose: Literal["answer", "cover_letter"], supplied_ids: set[str],
+                  purpose: Literal["answer", "cover_letter", "motivation"], supplied_ids: set[str],
                   job_ids: set[str], max_length: int | None) -> str | None:
     """Why a rewrite is unacceptable, or None: it must be READY, keep every cited id and
-    cite nothing new, add no number, stay near the draft's length and within the
+    cite nothing new, keep each draft sentence's exact citation set together on one
+    rewritten sentence, add no number, stay near the draft's length and within the
     field's shape."""
     if rewritten.status != "READY":
         return "not_ready"
@@ -160,6 +168,8 @@ def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
         return "unknown_citation"
     if not original_facts <= facts or not original_jobs <= jobs:
         return "dropped_citation"
+    if _citation_sets(original) != _citation_sets(rewritten):
+        return "moved_citation"  # a citation set split, recombined or moved between sentences
     if set(_NUMBER.findall(rewritten.text)) - set(_NUMBER.findall(original.text)):
         return "new_number"
     words, before = len(rewritten.text.split()), len(original.text.split())
@@ -203,7 +213,11 @@ _RULES = (
     "vocabulary and cadence of voice_samples, which are the applicant's own writing; they are "
     "style only, never a source of claims. Make the minimum effective edit: leave sentences "
     "that are already plain alone. "
-    "Hard constraints: (1) Add no claim, example, number, date, tool, employer, motivation, "
+    "Hard constraints: (0) Keep each draft sentence's exact set of fact_ids and "
+    "job_evidence_ids together on the one rewritten sentence that carries its claims; never "
+    "move a number, name or result to a sentence with a different citation set, and never "
+    "split or recombine citation sets (merge sentences only when they cite the same ids). "
+    "(1) Add no claim, example, number, date, tool, employer, motivation, "
     "preference or opinion the draft does not already state; only cut, merge, split or reword. "
     "(2) Every fact_ids and job_evidence_ids entry the draft cites must still be cited by the "
     "sentence that now carries that claim, and no sentence may cite an id the draft did not "
@@ -218,19 +232,20 @@ _RULES = (
 
 
 def rewrite_draft(writer: NarrativeWriter, *, question: str,
-                  purpose: Literal["answer", "cover_letter"], draft: NarrativeDraft,
+                  purpose: Literal["answer", "cover_letter", "motivation"], draft: NarrativeDraft,
                   job: dict[str, str], voice_samples: list[str], findings: list[Finding],
                   max_length: int | None, attempt: int) -> NarrativeDraft:
     """One bounded Opus rewrite of a grounded draft; the same budget, transport and
     structured schema as the writer, recorded under the purpose ``humanize``."""
-    if purpose not in ("answer", "cover_letter"):
+    if purpose not in ("answer", "cover_letter", "motivation"):
         raise AIHold("Unsupported narrative purpose")
     if any(not isinstance(sample, str) for sample in voice_samples):
         raise AIHold("Narrative voice samples must be text")
     effort = writer.effort_for("humanize")
+    reasoning, request_max_tokens = writer.narrative_budget("humanize")
     payload = {
-        "model": writer.model, "max_tokens": writer.max_tokens,
-        "reasoning": {"effort": effort},
+        "model": writer.model, "max_tokens": request_max_tokens,
+        "reasoning": reasoning,
         "provider": {"require_parameters": True, "allow_fallbacks": False},
         "messages": [
             {"role": "system", "content": _RULES},
@@ -247,7 +262,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
             "name": "cited_application_response", "strict": True, "schema": _draft_schema()}},
     }
     body = json.dumps(payload).encode()
-    reserve = (len(body) + 2048) * 4 / 1_000_000 + writer.max_tokens * 20 / 1_000_000
+    reserve = (len(body) + 2048) * 4 / 1_000_000 + request_max_tokens * 20 / 1_000_000
     writer.budget.reserve(body, reserve)
     started = time.monotonic()
     resolved: str | None = None
@@ -303,7 +318,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
 
 
 def humanize_draft(writer: NarrativeWriter, *, question: str,
-                   purpose: Literal["answer", "cover_letter"], draft: NarrativeDraft,
+                   purpose: Literal["answer", "cover_letter", "motivation"], draft: NarrativeDraft,
                    job: dict[str, str], voice_samples: list[str], max_length: int | None,
                    supplied_ids: set[str], job_ids: set[str],
                    ground: Callable[[NarrativeDraft, dict[str, Any]], None],

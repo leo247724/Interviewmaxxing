@@ -50,5 +50,6 @@
   "consent_to_contact": null,
   "consent_reference_checks": null,
   "consent_background_check": null,
-  "work_authorization_status": null
+  "work_authorization_status": null,
+  "career_motivation": null
 }

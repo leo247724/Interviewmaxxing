@@ -46,7 +46,7 @@ These three decisions map the user's own stored answer onto what a site offers. 
   - Explicit-answer types still come only from a saved answer.
 - **Yes/no experience screeners (round 2).** A required question that the full-form gate routes as a literal `COPY_KNOWN` answer about the applicant's own history (`HISTORICAL_OR_CONTEXTUAL`, gated) is answered from verified facts. Examples: "Do you have experience working at a digital marketing agency?" or "Do you have lifecycle or CRM experience?". It qualifies as a radio or select with one yes-like and one no-like option (extras such as "Prefer not to say" allowed), or as a text field phrased as a yes/no question.
   - The facts come from the RAG retriever when configured, else from the verified list within the 40-fact bound.
-  - One request (purpose `experience_screener`, prompt `experience-screener-v1`) holds the Choice `experience` (YES, NO, UNKNOWN, NOT_EXPERIENCE) and, per fact, nouls asking whether the fact explicitly states the named experience (`has_fN`) or its absence (`lacks_fN`).
+  - One request (purpose `experience_screener`, prompt `experience-screener-v2`) holds the Choice `experience` (YES, NO, UNKNOWN, NOT_EXPERIENCE) and, per fact, nouls asking whether the fact explicitly states the named experience (`has_fN`) or its absence (`lacks_fN`).
   - YES needs the Choice at the gates and at least one fact stating the experience; NO needs a fact stating its absence. Absence of a fact is UNKNOWN, never NO.
   - Facts that point both ways hold as a conflict, and UNKNOWN holds with a prompt that names the question and the fact that would settle it.
   - A named tool or platform must be named in a fact, and the ABM-platform rule still requires platform names.
@@ -219,6 +219,45 @@ drifts in length or fails a check; a residual lint pattern allows one more rewri
 pass adds one or two Opus calls and one or two Jev grounding calls per narrative field,
 which is why the per-WRITER-field allowance is now 12 calls and USD 0.30; a call the
 budget still refuses keeps the grounded draft rather than holding the field.
+
+**Round 3 (WP12).** Narrative calls (writing, motivation, cover letters, the no-slop
+rewrite) send an explicit reasoning budget by effort (`reasoning.max_tokens`: low 1024,
+medium 1536, high 2560, xhigh 5120, max 10240) and a request `max_tokens` of that budget plus
+the purpose's answer allowance (2000 tokens for an answer or motivation, 3000 for a cover
+letter or a rewrite), so the answer keeps its whole room; with `effort: high` OpenRouter
+had reserved about 80% of a 3000-token limit for reasoning and cut answers. A `length`
+finish reason is retried once at the same effort with a larger budget (half more reasoning,
+twice the answer room); the draft trace's `attempts` list records each call's status,
+finish reason and budgets; a second cut, or a retry the call budget refuses, holds with
+both reasons. Reviews keep `reasoning.effort` (short verdicts). The reservation for a
+high-effort writer call grows from 0.06 to 0.09-0.11 USD plus the body (0.16-0.20 on the
+retry); the allowances are unchanged. Interest, motivation and "why us" questions are now
+their own purpose, `motivation` (trace status `MOTIVATION_PURPOSE`): the reason is the
+alignment between the job's cited requirements and the applicant's cited experience, a
+`career_motivation` fact (docs/simple-answers.md) is added to the evidence and may be
+cited, and no personal reason is demanded. The yes/no, choice and select-all screeners
+(prompt `experience-screener-v2`) read the derived `years_experience.<area>` facts (one or
+more years is experience in the area, including having managed or used the platform it
+names) and story facts (employer type, platforms named) as evidence, mapping onto options
+through the existing per-option source decision; choice and select-all screeners retrieve
+with their option labels. Enumeration questions ("How many direct reports do you currently
+manage, or have you managed…") carry a guidance rule to the writer: present each item the
+facts state with its size, employer and dates, never hold for completeness, and no
+totality words unless a fact states the total; a draft with one gets the one corrective
+rewrite (trace status `TOTALITY_REJECTED`).
+
+**Round 4 (WP12).** Provenance: story facts and per-area years facts are written
+`UNVERIFIED` by the index script and become evidence only once the person confirms them
+through `scripts/rag_answers.py import-facts` (the review's `.confirm.json`); the total
+years fact stays verified; areas come from role titles or bullets that state their own
+duration, never from a mention or a linked story ([rag-writing.md](rag-writing.md), Round
+4). Motivation narratives need the applicant's own reason, a cited story passage or the
+`career_motivation` statement, or hold before writing; a draft citing neither gets the one
+corrective rewrite (`MOTIVATION_UNCITED`). The consistency comparison set tiers same-key
+and global claims before the count-ranked rest (`tiered_first`), for the Jev check and the
+review. The humanizer keeps each sentence's citation set together (`REJECTED_MOVED_CITATION`)
+and every humanized draft gets the independent review. The form allowance is granted once
+per step per runtime, so a re-resolve of a step grants nothing more.
 
 ## Bounds and observations
 

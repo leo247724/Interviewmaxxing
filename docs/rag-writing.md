@@ -307,6 +307,144 @@ from the confirmed role dates) with provenance `derived:experience_timeline`, id
 `derived_years_experience[_<area>]`, and are replaced on every run like the story facts.
 A question about a skill no role names still holds.
 
+## Round 3: motivation as alignment, output budgets, screener evidence, enumerations
+
+**Motivation narratives.** Interest, motivation and "why us" questions are written under
+their own writer purpose, `motivation` (at most eight sentences, one or two paragraphs,
+trace stage `motivation_narrative` with status `MOTIVATION_PURPOSE`). The reason the
+draft gives is the alignment between the job description's requirements or priorities
+(cited job evidence) and the applicant's own experience (cited facts and story passages):
+two or three named requirements and the matching work, employer and period. The writer
+never demands, invents or implies a personal reason, familiarity with the company or
+enthusiasm the evidence does not carry, and never returns `NEEDS_INPUT` for the lack of
+one; the draft must cite both namespaces. One reusable statement, `career_motivation`
+(two or three sentences the person writes once about what they look for in a role,
+`docs/simple-answers.md`), is stored as a verified user-stated fact; the resolver adds it
+to a motivation field's evidence whether or not retrieval surfaced it, so the writer may
+cite it as a reason. (Round 4 tightened this: the reason must be the applicant's own,
+a cited story passage or the statement; see below.) The review prompt accepts the
+alignment as a complete frame.
+
+**Output budgets.** The high-effort writer had reached its output token limit: with
+`reasoning.effort` OpenRouter reserves about 80% of `max_tokens` for reasoning, leaving a
+3000-token limit some 600 tokens for the cited JSON answer. Narrative calls (`write`,
+purposes answer, motivation and cover letter, and the no-slop rewrite) now send an
+explicit `reasoning.max_tokens` budget by effort (`REASONING_BUDGET_TOKENS`: low 1024,
+medium 1536, high 2560, xhigh 5120, max 10240; OpenRouter maps a token budget to an
+effort level for models without one) and a request `max_tokens` of that budget plus the
+purpose's answer allowance (`ANSWER_TOKENS`: 2000 for an answer or motivation, 3000 for
+a cover letter or a rewrite, bounded by the writer's `max_tokens`), so the answer keeps
+its whole room after reasoning; Anthropic models require `max_tokens` above the reasoning
+budget, which this satisfies. A `finish_reason` of `length` is retried once at the same
+effort with a larger budget (`RETRY_REASONING_FACTOR` 1.5, `RETRY_ANSWER_FACTOR` 2); the
+field never holds on the first cut. Each call's receipt status (`OUTPUT_LIMIT`, `OK`) and
+the draft trace's `attempts` list (attempt, status, finish reason, reasoning budget,
+`max_tokens`) record what happened; a second cut holds with "reached its output token
+limit twice", and a retry the call budget refuses holds naming both reasons. Reviews keep
+`reasoning.effort`: their verdicts are short. The cost reservation of a high-effort call
+grows from 0.06 USD plus the body to 0.09 (answer) or 0.11 (cover letter) plus the body,
+and to 0.16-0.20 on the retry; the per-form allowances are unchanged.
+
+**Screener evidence.** The fact-grounded yes/no, choice and select-all screeners (prompt
+`experience-screener-v2`) read two more kinds of evidence through the same decisions: a
+derived `years_experience.<area>` fact with a value of one or more states that the
+applicant worked in that area for that many whole years (derived from the dated resume
+roles that name it), so it establishes experience in the area, including having managed
+or used the platform or tool the area names; and a story fact (source `story:<chunk>`)
+states the employer type it names (an SEO agency, a paid media agency) as the environment
+the applicant worked in and the platforms or tools it names as the applicant's own work.
+The per-option `source_o<i>` decision maps them onto the options, so "Which paid media
+platforms have you directly managed? (Select all that apply)" selects Google Ads from
+`years_experience.google_ads = 3` and Meta Ads from a story fact naming it, and "Have you
+worked in a performance marketing agency environment?" answers from a story fact naming
+the agency (Jev decides whether the named kind is the asked kind). Choice and select-all
+screeners retrieve with the question plus their option labels (`_screener_query`), so a
+fact naming an option is retrieved even when the question does not name it.
+
+**Enumerations.** A question asking to enumerate or count the applicant's teams, reports,
+clients, campaigns or tools (`_enumeration_question`: "How many direct reports do you
+currently manage, or have you managed…", "Which platforms have you managed?", "List the
+tools…") is written from the facts at hand: the writer receives a guidance rule
+(`ENUMERATION_GUIDANCE`, the `guidance` list in the request, never a factual source) to
+present each item the facts state with its size, employer and dates, each cited, not to
+return `NEEDS_INPUT` for completeness, and not to use totality words (all, every, only, in
+total, total across roles, altogether) unless a fact states the total; the required-details
+check and the review prompt accept the non-exhaustive list as complete. A draft that still
+claims a total the facts do not state gets the one corrective rewrite with that as its
+feedback (draft trace status `TOTALITY_REJECTED`); a fact that states the total allows the
+word.
+
+## Round 4: fact provenance, the applicant's own reason, bounded comparisons, reviewed rewrites
+
+**Story facts are extracted, not confirmed (H5).** CONTRACTS 3: `VERIFIED` means the
+person stated or confirmed the fact; a run clock is neither. `extract_story_facts` now
+writes every story fact `UNVERIFIED` (no method, no time), and only sentences in the first
+person singular (I, my, me) or resume-style sentences opening with a verb become facts;
+"We grew ARR 3x", "our team of 6 closed the deal" describe the team's work, stay in the
+story chunks as narrative evidence and are counted in the receipt's `skipped` list as
+`plural_subject_only` (the analysis still reads them as the story's actions). An
+unverified fact is never writer, screener or retrieval evidence (`verified_facts()`,
+`index_candidate` and the resolvers use verified facts only), so a story that has not
+been confirmed contributes its passages, not facts.
+
+**Confirming facts.** `--facts-review` writes, beside the review JSON and Markdown, a
+`<name>.confirm.json`: every unverified fact of the run (story facts and per-area years)
+in the facts-import format (`id`, `key`, `value`, `evidence`). Delete the rows you do not
+stand behind, then run `uv run --no-sync python scripts/rag_answers.py import-facts --file
+<that file>` and `index-profile`. The import records the confirmation (`VERIFIED`,
+`USER_STATED`, provenance `user:confirmed fact import`), and the index script keeps a
+confirmed fact by id on every later run (`kept_confirmed` in the receipt): it never
+replaces or downgrades it, while an unconfirmed fact it produces again stays
+`UNVERIFIED` and one it no longer produces is removed. Fact ids are content hashes, so an
+unchanged sentence keeps its confirmation across re-runs; a corrected sentence is a new
+fact to confirm. The review Markdown shows each fact's status.
+
+**Years of experience (H4).** `timeline.py` derives an area only from a role's title
+(the whole role: "PPC Specialist" dates PPC, paid search, paid media, digital marketing for
+its full span) or from a bullet that states its own duration ("ran paid social on Meta
+Ads for 18 months", "managed Google Ads for over 3 years", "owned SEO from 2021 to
+2023": that duration, capped at the role's length; `stated_duration_months`). A bullet
+that merely mentions an area ("piloted TikTok Ads in Q4") dates nothing, and linked
+stories never date an area (their tools are the story's evidence, not a timeline). The
+total across dated roles stays `VERIFIED` (`USER_CONFIRMED`: it only restates the
+person's confirmed role dates); each per-area fact is `UNVERIFIED` until confirmed
+through the import above, with its basis in the evidence ("Glaze Agency: title, 24
+months"; "Crumb & Co.: a bullet stating 36 months"). The numeric screener therefore
+answers "How many years of X" from a per-area fact only once the person confirmed it.
+
+**The applicant's own reason (M7).** A motivation narrative needs, besides the
+alignment, the applicant's own reason: a retrieved story passage about this kind of work
+or the `career_motivation` statement. With neither, the field holds before any writer
+call ("Motivation answer needs the applicant's own reason: a story about this kind of
+work … or a career_motivation statement …"). A draft whose sentences cite neither gets
+the one corrective rewrite with that feedback (draft trace `MOTIVATION_UNCITED`), then
+holds.
+
+**Bounded comparisons (M8).** The consistency comparison set (40 for Jev, 24 for the
+review) is tiered: facts with the same non-additive key as a selected fact, global claims
+("never", "throughout my career") and explicit negatives come first, then the rest by
+how many selected facts they compete with; a contradiction in one slot can no longer fall
+below the bound behind many additive bullets about the same subject (`tiered_first` in
+the consistency trace).
+
+**Reviewed rewrites (M9).** `check_rewrite` keeps each draft sentence's exact citation
+set (fact ids and job evidence ids) together on one rewritten sentence: a set that is
+split, recombined or moved rejects the rewrite (`REJECTED_MOVED_CITATION`), so a metric
+cannot travel to a sentence cited by other facts; sentences citing the same set may
+still merge. Every humanized draft is grounded again *and* independently reviewed
+(`force_review`), not only at an uncertain score or after a corrective rewrite.
+
+**Smaller items.** An unlinked story's facts carry a span only when its stated years are
+adjacent (2022, 2023, 2024) or the story states an explicit range ("2019 to 2023");
+years stated apart ("in 2019 … by 2023") date nothing (L8, `stated_year_span`). The
+printed receipt carries counts only: `stated_year_count` per story and, for the derived
+facts, count/verified/unverified; the values stay in the private review files (L9).
+Story chunks still stand in for voice samples when the profile has none (L10): the
+writer prompt keeps them style-only and the humanizer's lexical guard (no new number,
+name or claim) applies, so a borrowed phrase cannot become a claim. The form allowance
+(`allow_form`) is granted once per step (application id and form fingerprint) per
+runtime; a re-resolve of the same step grants nothing more (L11).
+
 ## Verification
 
 Mocked tests cover isolated retrieval, changed and revoked facts, source separation,

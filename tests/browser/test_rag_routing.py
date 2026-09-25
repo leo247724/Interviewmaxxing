@@ -1064,7 +1064,7 @@ def test_screener_answers_yes_from_a_fact_that_names_agency_work(
     fact_keys = set(request["state"]["facts"])
     assert {f"has_{k}" for k in fact_keys} | {f"lacks_{k}" for k in fact_keys} | {"experience"} == set(
         request["questions"])
-    assert request["state"]["screener_version"] == "experience-screener-v1"
+    assert request["state"]["screener_version"] == "experience-screener-v2"
     assert {f["id"] for f in request["state"]["facts"].values()} == {"fact.agency", "fact.paid_media"}
     assert not provider.asked("route")
 
@@ -1544,7 +1544,7 @@ def test_a_budget_range_is_the_option_containing_the_stated_monthly_budget(
     assert request["state"]["options"] == {f"o{i}": label for i, label in enumerate(BUDGET_OPTIONS)}
     assert {f"states_{key}" for key in request["state"]["facts"]} | {"fact_choice"} == set(
         request["questions"])
-    assert request["state"]["screener_version"] == "experience-screener-v1"
+    assert request["state"]["screener_version"] == "experience-screener-v2"
     [trace] = fact_traces(resolver)
     assert (trace["kind"], trace["status"], trace["evidence_ids"]) == ("choice", "ANSWERED", ["fact.budget"])
     assert not provider.asked("route") and not provider.asked("experience")
@@ -3401,3 +3401,91 @@ def test_items_start_in_form_order_whatever_the_semaphore_order(
     assert (packet.answers, packet.missing_inputs) == (sequential.answers, sequential.missing_inputs)
     checks = [t for t in resolver.narrative_traces if t["stage"] == "consistency"]
     assert checks  # the form-order consistency step ran under the LIFO semaphore
+
+
+# --- WP12 round 3: derived years facts and story facts as screener evidence ------------------
+
+AGENCY_ENVIRONMENT = "Have you worked in a performance marketing agency environment?"
+SEO_AGENCY_STORY = ("I managed a team of 5 SEO specialists at Batlinks, an SEO agency, and owned "
+                    "the client accounts (2024-03 to 2025-05).")
+PAID_SOCIAL_QUESTION = "Have you managed paid social campaigns?"
+PAID_MEDIA_PLATFORMS = "Which paid media platforms have you directly managed? (Select all that apply)"
+
+
+def story_fact(candidate: CandidateProfile, text: str, *, fid: str) -> CandidateFact:
+    return fact(candidate, "experience", text, fid=fid).model_copy(update={
+        "source": "story:" + "e" * 64,
+        "evidence": [text, "period_source: resume_role", "resume_role_id: exp_batlinks"]})
+
+
+def derived_fact(candidate: CandidateProfile, area: str, years: int) -> CandidateFact:
+    slug = area.lower().replace(" ", "_")
+    return fact(candidate, f"years_experience.{slug}", years,
+                fid=f"derived_years_experience_{slug}").model_copy(update={
+        "source": "derived:experience_timeline",
+        "evidence": [f"Years of {area} experience derived from the resume roles that name it: "
+                     f"{years * 12} months with overlaps merged, rounded down to whole years",
+                     "roles: Fictional Widgets Co (2021-03 to 2024-06)"]})
+
+
+def test_a_story_fact_naming_the_employer_type_answers_the_agency_environment_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    story = story_fact(fictional_candidate, SEO_AGENCY_STORY, fid="sf_batlinks_0001")
+    other = fact(fictional_candidate, "skills", PAID_SEARCH, fid="fact.paid_search")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=mentions("SEO agency"))
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [story, other]), mock_job,
+                            screener_form(AGENCY_ENVIRONMENT), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["sf_batlinks_0001"]
+    [request] = provider.asked("experience")
+    assert request["state"]["screener_version"] == "experience-screener-v2"
+    facts = request["state"]["facts"]
+    key = next(k for k, f in facts.items() if f["id"] == "sf_batlinks_0001")
+    assert facts[key]["source"] == "story:" + "e" * 64  # Jev sees the provenance
+    assert "whose source starts with story:" in json.dumps(request["questions"]["experience"])
+    assert "years_experience.<area>" in json.dumps(request["questions"][f"has_{key}"])
+    # The same fact is no evidence when Jev finds the named kind is not the asked kind.
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [story, other]), mock_job,
+                            screener_form(AGENCY_ENVIRONMENT), provider)
+    assert packet.answers == [] and not packet.is_complete
+
+
+def test_a_derived_years_fact_answers_a_yes_no_screener_about_its_area(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    derived = derived_fact(fictional_candidate, "paid social", 2)
+    other = fact(fictional_candidate, "skills", PAID_SEARCH, fid="fact.paid_search")
+    provider = ScreenerProvider(("YES", 0.99, 0.98), has=lambda text: 1.0 if text == "2" else 0.0)
+    packet, ctx, _ = screen(candidate_with(fictional_candidate, [derived, other]), mock_job,
+                            screener_form(PAID_SOCIAL_QUESTION), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.reference_ids == ["derived_years_experience_paid_social"]
+    [request] = provider.asked("experience")
+    assert any(f["key"] == "years_experience.paid_social" and f["value"] == 2
+               and f["source"] == "derived:experience_timeline" for f in request["state"]["facts"].values())
+
+
+def test_choice_screeners_retrieve_with_their_option_labels(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    story = story_fact(fictional_candidate, SEO_AGENCY_STORY, fid="sf_batlinks_0001")
+    retriever = Retriever([story])
+    provider = FactScreenerProvider("UNKNOWN", semantic="CUSTOM_MULTISELECT")
+    form = fact_form(PAID_MEDIA_PLATFORMS, ["Google Ads", "Meta Ads", "Other"],
+                     control=ControlType.MULTISELECT, semantic=SemanticType.CUSTOM_MULTISELECT)
+    screen_facts(candidate_with(fictional_candidate, [story]), mock_job, form, provider, retriever=retriever)
+    [call] = retriever.calls
+    assert call["query"] == PAID_MEDIA_PLATFORMS + "\nOptions: Google Ads, Meta Ads, Other"
+    assert call["narrative"] is False
+    # A yes/no screener keeps the question alone: its options are Yes and No.
+    retriever = Retriever([story])
+    screen(candidate_with(fictional_candidate, [story]), mock_job, screener_form(AGENCY_ENVIRONMENT),
+           ScreenerProvider(("YES", 0.99, 0.98), has=mentions("SEO agency")), retriever=retriever)
+    assert retriever.calls[0]["query"] == AGENCY_ENVIRONMENT

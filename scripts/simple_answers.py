@@ -74,6 +74,11 @@ def main() -> int:
                 for answer in updates:
                     store.save_answer(args.candidate_id, answer)
                 result["saved_answers_updated"] = len(updates)
+                statement = answers.career_motivation_fact(
+                    confirmed_at=identity.verified_at, current=current)
+                if statement is not None:
+                    store.upsert_facts(args.candidate_id, [statement])
+                result["facts_updated"] = ["career_motivation"] if statement is not None else []
         print(json.dumps(result, indent=2))
         return 0
     except ValidationError as exc:

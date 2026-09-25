@@ -11,11 +11,15 @@ unlinked story's carry a year only when the story states one; never a default ye
 chunks (one summary plus sections of about 120-300 words, each headed by the story's
 title, employer, resume role, period and themes) are indexed under the ``story`` kind as
 the candidate's one current stories source; unchanged documents need no new embeddings.
-Concrete first-person sentences become user-authored ``CandidateFact`` records with
-``story:<chunk id>`` provenance. Years of experience (total and per area) are derived from
-the dated resume roles with provenance ``derived:experience_timeline``. Facts of either
+Concrete first-person singular sentences become ``CandidateFact`` records with
+``story:<chunk id>`` provenance, UNVERIFIED: the person confirms the ones they stand behind
+through the facts import (``--facts-review`` writes a ``.confirm.json`` in that format; see
+docs/rag-writing.md). Years of experience are derived from the dated resume roles with
+provenance ``derived:experience_timeline``: the total is verified (it restates the confirmed
+role dates), each per-area fact is UNVERIFIED until confirmed the same way. Facts of either
 provenance that this run does not produce again are removed from the profile, the new ones
-are merged through the candidate store, and the fact projection is re-indexed.
+are merged through the candidate store (a fact the person confirmed through the import is
+kept by id and never downgraded), and the verified fact projection is re-indexed.
 
 It opens no browser, prepares nothing and never submits. The printed and saved receipt
 carries counts, ids, hashes and link scores only; the optional facts-review files (JSON and
@@ -44,10 +48,9 @@ from interviewmaxxing_generation.knowledge.stories import (
     DEFAULT_STORY_SOURCE,
     StoryRoleLink,
     build_story_index,
+    confirmable_facts,
     facts_review,
     facts_review_markdown,
-    find_skills,
-    find_tools,
     match_role_by_name,
     read_stories,
     resume_roles,
@@ -60,25 +63,42 @@ from interviewmaxxing_selection.jev import JevClient
 
 
 def _unchanged(existing: CandidateFact | None, fact: CandidateFact) -> bool:
-    """The same fact is already in the profile: keep its verification time."""
-    return (existing is not None and existing.is_verified
+    """The same fact, with the same verification status, is already in the profile: a
+    verified one keeps its verification time, an unverified one stays as it is."""
+    return (existing is not None
+            and existing.verification.status is fact.verification.status
             and (existing.key, existing.value, existing.source, list(existing.evidence))
             == (fact.key, fact.value, fact.source, list(fact.evidence)))
+
+
+def _confirmed(existing: CandidateFact | None) -> bool:
+    """The person confirmed this fact through the facts import (``user:`` provenance,
+    verified): the run never replaces or downgrades it."""
+    return existing is not None and existing.is_verified and existing.source.startswith("user:")
 
 
 def _merge(store: LocalCandidateStore, candidate: str, profile: CandidateProfile,
            new_facts: list[CandidateFact], stale: list[str]) -> tuple[CandidateProfile, dict[str, int]]:
     """Remove the stale facts, merge the changed new ones; unchanged facts keep their
-    verification time. Returns the profile and the counts."""
+    verification, confirmed ones are kept by id. Returns the profile and the counts."""
     if stale:
         profile = store.remove_facts(candidate, stale)
-    changed = [fact for fact in new_facts if not _unchanged(profile.find_fact(fact.id), fact)]
+    confirmed = [fact for fact in new_facts if _confirmed(profile.find_fact(fact.id))]
+    changed = [fact for fact in new_facts if fact not in confirmed
+               and not _unchanged(profile.find_fact(fact.id), fact)]
     known = {fact.id for fact in profile.facts}
     if changed:
         profile = store.upsert_facts(candidate, changed)
     return profile, {"removed": len(stale), "added": sum(1 for fact in changed if fact.id not in known),
                      "updated": sum(1 for fact in changed if fact.id in known),
-                     "unchanged": len(new_facts) - len(changed)}
+                     "unchanged": len(new_facts) - len(changed) - len(confirmed),
+                     "kept_confirmed": len(confirmed)}
+
+
+def _derived_counts(derived: list[CandidateFact]) -> dict[str, int]:
+    """Counts only: the values are the person's to review in the private files."""
+    return {"count": len(derived), "verified": sum(1 for fact in derived if fact.is_verified),
+            "unverified": sum(1 for fact in derived if not fact.is_verified)}
 
 
 def _write_private_text(path: Path, text: str) -> None:
@@ -112,7 +132,8 @@ def main() -> int:
                         help="new private JSON with the full fact list for review (a .md is written beside it)")
     args = parser.parse_args()
     review_markdown = args.facts_review.with_suffix(".md") if args.facts_review else None
-    for path in (args.receipt, args.facts_review, review_markdown):
+    confirm_file = args.facts_review.with_suffix(".confirm.json") if args.facts_review else None
+    for path in (args.receipt, args.facts_review, review_markdown, confirm_file):
         if path is not None and path.exists():
             print("error: --receipt and --facts-review must name new files", file=sys.stderr)
             return 2
@@ -152,16 +173,10 @@ def main() -> int:
             if link is not None:
                 links[analysis.story_id] = link
         index = build_story_index(document, verified_at=now, links=links, source_id=args.source_id)
-        # The preview of the derived years uses this document's facts (the areas their
-        # sentences name), exactly what the real run reads back from the profile.
-        story_areas: dict[str, list[str]] = {}
-        for fact in index.facts:
-            story_id = fact.id.split("_")[1]
-            story_areas.setdefault(story_id, []).extend([*find_tools(str(fact.value)), *find_skills(str(fact.value))])
         today = datetime.now(UTC).date()
-        derived = (derive_experience_years(profile, today=today, verified_at=now,
-                                           story_links=links, story_areas=story_areas)
-                   if profile is not None else [])
+        # Years of experience come from the resume timeline alone (titles and self-dated
+        # bullets), so the preview equals what the real run derives after the merge.
+        derived = derive_experience_years(profile, today=today, verified_at=now) if profile is not None else []
         receipt: dict[str, Any] = {
             "candidate_sha256": hashlib.sha256(args.candidate.encode()).hexdigest(),
             "source_id": args.source_id, "dry_run": args.dry_run, "facts_enabled": not args.no_facts,
@@ -170,8 +185,8 @@ def main() -> int:
             "jev_links": ("skipped: dry run" if args.dry_run else "skipped: --no-links" if args.no_links
                           else "skipped: no resume roles" if not roles else "asked"),
             **story_index_receipt(index),
-            "derived_years_facts": {"count": len(derived), "keys": [fact.key for fact in derived],
-                                    "values": {fact.key: fact.value for fact in derived}},
+            "story_facts_unverified": sum(1 for fact in index.facts if not fact.is_verified),
+            "derived_years_facts": _derived_counts(derived),
         }
         if decisions is not None:
             receipt["provider"] = decisions.budget.metadata()
@@ -196,14 +211,15 @@ def main() -> int:
                 stale_derived = [fact.id for fact in profile.facts
                                  if fact.source == DERIVED_SOURCE and fact.id not in derived_ids]
                 profile, derived_counts = _merge(store, args.candidate, profile, derived, stale_derived)
-                receipt["derived_years_facts"] = {
-                    "count": len(derived), "keys": [fact.key for fact in derived],
-                    "values": {fact.key: fact.value for fact in derived}}
+                receipt["derived_years_facts"] = _derived_counts(derived)
                 receipt["profile"] = {
                     "story_facts": story_counts, "derived_facts": derived_counts,
                     "story_facts_of_this_source": len(index.facts),
                     "story_facts_all_sources": sum(1 for fact in profile.facts if story_source_of(fact)),
+                    "confirmed_import_facts": sum(1 for fact in profile.facts
+                                                  if fact.source.startswith("user:") and fact.is_verified),
                     "verified_facts_total": len(profile.verified_facts()),
+                    "unverified_facts_total": sum(1 for fact in profile.facts if not fact.is_verified),
                     "facts_total": len(profile.facts),
                 }
                 receipt["facts_index"] = knowledge.index_candidate(profile)
@@ -217,6 +233,11 @@ def main() -> int:
             args.facts_review.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             write_json_private(args.facts_review, review)
             _write_private_text(review_markdown, facts_review_markdown(review, derived))
+            # The facts offered for confirmation, in the import's format: delete the rows
+            # you do not confirm, then `scripts/rag_answers.py import-facts --file <it>`.
+            confirm_path = args.facts_review.with_suffix(".confirm.json")
+            write_json_private(confirm_path, confirmable_facts([*index.facts, *derived]))
+            receipt["confirm_file"] = str(confirm_path)
         print(json.dumps(receipt, sort_keys=True, default=str))
         return 0
     except Exception as exc:
