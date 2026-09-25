@@ -3301,3 +3301,103 @@ def test_a_dated_single_amount_is_still_range_checked(
     [trace] = fact_traces(resolver)
     assert (trace["status"], trace["evidence_ids"]) == ("RANGE_MISMATCH", ["fact.range"])
     assert packet.answers == []
+
+
+# --- round 7 (L4, item 13, review 3 L3): quantity kinds, trace hygiene, in-order starts ----------
+
+@pytest.mark.parametrize("first_text,second_text,compared", [
+    ("Managed a $2M annual budget", "Managed budgets up to $500K", True),  # the review's pair
+    ("Managed a $2M annual budget at Acme", "Managed budgets up to $500K at Example Labs", False),
+    ("Managed a $2M annual budget at Acme", "Managed budgets up to $500K", True),
+    ("Managed a $2M annual budget", "Led a team of 8 people", False),  # money versus a count
+    ("Worked 5 years in paid search", "Worked 3 years in SEO", True),  # two durations
+    ("Grew signups 40%", "Cut churn by 12 percent", True),  # two percentages
+])
+def test_ungrouped_facts_stating_the_same_kind_of_quantity_are_compared(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    first_text: str, second_text: str, compared: bool,
+) -> None:
+    first = fact(fictional_candidate, "experience", first_text)
+    second = fact(fictional_candidate, "experience", second_text, fid="fact.second")
+    provider = DecisionsProvider(consistency=0.99)
+    resolver, _ = consistency_resolver(provider)
+    ctx = context(candidate_with(fictional_candidate, [first, second]), mock_job)
+    resolver._check_additive_consistency(ctx, [first])
+    assert bool(consistency_checks(provider)) is compared
+
+
+def test_persisted_traces_carry_no_fact_text_draft_or_review_text(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_cli.runner import project_trace
+
+    first, second = same_subject_pair(fictional_candidate)
+    candidate = candidate_with(fictional_candidate, [first, second])
+    writer = ReviewingWriter([{"text": "Fictional draft sentence about budgets.",
+                               "fact_ids": [first.id]}], verdict="UNSUPPORTED")
+    ctx = narrative_form(context(candidate, mock_job), 2)
+    _, resolver, _ = resolve(ctx, Retriever([first, second]), writer,
+                             DecisionsProvider(consistency=0.5, support=0.9))
+    persisted = json.dumps([project_trace(trace) for trace in resolver.narrative_traces])
+    assert resolver.narrative_traces  # there is something to audit
+    for secret in (str(first.value), str(second.value), "Fictional draft sentence",
+                   "Explicit platform experience remains contradictory"):
+        assert secret not in persisted
+
+
+class LifoSemaphore:
+    """An asyncio semaphore that wakes the newest waiter first (the opposite of FIFO)."""
+
+    def __init__(self, value: int = 1) -> None:
+        self._value, self._waiters = value, []
+
+    async def acquire(self) -> bool:
+        if self._value > 0 and not self._waiters:
+            self._value -= 1
+            return True
+        waiter = asyncio.get_running_loop().create_future()
+        self._waiters.append(waiter)
+        await waiter
+        return True
+
+    def release(self) -> None:
+        if self._waiters:
+            self._waiters.pop().set_result(None)
+        else:
+            self._value += 1
+
+    async def __aenter__(self) -> None:
+        await self.acquire()
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.release()
+
+
+def test_items_start_in_form_order_whatever_the_semaphore_order(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review 3 (L3): the consistency turns rely on the earliest unfinished field holding a
+    # slot; items now start strictly in index order, so a LIFO semaphore cannot deadlock.
+    first, second = same_subject_pair(fictional_candidate)
+    candidate = candidate_with(fictional_candidate, [first, second])
+
+    def run(concurrency: int) -> Any:
+        writer = Writer([{"text": "I managed paid media budgets.", "fact_ids": [first.id]}])
+        ctx = narrative_form(context(candidate, mock_job), 4)
+        provider = DecisionsProvider(consistency=0.99)
+        decisions = BoundedDecisions(JevClient(ApiKey("synthetic-test-key", source="test"),
+                                               transport=provider, max_attempts=1))
+        router = AIFormRouter(decisions)
+        annotated = replace(ctx, form=router.annotate(ctx.form, document_id="lifo"))
+        resolver = DynamicPacketResolver(decisions, writer, router=router,
+                                         retriever=Retriever([first, second]),
+                                         max_concurrency=concurrency)
+        return asyncio.run(asyncio.wait_for(resolver.resolve(annotated), 20)), resolver
+
+    sequential, _ = run(1)
+    monkeypatch.setattr(asyncio, "Semaphore", LifoSemaphore)
+    packet, resolver = run(2)
+    assert packet.is_complete
+    assert (packet.answers, packet.missing_inputs) == (sequential.answers, sequential.missing_inputs)
+    checks = [t for t in resolver.narrative_traces if t["stage"] == "consistency"]
+    assert checks  # the form-order consistency step ran under the LIFO semaphore

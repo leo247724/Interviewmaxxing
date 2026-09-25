@@ -9,13 +9,14 @@ threads. Real-Chromium coverage of the same runner is in ``e2e/``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -1918,7 +1919,7 @@ LOOKUP_CHOICES: dict[str, list[str]] = {
 """The suggestions each lookup offers when the text typed into it does not commit."""
 LOOKUP_ORDER = ("location", "city", "state")
 """The lookups of ``_three_lookups_form``, in form order."""
-TYPED = {"location": "Austin, TX", "city": "Austin, TX", "state": "Texas"}
+TYPED = {"location": "Austin, TX", "city": "Austin", "state": "Texas"}
 """What the resolver types into each lookup from the ``_austin`` identity."""
 RIGHT_LABELS = {"location": TEXAS, "city": "Austin, Texas", "state": "Texas, United States"}
 """For each lookup, the suggestion that denotes exactly what was typed."""
@@ -2202,13 +2203,13 @@ def test_a_batch_leaves_out_a_lookup_the_user_answered_and_each_label_stays_on_i
                          .apply(URL, candidate_id="c1"))
     assert result.state is S.NEEDS_INPUT and result.message == PREPARED
     assert chooser.batches == [[("location", "Austin, TX", LOOKUP_CHOICES["location"]),
-                                ("city", "Austin, TX", LOOKUP_CHOICES["city"])]]
+                                ("city", "Austin", LOOKUP_CHOICES["city"])]]
     assert chooser.singles == []
     first, second = interaction.asked
     assert [m.field_id for m in first] == [m.field_id for m in second] == ["school"]
     assert [o.label for o in second[0].options or []] == LOOKUP_CHOICES["school"]
     assert factory.typed == [
-        {"location": "Austin, TX", "school": "Fictional State", "city": "Austin, TX"},
+        {"location": "Austin, TX", "school": "Fictional State", "city": "Austin"},
         {"location": TEXAS, "school": "Fictional State University", "city": "Austin, Texas"}]
     events = _events(isolated_imx_home, result.application_id, SUGGESTION_EVENT)
     assert [(e.metadata["field_id"], e.metadata["chosen_label"]) for e in events] == [
@@ -2260,10 +2261,10 @@ def test_the_dynamic_resolver_decides_the_lookups_of_a_step_concurrently(
     assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
     assert result.message.startswith(PREPARED)
     lookups = jev.asked("lookup")
-    assert sorted(r["state"]["typed_value"] for r in lookups) == ["Austin, TX", "Austin, TX"]
+    assert sorted(r["state"]["typed_value"] for r in lookups) == ["Austin", "Austin, TX"]
     assert jev.peak >= 2  # both lookup decisions were in flight at the same time
     assert _refilled(script) == ["fill_fields:location,city"]
-    assert factory.typed == [{"location": "Austin, TX", "city": "Austin, TX"},
+    assert factory.typed == [{"location": "Austin, TX", "city": "Austin"},
                              {"location": TEXAS, "city": "Austin, Texas"}]
     # Events, decisions and traces keep fill order although the decisions overlapped.
     events = _events(isolated_imx_home, result.application_id, SUGGESTION_EVENT)
@@ -2501,9 +2502,9 @@ def test_a_lookup_gets_one_batch_round_per_run_even_if_its_chosen_label_later_fa
     assert result.state is S.NEEDS_INPUT
     assert result.message == "1 required question(s) need your answer."
     assert chooser.batches == [[("location", "Austin, TX", LOOKUP_CHOICES["location"]),
-                                ("city", "Austin, TX", LOOKUP_CHOICES["city"])]]
+                                ("city", "Austin", LOOKUP_CHOICES["city"])]]
     assert chooser.singles == []
-    assert factory.typed == [{"location": "Austin, TX", "city": "Austin, TX"},
+    assert factory.typed == [{"location": "Austin, TX", "city": "Austin"},
                              {"location": TEXAS, "city": "Austin, Texas"}]
     assert [m.field_id for asked in interaction.asked for m in asked] == ["city", "location"]
     [question] = result.missing_inputs
@@ -2542,7 +2543,7 @@ def test_a_timed_out_lookup_decision_in_the_dynamic_batch_leaves_only_that_looku
     result = asyncio.run(runner.apply(URL, candidate_id="c1"))
     assert result.state is S.NEEDS_INPUT
     assert result.message.startswith("1 required question(s) need your answer.")
-    assert sorted(r["state"]["typed_value"] for r in jev.asked("lookup")) == ["Austin, TX", "Austin, TX"]
+    assert sorted(r["state"]["typed_value"] for r in jev.asked("lookup")) == ["Austin", "Austin, TX"]
     [question] = result.missing_inputs
     assert question.field_id == "city"
     assert [o.label for o in question.options or []] == LOOKUP_CHOICES["city"]
@@ -2553,4 +2554,233 @@ def test_a_timed_out_lookup_decision_in_the_dynamic_batch_leaves_only_that_looku
         packet = store.latest_packet(result.application_id)
     assert packet.answer_for("location").value == TextValue(text=TEXAS)
     assert packet.answer_for("city") is None
-    assert factory.typed == [{"location": "Austin, TX", "city": "Austin, TX"}]
+    assert factory.typed == [{"location": "Austin, TX", "city": "Austin"}]
+
+
+# --- round 7 (live M3 regression): a city lookup types the bare city first ----------------------
+
+class TypedLookupBrowser(SelectiveLookupBrowser):
+    """``SelectiveLookupBrowser`` whose suggestions depend on the text typed (``by_typed``;
+    nothing for any other text), like a site that searches exactly what was typed."""
+
+    by_typed: ClassVar[dict[str, list[str]]] = {}
+
+    def _results(self, form: ApplicationForm, packet: ApplicationPacket,
+                 only: set[str] | None = None) -> FillResult:
+        base = super()._results(form, packet, only)
+        typed = self.typed[-1]
+        fields = [FieldFillResult(field_id=r.field_id, status=r.status,
+                                  suggestions=self.by_typed.get(typed.get(r.field_id, ""), []))
+                  if r.status is FieldFillStatus.NEEDS_CHOICE else r for r in base.fields]
+        return FillResult(form_step=base.form_step, fields=fields)
+
+
+def _city_form() -> ApplicationForm:
+    base = _form()
+    return base.model_copy(update={"fields": [*base.fields,
+                                              _lookup_field("city", semantic=SemanticType.CITY)]})
+
+
+def _typed_lookups(script: Script, by_typed: dict[str, list[str]],
+                   commits: set[str]) -> LookupFactory:
+    browser = type("SearchingLookupBrowser", (TypedLookupBrowser,), {"by_typed": by_typed})
+    return LookupFactory(script, browser, commits=frozenset(commits))
+
+
+AUSTINS = ["Austin, Minnesota", "Austin, Texas"]
+
+
+def test_a_city_lookup_types_the_bare_city_first_and_chooses_among_its_suggestions(
+    isolated_imx_home, fictional_candidate
+):
+    # The live Greenhouse site offers nothing for "Austin, TX" but suggestions for "Austin".
+    script = Script(pages=[_page(_city_form())])
+    factory = _typed_lookups(script, {"Austin": AUSTINS, "Austin, TX": []}, {"Austin, Texas"})
+    chooser = Chooser("Austin, Texas")
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=chooser).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.message == PREPARED
+    assert chooser.calls == [("city", "Austin", AUSTINS)]
+    assert factory.typed == [{"city": "Austin"}, {"city": "Austin, Texas"}]
+
+
+def test_a_city_lookup_is_typed_with_its_region_only_when_the_bare_city_gets_no_suggestion(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_city_form())])
+    factory = _typed_lookups(script, {"Austin": [], "Austin, TX": AUSTINS}, {"Austin, Texas"})
+    chooser = Chooser("Austin, Texas")
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=chooser).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.message == PREPARED
+    assert factory.typed == [{"city": "Austin"}, {"city": "Austin, TX"}, {"city": "Austin, Texas"}]
+    assert chooser.calls == [("city", "Austin, TX", AUSTINS)]
+    with _store(isolated_imx_home) as store:
+        packet = store.latest_packet(result.application_id)
+    [answer] = [a for a in packet.answers if a.field_id == "city"]
+    assert answer.value == TextValue(text="Austin, Texas")
+    assert "typed a second way" in (answer.provenance.note or "")
+
+
+def test_a_city_lookup_with_no_suggestion_either_way_is_asked_once(
+    isolated_imx_home, fictional_candidate
+):
+    script = Script(pages=[_page(_city_form())])
+    factory = _typed_lookups(script, {}, set())
+    chooser = Chooser(None)
+    result = asyncio.run(_lookup_runner(isolated_imx_home, _austin(fictional_candidate), factory,
+                                        resolver=chooser).apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT
+    assert factory.typed == [{"city": "Austin"}, {"city": "Austin, TX"}]  # one retype per run
+    [question] = result.missing_inputs
+    assert question.field_id == "city"
+    assert question.prompt.startswith("The site offered no suggestion for 'Austin, TX'")
+    assert chooser.calls == [("city", "Austin, TX", [])]  # nothing to choose: the person types
+
+
+class AddressLookupJev(ScriptedJev):
+    """``ScriptedJev`` whose ``lookup`` decision picks the suggestion naming the state in the
+    decision's ``applicant_address`` (else NONE): a model that uses the address."""
+
+    STATE_NAMES: ClassVar[dict[str, str]] = {"TX": "Texas"}
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        if "lookup" not in request["questions"]:
+            return super().__call__(url, headers, body, timeout)
+        self.requests.append(request)
+        region = request["state"].get("applicant_address", {}).get("region", "")
+        name = self.STATE_NAMES.get(region, "\0")
+        key = next((k for k, label in request["state"]["suggestions"].items() if name in label),
+                   "NONE")
+        criteria = list(request["questions"]["lookup"]["criteria"])
+        answer = {"type": "choice", "choice": key, "confidence": 0.98, "probabilities": {
+            k: 0.99 if k == key else 0.01 / (len(criteria) - 1) for k in criteria}}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": {"lookup": answer}, "usage": {"cost": 0.0001}}).encode())
+
+
+@pytest.mark.parametrize("suggestions,chosen", [
+    (["Paris, France", "Paris, Texas, United States"], "Paris, Texas, United States"),
+    (["Paris, France", "Paris, Ontario, Canada"], None),
+])
+def test_same_named_cities_are_told_apart_by_the_applicants_region(
+    isolated_imx_home, fictional_candidate, suggestions, chosen
+):
+    identity = fictional_candidate.identity
+    address = identity.address.model_copy(update={"city": "Paris", "region": "TX",
+                                                  "country": "United States"})
+    candidate = fictional_candidate.model_copy(update={"identity": identity.model_copy(
+        update={"address": address})})
+    script = Script(pages=[_page(_city_form())])
+    factory = _typed_lookups(script, {"Paris": suggestions}, {"Paris, Texas, United States"})
+    jev = AddressLookupJev({}, {})
+    result = asyncio.run(_dynamic_lookup_runner(isolated_imx_home, candidate, factory, jev)
+                         .apply(URL, candidate_id="c1"))
+    [request] = jev.asked("lookup")
+    assert request["state"]["typed_value"] == "Paris"
+    assert request["state"]["applicant_address"] == {"city": "Paris", "region": "TX",
+                                                     "country": "United States"}
+    if chosen is None:
+        [question] = result.missing_inputs
+        assert question.field_id == "city" and [o.label for o in question.options or []] == suggestions
+        return
+    assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
+    assert factory.typed == [{"city": "Paris"}, {"city": chosen}]
+
+
+# --- round 7 (L11, L19, review 3 L1): optional questions, resume message, cancelled cost -------
+
+class LeavesAnOptionalQuestion(FactualPacketResolver):
+    """The factual resolver plus one optional question it leaves open for the person."""
+
+    async def resolve(self, context: PacketContext) -> ApplicationPacket:
+        packet = await super().resolve(context)
+        field = context.form.field("hobby")
+        item = MissingInput.for_field(context.form, field, reason=MissingReason.NO_ANSWER,
+                                      prompt="Optional: what do you do outside work?")
+        return packet.model_copy(update={"missing_inputs": [*packet.missing_inputs, item]})
+
+
+def test_the_prepared_stop_keeps_the_optional_questions_that_remain(
+    isolated_imx_home, fictional_candidate
+):
+    base = _form()
+    hobby = ApplicationField(id="hobby", label="What do you do outside work?", selector="#hobby",
+                             semantic_type=SemanticType.CUSTOM_TEXT, control_type=ControlType.TEXT,
+                             required=False)
+    form = base.model_copy(update={"fields": [*base.fields, hobby]})
+    runner = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptedFactory(Script(pages=[_page(form)])),
+        candidates=Candidates(fictional_candidate), resolver=LeavesAnOptionalQuestion(),
+        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=True)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.message == PREPARED
+    assert [m.field_id for m in result.missing_inputs] == ["hobby"]
+    assert not result.missing_inputs[0].required
+    with _store(isolated_imx_home) as store:
+        stop = [e for e in store.list_events(result.application_id)
+                if e.to_state is S.NEEDS_INPUT][-1]
+    assert [m["field_id"] for m in stop.metadata["missing_inputs"]] == ["hobby"]
+
+
+def test_a_missing_pinned_resume_is_named_without_its_path(
+    isolated_imx_home, fictional_candidate, tmp_path
+):
+    resume_file = tmp_path / "private-folder" / "avery-resume.pdf"
+    resume_file.parent.mkdir()
+    resume_file.write_bytes(b"%PDF-1.4 fictional resume")
+    resume = type(fictional_candidate.resume).from_file(resume_file, id="resume_private",
+                                                        media_type="application/pdf")
+    candidate = fictional_candidate.model_copy(update={"resume": resume})
+    first = asyncio.run(_runner(isolated_imx_home, candidate, Script(), prepare_only=True)
+                        .apply(URL, candidate_id="c1"))
+    resume_file.unlink()
+    result = asyncio.run(_runner(isolated_imx_home, candidate, Script(), prepare_only=True)
+                         .resume(first.application_id))
+    assert result.state is S.FAILED_RETRYABLE
+    assert "avery-resume.pdf" in result.message
+    assert str(resume_file.parent) not in result.message and "private-folder" not in result.message
+
+
+class BlockingResidenceJev(ScriptedJev):
+    """``ScriptedJev`` whose residence decision waits until ``release`` is set (thread-safe
+    request log), so the run can be cancelled while that call is in flight."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.entered, self.release = threading.Event(), threading.Event()
+        self.lock = threading.Lock()
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        if "residence" in json.loads(body)["questions"]:
+            self.entered.set()
+            assert self.release.wait(10)
+        with self.lock:
+            return super().__call__(url, headers, body, timeout)
+
+
+def test_a_cancelled_run_still_records_the_cost_of_a_call_it_left_in_flight(
+    isolated_imx_home, fictional_candidate
+):
+    jev = BlockingResidenceJev(RESIDENCE_SCOPES, RESIDENCE_CHOICES)
+    runner = _dynamic_runner(isolated_imx_home, fictional_candidate,
+                             Script(pages=[_page(_residence_form())]), jev)
+
+    async def cancel_mid_call() -> None:
+        task = asyncio.ensure_future(runner.apply(URL, candidate_id="c1"))
+        await asyncio.to_thread(jev.entered.wait, 10)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        jev.release.set()  # the call finishes after its pass was cancelled
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_mid_call())
+    with _store(isolated_imx_home) as store:
+        [app] = store.list_applications()
+        events = [e for e in store.list_events(app.id) if e.event == PROVIDER_EVENT]
+        assert app.claim_owner is None  # the claim was released after the cost was recorded
+    assert sum(e.metadata["calls"] for e in events) == len(jev.requests) >= 2
+    assert "residence_screener" in {p for e in events for p in e.metadata["by_purpose"]}

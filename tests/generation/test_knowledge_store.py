@@ -582,3 +582,59 @@ def test_migration_is_private_and_matches_fixed_contract():
     assert sql.count("FORCE ROW LEVEL SECURITY") == 2
     assert "ON DELETE CASCADE" in sql
     assert "SECURITY DEFINER" not in sql
+
+
+def test_concurrent_retrievals_each_open_their_own_connection(profile, mock_job):
+    """Round 7 (review 3, L4): the resolver retrieves from up to three worker threads at
+    once. The store opens a new connection for every transaction, on the calling thread,
+    so no connection is ever shared between threads."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    db, embedder = MemoryPg(), FakeEmbedder()
+    serial = threading.Lock()  # the in-memory double itself is not thread-safe
+    opened: list[tuple[int, object]] = []
+    used: dict[int, set[int]] = {}
+    barrier = threading.Barrier(3, timeout=10)
+
+    class Connection:
+        def __init__(self) -> None:
+            db()
+            opened.append((threading.get_ident(), self))
+
+        def _mark(self) -> None:
+            used.setdefault(id(self), set()).add(threading.get_ident())
+
+        def __enter__(self):
+            self._mark()
+            serial.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            serial.release()
+            return False
+
+        def transaction(self):
+            self._mark()
+            return db.transaction()
+
+        def cursor(self):
+            self._mark()
+            return db.cursor()
+
+    store = PgKnowledgeStore(Connection, embedder)
+    store.index_candidate(profile)
+    before = len(opened)
+
+    def retrieve(_: int):
+        barrier.wait()  # three retrievals in flight together
+        return store.retrieve(candidate=profile, job=mock_job, query="paid search")
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(retrieve, range(3)))
+    assert all(result.facts for result in results)
+    connections = opened[before:]
+    assert len(connections) >= 3 and len({id(conn) for _, conn in connections}) == len(connections)
+    assert len({thread for thread, _ in connections}) == 3
+    for thread, conn in connections:
+        assert used[id(conn)] == {thread}  # used only on the thread that opened it

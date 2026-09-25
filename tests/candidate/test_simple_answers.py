@@ -338,3 +338,60 @@ def test_new_defaults_carry_distinct_wordings_and_phrases():
     for key in NEW_KEYS:
         for wording in (_canonical_question(key), *_REUSABLE_PHRASES[key]):
             assert owners[wording_key(wording)] == {key}, wording
+
+
+# --- round 7: statements, one-time keys, race and disability, typed imports -------------------
+
+ROUND7_YES_NO = ["family_government_official", "non_compete_agreement", "uses_ai_tools",
+                 "acknowledge_privacy_notice", "certify_information_true", "consent_to_contact",
+                 "consent_reference_checks", "consent_background_check"]
+
+
+def _round7_answers(**values):
+    from interviewmaxxing_candidate.simple_answers import _CONTACT_KEYS, SimpleAnswers
+
+    base = dict.fromkeys(_CONTACT_KEYS) | {"first_name": "Avery", "last_name": "Example",
+                                           "email": "avery@example.test"}
+    return SimpleAnswers.model_validate(base | values)
+
+
+@pytest.mark.parametrize("key", ROUND7_YES_NO)
+def test_round7_yes_no_keys_accept_only_yes_or_no(key):
+    from pydantic import ValidationError
+
+    assert getattr(_round7_answers(**{key: "yes"}), key) == "Yes"
+    with pytest.raises(ValidationError, match='"Yes", "No", or null'):
+        _round7_answers(**{key: "maybe"})
+
+
+def test_round7_keys_import_as_typed_global_answers_where_a_type_exists():
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS, STATEMENT_KEYS
+    from interviewmaxxing_core import AnswerScope, SemanticType
+
+    answers = _round7_answers(
+        race_ethnicity="Two or more races", disability_status="No, I do not have a disability",
+        pronouns="they/them", county="Fictional County", familiar_with_company="Somewhat familiar",
+        acknowledge_privacy_notice="Yes", certify_information_true="Yes", consent_to_contact="Yes",
+        consent_reference_checks="No", consent_background_check="Yes", uses_ai_tools="No")
+    updates = answers.saved_answer_updates(confirmed_at=datetime(2026, 9, 24, tzinfo=UTC))
+    by_question = {a.question: a for a in updates}
+    expected = {
+        "race_ethnicity": SemanticType.EEO_RACE_ETHNICITY,
+        "disability_status": SemanticType.EEO_DISABILITY_STATUS,
+        "pronouns": SemanticType.PRONOUNS,
+        "acknowledge_privacy_notice": SemanticType.CONSENT,
+        "certify_information_true": SemanticType.ATTESTATION,
+        "consent_to_contact": SemanticType.CONSENT,
+        "consent_reference_checks": SemanticType.CONSENT,
+        "consent_background_check": SemanticType.CONSENT,
+        "county": None, "familiar_with_company": None, "uses_ai_tools": None,
+    }
+    for key, semantic in expected.items():
+        answer = by_question[_REUSABLE_QUESTIONS[key][1]]
+        assert answer.semantic_type is semantic and answer.scope is AnswerScope.GLOBAL
+    assert {_REUSABLE_QUESTIONS[key][0] for key in STATEMENT_KEYS} == {
+        SemanticType.CONSENT, SemanticType.ATTESTATION}
+    # Education discipline stays untyped: sites type "Discipline" as a custom question.
+    assert _REUSABLE_QUESTIONS["education_discipline"][0] is None

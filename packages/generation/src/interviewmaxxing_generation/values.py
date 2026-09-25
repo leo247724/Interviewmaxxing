@@ -26,6 +26,7 @@ from interviewmaxxing_core import (
     TextValue,
     answer_problems,
 )
+from interviewmaxxing_core.packets import text_control_problems
 
 from .questions import question_key
 
@@ -128,10 +129,16 @@ def us_state_code(region: str | None) -> str | None:
     return next((code.upper() for code, name in _US_STATES.items() if name == key), None)
 
 
+_CODE_LIST = re.compile(r"\b[A-Z]{2}\b(?:\s*[,/]\s*(?:and\s+|or\s+)?[A-Z]{2}\b)+")
+"""Two or more uppercase codes separated by commas or slashes ("AL, AZ, CA", "OR/WA")."""
+
+
 def us_states_named(text: str) -> set[str]:
-    """Codes of the US states a text names, by uppercase code ("AL, AZ, CA") or by full
+    """Codes of the US states a text names, by a list of two or more uppercase codes ("AL,
+    AZ, CA"; a lone "OR" or "IN" in a shouting label is a word, not a state) or by full
     name ("New York"); longer names win ("West Virginia" is not also Virginia)."""
-    codes = {token.lower() for token in re.findall(r"\b[A-Z]{2}\b", text) if token.lower() in _US_STATES}
+    codes = {token.lower() for match in _CODE_LIST.finditer(text)
+             for token in re.findall(r"\b[A-Z]{2}\b", match.group(0)) if token.lower() in _US_STATES}
     remaining = " ".join(text.casefold().split())
     for code, name in sorted(_US_STATES.items(), key=lambda item: -len(item[1])):
         pattern = re.compile(rf"\b{re.escape(name)}\b")
@@ -253,6 +260,8 @@ def _to_text(fld: ApplicationField, raw: RawValue) -> Translation:
     text = render_scalar(raw)
     if not text.strip():
         return Unmapped("the known value is empty")
+    if text_control_problems(fld, text):
+        return Unmapped("the known value contains a control character")
     if fld.input_type == "number" and as_number(raw) is None:
         return Unmapped(f"{text!r} is not a number")
     if fld.max_length is not None and len(text) > fld.max_length:

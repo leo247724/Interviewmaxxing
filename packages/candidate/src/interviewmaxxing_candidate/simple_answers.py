@@ -64,7 +64,46 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "available_time_zones": (None, "Which time zones are you available to work in?"),
     "travel_willingness": (None, "How much are you willing to travel for work?"),
     "earliest_start_date": (SemanticType.START_DATE, "What is your earliest start date?"),
+    "race_ethnicity": (SemanticType.EEO_RACE_ETHNICITY, "Race/Ethnicity"),
+    "disability_status": (SemanticType.EEO_DISABILITY_STATUS, "Disability Status"),
+    "pronouns": (SemanticType.PRONOUNS, "What pronouns do you use?"),
+    "family_government_official": (
+        None, "Are you or anyone in your immediate family a government official?",
+    ),
+    "non_compete_agreement": (
+        None, "Have you signed any non-competition or non-solicitation agreement that could "
+        "restrict your work for this employer?",
+    ),
+    "uses_ai_tools": (None, "Have you used AI tools to help prepare this application?"),
+    "familiar_with_company": (None, "Before applying, how familiar were you with this company?"),
+    "county": (None, "County"),
+    # Reusable statements (round 7): each is the definition a site's consent or attestation
+    # must be fully covered by, with nothing added, before the person's answer is reused.
+    "acknowledge_privacy_notice": (
+        SemanticType.CONSENT,
+        "I have read and understand the employer's applicant privacy notice and data "
+        "processing terms.",
+    ),
+    "certify_information_true": (
+        SemanticType.ATTESTATION,
+        "The information I provide in this application is true, complete and accurate.",
+    ),
+    "consent_to_contact": (
+        SemanticType.CONSENT, "The employer may contact me about this application.",
+    ),
+    "consent_reference_checks": (
+        SemanticType.CONSENT, "The employer may contact the references I provide.",
+    ),
+    "consent_background_check": (
+        SemanticType.CONSENT, "I consent to a background check, subject to applicable law.",
+    ),
 }
+STATEMENT_KEYS = frozenset({
+    "acknowledge_privacy_notice", "certify_information_true", "consent_to_contact",
+    "consent_reference_checks", "consent_background_check",
+})
+"""Consent and attestation statements: reused only when a site's statement is fully covered
+by exactly one of them (``DynamicPacketResolver._statement``), never by wording."""
 _REUSABLE_PHRASES = {
     "referral_source": [
         "Where did you first hear about the company?",
@@ -161,6 +200,32 @@ _REUSABLE_PHRASES = {
         "Earliest available start date",
         "What is your earliest available start date?",
     ],
+    "race_ethnicity": [
+        "Race", "What is your race/ethnicity?", "Race and ethnicity", "Ethnicity",
+        "Please identify your race",
+    ],
+    "disability_status": [
+        "Do you have a disability?", "Disability", "Voluntary self-identification of disability",
+    ],
+    "pronouns": ["Pronouns", "Preferred pronouns", "What are your pronouns?"],
+    "family_government_official": [
+        "Are/were you or anyone in your immediate family a government official?",
+        "Have you or an immediate family member ever been a government official?",
+    ],
+    "non_compete_agreement": [
+        "Have you signed any non-competition or non-solicitation agreement?",
+        "Are you bound by a non-compete agreement?",
+        "Are you subject to any non-compete or non-solicitation agreements?",
+    ],
+    "uses_ai_tools": [
+        "Have you used AI tools (e.g., ChatGPT) in preparing your application?",
+        "Did you use AI to help write this application?",
+    ],
+    "familiar_with_company": [
+        "How familiar are you with this company?",
+        "Before applying, how familiar were you with our company?",
+    ],
+    "county": ["County of residence", "What county do you live in?"],
 }
 _MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",
@@ -245,6 +310,19 @@ class SimpleAnswers(BaseModel):
     available_time_zones: str | None = None
     travel_willingness: str | None = None
     earliest_start_date: str | None = None
+    race_ethnicity: str | None = None
+    disability_status: str | None = None
+    pronouns: str | None = None
+    family_government_official: str | None = None
+    non_compete_agreement: str | None = None
+    uses_ai_tools: str | None = None
+    familiar_with_company: str | None = None
+    county: str | None = None
+    acknowledge_privacy_notice: str | None = None
+    certify_information_true: str | None = None
+    consent_to_contact: str | None = None
+    consent_reference_checks: str | None = None
+    consent_background_check: str | None = None
 
     @field_validator("*", mode="after")
     @classmethod
@@ -255,7 +333,10 @@ class SimpleAnswers(BaseModel):
         "requires_visa_sponsorship", "referred_by_current_employee", "above_age_18",
         "authorized_to_work_us", "hispanic_latino", "previously_employed_here",
         "previously_interviewed_here", "related_to_employee", "willing_to_relocate",
-        "open_to_other_positions", "willing_to_provide_references", mode="after",
+        "open_to_other_positions", "willing_to_provide_references", "family_government_official",
+        "non_compete_agreement", "uses_ai_tools", "acknowledge_privacy_notice",
+        "certify_information_true", "consent_to_contact", "consent_reference_checks",
+        "consent_background_check", mode="after",
     )
     @classmethod
     def _yes_or_no(cls, value: str | None) -> str | None:

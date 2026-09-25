@@ -88,7 +88,12 @@ project or tool (a capitalized name, including at the start of a bullet, that is
 title, job function, company suffix or leading verb). Independent bullets about different employers, budgets, team sizes
 or skills are not compared, so they no longer send a narrative to the Opus
 evidence review. A real contradiction about the same subject still holds or
-escalates as before. Each Jev verdict is cached per runtime under the exact fact and
+escalates as before. Since round 7, ungrouped facts that state the same kind of quantity (money, a duration, a
+percentage, a count of one unit) are also compared, unless both name different subjects:
+"Managed a $2M annual budget" and "Managed budgets up to $500K" can contradict. Retrieval runs
+from up to three worker threads; the knowledge store opens a new connection for every
+transaction on the calling thread, so no connection is shared between threads.
+Each Jev verdict is cached per runtime under the exact fact and
 its comparison set, so a second narrative on the same form reuses it (the
 consistency trace lists `cached` keys).
 

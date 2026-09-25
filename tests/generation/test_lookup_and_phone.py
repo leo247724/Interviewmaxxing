@@ -28,6 +28,7 @@ from interviewmaxxing_generation import (
     FactualPacketResolver,
     PhoneFormatError,
     international_phone,
+    lookup_alternatives,
     lookup_text,
     stored_value,
 )
@@ -79,9 +80,9 @@ def test_typeahead_location_fields_are_typed_from_the_verified_address(
     packet = resolve(context)
     assert context.problems(packet) == [] and packet.is_complete
     typed = {a.field_id: a.value.text for a in packet.answers if isinstance(a.value, TextValue)}
-    # A city lookup types "City, Region" (round 6, M3): a same-named city elsewhere is not
-    # the first suggestion, and the decision can tell the applicant's own one apart.
-    assert typed == {"location": "Austin, TX", "city": "Austin, TX", "state": "Texas",
+    # A city lookup types the bare city first (round 7): "City, Region" is typed only when
+    # the site offers nothing for it (``lookup_alternatives``, used by the runner).
+    assert typed == {"location": "Austin, TX", "city": "Austin", "state": "Texas",
                      "country": "United States"}
     for answer in packet.answers:
         assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
@@ -298,7 +299,7 @@ def test_stored_value_yields_to_user_input_and_disagreeing_saved_answers(fiction
     assert stored_value(make_context(form, candidate), work) is None
 
 
-# --- round 6 (M3): a city lookup types "City, Region" ------------------------------------------
+# --- rounds 6-7 (M3): a city lookup types the bare city, then "City, Region" ----------------
 
 
 @pytest.mark.parametrize(("city", "region", "country", "expected"), [
@@ -313,14 +314,18 @@ def test_stored_value_yields_to_user_input_and_disagreeing_saved_answers(fiction
     ("  ", "TX", "United States", None),
 ], ids=["us", "no-country", "outside-the-us", "region-as-stored", "whitespace-collapsed",
         "no-region", "blank-region", "no-city", "blank-city"])
-def test_a_city_lookup_types_the_city_with_its_region_when_both_are_known(
+def test_a_city_lookup_types_the_bare_city_and_offers_city_region_second(
     fictional_candidate, city, region, country, expected
 ):
-    # The region is typed as stored (never spelled out or abbreviated) and the country is
-    # never appended; without a region the bare city is typed, without a city nothing.
+    # The bare city is typed first; "City, Region" (region as stored, never a country) is
+    # the one alternative, offered only when both are known.
     identity = _with_address(fictional_candidate, city=city, region=region,
                              country=country).identity
-    assert lookup_text(identity, SemanticType.CITY) == expected
+    bare = expected.split(", ")[0] if expected else None
+    assert lookup_text(identity, SemanticType.CITY) == bare
+    assert lookup_alternatives(identity, SemanticType.CITY) == (
+        [expected] if expected and expected != bare else [])
+    assert lookup_alternatives(identity, SemanticType.LOCATION) == []
 
 
 def test_city_and_location_lookups_outside_the_us_are_typed_from_the_verified_address(
@@ -333,7 +338,7 @@ def test_city_and_location_lookups_outside_the_us_are_typed_from_the_verified_ad
     packet = resolve(context)
     assert context.problems(packet) == [] and packet.is_complete
     assert {a.field_id: a.value for a in packet.answers} == {
-        "city": TextValue(text="Toronto, ON"), "location": TextValue(text="Toronto, ON, Canada")}
+        "city": TextValue(text="Toronto"), "location": TextValue(text="Toronto, ON, Canada")}
     assert all(a.provenance.source is AnswerSource.PROFILE_IDENTITY for a in packet.answers)
 
 
@@ -362,7 +367,7 @@ def test_a_city_lookup_without_a_city_is_asked_even_with_a_region(fictional_cand
 
 def test_a_plain_text_city_field_still_gets_the_bare_city(fictional_candidate, make_context,
                                                           resolve):
-    # Only a lookup, which searches for a place, types the region with the city.
+    # A plain text city field gets the bare city (a lookup retries with the region).
     candidate = _with_address(fictional_candidate)
     city = ApplicationField(id="city", label="City", selector="#city",
                             semantic_type=SemanticType.CITY, control_type=ControlType.TEXT,
@@ -373,3 +378,44 @@ def test_a_plain_text_city_field_still_gets_the_bare_city(fictional_candidate, m
     [answer] = packet.answers
     assert answer.value == TextValue(text="Austin")
     assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+
+
+# --- round 7 (L3, L5): state codes only in lists; control characters hold --------------------
+
+@pytest.mark.parametrize("text,codes", [
+    ("ARE YOU WILLING TO RELOCATE OR NOT?", set()),  # "OR" is a word here
+    ("PLEASE ANSWER IN FULL. ME AND MY FAMILY", set()),
+    ("Do you live in AL, AZ, CA?", {"AL", "AZ", "CA"}),
+    ("States: OR/WA", {"OR", "WA"}),
+    ("AL, AZ and CA", {"AL", "AZ"}),
+    ("Do you live in Texas?", {"TX"}),
+    ("West Virginia", {"WV"}),
+])
+def test_state_codes_count_only_in_a_list_of_two_or_more(text, codes):
+    from interviewmaxxing_generation.values import us_states_named
+
+    assert us_states_named(text) == codes
+
+
+@pytest.mark.parametrize("control,held", [(ControlType.TEXT, True), (ControlType.TEXTAREA, False)])
+def test_a_saved_value_with_a_control_character_holds_a_single_line_field(
+    fictional_candidate, make_context, resolve, control, held
+):
+    from interviewmaxxing_core import AnswerScope, SavedAnswer
+
+    saved = SavedAnswer(id="sa.motto", scope=AnswerScope.GLOBAL, question="Your motto",
+                        value="Line one.\nLine two.", confirmed_at="2026-09-01T12:00:00Z")
+    candidate = fictional_candidate.model_copy(update={"saved_answers": [saved]})
+    field = ApplicationField(id="motto", label="Your motto", selector="#motto",
+                             semantic_type=SemanticType.CUSTOM_TEXT, control_type=control,
+                             required=True)
+    context = make_context(_form(field), candidate)
+    packet = resolve(context)  # a hold, never an internal error
+    assert context.problems(packet) == []
+    if held:
+        assert packet.answers == []
+        [missing] = packet.missing_inputs
+        assert missing.field_id == "motto" and "control character" in missing.prompt
+    else:
+        [answer] = packet.answers
+        assert answer.value == TextValue(text="Line one.\nLine two.")

@@ -8,7 +8,7 @@ the candidate's own location from the verified identity (``contact``), and phone
 controls with a country picker get the number in international form.
 """
 
-from .contact import PhoneFormatError, international_phone, lookup_text
+from .contact import PhoneFormatError, international_phone, lookup_alternatives, lookup_text
 from .documents import (
     DocumentArtifact,
     DocumentBundle,
@@ -66,6 +66,7 @@ __all__ = [
     "document_scope",
     "international_phone",
     "is_neutral_hint",
+    "lookup_alternatives",
     "lookup_text",
     "missing_input_id",
     "plan_resume_variant",

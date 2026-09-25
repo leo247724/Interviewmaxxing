@@ -6,7 +6,7 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-twenty-five explicit reusable answers, stored through the existing saved-answer system.
+thirty-eight explicit reusable answers, stored through the existing saved-answer system.
 Each starts as `null`; nothing is filled in for you.
 
 | Map key | Example wording on a form |
@@ -49,6 +49,19 @@ Each starts as `null`; nothing is filled in for you.
 | `available_time_zones` | Which time zones are you available to work in? |
 | `travel_willingness` | How much are you willing to travel for work? |
 | `earliest_start_date` | What is your earliest start date? / When can you start? |
+| `race_ethnicity` | Race/Ethnicity / What is your race/ethnicity? |
+| `disability_status` | Disability Status / Do you have a disability? |
+| `pronouns` | What pronouns do you use? / Pronouns |
+| `family_government_official` | Are you or anyone in your immediate family a government official? |
+| `non_compete_agreement` | Have you signed any non-competition or non-solicitation agreement …? |
+| `uses_ai_tools` | Have you used AI tools to help prepare this application? |
+| `familiar_with_company` | Before applying, how familiar were you with this company? |
+| `county` | County / County of residence |
+| `acknowledge_privacy_notice` | I have read and understand the employer's applicant privacy notice and data processing terms. |
+| `certify_information_true` | The information I provide in this application is true, complete and accurate. |
+| `consent_to_contact` | The employer may contact me about this application. |
+| `consent_reference_checks` | The employer may contact the references I provide. |
+| `consent_background_check` | I consent to a background check, subject to applicable law. |
 
 Full name is derived from first and last name. Location is derived from city,
 state and country, omitting unanswered components. The selected resume already
@@ -91,7 +104,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The twenty-five additional reusable-answer keys may be omitted or `null`;
+contact value. The thirty-eight additional reusable-answer keys may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
 strings become `null`; phone and postal codes remain strings to preserve formatting
@@ -102,14 +115,27 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the twenty-five additional keys become explicitly
+Nonblank values for the thirty-eight additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
 referral, age, work-authorization and Hispanic/Latino answers also accept `"Yes"`,
 `"No"`, or `null`. So do previous employment, previous interviews, being related to an
-employee, relocation, other positions and references. Desired salary, English
-proficiency, time zones, travel and earliest start date are free text in your words.
+employee, relocation, other positions and references. So do government official,
+non-compete, AI tools and the five statements. Desired salary, English
+proficiency, time zones, travel, earliest start date, race/ethnicity, disability status,
+pronouns, familiarity with the company and county are free text in your words.
+
+The five statements (`acknowledge_privacy_notice` through `consent_background_check`) are
+definitions you confirm once. A site's consent or attestation reuses your answer only when
+one Jev decision finds it fully covered by exactly one of them, adding no further
+obligation. Anything more holds with the statement quoted, for example "no AI tools during
+interviews", a non-compete, arbitration or drug testing. Each key that has a semantic type
+imports with it: referral, sponsorship, work authorization, EEO (gender, Hispanic/Latino,
+race/ethnicity, veteran, disability), pronouns, location, school, degree, relocation,
+salary, start date and the statements (consent or attestation). Education discipline stays
+untyped, because sites type "Discipline" as a custom question. An older untyped answer to
+the same question is superseded by the typed one.
 Each key lists a few observed wordings. With AI routing, a differently worded
 question can reuse the answer when Jev finds it asks exactly the same thing
 ([dynamic-application-routing.md](dynamic-application-routing.md), "Reworded

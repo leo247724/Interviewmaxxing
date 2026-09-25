@@ -122,7 +122,7 @@ from interviewmaxxing_core import (
     utc_now,
 )
 from interviewmaxxing_core.interfaces import SelectiveFill, SuggestionChooser
-from interviewmaxxing_generation import FactualPacketResolver, missing_input_id
+from interviewmaxxing_generation import FactualPacketResolver, lookup_alternatives, missing_input_id
 
 S = ApplicationState
 T = TypeVar("T")
@@ -203,6 +203,8 @@ def _traces_since(traces: list[dict[str, Any]], last_id: int | None) -> list[dic
             return traces[index + 1:]
     return traces
 RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
+LATE_COST_WAIT_S = 10.0
+"""How long a cancelled run waits for resolver work still running before its final cost."""
 
 
 class SavedAnswerStore(CandidateLoader, Protocol):
@@ -603,8 +605,13 @@ class LocalApplicationRunner:
                         message = self._browser_start_failed(exc) + " Then resume."
                         _fail_retryable(store, claim, app, message)
                         return _outcome(store, app_id, message)
+                    run = _Run(self, store, claim, candidate, browser, url)
                     try:
-                        return await _Run(self, store, claim, candidate, browser, url).execute()
+                        return await run.execute()
+                    except asyncio.CancelledError:
+                        # Record what the cancelled run spent, while the claim is held.
+                        await asyncio.shield(run.settle_provider_cost())
+                        raise
                     finally:
                         await browser.close()
                 finally:
@@ -619,8 +626,8 @@ class LocalApplicationRunner:
         """The application's own resume is gone or changed. Stop; never substitute the
         profile's current resume, which may belong to another application."""
         message = (f"The resume this application uses ({pinned.filename}, sha256 "
-                   f"{pinned.sha256[:12]}...) is missing or changed at {pinned.path}. Restore "
-                   "that file and resume; another resume is never substituted.")
+                   f"{pinned.sha256[:12]}...) is missing or changed. Restore that file and "
+                   "resume; another resume is never substituted.")
         _fail_retryable(store, claim, app, message)
         return _outcome(store, app.id, message)
 
@@ -649,6 +656,9 @@ class _Run:
         self.chosen: dict[tuple[int, str, str], tuple[str, str]] = {}
         """Suggestions chosen in this run: question -> (typed text, chosen label). A
         re-resolved packet types the stored value again; the chosen label replaces it."""
+        self.retyped: dict[tuple[int, str, str], str] = {}
+        """Lookups typed a second way in this run (the site offered nothing for the first):
+        question -> the resolver's own typed text, which a chosen label is recorded under."""
         mark = getattr(runner.resolver, "provider_mark", None)
         self.provider_mark: int | None = mark() if callable(mark) else None
         """Where this run's unrecorded provider receipts start (None: the resolver uses no
@@ -734,6 +744,17 @@ class _Run:
         unknown = total["unknown_cost_calls"]
         return (f" Provider cost: USD {total['known_cost_usd']:.4f} for {total['calls']} call(s)"
                 + (f", {unknown} without a reported cost" if unknown else "") + ".")
+
+    async def settle_provider_cost(self) -> None:
+        """A cancelled run still records its provider usage: wait (at most
+        ``LATE_COST_WAIT_S``) for resolver work the cancellation left running, so calls it
+        finishes are receipted, then record what was not recorded yet."""
+        drain = getattr(self.runner.resolver, "drain", None)
+        if callable(drain):
+            with contextlib.suppress(Exception):
+                await drain(timeout=LATE_COST_WAIT_S)
+        with contextlib.suppress(Exception):
+            self._provider_cost()
 
     def _stop(self, state: ApplicationState, message: str, *, reason: str | None = None,
               missing: Sequence[MissingInput] = (),
@@ -1093,6 +1114,10 @@ class _Run:
         fields are filled again. Otherwise the user is asked to pick a suggestion (an
         optional lookup is left blank). Returns the merged fill and the saved packet,
         or None when the browser refused to fill again because the page changed."""
+        retyped = await self._retype_lookups(form, packet, fill)
+        if retyped is None:
+            return None
+        fill, packet = retyped
         resolver = self.runner.resolver
         chooser = resolver if isinstance(resolver, SuggestionChooser) else None
         chosen: dict[str, PacketAnswer] = {}
@@ -1124,7 +1149,7 @@ class _Run:
                 open_[field.id] = (typed, suggestions)
                 continue
             chosen[field.id], picked[field.id] = _chosen_answer(answer, label), label
-            self.chosen[key] = (typed, label)
+            self.chosen[key] = (self.retyped.get(key, typed), label)
             decision = getattr(chooser, "suggestion_decision", None)
             events.append({
                 "form_url": form.url, "form_step": form.step, "field_id": field.id,
@@ -1157,6 +1182,42 @@ class _Run:
             packet = self._with_lookups(form, packet, {}, retry)
             self.store.save_packet(self.claim, packet)
         return fill, packet
+
+    async def _retype_lookups(
+        self, form: ApplicationForm, packet: ApplicationPacket, fill: FillResult
+    ) -> tuple[FillResult, ApplicationPacket] | None:
+        """A lookup typed from the verified identity for which the site offered no
+        suggestion at all is typed once more the other way the identity allows ("City,
+        Region" after the bare city); the site's suggestions for that then go through the
+        normal choice round. Once per question per run. None when the browser refused to
+        fill again because the page changed."""
+        retype: dict[str, PacketAnswer] = {}
+        for result in fill.needs_choice():
+            field = form.find(result.field_id)
+            answer = packet.answer_for(result.field_id)
+            if (result.suggestions or field is None or answer is None
+                    or answer.provenance.source is not AnswerSource.PROFILE_IDENTITY
+                    or not isinstance(answer.value, TextValue)):
+                continue
+            key = (form.step, field.id, field.fingerprint)
+            others = [text for text in lookup_alternatives(self.candidate.identity, field.semantic_type)
+                      if text != answer.value.text]
+            if key in self.retyped or not others:
+                continue
+            self.retyped[key] = answer.value.text
+            note = "; ".join(p for p in (answer.provenance.note, "typed a second way: the site "
+                                         "offered no suggestion for the first") if p)
+            retype[field.id] = answer.model_copy(update={
+                "value": TextValue(text=others[0]),
+                "provenance": answer.provenance.model_copy(update={"note": note})})
+        if not retype:
+            return fill, packet
+        packet = packet.model_copy(update={"answers": [retype.get(a.field_id, a) for a in packet.answers]})
+        try:
+            refill = await self._refill(form, packet, list(retype))
+        except ValueError:
+            return None
+        return _merged(fill, refill), packet
 
     async def _choose(self, chooser: SuggestionChooser, form: ApplicationForm,
                       asks: list[tuple[ApplicationField, str, list[str]]]) -> list[str | None]:
@@ -1245,7 +1306,8 @@ class _Run:
                              "Submission remains disabled when this application is resumed."
                              + captcha_note
                              + (f" Review the open page in {location}." if location else ""),
-                             reason="prepared for final review; submission disabled")
+                             reason="prepared for final review; submission disabled",
+                             missing=[m for m in packet.missing_inputs if not m.required])
         has_expected_job = self.store.expected_job_identity(self.app_id) is not None
         if has_expected_job:
             await self.interaction.progress("Submitting the application")

@@ -121,3 +121,20 @@ def test_service_startup_rejects_invalid_runtime_before_candidate_gateway(tmp_pa
     assert entrypoint.main([]) == 2
     assert 'IMX_SERVICE_WRITER_MODEL' in capsys.readouterr().err
     assert not tmp_path.joinpath('home').exists()
+
+
+def test_each_run_gets_a_fresh_resolver_with_no_traces_or_suggestion_decisions(tmp_path):
+    """Round 7 (review 3): the per-run resolver invariant. Every run the service starts
+    builds its own dynamic resolver, empty at run start, so no trace or lookup decision of
+    one application reaches another's routing.trace event."""
+    config = ServiceConfig.from_env(configured(tmp_path))
+    make = runner_factory(config)
+    first, second = make(SimpleNamespace()), make(SimpleNamespace())
+    assert first.resolver is not second.resolver
+    for runner in (first, second):
+        assert type(runner.resolver).__name__ == 'DynamicPacketResolver'
+        assert runner.resolver.narrative_traces == []
+        assert runner.resolver._suggestion_decisions == {}
+    first.resolver._trace({'stage': 'fictional', 'status': 'HELD'})
+    assert second.resolver.narrative_traces == []
+    assert not config.paths.state_db.exists()

@@ -38,16 +38,14 @@ def lookup_text(identity: CandidateIdentity, semantic_type: SemanticType) -> str
     """What to type into a lookup asking for the candidate's own location.
 
     LOCATION is "City, Region", plus ", Country" outside the United States (a city is
-    required); CITY is "City, Region" when the region is known, so the site's suggestions
-    for a same-named city elsewhere do not come first; STATE is the region, a two-letter
-    US abbreviation spelled out ("TX" -> "Texas"); COUNTRY is the country as stored.
-    None for any other type or a missing value."""
+    required); CITY is the city (``lookup_alternatives`` gives "City, Region" for a site
+    that offers nothing for the bare city); STATE is the region, a two-letter US
+    abbreviation spelled out ("TX" -> "Texas"); COUNTRY is the country as stored. None
+    for any other type or a missing value."""
     address = identity.address
     country = _clean(address.country)
     if semantic_type is SemanticType.CITY:
-        city = _clean(address.city)
-        region = _clean(address.region)
-        return f"{city}, {region}" if city is not None and region is not None else city
+        return _clean(address.city)
     if semantic_type is SemanticType.COUNTRY:
         return country
     if semantic_type is SemanticType.STATE:
@@ -64,6 +62,19 @@ def lookup_text(identity: CandidateIdentity, semantic_type: SemanticType) -> str
             parts.append(country)
         return ", ".join(p for p in parts if p)
     return None
+
+
+def lookup_alternatives(identity: CandidateIdentity, semantic_type: SemanticType) -> list[str]:
+    """Other ways to type the candidate's own location into a lookup, tried only when the
+    site offered no suggestion for ``lookup_text``: "City, Region" for a city lookup. The
+    bare city comes first because some sites suggest nothing for "Austin, TX"; a
+    same-named city elsewhere is told apart when the suggestion is chosen, which sees the
+    applicant's region and country."""
+    if semantic_type is SemanticType.CITY:
+        city, region = _clean(identity.address.city), _clean(identity.address.region)
+        if city is not None and region is not None:
+            return [f"{city}, {region}"]
+    return []
 
 
 # --- international phone numbers ----------------------------------------------------------

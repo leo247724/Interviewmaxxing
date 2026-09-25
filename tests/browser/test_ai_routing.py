@@ -16,6 +16,7 @@ from interviewmaxxing_browser.ai import (
 )
 from interviewmaxxing_browser.ai.classification import PROMPT_VERSION, FieldRoute
 from interviewmaxxing_browser.ai.providers import NarrativeDraft, NarrativeWriter
+from interviewmaxxing_browser.ai.routing import CHOICE_PROMPT_VERSION
 from interviewmaxxing_browser.semantics import classify as classify_semantics
 from interviewmaxxing_core import (
     AnswerScope,
@@ -149,13 +150,17 @@ def test_fact_choice_copies_exact_value_and_checks_provenance(fictional_candidat
 
 def test_unknown_and_explicit_fields_never_send_candidate_facts(fictional_candidate: CandidateProfile,
                                                        mock_job: JobRecord) -> None:
-    p = Provider([])
+    # The consent field also gets the round-7 statement decision over the saved consent
+    # (answered NONE here); it sends statement definitions, never candidate facts. The
+    # scripted choices are consumed in order: the unknown field's type, then the statement.
+    p = Provider(["CUSTOM_TEXT", "NONE"])
     resolver = DynamicPacketResolver(decisions(p))
     for semantic in (SemanticType.UNKNOWN, SemanticType.CONSENT, SemanticType.WORK_AUTHORIZATION):
         packet = asyncio.run(resolver.resolve(context(form(semantic=semantic), fictional_candidate, mock_job)))
         assert not packet.answers
         assert not packet.is_complete
-    assert len(p.requests) == 3
+    assert len(p.requests) == 4
+    assert [list(r["questions"]) for r in p.requests].count(["statement"]) == 1
     assert all("facts" not in request["state"] for request in p.requests)
 
 
@@ -601,7 +606,8 @@ def test_referral_rule_four_is_the_first_enabled_real_option_even_when_jev_is_un
     [answer] = packet.answers
     assert (answer.value.value, answer.value.label) == ("event", "Conference")
     assert "referral policy rule 4" in (answer.provenance.note or "")
-    assert answer.confidence == pytest.approx(0.98)
+    # Round 7 (L2): min(Jev's confidence 0.97, 1 - NOT_SOURCE 0.98), not 1 - NOT_SOURCE alone.
+    assert answer.confidence == pytest.approx(0.97)
     [trace] = [t for t in resolver.narrative_traces if t["stage"] == "referral_policy"]
     assert trace["rule"] == 4 and trace["not_source_probability"] == pytest.approx(0.02)
 
@@ -787,7 +793,10 @@ def test_a_reworded_sponsorship_question_uses_the_global_saved_answer(
     assert observed["options"] == list(SPONSORSHIP_OPTIONS)
     criteria = request["questions"]["wording"]["criteria"]
     assert set(criteria) == {"q0", "NONE"}
-    assert "same timeframe" in criteria["q0"] and "which authorization you hold" in criteria["NONE"]
+    # Round 7 (B): the saved answer's truth must carry over; unit, scope or extra clause is NONE.
+    assert "is necessarily a truthful answer to observed_question" in criteria["q0"]
+    assert "same scope, unit and timeframe" in criteria["q0"]
+    assert "an extra clause (base and/or OTE)" in criteria["NONE"]
     [mapping] = provider.asked("equivalent_0")
     assert mapping["state"]["stored_answers"] == {"equivalent_0": "No"}
     [trace] = stage_traces(resolver, "question_equivalence")
@@ -833,7 +842,8 @@ def test_a_job_scoped_answer_is_never_mapped_to_another_wording(
     assert not stage_traces(resolver, "question_equivalence")
 
 
-@pytest.mark.parametrize("probability,confidence", [(0.90, 0.97), (0.98, 0.80)])
+# Round 7 (A): with one same-type candidate the gate is 0.90 / 0.85 (type-anchored).
+@pytest.mark.parametrize("probability,confidence", [(0.89, 0.97), (0.98, 0.84)])
 def test_a_low_scoring_wording_decision_keeps_the_hold(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
     probability: float, confidence: float,
@@ -1019,10 +1029,14 @@ def test_a_reworded_eeo_question_uses_the_global_eeo_answer(
 
 def test_every_typed_simple_answer_is_reusable_by_meaning() -> None:
     from interviewmaxxing_browser.ai.routing import REUSABLE_TYPES, UNTYPED_REUSE_TYPES
-    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS, STATEMENT_KEYS
 
-    typed = {semantic for semantic, _ in _REUSABLE_QUESTIONS.values() if semantic is not None}
+    typed = {semantic for key, (semantic, _) in _REUSABLE_QUESTIONS.items()
+             if semantic is not None and key not in STATEMENT_KEYS}
     assert typed <= REUSABLE_TYPES
+    # Round 7: consent/attestation statements are reused only by full coverage (_statement).
+    assert {_REUSABLE_QUESTIONS[key][0] for key in STATEMENT_KEYS} <= {
+        SemanticType.CONSENT, SemanticType.ATTESTATION}
     assert {SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP,
             SemanticType.REFERRAL_SOURCE} <= REUSABLE_TYPES
     # Consent and attestations are never answered from a differently worded question. The
@@ -1682,7 +1696,9 @@ def test_the_live_rippling_state_list_question_is_answered_from_the_address(
 
 
 @pytest.mark.parametrize("split,control", [
-    ({"STATE": 0.60, "CUSTOM_BOOLEAN": 0.40}, ControlType.SELECT),  # not a residence reading
+    # Not a residence reading: the yes/no shape outweighs the residence types, so WP10's
+    # pooled gate (895e7b2) does not pool CUSTOM_BOOLEAN with them.
+    ({"STATE": 0.40, "CUSTOM_BOOLEAN": 0.60}, ControlType.SELECT),
     (STATE_OR_LOCATION, ControlType.TEXT),  # a text box copies one exact datum: never pooled
 ])
 def test_a_split_that_is_not_one_residence_reading_on_a_choice_stays_unknown(
@@ -2500,9 +2516,10 @@ def test_a_typed_salary_question_is_offered_only_the_saved_salary_answer(
                                   text_field(label, SemanticType.SALARY_EXPECTATION))
     [wording] = provider.asked("wording")
     assert list(wording["state"]["saved_questions"]) == ["q0"]  # the untyped answers stay out
-    assert wording["state"]["prompt_version"] == "option-choice-v2"
+    assert wording["state"]["prompt_version"] == CHOICE_PROMPT_VERSION
     instructions = wording["questions"]["wording"]["instructions"]
-    assert "desired salary, base salary, compensation or pay expectations" in instructions
+    # Round 7 (B): an extra clause ("base and/or OTE") is for Jev to judge as NONE.
+    assert "adds a clause the saved answer does not cover (for example base and/or OTE)" in instructions
     [answer] = packet.answers
     assert answer.value.text == "USD 95,000 per year"
     assert (answer.provenance.source, answer.provenance.reference_ids) == (
@@ -2649,3 +2666,308 @@ def test_a_select_all_referral_question_gets_exactly_one_option(
     [answer] = packet.answers
     assert [choice.label for choice in answer.value.choices] == ["Company careers page"]
     assert "referral policy rule 1" in (answer.provenance.note or "")
+
+
+# --- round 7 (A, B, D): type-anchored gate, truthful-answer criterion, confirmed untyped picks --
+
+LIVE_SPONSORSHIP = ("Will you now or at any time in the future require employer sponsorship for "
+                    "employment visa status?")
+
+
+class WordingConfidence(ChoiceProvider):
+    """ChoiceProvider whose ``wording`` decision alone has confidence ``wording_confidence``."""
+
+    def __init__(self, picks: dict[str, tuple[str, float]], *, wording_confidence: float) -> None:
+        super().__init__(dict(picks))
+        self.wording_confidence = wording_confidence
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        payload = json.loads(response.body)
+        if "wording" in payload["answers"]:
+            payload["answers"]["wording"]["confidence"] = self.wording_confidence
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+@pytest.mark.parametrize("probability,confidence,answered", [
+    (0.94, 0.97, True),   # the live sponsorship and start-date scores
+    (0.90, 0.85, True),   # exactly at the type-anchored gate
+    (0.89, 0.97, False),  # the live "Veteran Status" score
+    (0.74, 0.97, False),  # the live Upstart sponsorship score
+    (0.94, 0.84, False),
+])
+def test_one_same_type_candidate_is_accepted_at_the_type_anchored_gate(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    probability: float, confidence: float, answered: bool,
+) -> None:
+    provider = WordingConfidence({"wording": ("q0", probability), "equivalent_0": ("o1", 0.99)},
+                                 wording_confidence=confidence)
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job,
+                                         sponsorship_field(LIVE_SPONSORSHIP))
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["candidate_count"], trace["gate"]) == (1, "type_anchored")
+    assert trace["status"] == ("MAPPED" if answered else "BELOW_GATE")
+    assert bool(packet.answers) is answered
+    assert not provider.asked("question_confirmation") and len(provider.asked("wording")) == 1
+
+
+def test_several_same_type_candidates_keep_the_standard_gate(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    other = global_answer("sa.sponsorship_other", "Do you need an employer to sponsor a work visa?",
+                          "Yes", semantic=SemanticType.SPONSORSHIP)
+    provider = ChoiceProvider({"wording": {"q0": 0.94, "q1": 0.05, "NONE": 0.01}})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, other), mock_job,
+                                         sponsorship_field(LIVE_SPONSORSHIP))
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["gate"], trace["status"]) == ("standard", "BELOW_GATE")
+    assert packet.answers == []
+
+
+class ConfirmingProvider(WordingPick):
+    """``WordingPick`` whose pick is split (``pick`` probability) and whose single-candidate
+    confirmation answers ``confirm`` (choice, probability)."""
+
+    def __init__(self, contains: str, *, pick: float, confirm: tuple[str, float],
+                 picks: dict[str, tuple[str, float]] | None = None) -> None:
+        super().__init__(contains, picks)
+        self.pick, self.confirm = pick, confirm
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        if "wording" in request["questions"]:
+            saved = request["state"]["saved_questions"]
+            if len(saved) == 1:  # the confirmation
+                self.picks["wording"] = self.confirm
+                return ChoiceProvider.__call__(self, url, headers, body, timeout)
+            key = next(k for k, item in saved.items() if self.contains in item["question"])
+            self.picks["wording"] = (key, self.pick)
+            return ChoiceProvider.__call__(self, url, headers, body, timeout)
+        return super().__call__(url, headers, body, timeout)
+
+
+@pytest.mark.parametrize("confirm,answered", [
+    (("q0", 0.95), True),
+    (("q0", 0.90), True),
+    (("q0", 0.89), False),
+    (("NONE", 0.97), False),
+])
+def test_an_untyped_pick_below_the_gate_is_confirmed_on_its_own(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    confirm: tuple[str, float], answered: bool,
+) -> None:
+    # The live travel pick: the right one of 17 untyped answers at 0.92.
+    travel = global_answer("sa.travel", "How much are you willing to travel for work?",
+                           "Up to 10% of the time")
+    provider = ConfirmingProvider("travel", pick=0.92, confirm=confirm,
+                                  picks={"equivalent_0": ("o1", 0.98)})
+    field = choice_field(TRAVEL, SemanticType.CUSTOM_SELECT, *TRAVEL_OPTIONS, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, travel, *UNTYPED_NOISE),
+                                         mock_job, field)
+    confirmations = [r for r in provider.asked("wording") if len(r["state"]["saved_questions"]) == 1]
+    [confirmation] = confirmations
+    assert confirmation["state"]["saved_questions"]["q0"]["question"] == travel.question
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert trace["gate"] == "confirmed" and trace["confirmation"]["choice"] == confirm[0]
+    assert trace["status"] == ("MAPPED" if answered else "BELOW_GATE")
+    assert [a.value.label for a in packet.answers] == (["Up to 10%"] if answered else [])
+
+
+def test_an_untyped_pick_that_passes_the_standard_gate_needs_no_confirmation(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    travel = global_answer("sa.travel", "How much are you willing to travel for work?",
+                           "Up to 10% of the time")
+    provider = ConfirmingProvider("travel", pick=0.97, confirm=("NONE", 0.99),
+                                  picks={"equivalent_0": ("o1", 0.98)})
+    field = choice_field(TRAVEL, SemanticType.CUSTOM_SELECT, *TRAVEL_OPTIONS, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, travel, *UNTYPED_NOISE),
+                                         mock_job, field)
+    assert len(provider.asked("wording")) == 1
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["gate"], trace["status"]) == ("standard", "MAPPED")
+    assert [a.value.label for a in packet.answers] == ["Up to 10%"]
+
+
+# --- round 7 (items 1, 3, 4): statements, salary period, typed imports --------------------------
+
+PRIVACY = global_answer("sa.privacy_notice", "I have read and understand the employer's applicant "
+                        "privacy notice and data processing terms.", "Yes",
+                        semantic=SemanticType.CONSENT)
+CERTIFY = global_answer("sa.certify", "The information I provide in this application is true, "
+                        "complete and accurate.", "Yes", semantic=SemanticType.ATTESTATION)
+CONTACT = global_answer("sa.contact", "The employer may contact me about this application.",
+                        "Yes", semantic=SemanticType.CONSENT)
+REFERENCES = global_answer("sa.references", "The employer may contact the references I provide.",
+                           "Yes", semantic=SemanticType.CONSENT)
+VERCEL = ("By submitting my application, I acknowledge that I have read and understand Fictional "
+          "Co's Job Applicant Privacy Notice")
+GEM = ("I certify that the information I have provided in this application, in my resume, and in "
+       "any other materials I have submitted is true, complete, and accurate")
+AI_TOOLS = ("I understand and agree that Fictional Co does not permit the use of AI tools or "
+            "assistance during the interview process")
+KNOWBE4 = ("By submitting this application, I hereby provide consent to Fictional Co to communicate "
+           "directly with me, and any employment references I provide")
+
+
+def with_statements(candidate: CandidateProfile, *statements: SavedAnswer) -> CandidateProfile:
+    return with_saved(candidate.model_copy(update={"saved_answers": []}), *statements)
+
+
+@pytest.mark.parametrize("label,semantic,saved,pick", [
+    (VERCEL, SemanticType.CONSENT, PRIVACY, "s0"),
+    (GEM, SemanticType.ATTESTATION, CERTIFY, "s0"),
+])
+def test_a_statement_fully_covered_by_one_saved_statement_reuses_its_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    semantic: SemanticType, saved: SavedAnswer, pick: str,
+) -> None:
+    provider = ChoiceProvider({"statement": (pick, 0.98)})
+    candidate = with_statements(fictional_candidate, PRIVACY, CERTIFY, CONTACT)
+    field = choice_field(label, semantic, "Yes", "No", control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, field)
+    [request] = provider.asked("statement")
+    # Only saved statements of the field's own type are offered.
+    offered = set(request["state"]["saved_statements"].values())
+    assert offered == {a.question for a in (PRIVACY, CERTIFY, CONTACT) if a.semantic_type is semantic}
+    assert "no further obligation" in request["questions"]["statement"]["criteria"]["s0"]
+    [answer] = packet.answers
+    assert answer.value.label == "Yes"
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, [saved.id])
+    [trace] = stage_traces(resolver, "statement_coverage")
+    assert (trace["status"], trace["statement"]) == ("ANSWERED", label)
+
+
+@pytest.mark.parametrize("label,semantic,pick", [
+    (AI_TOOLS, SemanticType.ATTESTATION, ("NONE", 0.97)),  # an extra obligation
+    (KNOWBE4, SemanticType.CONSENT, ("NONE", 0.97)),  # two obligations, two saved statements
+    (VERCEL, SemanticType.CONSENT, ("s0", 0.93)),  # below the gate
+])
+def test_a_statement_not_fully_covered_keeps_its_explicit_hold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    semantic: SemanticType, pick: tuple[str, float],
+) -> None:
+    provider = ChoiceProvider({"statement": pick})
+    candidate = with_statements(fictional_candidate, PRIVACY, CERTIFY, CONTACT, REFERENCES)
+    field = choice_field(label, semantic, "Yes", "No", control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, field)
+    assert packet.answers == []
+    [missing] = packet.missing_inputs
+    # The factual hold stays: an uncovered attestation or a consent needing its own answer.
+    assert missing.reason in (MissingReason.UNCOVERED_ATTESTATION,
+                              MissingReason.EXPLICIT_ANSWER_REQUIRED)
+    assert label[:40] in missing.prompt  # the statement is quoted for the person
+    [trace] = stage_traces(resolver, "statement_coverage")
+    assert trace["status"] in ("NONE", "BELOW_GATE")
+
+
+def test_a_statement_on_an_unsupported_control_is_never_read_or_answered(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"statement": ("s0", 0.99)})
+    field = ApplicationField(id="answer", selector="#answer",
+                             label="Please double-check all the information provided above",
+                             semantic_type=SemanticType.ATTESTATION,
+                             control_type=ControlType.UNSUPPORTED, required=True)
+    packet, _, _ = resolve_choice(provider, with_statements(fictional_candidate, CERTIFY),
+                                  mock_job, field)
+    assert not provider.asked("statement") and packet.answers == []
+
+
+def test_a_saved_no_to_a_statement_is_the_persons_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    declined = CERTIFY.model_copy(update={"value": "No"})
+    provider = ChoiceProvider({"statement": ("s0", 0.98)})
+    field = choice_field(GEM, SemanticType.ATTESTATION, "Yes", "No", control=ControlType.RADIO)
+    packet, _, _ = resolve_choice(provider, with_statements(fictional_candidate, declined),
+                                  mock_job, field)
+    [answer] = packet.answers
+    assert answer.value.label == "No"
+
+
+def salary_form(period_label: str, *options: str) -> tuple[ApplicationField, ApplicationField]:
+    salary = text_field("Desired Salary", SemanticType.SALARY_EXPECTATION).model_copy(
+        update={"id": "salary", "selector": "#salary"})
+    period = choice_field(period_label, SemanticType.SALARY_EXPECTATION,
+                          *(options or ("Hourly", "Weekly", "Monthly", "Yearly")),
+                          control=ControlType.SELECT, field_id="period")
+    return salary, period
+
+
+@pytest.mark.parametrize("value,label,expected", [
+    ("USD 95,000 per year", "", "Yearly"),
+    ("$95,000/yr", "Pay period", "Yearly"),
+    ("95000 annual", "", "Annual"),
+    ("$45/hr", "", "Hourly"),
+    ("$8,000 per month", "Frequency", "Monthly"),
+    ("95,000", "", None),  # no unit: held
+])
+def test_a_salary_period_select_is_answered_from_the_unit_in_the_saved_salary(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    value: str, label: str, expected: str | None,
+) -> None:
+    saved = global_answer("sa.salary", "What is your desired salary?", value,
+                          semantic=SemanticType.SALARY_EXPECTATION)
+    options = ("Hourly", "Weekly", "Monthly", "Annual") if expected == "Annual" else ()
+    salary, period = salary_form(label, *options)
+    provider = ChoiceProvider({"wording": ("q0", 0.98)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved),
+                                         mock_job, salary, period)
+    chosen = next((a for a in packet.answers if a.field_id == "period"), None)
+    [trace] = stage_traces(resolver, "salary_period")
+    if expected is None:
+        assert chosen is None and trace["status"] == "NO_UNIT"
+        return
+    assert chosen is not None and chosen.value.label == expected
+    assert (chosen.provenance.source, chosen.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.salary"])
+    assert trace["status"] == "ANSWERED" and "period" not in trace  # no value-derived trace
+    # The salary itself keeps its own explicit rule (reworded saved answer here).
+    assert next(a for a in packet.answers if a.field_id == "salary").value.text == value
+
+
+def test_a_custom_typed_period_select_is_left_to_the_person(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    saved = global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
+                          semantic=SemanticType.SALARY_EXPECTATION)
+    salary, period = salary_form("")
+    period = period.model_copy(update={"semantic_type": SemanticType.CUSTOM_SELECT})
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)}, semantic="CUSTOM_SELECT")
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved),
+                                         mock_job, salary, period)
+    assert not stage_traces(resolver, "salary_period")
+    assert all(a.field_id != "period" for a in packet.answers)
+
+
+def test_an_untyped_answer_superseded_by_a_typed_one_is_not_offered_twice(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # An import that typed a key leaves the older untyped answer to the same question behind.
+    legacy = global_answer("sa.pronouns_old", "What pronouns do you use?", "they/them")
+    typed = global_answer("sa.pronouns", "What pronouns do you use?", "they/them",
+                          semantic=SemanticType.PRONOUNS)
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)})
+    field = choice_field("Pronouns (optional)", SemanticType.CUSTOM_SELECT, "she/her", "he/him",
+                         "they/them", control=ControlType.SELECT)
+    resolve_choice(provider, with_saved(fictional_candidate, legacy, typed, *UNTYPED_NOISE),
+                   mock_job, field)
+    [wording] = provider.asked("wording")
+    offered = [item["question"] for item in wording["state"]["saved_questions"].values()]
+    assert "What pronouns do you use?" not in offered  # the typed one supersedes it
+
+
+def test_a_typed_pronouns_answer_is_reused_by_wording(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    typed = global_answer("sa.pronouns", "What pronouns do you use?", "they/them",
+                          semantic=SemanticType.PRONOUNS)
+    provider = ChoiceProvider({"wording": ("q0", 0.96)})
+    field = choice_field("Pronouns", SemanticType.PRONOUNS, "she/her", "he/him", "they/them",
+                         control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, typed), mock_job, field)
+    [answer] = packet.answers
+    assert answer.value.label == "they/them"
+    assert stage_traces(resolver, "question_equivalence")[0]["gate"] == "type_anchored"

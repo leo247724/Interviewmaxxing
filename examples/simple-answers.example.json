@@ -36,5 +36,18 @@
   "english_proficiency": null,
   "available_time_zones": null,
   "travel_willingness": null,
-  "earliest_start_date": null
+  "earliest_start_date": null,
+  "race_ethnicity": null,
+  "disability_status": null,
+  "pronouns": null,
+  "family_government_official": null,
+  "non_compete_agreement": null,
+  "uses_ai_tools": null,
+  "familiar_with_company": null,
+  "county": null,
+  "acknowledge_privacy_notice": null,
+  "certify_information_true": null,
+  "consent_to_contact": null,
+  "consent_reference_checks": null,
+  "consent_background_check": null
 }

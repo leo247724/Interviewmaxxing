@@ -543,6 +543,18 @@ interviewmaxxing answer APP --set FIELD=VALUE ...   # then: interviewmaxxing res
 interviewmaxxing resume APP --act      # visible window for sign-in, CAPTCHA, custom controls
 ```
 
+The runner records these events for each application:
+
+- `preparation.ready`: the review step.
+- `provider.budget`: calls, known cost, unknown-cost calls, latency by purpose, and the budget
+  limits used.
+- `routing.trace`: once per resolved step, a projection of each field's route decision and
+  of the new decision traces. It holds ids, statuses, scores and page wording, and never
+  answer values, fact text, drafts or review text.
+- `field.suggestion_chosen`: a lookup label the resolver chose.
+- `application.failed_retryable`: after a fill failure its metadata carries `failed_fields`
+  (`field_id`, `label`, `status`, and a `detail` with quoted values redacted).
+
 `summary.json` lists the application ids per outcome, so a script or the dashboard
 can pick up the `prepared` ones. Evidence lives under `$IMX_HOME/artifacts/APP/`.
 Resuming a prepared application re-inspects the site and stops at the same review
