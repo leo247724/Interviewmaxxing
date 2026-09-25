@@ -16,9 +16,14 @@ def limits(budget: CallBudget) -> tuple[int, float]:
     return budget.max_calls, budget.max_usd
 
 
-def test_the_caps_are_120_calls_and_usd_2() -> None:
-    """The caps allow_calls shares with allow_form are 120 calls and USD 2.00."""
-    assert (providers.FORM_CAP_CALLS, providers.FORM_CAP_USD) == (120, 2.00)
+def test_allow_calls_and_allow_form_share_the_form_caps() -> None:
+    """The caps allow_calls respects are the form caps allow_form uses (WP14 pins their values):
+    a budget allow_form took to its caps gets no more room from allow_calls."""
+    budget = CallBudget(scales_with_form=True)
+    budget.allow_form(1000)
+    assert limits(budget) == (providers.FORM_CAP_CALLS, pytest.approx(providers.FORM_CAP_USD))
+    budget.allow_calls(10, 0.50)
+    assert limits(budget) == (providers.FORM_CAP_CALLS, pytest.approx(providers.FORM_CAP_USD))
 
 
 def test_a_fixed_budget_keeps_its_limits() -> None:
@@ -78,25 +83,27 @@ def test_the_room_starts_from_what_was_used_when_that_passed_the_limit() -> None
 
 
 def test_the_caps_bound_the_room() -> None:
-    """However much room is asked for, the limits stop at 120 calls and USD 2.00."""
+    """However much room is asked for, the limits stop at the form caps."""
     budget = CallBudget(scales_with_form=True)
     budget.allow_form(3)
-    budget.allow_calls(40, 1.00)
+    budget.allow_calls(providers.FORM_CAP_CALLS, providers.FORM_CAP_USD)
     assert budget.max_calls == providers.FORM_CAP_CALLS
     assert budget.max_usd == pytest.approx(providers.FORM_CAP_USD)
     fresh = CallBudget(scales_with_form=True)
     fresh.allow_calls(1000, 50.0)
-    assert fresh.max_calls == 120 and fresh.max_usd == pytest.approx(2.00)
+    assert fresh.max_calls == providers.FORM_CAP_CALLS
+    assert fresh.max_usd == pytest.approx(providers.FORM_CAP_USD)
 
 
 def test_a_budget_at_its_call_cap_gets_no_more_calls() -> None:
-    """Once 120 calls are used, the cap refuses the room and the next call is held."""
+    """Once the capped number of calls is used, the cap refuses the room and the next call is
+    held."""
     budget = CallBudget(scales_with_form=True)
-    budget.allow_form(12)
-    for _ in range(120):
+    budget.allow_form(1000)
+    for _ in range(providers.FORM_CAP_CALLS):
         budget.reserve(b"{}", 0.001)
     budget.allow_calls(4, 0.02)
-    assert budget.max_calls == 120
+    assert budget.max_calls == providers.FORM_CAP_CALLS
     with pytest.raises(AIHold, match="budget exhausted"):
         budget.reserve(b"{}", 0.001)
 

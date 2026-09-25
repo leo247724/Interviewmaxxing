@@ -114,6 +114,11 @@ _NOT_EXPERIENCE_YEARS = re.compile(
     r"\bcitizen\w*|\bmarried\b|\bwith\s+(?:us|this\s+company|the\s+company)\b|\bemployed\s+(?:by|at)\b",
     re.IGNORECASE)
 """A years threshold about age, residence, citizenship or tenure, never experience."""
+_SECOND_NUMBER = re.compile(
+    r"(?<![\w.,$\u20ac\u00a3])\d+(?:[.,]\d+)*(?![\w%])(?!\s*\+?\s*(?:years?|yrs?)\b)")
+"""A number of its own beside the threshold, with no "years" after it ("…, including 2 in paid
+social", "teams of 10 or more"): a second minimum. Not a number inside a word (B2B, GA4), an
+amount ($1M, 50%) or another years mention ("in the past 10 years") (round 12b)."""
 _EXPERIENCE_NEAR = re.compile(r"\bexperience\b|\bexp\b|\b(?:managing|leading|running|working|doing|"
                               r"building|owning|in|with)\b", re.IGNORECASE)
 
@@ -130,6 +135,9 @@ def years_requirement(question: str) -> YearsRequirement | None:
     match = matches[0]
     if _EXPERIENCE_NEAR.search(question[match.end():]) is None:
         return None
+    if any(not match.start() <= number.start() < match.end()
+           for number in _SECOND_NUMBER.finditer(question)):
+        return None  # "5+ years, including 2 in paid social" sets two minimums: Jev reads it
     if match.group("cmp"):
         years = _number(match.group(2))
         strict = match.group("cmp").casefold() in ("more than", "over")

@@ -1498,9 +1498,12 @@ class DynamicPacketResolver:
                 continue
             answers.append(outcome)
             missing = [m for m in missing if m.field_id != field.id]
-        answers, missing = await self._apply_answer_policies(
+        answers, missing, by_policy = await self._apply_answer_policies(
             context, report, answers, missing,
             held | {f.id for f, outcome in zip(open_fields, routed, strict=True) if _fact_conflict(outcome)})
+        if by_policy:
+            answers, missing = self._policy_follow_ups(context, packet, report, answers, missing,
+                                                       by_policy)
         result = ApplicationPacket.model_validate(packet.model_dump() | {
             "answers": answers, "missing_inputs": missing})
         problems = context.problems(result)
@@ -1817,7 +1820,8 @@ class DynamicPacketResolver:
             "answers": [*packet.answers, *mapped], "missing_inputs": missing}), set(held)
 
     def _conditional_follow_ups(self, context: PacketContext, packet: ApplicationPacket,
-                                report: FormRouteReport) -> tuple[ApplicationPacket, set[str]]:
+                                report: FormRouteReport, *, governed_by: set[str] | None = None,
+                                ) -> tuple[ApplicationPacket, set[str]]:
         """Follow-ups whose governing answer is No (round 11): "If yes to the above question,
         what role …", "If you were referred by …, please provide their name". The governing
         question is the nearest preceding yes/no question the wording refers to
@@ -1825,7 +1829,11 @@ class DynamicPacketResolver:
         follow-up, a stated U.S. citizenship or permanent residence) makes the follow-up not
         applicable: "N/A" (or the site's N/A option) when required, blank when optional. A
         governing Yes, an unanswered or unsaved governing answer, or no governing question
-        keeps today's hold. Returns the packet and the optional follow-ups left blank."""
+        keeps today's hold. Returns the packet and the optional follow-ups left blank.
+
+        With ``governed_by`` (round 12b) only the follow-ups whose governing question is one
+        of those fields are read, and nothing else is traced: the policy pass answered those
+        questions after this rule first ran."""
         fields = context.form.fields
         answered = {answer.field_id: answer for answer in packet.answers}
         status = self._status_answer(context)
@@ -1841,7 +1849,7 @@ class DynamicPacketResolver:
                 continue
             trace: dict[str, Any] = {"stage": "conditional_follow_up", "field_id": field.id,
                                      "field_fingerprint": field.fingerprint}
-            if refers_to_visa(field) and permanent:
+            if refers_to_visa(field) and permanent and governed_by is None:
                 assert status is not None
                 polarity: str | None = "no"
                 provenance = Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[status.id],
@@ -1851,6 +1859,9 @@ class DynamicPacketResolver:
                 trace["governing"] = "status"
             else:
                 governing_at = governing_index(fields, index, self._yes_no_question)
+                if governed_by is not None and (governing_at is None
+                                                or fields[governing_at].id not in governed_by):
+                    continue  # read when the rule first ran
                 if governing_at is None:
                     self._trace(trace | {"status": "NO_GOVERNING"})
                     continue
@@ -3018,21 +3029,23 @@ class DynamicPacketResolver:
 
     async def _apply_answer_policies(self, context: PacketContext, report: FormRouteReport,
                                      answers: list[PacketAnswer], missing: list[MissingInput],
-                                     settled: set[str]) -> tuple[list[PacketAnswer], list[MissingInput]]:
+                                     settled: set[str],
+                                     ) -> tuple[list[PacketAnswer], list[MissingInput], set[str]]:
         """The fourth pass: the person's standing answer policies for the required yes/no
         screeners no saved answer and no fact settled (``_answer_policy``), decided
         concurrently. ``settled`` holds the fields a saved answer or the facts keep: a
-        reworded saved answer that does not fit, or verified facts that disagree."""
+        reworded saved answer that does not fit, or verified facts that disagree. Also
+        returns the fields a policy answered."""
         policies = stated_answer_policies(context.candidate.applicable_saved_answers(context.job))
         if not policies:
-            return answers, missing
+            return answers, missing, set()
         answered = {answer.field_id for answer in answers}
         candidates = [field for field in context.form.fields
                       if field.id not in answered and field.id not in settled
                       and self._policy_candidate(context, report.field(field.id), field, missing,
                                                  policies)]
         if not candidates:
-            return answers, missing
+            return answers, missing, set()
         step = f"{context.application.id}:{context.form.fingerprint}"
         if step not in self._policy_steps:  # once per step, whatever re-resolves it
             self._policy_steps.add(step)
@@ -3041,6 +3054,7 @@ class DynamicPacketResolver:
         decided = await self._each(candidates, lambda field: self._answer_policy(
             context, field, report.field(field.id), policies))
         answers, missing = list(answers), list(missing)
+        by_policy: set[str] = set()
         for field, outcome in zip(candidates, decided, strict=True):
             _raise_unexpected(outcome)
             if outcome is None:
@@ -3054,7 +3068,20 @@ class DynamicPacketResolver:
                     prompt=str(outcome)))
             else:
                 answers.append(outcome)
-        return answers, missing
+                by_policy.add(field.id)
+        return answers, missing, by_policy
+
+    def _policy_follow_ups(self, context: PacketContext, packet: ApplicationPacket,
+                           report: FormRouteReport, answers: list[PacketAnswer],
+                           missing: list[MissingInput], governing: set[str],
+                           ) -> tuple[list[PacketAnswer], list[MissingInput]]:
+        """Round 11's conditional follow-ups for the questions the policy pass answered: a
+        follow-up ("If yes, when?") to a question the person's policy answered No does not
+        apply, exactly as after a saved No; after a policy Yes it keeps its hold."""
+        interim = ApplicationPacket.model_validate(packet.model_dump() | {
+            "answers": answers, "missing_inputs": missing})
+        interim, _ = self._conditional_follow_ups(context, interim, report, governed_by=governing)
+        return list(interim.answers), list(interim.missing_inputs)
 
     def _policy_candidate(self, context: PacketContext, gate: FieldRouteDecision,
                           field: ApplicationField, missing: Sequence[MissingInput],
@@ -3163,7 +3190,7 @@ class DynamicPacketResolver:
         trace: dict[str, Any] = {"stage": "answer_policy", "field_id": field.id,
             "field_fingerprint": field.fingerprint, "classes": sorted(classes), "status": "HELD"}
         try:
-            response = self.decisions.decide(DecisionRequest(model=self.decisions.model, state={
+            response = self._decide(DecisionRequest(model=self.decisions.model, state={
                 "prompt_version": POLICY_PROMPT_VERSION, "employer": context.job.company,
                 "question": {"label": field.label, "help_text": field.help_text,
                              "placeholder": field.placeholder,

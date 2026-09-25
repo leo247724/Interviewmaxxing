@@ -305,6 +305,11 @@ AGREE = ("I agree", "I do not agree")
 EXPLICIT = Script(route="HUMAN_INPUT", scope="EXPLICIT_ANSWER")
 """How the classifier reads an eligibility-style screener: never a fact screener."""
 
+
+def explicit_policy(policy: str) -> Script:
+    """An eligibility-style screener (never a fact screener) that Jev places in ``policy``."""
+    return Script(policy=policy, route="HUMAN_INPUT", scope="EXPLICIT_ANSWER")
+
 LIVE: list[tuple[str, ControlType, tuple[str, ...], Script, str | bool, str]] = [
     # claims_experience_asked: Yes (the experience screener finds no fact and holds first)
     ("Have you owned paid social strategy and execution across multiple platforms?", R, YES_NO,
@@ -489,3 +494,85 @@ def test_a_certification_over_true_and_false_takes_true(
     assert rendered(answer) == "True"
     [request] = provider.policy_requests()
     assert "yes_option" not in request["questions"] and "no_option" not in request["questions"]
+
+
+# --- round 12b: with round 11 on the base ----------------------------------------------------------
+
+
+EMPLOYED_Q = "Have you previously worked for Mock Co or any of its affiliates?"
+WHEN_Q = "If yes, when did you work there and in what role?"
+DSP_Q = "Have you managed Amazon DSP campaigns?"
+DSP_DETAIL_Q = "If yes, please describe your experience with Amazon DSP."
+
+
+def follow_up_traces(resolver: DynamicPacketResolver, field_id: str) -> list[dict[str, Any]]:
+    return [t for t in traces(resolver, "conditional_follow_up") if t["field_id"] == field_id]
+
+
+def test_a_required_follow_up_to_a_policy_no_does_not_apply(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    """Round 11's rule reads the policy pass's answers too: "If yes, when …?" after a policy No
+    is "N/A", citing the person's policy, as after a saved No."""
+    candidate = with_policies(fictional_candidate)
+    provider = PolicyJev({EMPLOYED_Q[:40]: explicit_policy(NOT_EMPLOYEE),
+                          WHEN_Q[:40]: Script(route="HUMAN_INPUT", scope="EXPLICIT_ANSWER")})
+    packet, _, resolver = resolve(provider, candidate, mock_job,
+        typed_field(EMPLOYED_Q, R, YES_NO, field_id="employed"),
+        typed_field(WHEN_Q, TA, field_id="when"))
+    assert packet.is_complete, packet.missing_inputs
+    assert rendered(packet.answer_for("employed")) == "No"
+    when = packet.answer_for("when")
+    assert rendered(when) == "N/A"
+    assert when.provenance.reference_ids == [policy_id(candidate, NOT_EMPLOYEE)]
+    # Read once before the policy pass (unanswered then) and once after it.
+    assert [t["status"] for t in follow_up_traces(resolver, "when")] == [
+        "GOVERNING_UNANSWERED", "NOT_APPLICABLE"]
+
+
+def test_an_optional_follow_up_to_a_policy_no_is_left_blank(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    candidate = with_policies(fictional_candidate)
+    provider = PolicyJev({EMPLOYED_Q[:40]: explicit_policy(NOT_EMPLOYEE),
+                          WHEN_Q[:40]: Script(route="HUMAN_INPUT", scope="EXPLICIT_ANSWER")})
+    packet, _, resolver = resolve(provider, candidate, mock_job,
+        typed_field(EMPLOYED_Q, R, YES_NO, field_id="employed"),
+        typed_field(WHEN_Q, TA, field_id="when", required=False))
+    assert packet.is_complete and packet.answer_for("when") is None
+    assert follow_up_traces(resolver, "when")[-1]["status"] == "LEFT_BLANK"
+
+
+def test_a_follow_up_to_a_policy_yes_keeps_its_hold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    """After a policy Yes the details are the person's (or a writer's from facts): the
+    follow-up is never answered by the policy or marked not applicable."""
+    candidate = with_policies(fictional_candidate)
+    provider = PolicyJev({DSP_Q[:30]: Script(policy=CLAIMS),
+                          DSP_DETAIL_Q[:40]: Script(route="WRITER", narrative="prose")})
+    packet, _, resolver = resolve(provider, candidate, mock_job,
+        typed_field(DSP_Q, R, YES_NO, field_id="dsp"), typed_field(DSP_DETAIL_Q, TA, field_id="detail"))
+    assert rendered(packet.answer_for("dsp")) == "Yes"
+    assert packet.answer_for("detail") is None
+    assert [m.field_id for m in packet.missing_inputs] == ["detail"]
+    assert follow_up_traces(resolver, "detail")[-1]["status"] == "GOVERNING_YES"
+    assert [t["field_id"] for t in traces(resolver)] == ["dsp"]  # never a policy candidate
+
+
+def test_two_minimums_on_a_radio_reach_the_policy_and_wait_for_the_person(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    """Round 11's years screener reads "including 2 in paid social" as a second minimum and
+    leaves the question to Jev; the threshold policy cannot read one minimum either, so the
+    field waits with a prompt naming the policy (never Yes from the total)."""
+    label = "Do you have 5+ years of experience, including 2 in paid social?"
+    candidate = with_policies(fictional_candidate)
+    provider = PolicyJev({label[:40]: Script(policy=THRESHOLDS)})
+    packet, _, resolver = resolve(provider, candidate, mock_job, typed_field(label, R, YES_NO))
+    assert packet.answers == []
+    [missing] = packet.missing_inputs
+    assert missing.prompt.startswith(f"Your answer policy {THRESHOLDS} applies to")
+    assert not settled_by_years_facts(resolver)
+    [trace] = traces(resolver)
+    assert trace["status"] == "YEARS_UNREADABLE"

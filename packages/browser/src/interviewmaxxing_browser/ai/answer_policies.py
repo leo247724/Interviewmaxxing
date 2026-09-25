@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from interviewmaxxing_core import CandidateFact, ControlType, SemanticType
 from interviewmaxxing_generation.questions import GENERIC_YEARS_KEYS, wording_key, years_fact_area
 
+from .experience import stated_by_person, years_value
+
 POLICY_PROMPT_VERSION = "answer-policy-v1"
 POLICY_CALLS_PER_FIELD = 2
 POLICY_USD_PER_FIELD = 0.01
@@ -260,24 +262,6 @@ def years_reading(question: str) -> YearsReading:
             or _AGE_WORDING.search(question)):
         return YearsReading(mentioned=True, threshold=None)
     return YearsReading(mentioned=True, threshold=found[0])
-
-
-def stated_by_person(fact: CandidateFact) -> bool:
-    """A fact the person stated themselves (source ``user`` or ``user:…``)."""
-    return fact.source == "user" or fact.source.startswith("user:")
-
-
-def years_value(fact: CandidateFact) -> float | None:
-    """The years a years fact states (7, 7.5, "7", "7 years"), else None."""
-    value = fact.value
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:\+|years?|yrs?)?\s*", value, re.IGNORECASE)
-        return float(match.group(1)) if match else None
-    return None
 
 
 @dataclass(frozen=True, slots=True)

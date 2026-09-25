@@ -136,6 +136,30 @@ def test_years_requirement_is_none_without_a_years_threshold(question: str) -> N
     assert years_requirement(question) is None
 
 
+@pytest.mark.parametrize("question", [
+    "Do you have 5+ years of experience, including 2 in paid social?",
+    "Do you have at least 8 years in total, including 3 in direct response?",
+    "Do you have 5+ years of experience managing teams of 10 or more?",
+])
+def test_years_requirement_is_none_for_a_second_minimum_without_its_unit(question: str) -> None:
+    """Round 12b: a number of its own beside the threshold sets a second minimum (the
+    docstring's own example); Jev reads the question instead."""
+    assert years_requirement(question) is None
+
+
+@pytest.mark.parametrize("question", [
+    "Do you have 5+ years of experience managing $1M+ budgets?",
+    "Do you have 5+ years of B2B marketing experience?",
+    "Do you have 5+ years of experience with GA4?",
+    "Do you have 5+ years of experience growing revenue by 50%?",
+    "Do you have 5+ years of SEO experience in the past 10 years?",
+])
+def test_years_requirement_keeps_numbers_that_set_no_second_minimum(question: str) -> None:
+    """An amount, a number inside a word and another years mention are not a second minimum."""
+    requirement = years_requirement(question)
+    assert requirement is not None and requirement.years == 5
+
+
 @pytest.mark.parametrize("requirement,value,met", [
     (YearsRequirement(8, False, None), 8, True), (YearsRequirement(8, False, None), 7.9, False),
     (YearsRequirement(8, False, None), 9, True), (YearsRequirement(7, True, "google ads"), 7, False),

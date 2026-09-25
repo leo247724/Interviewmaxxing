@@ -373,7 +373,8 @@ sanctions question, a statement or a checkbox whose wording also adds an obligat
 for another consent ("… and would like to receive promotional offers", "By answering you
 agree to binding arbitration"): answering it would agree to all of it. A free-text
 "If yes, describe" follow-up after a policy Yes waits for you unless your facts support the
-detail. [dynamic-application-routing.md](dynamic-application-routing.md), "Round 12",
+detail; after a policy No it does not apply ("N/A" when required, blank when optional).
+[dynamic-application-routing.md](dynamic-application-routing.md), "Round 12",
 describes the decision.
 
 ## `career_motivation`: what you look for in a role

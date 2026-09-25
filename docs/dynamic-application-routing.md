@@ -266,7 +266,7 @@ A prepare-only retry on 2026-09-25, after the person saved every reusable key, l
   - A wording that names an area the facts do not cover is never answered from the total: the total is removed from Jev's evidence. So "at least 8 years of total experience in direct response marketing" holds unless a `years_experience.direct_response_marketing` fact meets it.
   - Some years thresholds are never read from the years facts:
     - one about age, residence, citizenship or tenure ("Are you at least 18 years old?", "lived at your current address for at least 3 years");
-    - a question setting two thresholds ("8 years in total, including 3 in direct response"), which is Jev's.
+    - a question setting two thresholds ("8 years in total, including 3 in direct response"), which is Jev's. Since round 12b a second number standing on its own counts too, even without "years" after it ("5+ years of experience, including 2 in paid social", "teams of 10 or more"). A number inside a word (B2B, GA4), an amount ($1M, 50%) and another years mention ("in the past 10 years") do not.
 - **Experience questions reach the screeners (item 9).** A required choice (yes/no, select or select-all) whose wording asks about experience, skills, platforms, years or something done is admitted to the fact screeners whatever its route or source confidence, unless it asks about another person. Live examples are "Have you owned paid social strategy …" at route 0.92 and "Do you have SEO AND GEO optimization experience?" at 0.84.
   - The screener's own gate decides, and the answer's confidence is at most the route's own.
   - Only a possessive subject ("Has your manager led …") marks a question about another person. "Agency" or "manager" as the applicant's own setting or role ("a performance marketing agency environment", "as a paid media manager") does not.
@@ -307,7 +307,7 @@ The person does not answer screeners one by one: at retry five (2026-09-25) they
   - on a choice without an exact Yes or No option, the Choices `yes_option` and `no_option`. `yes_option` is the mildest affirmative: a plain yes, or "Yes, some experience", "Yes, as part of a team", never an option that states years or amounts;
   - on a text box, the nouls `details_if_yes` and `details_if_no`.
 
-  The state carries the question, its options and the employer. The saved policies are never sent.
+  The state carries the question, its options and the employer. The saved policies are never sent. The decision goes through round 11's `_decide`, so a NETWORK or TIMEOUT failure is sent once more before the field holds (round 12b).
 - **Applying the class.**
   - **The whole wording is agreed to.** A certification, an employee or sanctions question, any statement (CONSENT or ATTESTATION) and any checkbox hold, whatever the class, when their wording adds an obligation or asks for another consent: answering them agrees to all of it.
     - `ADDED_OBLIGATION` uses the round-9 `_ADDED_OBLIGATIONS` list over the question and its options: drug tests, previous employers, non-competes, arbitration and waivers, AI tools, at-will employment, and background, credit, driving or ongoing checks. An example is "Have you worked for Mock Co before? By answering you agree to binding arbitration."
@@ -315,6 +315,7 @@ The person does not answer screeners one by one: at retry five (2026-09-25) they
     - An experience question on another control is not checked, because its topic may name AI tools or a background without adding an obligation.
   - `claims_experience_asked`: the saved answer.
   - `meets_experience_thresholds` applies to any experience question that sets a minimum number of years, whichever experience class Jev read, so a claimed Yes never exceeds the stated years. With Yes, the answer is Yes when the minimum is within the stated years and No above them.
+    - Round 11's years screener runs first, and it settles most yes/no thresholds from the years facts. It answers Yes when a named area's fact (or, with no area named, the total) meets the minimum, and No when the total falls short. The policy decides what that leaves open: a named area without a fact that meets the minimum, while the total does, or a missing total.
     - Minimums read: "5+", "at least eight (8)", "5 or more", "a minimum of 4", "more than 7" (strict) and a bare "3 years". A timeframe ("in the past 2 years", "2 years ago") is not a minimum.
     - The stated years are the larger of the `years_experience` total and a `years_experience.<area>` fact whose area the question names. A stated (`user:`) fact replaces a derived one for the same key.
     - These hold with a prompt naming the policy: a range, an upper bound, an age, two different minimums or a second number standing on its own ("5+ years, including 2 in paid social") (`YEARS_UNREADABLE`), two stated values for one key (`YEARS_CONFLICT`), or no stated years (`NO_STATED_YEARS`). A number inside a word (B2B, GA4) or an amount ($1M, 50%) does not count.
@@ -327,6 +328,7 @@ The person does not answer screeners one by one: at retry five (2026-09-25) they
     - A checkbox is checked or left unchecked. A required box the answer leaves unchecked holds (`INVALID`).
     - A text box takes "Yes." or "No.", unless the question also asks for details for that answer (`NEEDS_DETAIL`, above 0.05).
     - A free-text "If yes, describe" follow-up after a policy Yes is never a policy question, because its label is not a yes/no question. It holds unless the writer answers it from facts.
+    - Round 11's conditional follow-ups first run before the policy pass, when the policy's question is still open. They run once more afterwards for the follow-ups of the questions the policy answered (round 12b, `_policy_follow_ups`). After a policy No the follow-up does not apply, exactly as after a saved No: "N/A" when required, blank when optional, citing the policy. After a policy Yes it keeps its hold.
 - **Provenance and trace.**
   - The answer is `SAVED_ANSWER` citing the policy's saved answer, whose id names the policy (`answer_policy_<key>_…`). Its note names the policy and `user:simple-answers`, and for a threshold the years fact ids. The confidence is the lowest of the class, polarity, option and detail scores.
   - The trace (`answer_policy`) records the classes the field may take, the class and its scores, the policy applied, the polarity, the decision and the reference ids. For a threshold it also records `years_rule`: the minimum, its strictness and the fact ids, never a fact value.
