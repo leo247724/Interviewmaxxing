@@ -515,8 +515,8 @@ def test_identity_value_maps_onto_a_country_option_through_the_copy_gate(
     [answer] = packet.answers
     assert answer.value.label == "United States of America (USA)"
     assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
-    assert provider.asked("equivalent_0")[0]["state"]["stored_answers"] == {
-        "equivalent_0": "United States"}
+    # Round 11: a country is a closed vocabulary, matched by name, code or alias with no call.
+    assert not provider.asked("equivalent_0")
 
 
 def test_identity_mapping_is_not_attempted_for_another_subject(
@@ -1045,7 +1045,8 @@ def test_every_typed_simple_answer_is_reusable_by_meaning() -> None:
     assert {SemanticType.SALARY_EXPECTATION, SemanticType.RELOCATION,
             SemanticType.START_DATE} <= REUSABLE_TYPES
     assert SemanticType.CUSTOM_BOOLEAN in UNTYPED_REUSE_TYPES
-    assert SemanticType.CUSTOM_LONG_TEXT not in UNTYPED_REUSE_TYPES
+    # Round 11: a custom text area takes an untyped answer too (a Yes/No as one sentence).
+    assert SemanticType.CUSTOM_LONG_TEXT in UNTYPED_REUSE_TYPES
 
 
 # --- round 3: residence screeners from the verified address (item 1) ---------------------
@@ -1152,11 +1153,9 @@ def test_a_state_select_tries_identity_equivalence_before_the_residence_decision
     [answer] = packet.answers
     assert (answer.value.value, answer.value.label) == ("v0", "OR - Oregon")
     assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
-    order = [name for request in provider.requests for name in request["questions"]
-             if name in ("equivalent_0", "residence")]
-    assert order == ["equivalent_0", "residence"]
-    assert [t["status"] for t in stage_traces(resolver, "option_equivalence")] == ["NONE"]
-    assert [t["status"] for t in stage_traces(resolver, "residence_screener")] == ["ANSWERED"]
+    # Round 11: a state is a closed vocabulary: "OR" names "OR - Oregon" with no call at all.
+    assert not provider.asked("equivalent_0") and not provider.asked("residence")
+    assert [t["status"] for t in stage_traces(resolver, "closed_vocabulary")] == ["MATCHED"]
 
 
 def test_a_region_select_takes_the_region_that_contains_the_address(
@@ -4071,7 +4070,7 @@ def test_salary_range_reads_the_bounds_a_range_option_states(
     ("$150,000 OTE", (150_000.0, None, "USD", False)),
     ("$120,000 base + bonus", None),  # "+" states no one amount
     ("$90,000 - $100,000", None),
-    ("about $95,000", None),
+    ("about $95,000", (95_000.0, None, "USD", True)),  # round 11: "about" one figure states it
     ("2026", None),  # a bare year
     ("negotiable", None),
 ])
@@ -4221,7 +4220,6 @@ def test_the_saved_unit_is_converted_to_the_unit_the_wording_names(
     ("What is your desired base salary?", "$150,000 OTE per year", "SAVED_NOT_BASE"),
     ("Expected annual salary (EUR)", "USD 95,000 per year", "CURRENCY_MISMATCH"),
     ("Desired salary (hourly or annual)", "USD 95,000 per year", "UNIT_AMBIGUOUS"),
-    ("Desired salary", "$90,000 - $100,000", "UNPARSED"),
 ])
 def test_a_salary_the_derivation_cannot_state_holds_without_a_call(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, value: str, status: str,
@@ -5134,3 +5132,843 @@ def test_an_onsite_question_naming_no_city_is_not_derived(
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, arrangement("on-site")),
                                          mock_job, field)
     assert not stage_traces(resolver, "work_arrangement") and packet.answers == []
+
+
+# --- round 11: saved answers that still did not reach the form ---------------------------------
+
+from interviewmaxxing_browser.ai.closed_vocab import LONG_OPTION_LIST, OPTION_SAMPLE  # noqa: E402
+from interviewmaxxing_browser.ai.salary import field_wording, periods_named  # noqa: E402
+from interviewmaxxing_candidate.simple_answers import (  # noqa: E402
+    _REUSABLE_QUESTIONS,
+    STATEMENT_KEYS,
+)
+from interviewmaxxing_core import ApplicationPacket, yes_no_sentence  # noqa: E402
+
+
+class ByControl(ChoiceProvider):
+    """ChoiceProvider whose semantic readings (s<i>) follow each field's control: a text area
+    is CUSTOM_LONG_TEXT, a text input CUSTOM_TEXT, a Yes/No choice CUSTOM_BOOLEAN and any other
+    choice CUSTOM_SELECT (a typed field is never asked)."""
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        fields = json.loads(body)["state"].get("fields")
+        if response.status != 200 or not fields:
+            return response
+        payload = json.loads(response.body)
+        for name, answer in payload["answers"].items():
+            if name[0] == "s" and name[1:].isdigit():
+                data = fields[f"f{name[1:]}"]
+                labels = {option["label"] for option in data["options"]}
+                choice = {"TEXTAREA": "CUSTOM_LONG_TEXT", "TEXT": "CUSTOM_TEXT"}.get(
+                    data["control"], "CUSTOM_BOOLEAN" if labels == set(YES_NO) else "CUSTOM_SELECT")
+                answer.update(choice=choice, probabilities={
+                    key: float(key == choice) for key in answer["probabilities"]})
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+class LabelPick(ChoiceProvider):
+    """ChoiceProvider whose ``name`` pick is the offered option whose label contains ``label``."""
+
+    def __init__(self, name: str, label: str, picks: dict[str, tuple[str, float]] | None = None) -> None:
+        super().__init__(dict(picks or {}))
+        self.name, self.label = name, label
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        if self.name in request["questions"]:
+            options = request["state"]["options"]
+            self.picks[self.name] = (next(key for key, label in options.items() if self.label in label), 0.99)
+        return super().__call__(url, headers, body, timeout)
+
+
+class Flaky(ChoiceProvider):
+    """ChoiceProvider whose first requests asking ``name`` fail in transport, one per entry of
+    ``failures`` (a ``TimeoutError`` is Jev TIMEOUT, another ``OSError`` Jev NETWORK)."""
+
+    def __init__(self, name: str, failures: list[OSError], picks: dict[str, tuple[str, float]] | None = None,
+                 **kwargs: Any) -> None:
+        super().__init__(dict(picks or {}), **kwargs)
+        self.name, self.failures = name, list(failures)
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        if self.name in request["questions"] and self.failures:
+            self.requests.append(request)
+            raise self.failures.pop(0)
+        return super().__call__(url, headers, body, timeout)
+
+
+def text_area(field_id: str, label: str, *, required: bool = True,
+              control: ControlType = ControlType.TEXTAREA,
+              semantic: SemanticType = SemanticType.CUSTOM_LONG_TEXT) -> ApplicationField:
+    return ApplicationField(id=field_id, selector=f"#{field_id}", label=label, semantic_type=semantic,
+                            control_type=control, required=required)
+
+
+def yes_no_field(field_id: str, label: str, *,
+                 semantic: SemanticType = SemanticType.CUSTOM_BOOLEAN) -> ApplicationField:
+    return choice_field(label, semantic, *YES_NO, field_id=field_id)
+
+
+def with_identity(candidate: CandidateProfile, **identity: str | None) -> CandidateProfile:
+    return candidate.model_copy(update={"identity": candidate.identity.model_copy(update=identity)})
+
+
+def receipts(resolver: DynamicPacketResolver, purpose: str) -> list[str]:
+    """The statuses of the budget receipts for ``purpose``, in call order."""
+    return [r.status for r in resolver.decisions.budget.receipts if r.purpose == purpose]
+
+
+# 1. A saved Yes/No reaches a free-text control.
+
+NON_COMPETE = ("Have you signed any non-competition or non-solicitation agreement that could restrict "
+               "your work for this employer?")
+NON_COMPETE_TEXT = ("Have you signed any non-competition or non-solicitation agreement with any other "
+                    "employer? If yes, describe")
+NON_COMPETE_NO = "No, I have not signed any non-competition or non-solicitation agreement."
+
+
+def non_compete(value: str) -> SavedAnswer:
+    return global_answer("sa.non_compete", NON_COMPETE, value)
+
+
+def wording_text(control: ControlType, contains: str) -> tuple[WordingPick, SemanticType]:
+    """A wording pick of the saved question containing ``contains``, for a custom text field."""
+    semantic = (SemanticType.CUSTOM_LONG_TEXT if control is ControlType.TEXTAREA
+                else SemanticType.CUSTOM_TEXT)
+    return WordingPick(contains, semantic=semantic.value), semantic
+
+
+@pytest.mark.parametrize("control,value,expected", [
+    (ControlType.TEXTAREA, "No", NON_COMPETE_NO),  # one sentence in the person's voice
+    (ControlType.TEXTAREA, "no", NON_COMPETE_NO),
+    (ControlType.TEXTAREA, "Yes, with Fictional Co until 2027", "Yes, with Fictional Co until 2027"),
+    (ControlType.TEXT, "No", "No"),  # a single line keeps the saved word
+])
+def test_a_saved_yes_no_reaches_a_free_text_question_through_the_wording_decision(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, control: ControlType,
+    value: str, expected: str,
+) -> None:
+    assert yes_no_sentence(NON_COMPETE, False) == NON_COMPETE_NO
+    provider, semantic = wording_text(control, "non-competition")
+    field = text_area("answer", NON_COMPETE_TEXT, control=control, semantic=semantic)
+    packet, ctx, resolver = resolve_choice(
+        provider, with_saved(fictional_candidate, non_compete(value), *UNTYPED_NOISE), mock_job, field)
+    assert ctx.form.fields[0].semantic_type is semantic
+    [answer] = packet.answers
+    assert answer.value == TextValue(text=expected)
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.non_compete"])
+    sentence = expected == NON_COMPETE_NO
+    assert ("typed as one sentence" in (answer.provenance.note or "")) is sentence
+    assert answer.confidence == pytest.approx(0.97)  # min(wording confidence 0.97, probability 0.98)
+    [wording] = provider.asked("wording")
+    assert "sa.non_compete" not in json.dumps(wording) and '"No"' not in json.dumps(wording)
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["status"], trace["gate"], trace.get("sentence", False)) == ("MAPPED", "untyped", sentence)
+    assert expected not in json.dumps(trace) and f'"{value}"' not in json.dumps(trace)
+    assert not provider.asked("route")  # never generated
+
+
+@pytest.mark.parametrize("control", [ControlType.TEXTAREA, ControlType.TEXT])
+def test_a_bare_saved_yes_never_answers_a_question_that_asks_for_the_details(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, control: ControlType,
+) -> None:
+    provider, semantic = wording_text(control, "non-competition")
+    field = text_area("answer", NON_COMPETE_TEXT, control=control, semantic=semantic)
+    packet, _, resolver = resolve_choice(
+        provider, with_saved(fictional_candidate, non_compete("Yes"), *UNTYPED_NOISE), mock_job, field)
+    assert packet.answers == [] and not packet.is_complete
+    [missing] = packet.missing_inputs
+    assert missing.reason is MissingReason.AMBIGUOUS
+    assert missing.prompt.startswith(f"Your saved answer to {NON_COMPETE!r} is Yes; this question asks "
+                                     "for the details.")
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["status"], trace["reference_ids"]) == ("YES_NEEDS_DETAIL", ["sa.non_compete"])
+    # Held for the person: no invented detail, never sent to fact routing or the writer.
+    assert not provider.asked("route") and purposes(resolver) == ["full_form_routes", "question_equivalence"]
+
+
+@pytest.mark.parametrize("value,expected", [("Yes", "Yes."), ("No", "No.")])
+def test_a_yes_no_outside_the_sentence_table_is_typed_as_a_bare_sentence_in_a_text_area(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str, expected: str,
+) -> None:
+    weekends = global_answer("sa.weekends", "Are you willing to work weekends when needed?", value)
+    assert yes_no_sentence(weekends.question, value == "Yes") is None
+    provider, _ = wording_text(ControlType.TEXTAREA, "weekends")
+    field = text_area("answer", "Would you be able to work on weekends during product launches?")
+    packet, _, resolver = resolve_choice(
+        provider, with_saved(fictional_candidate, weekends, *UNTYPED_NOISE), mock_job, field)
+    [answer] = packet.answers
+    assert (answer.value, answer.provenance.reference_ids) == (TextValue(text=expected), ["sa.weekends"])
+    assert stage_traces(resolver, "question_equivalence")[0]["sentence"] is True
+
+
+@pytest.mark.parametrize("semantic,saved,label", [
+    (SemanticType.RELOCATION, WILLING, "Would you relocate for this role? Tell us about your plans."),
+    (SemanticType.REFERRAL_SOURCE, REFERRAL_DEFAULT, "How did you hear about this role? Tell us more."),
+])
+def test_a_typed_text_area_is_never_offered_saved_wordings(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: SemanticType,
+    saved: SavedAnswer, label: str,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, ctx, resolver = resolve_choice(
+        provider, with_saved(fictional_candidate, saved, *UNTYPED_NOISE), mock_job,
+        text_area("answer", label, semantic=semantic))
+    assert ctx.form.fields[0].semantic_type is semantic
+    assert not provider.asked("wording") and not stage_traces(resolver, "question_equivalence")
+    assert packet.answers == []
+
+
+# 2. Conditional follow-ups.
+
+GOVERNMENT = "Are you or anyone in your immediate family a government official?"
+GOVERNMENT_ROLE = "If yes to the above question, what role and what governmental organization?"
+GOVERNMENT_CONFIRM = ("Please confirm whether the government official mentioned above has any direct or "
+                      "indirect influence over purchasing decisions at Fictional Co.")
+REFERRED = "Were you referred to this position by a current employee?"
+REFERRER_NAME = "If you were referred by a Fictional Co team member, please provide their name."
+REFERRER_TEAM = "If you were referred by a Fictional Co team member, which team are they on?"
+EMPLOYED = "Have you previously been employed by this company?"
+VISA_DETAILS = ("Please provide the details and expiration date here if your specific visa or work "
+                "authorization is temporary.")
+LICENSE = "Do you hold a current driver's license?"
+ISSUING_STATE = "If yes, please list the issuing state."
+LIVE_IN_US = "Do you currently live in the United States?"
+
+
+def follow_up_trace(resolver: DynamicPacketResolver, field_id: str) -> dict[str, Any]:
+    [trace] = [t for t in stage_traces(resolver, "conditional_follow_up") if t["field_id"] == field_id]
+    return trace
+
+
+@pytest.mark.parametrize("saved,required,status", [
+    ("No", True, "NOT_APPLICABLE"),
+    ("No", False, "LEFT_BLANK"),
+    ("Yes", True, "GOVERNING_YES"),
+])
+def test_a_follow_up_to_a_saved_no_does_not_apply(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, saved: str, required: bool, status: str,
+) -> None:
+    provider = ByControl()
+    fields = (yes_no_field("official", GOVERNMENT), text_area("role", GOVERNMENT_ROLE, required=required))
+    packet, ctx, resolver = resolve_choice(
+        provider, with_saved(fictional_candidate, global_answer("sa.official", GOVERNMENT, saved)),
+        mock_job, *fields)
+    governing = packet.answer_for("official")
+    assert governing is not None and governing.value.label == saved
+    trace = follow_up_trace(resolver, "role")
+    assert (trace["field_fingerprint"], trace["governing_field_id"], trace["status"]) == (
+        ctx.form.field("role").fingerprint, "official", status)
+    shown_trace = json.dumps(trace)  # ids and a status only: never the saved answer or the "N/A"
+    assert '"No"' not in shown_trace and '"Yes"' not in shown_trace and "N/A" not in shown_trace
+    follow = packet.answer_for("role")
+    if status == "NOT_APPLICABLE":
+        assert follow is not None and follow.value == TextValue(text="N/A")
+        assert follow.semantic_type is SemanticType.CUSTOM_LONG_TEXT
+        assert (follow.provenance.source, follow.provenance.reference_ids) == (
+            AnswerSource.SAVED_ANSWER, ["sa.official"])
+        assert follow.provenance.note == f"follow-up to {GOVERNMENT!r}, answered No: it does not apply"
+        assert follow.confidence == governing.confidence
+    else:
+        assert follow is None
+    assert packet.is_complete is (status != "GOVERNING_YES")
+    assert [m.field_id for m in packet.missing_inputs] == (["role"] if status == "GOVERNING_YES" else [])
+    # Only a follow-up that applies (governing Yes) still reaches generation, and is held there.
+    assert bool(provider.asked("route")) is (status == "GOVERNING_YES")
+
+
+@pytest.mark.parametrize("between", [False, True])
+def test_the_referrer_name_follow_up_is_governed_by_the_referral_question(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, between: bool,
+) -> None:
+    adult = "Are you at least 18 years of age?"  # saved Yes: it would never make the follow-up N/A
+    fields = [yes_no_field("referred", REFERRED), *([yes_no_field("adult", adult)] if between else []),
+              text_area("referrer", REFERRER_NAME, control=ControlType.TEXT, semantic=SemanticType.CUSTOM_TEXT)]
+    candidate = with_saved(fictional_candidate, global_answer("sa.referred", REFERRED, "No"),
+                           global_answer("sa.adult", adult, "Yes"))
+    packet, _, resolver = resolve_choice(ByControl(), candidate, mock_job, *fields)
+    trace = follow_up_trace(resolver, "referrer")
+    assert (trace["governing_field_id"], trace["status"]) == ("referred", "NOT_APPLICABLE")
+    answer = packet.answer_for("referrer")
+    assert answer is not None and answer.value == TextValue(text="N/A")
+    assert answer.provenance.reference_ids == ["sa.referred"]
+    assert packet.is_complete
+
+
+def test_a_confirmation_about_the_official_mentioned_above_follows_the_same_saved_no(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    fields = (yes_no_field("official", GOVERNMENT), text_area("role", GOVERNMENT_ROLE),
+              text_area("influence", GOVERNMENT_CONFIRM))
+    packet, _, resolver = resolve_choice(
+        ByControl(), with_saved(fictional_candidate, global_answer("sa.official", GOVERNMENT, "No")),
+        mock_job, *fields)
+    for field_id in ("role", "influence"):
+        trace = follow_up_trace(resolver, field_id)
+        assert (trace["governing_field_id"], trace["status"]) == ("official", "NOT_APPLICABLE")
+        answer = packet.answer_for(field_id)
+        assert answer is not None and answer.value == TextValue(text="N/A")
+    assert packet.is_complete
+
+
+@pytest.mark.parametrize("code,status", [
+    ("us_citizen", "NOT_APPLICABLE"),
+    ("us_permanent_resident", "NOT_APPLICABLE"),
+    ("h1b", "NO_GOVERNING"),  # a visa that may expire: not concluded, held as before
+])
+def test_a_visa_details_follow_up_does_not_apply_to_a_stated_citizen_or_permanent_resident(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, code: str, status: str,
+) -> None:
+    provider = ByControl()
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, code), mock_job,
+                                         text_area("visa", VISA_DETAILS))
+    [trace] = code_free(resolver, code, "conditional_follow_up")
+    assert trace["status"] == status
+    if status == "NO_GOVERNING":
+        assert packet.answers == [] and [m.field_id for m in packet.missing_inputs] == ["visa"]
+        assert provider.asked("route")  # today's path: generation, held there
+        return
+    assert trace["governing"] == "status" and "governing_field_id" not in trace
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="N/A")
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.status"])
+    assert "the stated U.S. status holds none" in (answer.provenance.note or "")
+    assert code not in packet.model_dump_json()
+
+
+def governing_case(case: str, candidate: CandidateProfile) -> tuple[
+        list[ApplicationField], CandidateProfile, ChoiceProvider]:
+    """A form whose last field is a follow-up, for each way its governing answer can be missing."""
+    license_no = global_answer("sa.governing", LICENSE, "No")
+    state = text_area("follow", ISSUING_STATE, control=ControlType.TEXT, semantic=SemanticType.CUSTOM_TEXT)
+    if case == "adjacent":  # "If yes" right after a yes/no question, no shared word
+        return [yes_no_field("governing", LICENSE), state], with_saved(candidate, license_no), ByControl()
+    if case == "text":  # a text question phrased as yes/no, its saved text "No"
+        certified = "Do you hold any professional certifications?"
+        return ([text_area("governing", certified, control=ControlType.TEXT, semantic=SemanticType.CUSTOM_TEXT),
+                 text_area("follow", "If yes, please list them.")],
+                with_saved(candidate, global_answer("sa.governing", certified, "No")), ByControl())
+    if case == "not_adjacent":  # another question in between and no shared word
+        channel = text_area("channel", "What is your favorite marketing channel?", control=ControlType.TEXT,
+                            semantic=SemanticType.CUSTOM_TEXT)
+        return [yes_no_field("governing", LICENSE), channel, state], with_saved(candidate, license_no), ByControl()
+    if case == "first":  # nothing before it
+        return [state], with_saved(candidate, license_no), ByControl()
+    if case == "unanswered":
+        return [yes_no_field("governing", GOVERNMENT), text_area("follow", GOVERNMENT_ROLE)], candidate, ByControl()
+    if case == "address":  # "No" from the verified address, not a saved answer
+        abroad = with_address(candidate, city="Toronto", region="ON", country="Canada")
+        return ([choice_field(LIVE_IN_US, SemanticType.COUNTRY, *YES_NO, field_id="governing"),
+                 text_area("follow", "If yes, which state do you live in?", control=ControlType.TEXT,
+                           semantic=SemanticType.CUSTOM_TEXT)],
+                abroad, ByControl({"residence": ("o1", 0.99)}))
+    assert case == "typed"  # the fixture's SPONSORSHIP answer: a custom field can never cite it
+    return ([choice_field(SPONSORSHIP, SemanticType.SPONSORSHIP, *YES_NO, field_id="governing"),
+             text_area("follow", "If yes, which visa will you need sponsorship for?")], candidate, ByControl())
+
+
+@pytest.mark.parametrize("case,status", [
+    ("adjacent", "NOT_APPLICABLE"),
+    ("text", "NOT_APPLICABLE"),
+    ("not_adjacent", "NO_GOVERNING"),
+    ("first", "NO_GOVERNING"),
+    ("unanswered", "GOVERNING_UNANSWERED"),
+    ("address", "GOVERNING_NOT_SAVED"),
+    ("typed", "GOVERNING_NOT_SAVED"),
+])
+def test_only_a_saved_governing_no_makes_a_follow_up_not_applicable(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, case: str, status: str,
+) -> None:
+    fields, candidate, provider = governing_case(case, fictional_candidate)
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job, *fields)
+    trace = follow_up_trace(resolver, "follow")
+    assert trace["status"] == status
+    assert trace.get("governing_field_id") == (None if status == "NO_GOVERNING" else "governing")
+    follow = packet.answer_for("follow")
+    if status == "NOT_APPLICABLE":
+        assert follow is not None and follow.value == TextValue(text="N/A")
+        assert follow.provenance.reference_ids == ["sa.governing"]
+        return
+    assert follow is None and "follow" in [m.field_id for m in packet.missing_inputs]
+    if case in ("address", "typed"):  # the governing question itself was answered No
+        governing = packet.answer_for("governing")
+        assert governing is not None and governing.value.label == "No"
+
+
+@pytest.mark.parametrize("options,expected", [
+    (("Engineering", "Marketing", "Sales", "N/A"), "N/A"),
+    (("Engineering", "Marketing", "Not applicable"), "Not applicable"),
+    (("Engineering", "Marketing", "N/A", "None"), None),  # two not-applicable options: never guessed
+    (("Engineering", "Marketing", "Sales"), None),  # none at all
+])
+def test_a_select_follow_up_takes_its_one_not_applicable_option(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, options: tuple[str, ...],
+    expected: str | None,
+) -> None:
+    fields = (yes_no_field("referred", REFERRED),
+              choice_field(REFERRER_TEAM, SemanticType.CUSTOM_SELECT, *options, control=ControlType.SELECT,
+                           field_id="team"))
+    packet, _, resolver = resolve_choice(
+        ByControl(), with_saved(fictional_candidate, global_answer("sa.referred", REFERRED, "No")),
+        mock_job, *fields)
+    trace = follow_up_trace(resolver, "team")
+    answer = packet.answer_for("team")
+    if expected is None:
+        assert trace["status"] == "NO_NOT_APPLICABLE" and answer is None
+        return
+    assert (trace["governing_field_id"], trace["status"]) == ("referred", "NOT_APPLICABLE")
+    assert answer is not None
+    assert (answer.value.value, answer.value.label) == (f"v{options.index(expected)}", expected)
+    assert answer.provenance.reference_ids == ["sa.referred"]
+
+
+# Found by the round-11 tests: the question sharing the most words with the condition governs.
+def test_a_follow_up_is_governed_by_its_condition_not_by_a_nearer_question_sharing_a_word(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    fields = (yes_no_field("referred", REFERRED), yes_no_field("employed", EMPLOYED),
+              text_area("referrer", "If you were referred by a current employee, please provide their name.",
+                        control=ControlType.TEXT, semantic=SemanticType.CUSTOM_TEXT))
+    candidate = with_saved(fictional_candidate, global_answer("sa.referred", REFERRED, "Yes"),
+                           global_answer("sa.employed", EMPLOYED, "No"))
+    packet, _, resolver = resolve_choice(ByControl(), candidate, mock_job, *fields)
+    assert packet.answer_for("referrer") is None  # the person was referred: they name the referrer
+    trace = follow_up_trace(resolver, "referrer")
+    assert (trace["governing_field_id"], trace["status"]) == ("referred", "GOVERNING_YES")
+
+
+# Found by the round-11 tests: a negated or hypothetical condition is never 'not applicable'.
+@pytest.mark.parametrize("question,follow_up,control,semantic", [
+    ("Do you have a bachelor's degree?",
+     "If you do not have a bachelor's degree, please describe your equivalent experience.",
+     ControlType.TEXTAREA, SemanticType.CUSTOM_LONG_TEXT),
+    ("Are you willing to travel up to 25% of the time?",
+     "If you answered no to the previous question, please explain.",
+     ControlType.TEXTAREA, SemanticType.CUSTOM_LONG_TEXT),
+    ("Are you able to start within two weeks of an offer?",
+     "If you are selected for this role, when could you start?", ControlType.TEXT, SemanticType.START_DATE),
+])
+def test_a_follow_up_that_applies_after_a_no_is_never_typed_not_applicable(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, question: str, follow_up: str,
+    control: ControlType, semantic: SemanticType,
+) -> None:
+    fields = (yes_no_field("governing", question),
+              text_area("follow", follow_up, control=control, semantic=semantic))
+    candidate = with_saved(without_start_dates(fictional_candidate), global_answer("sa.governing", question, "No"))
+    packet, _, resolver = resolve_choice(ByControl(), candidate, mock_job, *fields)
+    assert packet.answer_for("follow") is None
+    # A negated condition is no follow-up at all; a hypothetical one finds no governing question.
+    assert all(t["status"] != "NOT_APPLICABLE" for t in stage_traces(resolver, "conditional_follow_up")
+               if t["field_id"] == "follow")
+
+
+# 3. SMS consent.
+
+SMS_CONSENT = "We may use SMS during the hiring process. Do you give us permission to text you?"
+SMS_HELP = ("Message and data rates may apply. Message frequency varies. Reply STOP to opt out or HELP "
+            "for help.")
+SMS_STATEMENT = _REUSABLE_QUESTIONS["consent_sms_messages"][1]
+SMS = global_answer("sa.sms", SMS_STATEMENT, "Yes", semantic=SemanticType.CONSENT)
+
+
+@pytest.mark.parametrize("saved,pick,expected", [
+    (True, ("s2", 0.98), "Yes"),
+    (False, ("NONE", 0.97), None),  # without the SMS statement: Jev's NONE, never an obligation hold
+])
+def test_the_sms_consent_reaches_the_saved_sms_statement(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, saved: bool,
+    pick: tuple[str, float], expected: str | None,
+) -> None:
+    assert _REUSABLE_QUESTIONS["consent_sms_messages"][0] is SemanticType.CONSENT
+    assert "consent_sms_messages" in STATEMENT_KEYS
+    provider = ChoiceProvider({"statement": pick})
+    field = choice_field(SMS_CONSENT, SemanticType.CONSENT, *YES_NO).model_copy(update={"help_text": SMS_HELP})
+    statements = (PRIVACY, CONTACT, SMS) if saved else (PRIVACY, CONTACT)
+    packet, ctx, resolver = resolve_choice(provider, with_statements(fictional_candidate, *statements),
+                                           mock_job, field)
+    assert ctx.form.fields[0].semantic_type is SemanticType.CONSENT
+    [request] = provider.asked("statement")
+    assert request["state"]["saved_statements"] == {f"s{i}": a.question for i, a in enumerate(statements)}
+    [trace] = stage_traces(resolver, "statement_coverage")
+    assert "obligations" not in trace
+    assert trace["status"] == ("ANSWERED" if expected else "NONE")
+    if expected is None:
+        assert packet.answers == []
+        [missing] = packet.missing_inputs
+        assert missing.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED
+        return
+    [answer] = packet.answers
+    assert answer.value.label == expected
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.sms"])
+
+
+# 4. Interview accommodations.
+
+ACCOMMODATIONS = _REUSABLE_QUESTIONS["interview_accommodations"][1]
+
+
+@pytest.mark.parametrize("label,reworded", [
+    (ACCOMMODATIONS, False),
+    ("Do you need any accommodations during your interviews with us?", True),
+])
+def test_the_saved_interview_accommodations_answer_the_custom_text_area(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, reworded: bool,
+) -> None:
+    assert _REUSABLE_QUESTIONS["interview_accommodations"][0] is None  # untyped
+    assert ACCOMMODATIONS == "Are there any accommodations we can make throughout the interview process?"
+    saved = global_answer("sa.accommodations", ACCOMMODATIONS, "None needed")
+    provider, _ = wording_text(ControlType.TEXTAREA, "accommodations")
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved, *UNTYPED_NOISE),
+                                         mock_job, text_area("answer", label))
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="None needed")
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.accommodations"])
+    assert bool(provider.asked("wording")) is reworded
+    traces = stage_traces(resolver, "question_equivalence")
+    assert [(t["status"], "sentence" in t) for t in traces] == ([("MAPPED", False)] if reworded else [])
+    assert "None needed" not in json.dumps(resolver.narrative_traces)
+
+
+# 5. Country and state selects are a closed vocabulary.
+
+PHONE_COUNTRIES = ("Canada (+1)", "\U0001f1fa\U0001f1f8 United States (+1)", "United Kingdom (+44)",
+                   *(f"Fictional Territory {n:03d} (+{800 + n})" for n in range(241)))
+"""A live-shaped 244-option phone-country select, fictional territories as fillers."""
+US_FLAG = PHONE_COUNTRIES[1]
+STATE_OPTIONS = ("OR - Oregon", "TX - Texas", "VA - Virginia", "WA - Washington", "WV - West Virginia")
+
+
+@pytest.mark.parametrize("country", ["United States", "USA", "US", "U.S.", "United States of America"])
+def test_a_long_phone_country_select_takes_the_identity_country_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, country: str,
+) -> None:
+    assert len(PHONE_COUNTRIES) == 244
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.99), "residence": ("o0", 0.99)})
+    field = choice_field("Country", SemanticType.COUNTRY, *PHONE_COUNTRIES, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_address(fictional_candidate, country=country),
+                                         mock_job, field)
+    assert len(provider.requests) == 1 and purposes(resolver) == ["full_form_routes"]
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v1", US_FLAG)
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    [trace] = stage_traces(resolver, "closed_vocabulary")
+    assert (trace["status"], trace["option_count"]) == ("MATCHED", 244)
+    shown_trace = json.dumps(trace, ensure_ascii=False)  # never the value or the option label
+    assert country not in shown_trace and "United States" not in shown_trace
+    assert not stage_traces(resolver, "option_equivalence") and not stage_traces(resolver, "residence_screener")
+
+
+@pytest.mark.parametrize("region,expected", [("TX", "TX - Texas"), ("Texas", "TX - Texas"),
+                                             ("Virginia", "VA - Virginia")])
+def test_a_state_select_takes_the_identity_region_by_code_or_name_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, region: str, expected: str,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.99), "residence": ("o0", 0.99)})
+    field = choice_field("State", SemanticType.STATE, *STATE_OPTIONS, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_address(fictional_candidate, region=region),
+                                         mock_job, field)
+    assert len(provider.requests) == 1
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == (f"v{STATE_OPTIONS.index(expected)}", expected)
+    assert [t["status"] for t in stage_traces(resolver, "closed_vocabulary")] == ["MATCHED"]
+
+
+@pytest.mark.parametrize("decision,note", [
+    ("equivalent_0", "Jev mapped it onto the site's option wording"),
+    ("residence", "residence question answered by Jev"),  # option equivalence NONE: the address decides
+])
+def test_a_long_select_naming_nothing_sends_jev_the_word_sharing_options_and_a_bounded_sample(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, decision: str, note: str,
+) -> None:
+    options = (*PHONE_COUNTRIES[:200], "Atlantis Islands (+999)", *PHONE_COUNTRIES[200:243])
+    assert len(options) == 244 > LONG_OPTION_LIST
+    provider = LabelPick(decision, "Atlantis", {"equivalent_0": ("NONE", 0.99)})
+    field = choice_field("Country", SemanticType.COUNTRY, *options, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_address(fictional_candidate, country="Atlantis"),
+                                         mock_job, field)
+    [request] = provider.asked(decision)
+    offered = request["state"]["options"]  # o0, o1 … (the request body sorts its keys as text)
+    in_order = [offered[f"o{i}"] for i in range(len(offered))]
+    # The option sharing a word with the value plus the first OPTION_SAMPLE others, in page order.
+    assert in_order == [*options[:OPTION_SAMPLE], "Atlantis Islands (+999)"]
+    assert len(offered) <= 1 + OPTION_SAMPLE
+    [trace] = stage_traces(resolver, "closed_vocabulary")
+    assert (trace["status"], trace["option_count"], trace["candidate_count"]) == ("BOUNDED", 244, 21)
+    assert "Atlantis" not in json.dumps(resolver.narrative_traces)
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v200", "Atlantis Islands (+999)")
+    assert answer.provenance.source is AnswerSource.PROFILE_IDENTITY
+    assert (answer.provenance.note or "").endswith(note)
+
+
+# 6. Transient provider failures are retried once; the job's own country.
+
+RETRIED = {  # a decision's question name: field, candidate change, pick, answer, purpose (= trace stage)
+    "wording": (choice_field("Are you 18 years of age or older?", SemanticType.CUSTOM_BOOLEAN, *YES_NO),
+                lambda c: with_saved(c, global_answer("sa.age", "Are you above the age of 18?", "Yes")),
+                ("q0", 0.98), "Yes", "question_equivalence"),
+    "status": (status_field(WHERE_YOU_LIVE, SemanticType.WORK_AUTHORIZATION, "I am a citizen",
+                            "I am a permanent resident", "I hold a work visa", "Other"),
+               lambda c: with_status(c, "us_citizen"), ("o0", 0.98), "I am a citizen", "status_derivation"),
+    "statement": (status_field(VERCEL, SemanticType.CONSENT),
+                  lambda c: with_statements(c, PRIVACY, CERTIFY, CONTACT), ("s0", 0.98), "Yes",
+                  "statement_coverage"),
+    "equivalent_0": (choice_field(WORK_AUTH, SemanticType.WORK_AUTHORIZATION, *AUTHORIZED),
+                     lambda c: c, ("o0", 0.98), AUTHORIZED[0], "option_equivalence"),
+}
+
+
+@pytest.mark.parametrize("failure,kind", [(TimeoutError("synthetic timeout"), "TIMEOUT"),
+                                          (ConnectionResetError("synthetic reset"), "NETWORK")])
+@pytest.mark.parametrize("name", list(RETRIED))
+def test_a_decision_after_a_timeout_or_network_failure_is_sent_once_more(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, name: str, failure: OSError, kind: str,
+) -> None:
+    field, change, pick, expected, purpose = RETRIED[name]
+    provider = Flaky(name, [failure], {name: pick})
+    packet, _, resolver = resolve_choice(provider, change(fictional_candidate), mock_job, field)
+    assert len(provider.asked(name)) == 2
+    assert receipts(resolver, purpose) == [kind, "OK"]
+    [answer] = packet.answers
+    assert shown(answer) == expected
+    assert stage_traces(resolver, purpose)[-1]["status"] in ("ANSWERED", "MAPPED")  # stage = purpose
+
+
+@pytest.mark.parametrize("name", list(RETRIED))
+def test_two_transient_failures_hold_the_decision_with_both_reasons(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, name: str,
+) -> None:
+    field, change, pick, _, purpose = RETRIED[name]
+    provider = Flaky(name, [ConnectionResetError("synthetic reset"), TimeoutError("synthetic timeout")],
+                     {name: pick})
+    packet, _, resolver = resolve_choice(provider, change(fictional_candidate), mock_job, field)
+    assert len(provider.asked(name)) == 2  # one retry, never a third call
+    assert receipts(resolver, purpose) == ["NETWORK", "TIMEOUT"]
+    assert packet.answers == [] and not packet.is_complete
+    [trace] = stage_traces(resolver, purpose)
+    assert trace["reason"] == "Jev TIMEOUT after one retry (Jev NETWORK)"
+
+
+def test_a_lookup_suggestion_is_never_retried(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = Flaky("lookup", [TimeoutError("synthetic timeout")], {"lookup": ("s1", 0.99)})
+    resolver = DynamicPacketResolver(decisions(provider))
+    ctx = lookup_context(fictional_candidate, mock_job)
+    chosen = asyncio.run(resolver.choose_suggestion(ctx, ctx.form.fields[0], "Austin, TX",
+                                                    [LOOKUP_MINNESOTA, LOOKUP_TEXAS]))
+    assert chosen is None and len(provider.requests) == 1
+    assert receipts(resolver, "lookup_suggestion") == ["TIMEOUT"]
+    decision = resolver.suggestion_decision("location")
+    assert decision is not None and (decision["status"], decision["reason"]) == ("HELD", "Jev TIMEOUT")
+
+
+JOB_COUNTRY = ("Work Authorization: Are you legally authorized to work in the country for which you are "
+               "applying?")
+
+
+@pytest.mark.parametrize("location,table", [
+    ("Austin, TX", True),
+    ("Remote - United States", True),
+    ("Toronto, ON, Canada", False),
+    ("London, United Kingdom", False),
+    (None, False),
+])
+def test_the_country_you_are_applying_for_is_the_united_states_only_for_a_listing_there(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, location: str | None, table: bool,
+) -> None:
+    job = mock_job.model_copy(update={"location": location})
+    provider = ChoiceProvider({"status": ("UNKNOWN", 0.97)})
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"), job,
+                                         status_field(JOB_COUNTRY, SemanticType.WORK_AUTHORIZATION))
+    assert bool(provider.asked("status")) is not table
+    [trace] = code_free(resolver, "us_citizen", "status_derivation")
+    assert trace["via"] == ("table" if table else "jev")
+    if not table:
+        assert packet.answers == []
+        return
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == ("Yes", ["sa.status"])
+    assert answer.provenance.note == "derived from the stated U.S. work authorization status (table)"
+
+
+# Found by the round-11 tests: only an unambiguous US location is the job's country.
+@pytest.mark.parametrize("location", ["Tel Aviv, IL", "Toronto, ON, CA", "Tbilisi, Georgia"])
+def test_a_listing_abroad_whose_location_looks_like_a_us_state_is_not_read_as_the_united_states(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, location: str,
+) -> None:
+    provider = ChoiceProvider({"status": ("UNKNOWN", 0.97)})
+    packet, _, _ = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"),
+                                  mock_job.model_copy(update={"location": location}),
+                                  status_field(JOB_COUNTRY, SemanticType.WORK_AUTHORIZATION))
+    assert packet.answers == []
+    assert provider.asked("status")
+
+
+# 7. The applicant's own profile link on an untyped question.
+
+PROFILE_LINK = "Professional profile link (LinkedIn, portfolio, or personal site)"
+PERSONAL_SITE = "https://avery-example.test/portfolio"
+LIVE_PROFILE_ROUTE = {"COPY_KNOWN": 0.97, "HUMAN_INPUT": 0.03}
+UNCONFIRMED_SCOPE = {"APPLICANT_CURRENT": 0.80, "EXPLICIT_ANSWER": 0.20}
+
+
+def profile_provider() -> RouteSplit:
+    """The live reading: typed UNKNOWN (0.88), COPY_KNOWN, a source scope that is not confirmed."""
+    return RouteSplit({}, route=LIVE_PROFILE_ROUTE, scope=UNCONFIRMED_SCOPE,
+                      semantic={"UNKNOWN": 0.88, "CUSTOM_TEXT": 0.07, "LINKEDIN": 0.05})
+
+
+@pytest.mark.parametrize("label,identity,expected,copied", [
+    (PROFILE_LINK, {}, "https://www.linkedin.example/in/avery-example", "linkedin"),
+    (PROFILE_LINK, {"linkedin_url": None, "website_url": PERSONAL_SITE}, PERSONAL_SITE, "website"),
+    ("Personal website or portfolio URL", {"website_url": PERSONAL_SITE}, PERSONAL_SITE, "website"),
+])
+def test_a_profile_link_question_takes_the_applicants_own_url_through_the_route_gate(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    identity: dict[str, str | None], expected: str, copied: str,
+) -> None:
+    candidate = with_identity(fictional_candidate, **identity)
+    packet, ctx, resolver = resolve_choice(profile_provider(), candidate, mock_job,
+                                           text_area("answer", label, semantic=SemanticType.UNKNOWN))
+    assert resolver.router is not None
+    report = resolver.router.report_for(ctx.form)
+    assert report is not None
+    gate = report.field("answer")
+    assert (gate.semantic_type, gate.route, gate.profile_copy_allowed) == (
+        SemanticType.UNKNOWN, FieldRoute.COPY_KNOWN, False)  # the source scope is not confirmed
+    [answer] = packet.answers
+    assert answer.value == TextValue(text=expected)
+    assert (answer.provenance.source, answer.semantic_type) == (AnswerSource.PROFILE_IDENTITY,
+                                                                SemanticType.UNKNOWN)
+    assert answer.confidence == pytest.approx(0.97)  # the route's own score
+    traces = stage_traces(resolver, "profile_link")
+    assert [(t["status"], t.get("copied")) for t in traces] == [("ANSWERED", copied), ("APPROVED", None)]
+    assert expected not in json.dumps(resolver.narrative_traces)
+
+
+@pytest.mark.parametrize("label,identity,status", [
+    ("Please share links to your LinkedIn profile and portfolio", {}, None),  # several links
+    ("Your manager's LinkedIn profile URL", {}, None),  # another person's
+    ("Previous LinkedIn profile URL", {}, None),  # a past one
+    (PROFILE_LINK, {"linkedin_url": None}, "NO_URL"),  # nothing saved
+])
+def test_a_profile_link_question_for_several_links_another_person_or_nothing_saved_takes_nothing(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    identity: dict[str, str | None], status: str | None,
+) -> None:
+    packet, _, resolver = resolve_choice(profile_provider(), with_identity(fictional_candidate, **identity),
+                                         mock_job, text_area("answer", label, semantic=SemanticType.UNKNOWN))
+    assert packet.answers == []
+    assert [t["status"] for t in stage_traces(resolver, "profile_link")] == ([status] if status else [])
+
+
+@pytest.mark.parametrize("text,problem", [
+    ("https://www.linkedin.example/in/someone-else",
+     "'answer' copies a link that is not the applicant's own profile URL"),
+    ("avery-example", "'answer' (UNKNOWN) is not an identity field"),
+])
+def test_core_rejects_a_profile_link_that_is_not_one_of_the_identitys_own_urls(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, text: str, problem: str,
+) -> None:
+    packet, ctx, _ = resolve_choice(profile_provider(), fictional_candidate, mock_job,
+                                    text_area("answer", PROFILE_LINK, semantic=SemanticType.UNKNOWN))
+    [answer] = packet.answers
+    forged = ApplicationPacket.model_validate(packet.model_dump() | {
+        "answers": [answer.model_copy(update={"value": TextValue(text=text)})]})
+    assert problem in ctx.problems(forged)
+
+
+# Found by the round-11 tests: a URL without its scheme is left to the person, never a crash.
+def test_a_profile_url_saved_without_its_scheme_never_breaks_the_packet(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    candidate = with_identity(fictional_candidate, linkedin_url="www.linkedin.example/in/avery-example")
+    packet, _, _ = resolve_choice(profile_provider(), candidate, mock_job,
+                                  text_area("answer", PROFILE_LINK, semantic=SemanticType.UNKNOWN))
+    assert [m.field_id for m in packet.missing_inputs] == ["answer"] or packet.answers
+
+
+# 14. Salary: the label's own period, and every common spelling of the saved unit.
+
+MONTHLY_USD = "What is your monthly salary expectation for your next role (in $USD)?"
+
+
+@pytest.mark.parametrize("update", [
+    {"help_text": "Our salary bands are reviewed yearly."},
+    {"section_context": ["Annual compensation"]},
+    {"placeholder": "We budget annually"},
+])
+def test_the_labels_own_period_wins_over_a_yearly_help_section_or_placeholder(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, update: dict[str, Any],
+) -> None:
+    field = salary_text(MONTHLY_USD).model_copy(update=update)
+    assert periods_named(field_wording(field)) == ["year", "month"]  # round 10 held it: UNIT_AMBIGUOUS
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, _, resolver = resolve_choice(
+        provider, with_saved(fictional_candidate, saved_salary("USD 120,000 per year")), mock_job, field)
+    assert len(provider.requests) == 1
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="$10,000 per month")
+    assert answer.provenance.reference_ids == ["sa.salary"]
+    [trace] = stage_traces(resolver, "salary_derivation")
+    assert (trace["wording"], trace["period"], trace["conversion"], trace["status"]) == (
+        "PLAIN", "month", "year->month", "ANSWERED")
+    assert "120" not in json.dumps({k: v for k, v in trace.items() if k != "field_fingerprint"})
+
+
+@pytest.mark.parametrize("value", [
+    "USD 120,000 per year", "$120,000/yr", "$120,000 a year", "$120,000 annually", "$120,000 yearly",
+    "USD 120,000 per annum", "$120k/yr", "$120,000 per yr", "USD 120,000 p/a",
+])
+def test_every_common_spelling_of_a_yearly_saved_salary_is_read(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
+) -> None:
+    assert periods_named(value) == ["year"]
+    field = salary_text(MONTHLY_USD, help_text="Our salary bands are reviewed yearly.")
+    packet, _, resolver = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, field)
+    assert [a.value for a in packet.answers] == [TextValue(text="$10,000 per month")]
+    assert stage_traces(resolver, "salary_derivation")[0]["conversion"] == "year->month"
+
+
+# --- round 11, addendum 2 (item 15): the saved salary's live shape and its neighbours ---------
+
+@pytest.mark.parametrize("value", [
+    "150,000 per year",  # the live shape, masked as "NNN,NNN per year" (fictional digits)
+    "USD 150,000 per year", "$150,000/yr", "150k a year", "150,000 dollars annually",
+    "150000 USD per annum", "about 150,000 per year", "Expected base: 150,000 yearly",
+    "150 000 per year", "150\u202f000 per year", "USD150,000 Per Year",
+])
+def test_the_live_salary_shape_and_its_neighbours_are_derived(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
+) -> None:
+    provider = ChoiceProvider()
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, salary_text("What is your monthly salary expectation?"))
+    [answer] = packet.answers
+    assert answer.value.text.startswith(("$12,500 per month", "12,500 per month", "USD 12,500 per month"))
+    [trace] = stage_traces(resolver, "salary_derivation")
+    assert (trace["status"], trace["period"], trace["conversion"]) == ("ANSWERED", "month", "year->month")
+    assert not provider.requests or not provider.asked("wording")
+
+
+@pytest.mark.parametrize("value", ["$150,000 - $170,000", "at least 150k", "150k+ per year", "competitive"])
+def test_a_salary_that_still_does_not_parse_holds_naming_the_saved_key(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, salary_text("Desired salary"))
+    assert packet.answers == [] and not provider.asked("wording")
+    [missing] = packet.missing_inputs
+    assert "desired_salary" in missing.prompt and value not in missing.prompt
+    [trace] = stage_traces(resolver, "salary_derivation")
+    assert (trace["status"], trace["saved_key"]) == ("UNPARSED", "desired_salary")
+    assert value not in json.dumps(trace)

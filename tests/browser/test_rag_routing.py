@@ -1016,6 +1016,10 @@ def mentions(*needles: str) -> Callable[[str], float]:
     return lambda text: 1.0 if any(n.lower() in text.lower() for n in needles) else 0.0
 
 
+NOT_EXPERIENCE_QUESTION = "Would you consider a contract-to-hire arrangement?"
+"""A yes/no question that asks about no experience: never admitted by its wording."""
+
+
 def screener_form(label: str = AGENCY_QUESTION, *, options: list[str] | None = None,
                   control: ControlType = ControlType.RADIO, required: bool = True,
                   semantic: SemanticType = SemanticType.CUSTOM_BOOLEAN) -> ApplicationForm:
@@ -1221,9 +1225,11 @@ def test_an_abm_platform_screener_needs_a_named_platform_in_the_evidence(
 def test_non_screener_fields_never_ask_the_experience_question(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, case: str,
 ) -> None:
+    # Round 11: an experience question on a choice is admitted by its wording whatever its
+    # source reading; a yes/no question that asks about no experience keeps the source rule.
     form = {
         "optional": screener_form(required=False),
-        "applicant_current": screener_form(),
+        "applicant_current": screener_form(NOT_EXPERIENCE_QUESTION),
         "not_a_question": screener_form("Agency experience", control=ControlType.TEXT),
         "not_yes_no_options": screener_form(options=["Agency", "In-house", "Both"]),
     }[case]
@@ -3133,10 +3139,12 @@ def test_a_split_route_label_outside_the_mass_rule_is_never_screened(
 ) -> None:
     from interviewmaxxing_core import MissingReason
 
+    # Round 11: an experience question is admitted by its wording whatever its route (see the
+    # round-11 section below); a yes/no question about no experience keeps the round-6 rule.
     agency = fact(fictional_candidate, "employment", AGENCY_WORK, fid="fact.agency")
     provider = _RoutedScreener(route=route, scope=scope, has=mentions("Fictional Search Agency"))
     packet, ctx, resolver = screen(candidate_with(fictional_candidate, [agency]), mock_job,
-                                   screener_form(), provider)
+                                   screener_form(NOT_EXPERIENCE_QUESTION), provider)
     assert route_of(resolver, ctx, "screener").route is FieldRoute.AMBIGUOUS
     assert not provider.asked("experience") and not screener_traces(resolver)
     assert not provider.asked("route") and packet.answers == []
@@ -3489,3 +3497,712 @@ def test_choice_screeners_retrieve_with_their_option_labels(
     screen(candidate_with(fictional_candidate, [story]), mock_job, screener_form(AGENCY_ENVIRONMENT),
            ScreenerProvider(("YES", 0.99, 0.98), has=mentions("SEO agency")), retriever=retriever)
     assert retriever.calls[0]["query"] == AGENCY_ENVIRONMENT
+
+
+# --- round 11: experience screeners reach a decision ---
+
+R11_STATED = "user:simple-answers"
+R11_YEARS = "user:years"
+R11_DERIVED = "derived:experience_timeline"
+R11_STORY = "story:" + "f" * 64
+R11_AREAS = (("paid_media", 7), ("meta_ads", 7), ("google_ads", 7), ("linkedin_ads", 7), ("seo", 6))
+R11_YEARS_IDS = ["user_years_total", *(f"user_years_{area}" for area, _ in R11_AREAS)]
+R11_PINNED_IDS = [*R11_YEARS_IDS, "sf_rank_works", "user_motivation"]
+"""Every years fact and every ``user:`` fact of the round-11 profile, in profile order; the
+derived total, which the stated total replaces, is none of them."""
+SPARK_AGENCY_STORY = ("I ran Google Ads and Meta campaigns for retail brands at Fictional Spark "
+                      "Media, a performance marketing agency (2019-2022).")
+RANK_AGENCY_STORY = ("I led technical SEO audits at Fictional Rank Works, an SEO agency, and owned "
+                     "its client reporting (2016-2019).")
+TOTAL_8 = "Do you have at least 8 years of total experience?"
+TOTAL_9 = "Do you have at least 9 years of total experience?"
+DIRECT_RESPONSE_8 = "Do you have at least 8 years of total experience in direct response marketing?"
+PAID_MEDIA_5 = "Do you have 5+ years of paid media experience?"
+GOOGLE_OVER_7 = "Do you have more than 7 years of experience managing Google Ads?"
+PAID_SOCIAL_OWNED = ("Have you owned paid social strategy and execution across multiple platforms "
+                     "(for example Meta and LinkedIn)?")
+CLIENT_READOUTS = ("Have you led client-facing conversations, such as performance readouts, QBRs "
+                   "and strategy reviews?")
+SEO_AND_GEO = "Do you have SEO AND GEO optimization experience?"
+META_HANDS_ON = ("Do you have hands-on experience managing paid campaigns across Meta/Instagram "
+                 "and Search?")
+ON_CALL = "Are you comfortable managing weekend on-call rotations?"
+AGENCY_OPTIONS = ["Yes, at a performance marketing agency", "Yes, at another kind of agency", "No"]
+LIVE_PLATFORMS = ["Google Ads", "Meta (Facebook/Instagram)", "LinkedIn Ads", "TikTok Ads",
+                  "Microsoft Advertising", "Amazon Ads", "Programmatic/DSP", "Other"]
+UNCONFIRMED_SCOPE: Split = ({"HISTORICAL_OR_CONTEXTUAL": 0.80, "APPLICANT_CURRENT": 0.20}, 0.80)
+"""A source scope below its own gate: only the wording can admit the field."""
+Script = tuple[tuple[str, float, float], Callable[[str], float]]
+UNCITED_YES: Script = (("YES", 0.99, 1.0), lambda text: 0.6)
+"""Jev's live YES (0.99 at confidence 1.0) whose every ``has_fN`` stays below 0.95."""
+
+
+def r11_fact(candidate: CandidateProfile, key: str, value: Any, *, fid: str,
+             source: str = R11_YEARS) -> CandidateFact:
+    return fact(candidate, key, value, fid=fid).model_copy(update={"source": source})
+
+
+def r11_candidate(candidate: CandidateProfile, *extra: CandidateFact, drop: tuple[str, ...] = (),
+                  fillers: int = 4) -> CandidateProfile:
+    """The fictional round-11 profile: a stated total of 8 beside a derived total of 5, stated
+    area years (paid media, Meta, Google and LinkedIn 7, SEO 6), two agency stories (one
+    ``story:``, one stated ``user:story``), a stated motivation and ``fillers`` resume
+    skills, then ``extra``, without the facts ``drop`` names."""
+    facts = [
+        r11_fact(candidate, "years_experience", 8, fid="user_years_total", source=R11_STATED),
+        r11_fact(candidate, "years_experience", 5, fid="derived_years_experience", source=R11_DERIVED),
+        *(r11_fact(candidate, f"years_experience.{area}", years, fid=f"user_years_{area}")
+          for area, years in R11_AREAS),
+        r11_fact(candidate, "experience", SPARK_AGENCY_STORY, fid="sf_spark_media", source=R11_STORY),
+        r11_fact(candidate, "experience", RANK_AGENCY_STORY, fid="sf_rank_works", source="user:story"),
+        r11_fact(candidate, "career_motivation", "I enjoy turning fictional paid media data into "
+                 "growth plans.", fid="user_motivation", source=R11_STATED),
+        *(fact(candidate, "skills", f"Filler skill {i}", fid=f"filler.{i}") for i in range(fillers)),
+        *extra,
+    ]
+    return candidate_with(candidate, [f for f in facts if f.id not in drop])
+
+
+def r11_fillers(candidate: CandidateProfile) -> list[CandidateFact]:
+    return [f for f in candidate.facts if f.id.startswith("filler.")]
+
+
+def fact_ids(request: dict[str, Any]) -> list[str]:
+    """The fact ids a decision request carries, in ``fN`` order (the body sorts its keys)."""
+    facts = request["state"]["facts"]
+    return [facts[key]["id"] for key in sorted(facts, key=lambda key: int(key[1:]))]
+
+
+@dataclass
+class _ResultRetriever(Retriever):
+    """``Retriever`` answering with the runtime's own ``RetrievalResult`` dataclass."""
+
+    def retrieve(self, **kwargs: Any) -> Any:
+        from interviewmaxxing_generation.knowledge import RetrievalResult
+
+        found = super().retrieve(**kwargs)
+        return RetrievalResult(facts=list(found.facts), job_evidence=found.job_evidence,
+                               voice_samples=found.voice_samples, receipt=found.receipt)
+
+
+def consistency_requests(provider: ScreenerProvider | FactScreenerProvider) -> list[dict[str, Any]]:
+    return [r for r in provider.requests if "canonical_alternatives" in r["state"]]
+
+
+class _RepeatScreener(_RoutedScreener):
+    """``_RoutedScreener`` whose ``experience`` choice and ``has_fN`` script is ``first`` for the
+    first decision and ``repeat`` for the decision asked once more (``repeat: 2``)."""
+
+    def __init__(self, first: Script, repeat: Script, **kwargs: Any) -> None:
+        super().__init__(first[0], has=first[1], **kwargs)
+        self.first, self.repeat = first, repeat
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        repeated = json.loads(body)["state"].get("repeat") == 2
+        self.experience, self.has = self.repeat if repeated else self.first
+        return super().__call__(url, headers, body, timeout)
+
+
+class _UndecidedSources(FactScreenerProvider):
+    """``FactScreenerProvider`` leaving every select-all ``source_oN`` undecided (NONE 0.5)."""
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        payload = json.loads(super().__call__(url, headers, body, timeout).body)
+        for name, answer in payload["answers"].items():
+            if name.startswith("source_"):
+                other = next(key for key in answer["probabilities"] if key != "NONE")
+                answer.update(choice="NONE", confidence=0.6, probabilities={
+                    key: 0.5 if key in ("NONE", other) else 0.0 for key in answer["probabilities"]})
+        return HttpResponse(200, {}, json.dumps(payload).encode())
+
+
+def platform_form(options: list[str], label: str = PAID_MEDIA_PLATFORMS) -> ApplicationForm:
+    return fact_form(label, options, control=ControlType.CHECKBOX_GROUP,
+                     semantic=SemanticType.CUSTOM_MULTISELECT)
+
+
+# item 8: the person's stated years over derived ones, thresholds settled from years facts
+
+@pytest.mark.parametrize("label,decision,option", [
+    pytest.param(TOTAL_8, "YES", ("v0", "Yes"), id="at-least-8"),
+    pytest.param(TOTAL_9, "NO", ("v1", "No"), id="at-least-9"),
+])
+@pytest.mark.parametrize("route,scope", [
+    pytest.param(COPY_ROUTE, HISTORICAL_096, id="copy-known"),
+    pytest.param(SPLIT_ROUTE, UNCONFIRMED_SCOPE, id="live-split-route"),
+])
+def test_the_stated_total_settles_a_total_years_threshold_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, decision: str,
+    option: tuple[str, str], route: Split, scope: Split,
+) -> None:
+    # A stated 8 beside a derived 5: 8 meets "at least 8" (neither 5 nor their mean 6.5 does)
+    # and misses "at least 9"; the answer cites the stated total, never the derived one.
+    provider = _RoutedScreener(("UNKNOWN", 0.99, 0.98), route=route, scope=scope)
+    packet, ctx, resolver = screen(r11_candidate(fictional_candidate), mock_job,
+                                   screener_form(label), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == option
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["user_years_total"]
+    assert f"years threshold answered {decision}" in (answer.provenance.note or "")
+    assert answer.confidence == pytest.approx(route[0]["COPY_KNOWN"])
+    assert not provider.asked("experience") and not provider.asked("route")
+    assert not consistency_requests(provider)  # the derived total never competes with it
+    [trace] = screener_traces(resolver)
+    assert (trace["via"], trace["status"], trace["decision"]) == ("years", "ANSWERED", decision)
+    assert trace["evidence_ids"] == ["user_years_total"]
+    assert trace["years_rule"] == {"years": 8.0 if decision == "YES" else 9.0, "strict": False,
+                                   "area": None}
+
+
+@pytest.mark.parametrize("stated_key,derived_key", [
+    ("years_experience.total", "years_experience"),
+    ("years_professional_experience", "years_experience"),
+    ("years_experience", "years_experience.total"),
+])
+def test_every_spelling_of_the_total_is_one_key_for_the_stated_total(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, stated_key: str, derived_key: str,
+) -> None:
+    stated = r11_fact(fictional_candidate, stated_key, 8, fid="user_total", source=R11_STATED)
+    derived = r11_fact(fictional_candidate, derived_key, 5, fid="derived_total", source=R11_DERIVED)
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, ctx, resolver = screen(candidate_with(fictional_candidate, [derived, stated]), mock_job,
+                                   screener_form(TOTAL_8), provider)
+    assert ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.value.label == "Yes" and answer.provenance.reference_ids == ["user_total"]
+    assert [t["status"] for t in screener_traces(resolver)] == ["ANSWERED"]  # no CONFLICT
+    assert not provider.asked("experience") and not consistency_requests(provider)
+
+
+def test_a_derived_total_answers_until_the_person_states_one(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    derived = r11_fact(fictional_candidate, "years_experience", 5, fid="derived_total",
+                       source=R11_DERIVED)
+    area = r11_fact(fictional_candidate, "years_experience.paid_media", 4, fid="user_paid_media")
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, _, _ = screen(candidate_with(fictional_candidate, [derived, area]), mock_job,
+                          screener_form(TOTAL_8), provider)
+    [answer] = packet.answers  # a stated area never replaces the total
+    assert answer.value.label == "No" and answer.provenance.reference_ids == ["derived_total"]
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "round 11 bug: the stated total does not replace the derived one in the factual pass that "
+    "DynamicPacketResolver.resolve runs first: interviewmaxxing_generation/resolver.py "
+    "_FieldResolver._years/_fact_value read candidate.verified_facts() without prefer_stated, so "
+    "'How many years of experience do you have?' (YEARS_EXPERIENCE text, applicant-current source) "
+    "with the stated 8 beside a derived 5 is unresolved as two disagreeing values (the stated 8 alone "
+    "is copied without a call) and only a fact_value Jev call can still answer it; expected: '8' "
+    "citing the stated total, no call"))
+def test_a_years_count_question_copies_the_stated_total_beside_a_derived_one_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = FactScreenerProvider("UNKNOWN", scope="APPLICANT_CURRENT")
+    packet, _, _ = screen_facts(
+        r11_candidate(fictional_candidate), mock_job,
+        fact_form("How many years of experience do you have?", control=ControlType.TEXT,
+                  semantic=SemanticType.YEARS_EXPERIENCE), provider)
+    assert not provider.asked("fact_value")
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="8")
+    assert answer.provenance.reference_ids == ["user_years_total"]
+
+
+def test_the_consistency_check_never_compares_a_stated_total_with_the_derived_one_it_replaced(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_browser.ai.routing import _conflicts, _current_facts
+
+    candidate = r11_candidate(fictional_candidate)
+    stated = next(f for f in candidate.facts if f.id == "user_years_total")
+    ctx = context(candidate, mock_job)
+    assert _conflicts(stated, candidate.verified_facts())  # the derived 5 disagrees with it
+    assert not _conflicts(stated, _current_facts(ctx))
+    assert "derived_years_experience" not in {f.id for f in _current_facts(ctx)}
+    provider = DecisionsProvider(consistency=0.5)
+    resolver, _ = consistency_resolver(provider)
+    assert resolver._check_additive_consistency(ctx, [stated]) == 1.0
+    assert not consistency_checks(provider)
+    # A total from another source (the resume) is still compared, and a disagreement holds.
+    resume_total = r11_fact(fictional_candidate, "years_experience", 6, fid="resume_total",
+                            source="resume")
+    ctx = context(r11_candidate(fictional_candidate, resume_total), mock_job)
+    with pytest.raises(AIHold):
+        resolver._check_additive_consistency(ctx, [stated])
+    [check] = consistency_checks(provider)
+    assert check["state"]["comparison_ids"] == {"f0": ["resume_total"]}
+
+
+@pytest.mark.parametrize("label,extra,evidence", [
+    pytest.param(PAID_MEDIA_5, None, "user_years_paid_media", id="5-plus-paid-media"),
+    pytest.param(DIRECT_RESPONSE_8, ("years_experience.direct_response_marketing", 8),
+                 "user_years_direct_response", id="direct-response-fact-meets-it"),
+])
+def test_an_area_threshold_is_settled_from_the_areas_own_years_fact(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    extra: tuple[str, int] | None, evidence: str,
+) -> None:
+    added = [r11_fact(fictional_candidate, *extra, fid="user_years_direct_response")] if extra else []
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, ctx, resolver = screen(r11_candidate(fictional_candidate, *added), mock_job,
+                                   screener_form(label), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == [evidence]
+    assert not provider.asked("experience")
+    [trace] = screener_traces(resolver)
+    assert (trace["via"], trace["status"], trace["evidence_ids"]) == ("years", "ANSWERED", [evidence])
+
+
+@pytest.mark.parametrize("label,rule", [
+    pytest.param(DIRECT_RESPONSE_8, {"years": 8.0, "strict": False, "area": "direct response marketing"},
+                 id="uncovered-area"),
+    pytest.param(GOOGLE_OVER_7, {"years": 7.0, "strict": True, "area": "google ads"},
+                 id="more-than-7-with-7"),
+])
+def test_an_area_threshold_no_area_fact_meets_is_never_settled_by_the_total(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, rule: dict[str, Any],
+) -> None:
+    # The stated total (8) meets 8 and 7 but states no years in the area: Jev decides, and
+    # never sees the total; its UNKNOWN holds.
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, _, resolver = screen(r11_candidate(fictional_candidate), mock_job,
+                                 screener_form(label), provider)
+    assert packet.answers == [] and not packet.is_complete
+    assert "absent evidence is not No" in packet.missing_inputs[0].prompt
+    years, decided = screener_traces(resolver)
+    assert (years["via"], years["status"], years["years_rule"]) == ("years", "NOT_SETTLED", rule)
+    assert decided["status"] == "UNKNOWN" and "via" not in decided
+    [request] = provider.asked("experience")
+    ids = fact_ids(request)
+    assert "user_years_total" not in ids and "derived_years_experience" not in ids
+    assert set(R11_YEARS_IDS) - {"user_years_total"} <= set(ids)
+
+
+# Found by the round-11 tests; fixed in round 11.
+def test_a_compound_threshold_naming_an_uncovered_area_is_not_answered_from_the_total(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    label = ("Do you have at least 8 years of total experience, including at least 3 years in "
+             "direct response marketing?")
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    packet, _, _ = screen(r11_candidate(fictional_candidate), mock_job, screener_form(label), provider)
+    assert packet.answers == []
+
+
+# Found by the round-11 tests; fixed in round 11.
+@pytest.mark.parametrize("label,route,scope", [
+    pytest.param("Are you at least 18 years old?", COPY_ROUTE, HISTORICAL_096, id="age"),
+    pytest.param("Are you at least 18 years old?", ({"HUMAN_INPUT": 0.97, "COPY_KNOWN": 0.03}, 0.95),
+                 ({"EXPLICIT_ANSWER": 0.97, "APPLICANT_CURRENT": 0.03}, 0.95), id="age-human-input"),
+    pytest.param("Have you lived at your current address for at least 3 years?", COPY_ROUTE,
+                 HISTORICAL_096, id="address-tenure"),
+])
+def test_an_age_or_tenure_threshold_is_never_answered_from_the_years_of_experience(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, route: Split, scope: Split,
+) -> None:
+    provider = _RoutedScreener(("NOT_EXPERIENCE", 0.99, 0.98), route=route, scope=scope)
+    packet, _, resolver = screen(r11_candidate(fictional_candidate), mock_job, screener_form(label),
+                                 provider)
+    assert not [t for t in screener_traces(resolver) if t.get("via") == "years"]
+    assert packet.answers == []
+
+
+# item 9: experience questions on an AMBIGUOUS route reach the screener by their wording
+
+@pytest.mark.parametrize("label,statement,route,scope", [
+    pytest.param(PAID_SOCIAL_OWNED, "Owned the paid social strategy and execution on Meta and "
+                 "LinkedIn at Fictional Widgets Co.", ({"COPY_KNOWN": 0.92, "HUMAN_INPUT": 0.08}, 0.95),
+                 UNCONFIRMED_SCOPE, id="paid-social-at-0.92"),
+    pytest.param(CLIENT_READOUTS, "Led the monthly performance readouts and QBRs with Fictional "
+                 "Widgets Co. clients", ({"COPY_KNOWN": 0.91, "HUMAN_INPUT": 0.09}, 0.95),
+                 ({"EXPLICIT_ANSWER": 0.55, "HISTORICAL_OR_CONTEXTUAL": 0.45}, 0.60),
+                 id="client-facing-at-0.91"),
+    pytest.param(SEO_AND_GEO, "Led SEO and GEO optimization for the Fictional Widgets Co. website",
+                 ({"COPY_KNOWN": 0.84, "HUMAN_INPUT": 0.16}, 0.90),
+                 ({"UNCLEAR": 0.60, "HISTORICAL_OR_CONTEXTUAL": 0.40}, 0.60), id="seo-and-geo-at-0.84"),
+])
+def test_live_experience_questions_on_an_ambiguous_route_reach_the_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, statement: str,
+    route: Split, scope: Split,
+) -> None:
+    stated = fact(fictional_candidate, "experience", statement, fid="fact.stated")
+    provider = _RoutedScreener(route=route, scope=scope,
+                               has=lambda text: 1.0 if text == statement else 0.0)
+    packet, ctx, resolver = screen(r11_candidate(fictional_candidate, stated), mock_job,
+                                   screener_form(label), provider)
+    gate = route_of(resolver, ctx, "screener")
+    assert (gate.route, gate.proposed_route) == (FieldRoute.AMBIGUOUS, FieldRoute.COPY_KNOWN)
+    assert (gate.source_scope_confidence or 0.0) < 0.90  # the source scope is not confirmed
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == ["fact.stated"]
+    assert answer.confidence == pytest.approx(route[0]["COPY_KNOWN"])  # the route's own score
+    [trace] = screener_traces(resolver)
+    assert (trace["status"], trace["decision"], trace["supporting_ids"]) == (
+        "ANSWERED", "YES", ["fact.stated"])
+    assert not provider.asked("route")
+
+
+def test_a_wording_admitted_answer_keeps_the_lower_of_its_own_and_the_routes_confidence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # COPY_KNOWN at 0.99 but an unconfirmed source: the source gate is skipped, and the
+    # screener's own 0.96 is lower than the route's 0.99.
+    statement = "Owned the paid social strategy and execution on Meta and LinkedIn at Fictional Widgets Co."
+    stated = fact(fictional_candidate, "experience", statement, fid="fact.stated")
+    provider = _RoutedScreener(("YES", 0.96, 0.97), route=({"COPY_KNOWN": 0.99, "HUMAN_INPUT": 0.01}, 0.99),
+                               scope=UNCONFIRMED_SCOPE, has=lambda text: 1.0 if text == statement else 0.0)
+    packet, ctx, resolver = screen(r11_candidate(fictional_candidate, stated), mock_job,
+                                   screener_form(PAID_SOCIAL_OWNED), provider)
+    assert route_of(resolver, ctx, "screener").route is FieldRoute.COPY_KNOWN
+    [answer] = packet.answers
+    assert answer.value.label == "Yes" and answer.provenance.reference_ids == ["fact.stated"]
+    assert answer.confidence == pytest.approx(0.96)
+
+
+def test_a_select_experience_question_on_an_ambiguous_route_reaches_the_fact_screener(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    label = "What is your level of proficiency with Google Ads?"
+    provider = _RoutedFactScreener(route=SPLIT_ROUTE, scope=UNCONFIRMED_SCOPE)
+    packet, ctx, resolver = screen_facts(r11_candidate(fictional_candidate), mock_job,
+        fact_form(label, ["Beginner", "Intermediate", "Advanced", "Expert"]), provider)
+    assert route_of(resolver, ctx, "fact_screener").route is FieldRoute.AMBIGUOUS
+    [request] = provider.asked("fact_choice")
+    assert set(R11_YEARS_IDS) <= set(fact_ids(request))
+    assert [t["status"] for t in fact_traces(resolver)] == ["UNKNOWN"]
+    assert packet.answers == [] and not provider.asked("route")
+    assert packet.missing_inputs[0].prompt.startswith("Add a verified fact that states the answer to")
+
+
+@pytest.mark.parametrize("label,control,route,scope,semantic,required", [
+    pytest.param("Describe how you owned paid social strategy and execution across multiple "
+                 "platforms.", ControlType.TEXTAREA, ({"WRITER": 1.0}, 1.0), HISTORICAL_096,
+                 SemanticType.CUSTOM_LONG_TEXT, True, id="narrative-text-area"),
+    pytest.param("Has your manager led paid social strategy across multiple platforms?",
+                 ControlType.RADIO, SPLIT_ROUTE, UNCONFIRMED_SCOPE, SemanticType.CUSTOM_BOOLEAN, True,
+                 id="another-persons-experience"),
+    pytest.param(PAID_SOCIAL_OWNED, ControlType.RADIO, SPLIT_ROUTE,
+                 ({"HISTORICAL_OR_CONTEXTUAL": 0.80, "OTHER_PERSON_OR_ENTITY": 0.20}, 0.80),
+                 SemanticType.CUSTOM_BOOLEAN, True, id="other-person-source-mass"),
+    pytest.param(SEO_AND_GEO, ControlType.TEXT, SPLIT_ROUTE, UNCONFIRMED_SCOPE,
+                 SemanticType.CUSTOM_BOOLEAN, True, id="yes-no-text-box"),
+    pytest.param(PAID_SOCIAL_OWNED, ControlType.RADIO, SPLIT_ROUTE, UNCONFIRMED_SCOPE,
+                 SemanticType.CUSTOM_BOOLEAN, False, id="optional"),
+])
+def test_narrative_text_other_person_and_optional_questions_are_not_admitted_by_wording(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, control: ControlType,
+    route: Split, scope: Split, semantic: SemanticType, required: bool,
+) -> None:
+    provider = _RoutedScreener(route=route, scope=scope, semantic=semantic.value,
+                               has=lambda text: 1.0)
+    packet, _, resolver = screen(r11_candidate(fictional_candidate), mock_job,
+                                 screener_form(label, control=control, semantic=semantic,
+                                               required=required), provider)
+    assert not provider.asked("experience") and not screener_traces(resolver)
+    assert not provider.asked("fact_choice") and not provider.asked("fact_select")
+    assert packet.answers == []
+    if control is ControlType.TEXTAREA:  # the writer's question, held without a writer
+        assert packet.missing_inputs[0].prompt == "Narrative writer is not configured"
+
+
+@pytest.mark.parametrize("route,scope,prompt,fact_route", [
+    pytest.param(COPY_ROUTE, UNCONFIRMED_SCOPE,
+                 "The field's current-candidate source is not confirmed for exact copying", False,
+                 id="copy-known-unconfirmed-source"),
+    pytest.param(COPY_ROUTE, HISTORICAL_096,
+                 "The question needs an explicit or unambiguous verified answer", True,
+                 id="copy-known-confirmed-source"),
+    pytest.param(SPLIT_ROUTE, UNCONFIRMED_SCOPE, "Required:", False, id="ambiguous-route"),
+])
+def test_a_not_experience_verdict_after_a_wording_admission_falls_back_to_the_ordinary_gates(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, route: Split, scope: Split,
+    prompt: str, fact_route: bool,
+) -> None:
+    provider = _RoutedScreener(("NOT_EXPERIENCE", 0.99, 0.98), route=route, scope=scope)
+    packet, _, resolver = screen(r11_candidate(fictional_candidate), mock_job,
+                                 screener_form(ON_CALL), provider)
+    assert [t["status"] for t in screener_traces(resolver)] == ["NOT_SCREENER"]
+    assert bool(provider.asked("route")) is fact_route
+    assert packet.answers == []
+    [missing] = packet.missing_inputs
+    assert missing.prompt.startswith(prompt)
+
+
+# Found by the round-11 tests; fixed in round 11.
+@pytest.mark.parametrize("label,statement", [
+    pytest.param(AGENCY_ENVIRONMENT, "Paid media specialist at Fictional Spark Media, a performance "
+                 "marketing agency (2019-2022)", id="agency-environment"),
+    pytest.param("Do you have experience as a paid media manager?",
+                 "Paid media manager at Fictional Widgets Co. (2021-present)", id="manager-role"),
+])
+def test_an_experience_question_naming_an_employer_type_or_a_role_is_admitted_by_wording(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, statement: str,
+) -> None:
+    stated = fact(fictional_candidate, "experience", statement, fid="fact.stated")
+    provider = _RoutedScreener(route=SPLIT_ROUTE, scope=UNCONFIRMED_SCOPE,
+                               has=lambda text: 1.0 if text == statement else 0.0)
+    packet, _, _ = screen(r11_candidate(fictional_candidate, stated), mock_job,
+                          screener_form(label), provider)
+    assert provider.asked("experience")
+    [answer] = packet.answers
+    assert answer.value.label == "Yes"
+
+
+# item 10: a YES that cites no fact
+
+def test_an_uncited_yes_is_supported_by_the_years_fact_of_the_area_it_names(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = _RepeatScreener(UNCITED_YES, UNCITED_YES, route=SPLIT_ROUTE, scope=HISTORICAL_096)
+    packet, ctx, resolver = screen(r11_candidate(fictional_candidate), mock_job,
+                                   screener_form(META_HANDS_ON), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert (answer.value.value, answer.value.label) == ("v0", "Yes")
+    assert answer.provenance.reference_ids == ["user_years_meta_ads"]
+    assert answer.confidence == pytest.approx(0.91)  # min(0.99, the route's 0.91)
+    [request] = provider.asked("experience")  # never asked again
+    assert "repeat" not in request["state"]
+    [trace] = screener_traces(resolver)
+    assert (trace["status"], trace["decision"], trace["support"]) == ("ANSWERED", "YES", "years_fact")
+    assert trace["supporting_ids"] == ["user_years_meta_ads"] and "repeat" not in trace
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param(None, id="no-meta-years"),
+    pytest.param(("years_experience.meta_ads", 0.5), id="meta-under-one-year"),
+])
+@pytest.mark.parametrize("repeat,cited", [
+    pytest.param((("YES", 0.99, 1.0), mentions("Meta")), ["sf_spark_media"], id="repeat-cites-a-fact"),
+    pytest.param(UNCITED_YES, [], id="repeat-cites-nothing"),
+])
+def test_an_uncited_yes_without_an_area_years_fact_is_asked_once_more_for_its_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, extra: tuple[str, float] | None,
+    repeat: Script, cited: list[str],
+) -> None:
+    from interviewmaxxing_browser.ai.routing import _CITE_INSTRUCTION
+
+    added = [r11_fact(fictional_candidate, *extra, fid="user_years_meta_half")] if extra else []
+    provider = _RepeatScreener(UNCITED_YES, repeat, route=SPLIT_ROUTE, scope=HISTORICAL_096)
+    packet, ctx, resolver = screen(
+        r11_candidate(fictional_candidate, *added, drop=("user_years_meta_ads",)), mock_job,
+        screener_form(META_HANDS_ON), provider)
+    first, second = provider.asked("experience")
+    assert "repeat" not in first["state"] and second["state"]["repeat"] == 2
+    assert second["questions"]["experience"]["instructions"].endswith(_CITE_INSTRUCTION)
+    assert fact_ids(first) == fact_ids(second)
+    [trace] = screener_traces(resolver)
+    assert "support" not in trace
+    assert trace["repeat"]["choice"] == "YES" and trace["repeat"]["supporting_ids"] == cited
+    if cited:
+        assert ctx.problems(packet) == [] and packet.is_complete
+        [answer] = packet.answers
+        assert answer.value.label == "Yes" and answer.provenance.reference_ids == cited
+        assert trace["status"] == "ANSWERED"
+    else:
+        assert packet.answers == [] and trace["status"] == "UNKNOWN"
+        assert "absent evidence is not No" in packet.missing_inputs[0].prompt
+
+
+# Found by the round-11 tests; fixed in round 11.
+@pytest.mark.parametrize("label,area,years", [
+    pytest.param(PAID_MEDIA_5, "paid_media", 3, id="5-plus-with-3"),
+    pytest.param(GOOGLE_OVER_7, "google_ads", 7, id="more-than-7-with-7"),
+])
+def test_an_uncited_yes_is_never_supported_by_a_years_fact_below_the_questions_threshold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, area: str, years: int,
+) -> None:
+    below = r11_fact(fictional_candidate, f"years_experience.{area}", years, fid="user_years_below")
+    provider = _RepeatScreener(UNCITED_YES, UNCITED_YES, route=SPLIT_ROUTE, scope=HISTORICAL_096)
+    packet, _, resolver = screen(
+        r11_candidate(fictional_candidate, below, drop=(f"user_years_{area}",)), mock_job,
+        screener_form(label), provider)
+    assert not [t for t in screener_traces(resolver) if t.get("support") == "years_fact"]
+    assert packet.answers == []
+
+
+# items 11 and 13: the screeners' evidence
+
+@pytest.mark.parametrize("retrieved", [4, 8, 12])
+def test_screener_evidence_pins_the_years_and_stated_facts_then_retrieval_fills_it_to_16(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, retrieved: int,
+) -> None:
+    from interviewmaxxing_browser.ai.routing import SCREENER_EVIDENCE
+
+    candidate = r11_candidate(fictional_candidate, fillers=12)
+    fillers = r11_fillers(candidate)[:retrieved]
+    retriever = _ResultRetriever(fillers)
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    screen(candidate, mock_job, screener_form(CLIENT_READOUTS), provider, retriever=retriever)
+    [call] = retriever.calls
+    assert (call["limit"], call["narrative"], call["query"]) == (
+        SCREENER_EVIDENCE, False, CLIENT_READOUTS)
+    [request] = provider.asked("experience")
+    room = SCREENER_EVIDENCE - len(R11_PINNED_IDS)
+    assert fact_ids(request) == R11_PINNED_IDS + [f.id for f in fillers][:room]
+    assert len(fact_ids(request)) == min(SCREENER_EVIDENCE, len(R11_PINNED_IDS) + retrieved)
+    assert "derived_years_experience" not in fact_ids(request)
+    assert "sf_spark_media" not in fact_ids(request)  # a story: fact comes only from retrieval
+
+
+def test_every_years_and_stated_fact_stays_in_the_evidence_beyond_16(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    extra = [r11_fact(fictional_candidate, f"years_experience.fictional_area_{i}", 2,
+                      fid=f"user_years_fictional_{i}") for i in range(10)]
+    candidate = r11_candidate(fictional_candidate, *extra)
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    screen(candidate, mock_job, screener_form(CLIENT_READOUTS), provider,
+           retriever=_ResultRetriever(r11_fillers(candidate)))
+    [request] = provider.asked("experience")
+    assert set(R11_PINNED_IDS) | {f.id for f in extra} <= set(fact_ids(request))  # 18, never cut
+
+
+def test_a_retrieved_derived_fact_the_person_restated_never_reaches_the_evidence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    candidate = r11_candidate(fictional_candidate)
+    by_id = {f.id: f for f in candidate.facts}
+    retriever = _ResultRetriever([by_id["derived_years_experience"], by_id["user_years_seo"],
+                                  by_id["sf_spark_media"], *r11_fillers(candidate)])
+    provider = ScreenerProvider(("UNKNOWN", 0.99, 0.98))
+    _, _, resolver = screen(candidate, mock_job, screener_form(CLIENT_READOUTS), provider,
+                            retriever=retriever)
+    [request] = provider.asked("experience")
+    ids = fact_ids(request)
+    assert "derived_years_experience" not in ids and "sf_spark_media" in ids
+    assert ids.count("user_years_seo") == 1  # pinned once, never again from retrieval
+    [receipt] = resolver.retrieval_receipts
+    assert "derived_years_experience" not in receipt["fact_ids"]
+    assert "sf_spark_media" in receipt["fact_ids"]
+
+
+@pytest.mark.parametrize("options", [
+    pytest.param(None, id="yes-no-radio"),
+    pytest.param(AGENCY_OPTIONS, id="agency-select"),
+])
+def test_the_agency_environment_screener_sees_the_agency_story_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, options: list[str] | None,
+) -> None:
+    candidate = r11_candidate(fictional_candidate, fillers=12)
+    story = next(f for f in candidate.facts if f.id == "sf_spark_media")
+    retriever = _ResultRetriever([story, *r11_fillers(candidate)[:8]])
+    names_agency = mentions("performance marketing agency")
+    if options is None:
+        provider: ScreenerProvider | FactScreenerProvider = ScreenerProvider(
+            ("YES", 0.99, 0.98), has=names_agency)
+        packet, ctx, _ = screen(candidate, mock_job, screener_form(AGENCY_ENVIRONMENT), provider,
+                                retriever=retriever)
+        [request] = provider.asked("experience")
+    else:
+        provider = FactScreenerProvider(options[0], states=names_agency)
+        packet, ctx, _ = screen_facts(candidate, mock_job, fact_form(AGENCY_ENVIRONMENT, options),
+                                      provider, retriever=retriever)
+        [request] = provider.asked("fact_choice")
+    ids = fact_ids(request)
+    assert {"sf_spark_media", "sf_rank_works"} <= set(ids)  # retrieved story:, pinned user:story
+    assert set(R11_PINNED_IDS) <= set(ids) and len(ids) == 16
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert answer.value.label == ("Yes" if options is None else options[0])
+    assert answer.provenance.reference_ids == ["sf_spark_media"]
+
+
+# item 12: select-all platforms from the years and story facts
+
+@pytest.mark.parametrize("route,scope", [
+    pytest.param(COPY_ROUTE, HISTORICAL_096, id="copy-known"),
+    pytest.param(SPLIT_ROUTE, UNCONFIRMED_SCOPE, id="live-split-route"),
+])
+def test_platform_options_are_selected_from_the_years_facts_and_only_the_rest_go_to_jev(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, route: Split, scope: Split,
+) -> None:
+    provider = _RoutedFactScreener(route=route, scope=scope, semantic="CUSTOM_MULTISELECT")
+    packet, ctx, resolver = screen_facts(r11_candidate(fictional_candidate), mock_job,
+                                         platform_form(LIVE_PLATFORMS), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete and not packet.missing_inputs
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == [
+        "Google Ads", "Meta (Facebook/Instagram)", "LinkedIn Ads"]
+    assert answer.confidence == pytest.approx(route[0]["COPY_KNOWN"])
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert answer.provenance.reference_ids == [
+        "user_years_google_ads", "user_years_meta_ads", "user_years_linkedin_ads"]
+    assert "from the platform facts" in (answer.provenance.note or "")
+    # Only the options no fact names (TikTok, Microsoft, Amazon, programmatic) go to Jev;
+    # "Other" is never offered, mapped or selected.
+    [request] = provider.asked("fact_select")
+    assert {name for name in request["questions"] if name.startswith("source_")} == {
+        "source_o3", "source_o4", "source_o5", "source_o6"}
+    [trace] = fact_traces(resolver)
+    assert trace["mapped"] == {"o0": "user_years_google_ads", "o1": "user_years_meta_ads",
+                               "o2": "user_years_linkedin_ads"}
+    assert (trace["status"], trace["selected"]) == ("ANSWERED", ["o0", "o1", "o2"])
+    assert trace["sources"] == trace["mapped"] and not trace.get("left_unselected")
+
+
+@pytest.mark.parametrize("options,extra,selected,cited", [
+    pytest.param(["Google Ads", "Meta (Facebook/Instagram)", "LinkedIn Ads", "Other"], None,
+                 ["Google Ads", "Meta (Facebook/Instagram)", "LinkedIn Ads"],
+                 ["user_years_google_ads", "user_years_meta_ads", "user_years_linkedin_ads"],
+                 id="years-facts"),
+    pytest.param(["TikTok Ads", "Google Ads", "Other"],
+                 "I launched TikTok Ads campaigns for Fictional Spark Media clients (2022).",
+                 ["TikTok Ads", "Google Ads"], ["sf_tiktok", "user_years_google_ads"],
+                 id="a-story-fact-names-tiktok"),
+])
+def test_a_select_all_whose_every_option_maps_asks_jev_nothing(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, options: list[str],
+    extra: str | None, selected: list[str], cited: list[str],
+) -> None:
+    added = [r11_fact(fictional_candidate, "experience", extra, fid="sf_tiktok", source=R11_STORY)
+             ] if extra else []
+    provider = FactScreenerProvider(semantic="CUSTOM_MULTISELECT")
+    packet, ctx, resolver = screen_facts(r11_candidate(fictional_candidate, *added), mock_job,
+                                         platform_form(options), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == selected and "Other" not in selected
+    assert answer.provenance.reference_ids == cited
+    assert not provider.asked("fact_select") and not provider.asked("fact_choice")
+    if extra is None:  # numeric years facts compete with nothing: the form's routes only
+        assert len(provider.requests) == 1
+    [trace] = fact_traces(resolver)
+    assert trace["status"] == "ANSWERED" and set(trace["mapped"].values()) == set(cited)
+
+
+def test_an_option_jev_leaves_undecided_is_left_unselected_and_never_held(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = _UndecidedSources(semantic="CUSTOM_MULTISELECT")
+    packet, ctx, resolver = screen_facts(r11_candidate(fictional_candidate), mock_job,
+                                         platform_form(LIVE_PLATFORMS), provider)
+    assert ctx.problems(packet) == [] and packet.is_complete and not packet.missing_inputs
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == [
+        "Google Ads", "Meta (Facebook/Instagram)", "LinkedIn Ads"]
+    [trace] = fact_traces(resolver)
+    assert trace["status"] == "ANSWERED"
+    assert trace["left_unselected"] == ["o3", "o4", "o5", "o6"]
+
+
+# Found by the round-11 tests; fixed in round 11.
+def test_a_non_advertising_google_product_is_not_selected_from_the_google_ads_years(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = FactScreenerProvider(semantic="CUSTOM_MULTISELECT")
+    packet, _, _ = screen_facts(
+        r11_candidate(fictional_candidate), mock_job,
+        platform_form(["Google Ads", "Google Data Studio", "Other"],
+                      "Which of these tools have you used hands-on? (Select all that apply)"), provider)
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == ["Google Ads"]

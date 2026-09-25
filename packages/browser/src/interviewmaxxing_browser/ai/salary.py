@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -25,10 +26,13 @@ from enum import StrEnum
 from interviewmaxxing_core import ApplicationField, FieldOption
 
 PERIOD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("year", re.compile(r"per\s+year|/\s*(?:yr|year)\b|\byearly\b|\bannual(?:ly|ized)?\b|"
-                        r"per\s+annum|\ba\s+year\b|\bp\.?a\.?(?=\s|$)", re.IGNORECASE)),
-    ("hour", re.compile(r"per\s+hour|/\s*(?:hr|hour)\b|\bhourly\b|\ban\s+hour\b", re.IGNORECASE)),
-    ("month", re.compile(r"per\s+month|/\s*(?:mo|month)\b|\bmonthly\b|\ba\s+month\b", re.IGNORECASE)),
+    ("year", re.compile(r"per\s+(?:year|yr|annum)\b|/\s*(?:yr|year|annum)\b|\byearly\b|"
+                        r"\bannual(?:ly|ized)?\b|\ba\s+(?:year|yr)\b|\bp\.?a\.?(?=\s|$)|\bp/a\b|"
+                        r"(?<=[\dkK])\s*(?:yr|year)\b", re.IGNORECASE)),
+    ("hour", re.compile(r"per\s+(?:hour|hr)\b|/\s*(?:hr|hour)\b|\bhourly\b|\ban\s+(?:hour|hr)\b",
+                        re.IGNORECASE)),
+    ("month", re.compile(r"per\s+(?:month|mo)\b|/\s*(?:mo|month)\b|\bmonthly\b|\ba\s+month\b",
+                         re.IGNORECASE)),
     ("week", re.compile(r"per\s+week|/\s*(?:wk|week)\b|\bweekly\b|\ba\s+week\b", re.IGNORECASE)),
     ("day", re.compile(r"per\s+day|/\s*day\b|\bdaily\b|\ba\s+day\b", re.IGNORECASE)),
 )
@@ -43,10 +47,23 @@ _CURRENCY_MARKS: dict[str, str] = {
 _CURRENCY = re.compile(r"[$€£₹]|\b(?:usd|us\$|c\$|a\$|eur|gbp|cad|aud|inr|dollars?|euros?|pounds?)\b",
                        re.IGNORECASE)
 _APPROXIMATE = re.compile(
-    r"\b(?:about|around|approximately|roughly|circa|at least|minimum|min|more than|less than|"
-    r"up to|or more|and above|and up|or above|over|under|below|negotiable)\b|[~+]|"
+    r"\b(?:at least|minimum|min|more than|less than|up to|or more|and above|and up|or above|"
+    r"over|under|below|negotiable)\b|\+|"
     r"\d\s*[kKmM]?\s*(?:-|\u2013|\u2014|to)\s*[$€£]?\d", re.IGNORECASE)
-"""A saved value that states no one exact amount: approximate, a floor, or a range."""
+"""A saved value that states no one exact amount: a floor, a ceiling or a range. ("About"
+or "~" beside one figure still states it; round 11.)"""
+_INVISIBLE = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
+_GROUP_SPACE = re.compile(r"(?<!\d)(\d{1,3})((?:[\u00a0\u2009\u202f\u2007 ]\d{3})+)(?!\d)")
+_GLUED_CURRENCY = re.compile(r"(?<=[A-Za-z$€£₹])(?=\d)|(?<=\d)(?=[A-Za-z]{2,})")
+
+
+def _normalized(value: str) -> str:
+    """The saved text with compatibility characters folded (a full-width comma, a no-break
+    space), invisible characters removed, digit groups joined across a thin or narrow space
+    ("150 000") and a currency glued to its figure separated ("USD150,000")."""
+    text = _INVISIBLE.sub("", unicodedata.normalize("NFKC", value))
+    text = _GROUP_SPACE.sub(lambda m: m.group(1) + re.sub(r"\D", "", m.group(2)), text)
+    return _GLUED_CURRENCY.sub(" ", text)
 _NOT_BASE = re.compile(
     r"\b(?:ote|on[- ]target|total|bonus|bonuses|equity|commission|commissions|package|"
     r"benefits|tc|all[- ]in|including|incl)\b", re.IGNORECASE)
@@ -113,8 +130,10 @@ class SavedSalary:
 
 def parse_salary(value: str) -> SavedSalary | None:
     """The one exact amount a saved salary states ("USD 95,000 per year", "$45/hr",
-    "95k annually", "95,000"); None for a range, several amounts, an approximate amount,
-    a bare year or contradictory periods or currencies."""
+    "95k annually", "95,000", "about 150,000 per year", "150,000 USD a year"), in any case
+    and order; None for a range, a floor or ceiling, several amounts, a bare year or
+    contradictory periods or currencies."""
+    value = _normalized(value)
     if _APPROXIMATE.search(value):
         return None
     amounts = amounts_named(value)

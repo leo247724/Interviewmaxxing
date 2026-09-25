@@ -5,6 +5,7 @@ from their modules. Downstream packages must not redeclare any of these types.
 """
 
 from ._base import CONTRACT_VERSION, Contract, new_id, utc_now
+from .answer_sentences import YES_NO_SENTENCES, yes_no_sentence
 from .applications import (
     PRE_SUBMISSION_STATES,
     SUBMISSION_BLOCKING_STATES,
@@ -147,6 +148,7 @@ from .interfaces import (
 )
 from .jobs import IdentityEvidenceKind, JobIdentityObservation, JobRecord
 from .packets import (
+    PROFILE_LINK_TYPES,
     AnswerReuse,
     AnswerSource,
     AnswerValue,
@@ -165,6 +167,7 @@ from .packets import (
     provenance_problems,
 )
 from .preferences import (
+    DESIRED_SALARY_QUESTION,
     WORK_ARRANGEMENT_PREFERENCE_QUESTION,
     WORK_ARRANGEMENTS,
     is_work_mode_choice,
@@ -192,12 +195,14 @@ __all__ = [
     "DEFAULT_REMOTE_REGION",
     "DEFAULT_ROLE_FOCUS",
     "DEFAULT_TITLE_PHRASES",
+    "DESIRED_SALARY_QUESTION",
     "EXPLICIT_ANSWER_REQUIRED",
     "KNOWN_SOURCES",
     "PAY_PERIOD_LABELS",
     "PERMANENT_STATUSES",
     "PRE_SUBMISSION_STATES",
     "PROFILE_IDENTITY_TYPES",
+    "PROFILE_LINK_TYPES",
     "PROTECTED_ATTRIBUTE_TYPES",
     "QUESTION_PART_SEPARATOR",
     "SPONSORSHIP_UNSETTLED_STATUSES",
@@ -212,6 +217,7 @@ __all__ = [
     "WORK_AUTHORIZATION_IMPLICATIONS",
     "WORK_AUTHORIZATION_STATUSES",
     "WORK_AUTHORIZATION_STATUS_QUESTION",
+    "YES_NO_SENTENCES",
     "ATSAdapter",
     "AnswerReuse",
     "AnswerScope",
@@ -349,4 +355,5 @@ __all__ = [
     "stated_work_arrangement_preference",
     "utc_now",
     "work_mode_of",
+    "yes_no_sentence",
 ]

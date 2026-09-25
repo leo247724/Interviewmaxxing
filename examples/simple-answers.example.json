@@ -52,5 +52,7 @@
   "consent_background_check": null,
   "work_authorization_status": null,
   "career_motivation": null,
-  "work_arrangement_preference": null
+  "work_arrangement_preference": null,
+  "consent_sms_messages": null,
+  "interview_accommodations": null
 }

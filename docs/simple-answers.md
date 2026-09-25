@@ -6,7 +6,7 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-forty explicit reusable answers, stored through the existing saved-answer system,
+forty-two explicit reusable answers, stored through the existing saved-answer system,
 and one statement key, `career_motivation`, stored as a verified fact (below).
 Each starts as `null`; nothing is filled in for you.
 
@@ -62,10 +62,12 @@ Each starts as `null`; nothing is filled in for you.
 | `county` | County / County of residence |
 | `acknowledge_privacy_notice` | I have read and understand the employer's applicant privacy notice and data processing terms. |
 | `certify_information_true` | The information I provide in this application is true, complete and accurate. |
-| `consent_to_contact` | The employer may contact me about this application (by email, phone or SMS/text). |
+| `consent_to_contact` | The employer may contact me about this application. |
 | `consent_reference_checks` | The employer may contact the references I provide. |
 | `consent_background_check` | I consent to a background check, subject to applicable law. |
 | `work_arrangement_preference` | Location Preference / Preferred work arrangement (remote, hybrid or on-site) |
+| `consent_sms_messages` | The employer may send me recruiting text messages (SMS) … (a statement; Yes/No) |
+| `interview_accommodations` | Are there any accommodations we can make throughout the interview process? |
 
 Full name is derived from first and last name. Location is derived from city,
 state and country, omitting unanswered components. The selected resume already
@@ -108,7 +110,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The forty additional reusable-answer keys and `career_motivation`
+contact value. The forty-two additional reusable-answer keys and `career_motivation`
 may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
@@ -120,7 +122,7 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the forty additional keys become explicitly
+Nonblank values for the forty-two additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
@@ -237,9 +239,23 @@ decision, unless one of your saved statements names the same kind:
 - a background check, which only `consent_background_check` names;
 - credit, driving-record, fingerprint, social-media or ongoing screening.
 
-`consent_to_contact` covers being contacted about this application by email, phone and
-SMS/text message ("We may use SMS during the hiring process. Do you give us permission to
-text you …?"); with it null such a consent is held for you. Each key that has a semantic type
+`consent_to_contact` covers being contacted about this application. Recruiting text
+messages are their own statement since round 11:
+- `consent_sms_messages` covers text messages about your application and the hiring process,
+  with the carrier-rate and STOP/HELP wording such consents carry. An example is "We may use
+  SMS during the hiring process. Do you give us permission to text you?".
+- With it null such a consent is held for you.
+
+`interview_accommodations` (round 11) is the accommodation you need for interviews, in your
+own words ("None needed"). It answers "Are there any accommodations we can make throughout
+the interview process?" and its variants, in a text box or a text area.
+
+A Yes/No key reaching a custom text area is typed as one sentence in your voice. For
+`non_compete_agreement` "No", that is "No, I have not signed any non-competition or
+non-solicitation agreement." A bare "Yes" never answers an "If yes, describe" question: that
+waits for your details.
+
+Each key that has a semantic type
 imports with it: referral, sponsorship, work authorization, EEO (gender, Hispanic/Latino,
 race/ethnicity, veteran, disability), pronouns, location, school, degree, relocation,
 salary, start date and the statements (consent or attestation). Education discipline stays
