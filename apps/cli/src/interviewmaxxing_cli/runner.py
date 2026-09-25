@@ -16,7 +16,10 @@ it and closes it before returning.
 
 Guarantees:
 
-* The user's request to apply authorizes submission; nothing else is confirmed.
+* Preparation is the default. Nothing is submitted unless the user approved the
+  prepared application and its submission was authorized (``submit``); a
+  ``prepare_only=False`` run of any other application records the no-submit
+  restriction and prepares (``submit_unapproved`` is for synthetic tests only).
   Questions are asked only for required answers the verified data cannot give, and
   the user is asked to act only for sign-in, CAPTCHA or custom controls.
 * ``SUBMITTING`` is durably recorded before the submit click, and any interruption
@@ -43,7 +46,8 @@ Guarantees:
   ``validation.rejected`` events (one per inspection of a step this run acted on), so
   a correction stored later, in this run or by ``interviewmaxxing answer`` in another
   process, is used even if the site still shows the old message; a correction the
-  site rejects again is asked again.
+  site rejects again is asked again. The site's message is stored redacted
+  (``redact_detail``): sites echo the value that was typed.
 * A lookup the site could not commit (``NEEDS_CHOICE``) gets one choice round per
   question per run: the resolver, when it is a ``SuggestionChooser``, may pick one of
   the observed suggestions, which is then typed verbatim (a ``field.suggestion_chosen``
@@ -60,7 +64,12 @@ Guarantees:
   type) and the final step must still be the approved one. A new, missing or changed
   question, a ``VERIFICATION_MISMATCH``, a lookup that no longer commits or answers the
   site rejects stop the run as NEEDS_INPUT ("The form no longer matches the approved
-  application") before any submit, and the approval is invalidated.
+  application") before any submit, and the approval is invalidated. A site that opens
+  a draft it kept at a later page is walked back to the first approved page with the
+  site's own previous-step control when the browser offers one (``StepBack``), so
+  every approved page is still checked and filled; otherwise the run stops as
+  NEEDS_INPUT before filling anything ("The site resumed a draft it kept"), the
+  approval is withdrawn and the user submits that draft in the browser.
 """
 
 from __future__ import annotations
@@ -78,7 +87,7 @@ from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from interviewmaxxing_browser import (
     AmbiguousAction,
@@ -165,6 +174,14 @@ prepared packet, ``submitted: False`` and every filled step with its questions
 MISMATCH_MESSAGE = "The form no longer matches the approved application"
 """How a submission run reports a form that differs from the approved one: it stops as
 NEEDS_INPUT before any submit and the approval is invalidated."""
+KEPT_DRAFT_MESSAGE = "The site resumed a draft it kept"
+"""How a submission run reports a site that opened the application's kept draft at a
+later page than an approved one, when the browser cannot go back to it (``StepBack``):
+the earlier approved pages can be neither checked nor filled, so the run stops as
+NEEDS_INPUT before filling anything and the approval is invalidated (with this reason).
+Preparing again reopens the same draft; the user submits it in the browser."""
+KEPT_DRAFT_REASON = "site resumed a kept draft"
+"""The ``reason`` of that NEEDS_INPUT stop (``application.needs_input`` metadata)."""
 NOT_AUTHORIZED_MESSAGE = "Not authorized for submission"
 """How ``submit`` reports an application without a current authorization; nothing is
 opened."""
@@ -274,6 +291,17 @@ class SavedAnswerStore(CandidateLoader, Protocol):
     def save_answer(self, candidate_id: str, answer: SavedAnswer) -> None: ...
 
 
+@runtime_checkable
+class StepBack(Protocol):
+    """Optional ``ApplicationBrowser`` capability: go back one page of a multi-step form,
+    in the same draft, with the site's own previous-step (Back) control, and inspect the
+    page it shows. Raises ``AmbiguousAction`` when the page offers no single unambiguous
+    way back. A submission run uses it to walk a kept draft back to its first approved
+    page; nothing is filled on the way back."""
+
+    async def previous_step(self) -> PageInspection: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RunLimits:
     max_steps: int = 12
@@ -358,7 +386,9 @@ def rejection_epochs(
 def _rejection_history(
     store: ApplicationStore, application_id: str
 ) -> tuple[dict[tuple[int, str, str], tuple[int, str]], dict[str, int]]:
-    """Keep each rejection's message with its epoch even after the DOM clears it."""
+    """Keep each rejection's message with its epoch even after the DOM clears it. The
+    message is redacted again on reading: rejections recorded before messages were
+    stored redacted must not bring a typed value into a new question's prompt."""
     rejections: dict[tuple[int, str, str], tuple[int, str]] = {}
     received: dict[str, int] = {}
     for event in store.list_events(application_id):
@@ -368,7 +398,7 @@ def _rejection_history(
                 continue
             for item in event.metadata.get("fields", []):
                 rejections[(int(step), item["field_id"], item["field_fingerprint"])] = (
-                    event.sequence, item["message"])
+                    event.sequence, redact_detail(item["message"]) or "")
         elif event.event == INPUT_EVENT:
             for item in event.metadata.get("inputs", []):
                 received[item["id"]] = event.sequence
@@ -448,6 +478,14 @@ def _fail_retryable(store: ApplicationStore, claim: Claim, app: Application, mes
 def _short(text: str, limit: int = LABEL_LIMIT) -> str:
     line = next((part.strip() for part in text.splitlines() if part.strip()), "")
     return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
+def _steps_text(numbers: Sequence[int]) -> str:
+    """``step 1``, ``steps 1 and 2``, ``steps 1, 2 and 3``."""
+    shown = [str(n) for n in numbers]
+    if len(shown) == 1:
+        return f"step {shown[0]}"
+    return f"steps {', '.join(shown[:-1])} and {shown[-1]}"
 
 
 def options_digest(field: ApplicationField) -> str | None:
@@ -610,11 +648,17 @@ class LocalApplicationRunner:
     """Concrete ``ApplicationRunner`` over local storage and a real browser.
 
     Preparation is the default: complete known fields and stop before final submit.
-    ``prepare_only=False`` is reserved for explicitly authorized submission callers
-    (``submit``, via ``create_submission_runner``) and synthetic tests; it never
-    overrides a stored preparation-only restriction. Once the user approved a prepared
-    application and its submission was authorized, a ``prepare_only=False`` run fills
-    exactly the approved packets and submits them (see ``submit``).
+    ``prepare_only=False`` is reserved for the explicitly authorized submission caller
+    (``submit``, via ``create_submission_runner``): once the user approved a prepared
+    application and its submission was authorized, it fills exactly the approved
+    packets and submits them. It never overrides a stored preparation-only restriction,
+    and any other run it makes (``apply`` or ``resume`` of an application without an
+    authorized approval, even one never restricted) records the restriction and
+    prepares, as a preparation-only runner does.
+
+    ``submit_unapproved=True`` is for synthetic tests only: a ``prepare_only=False`` run
+    may then submit an application that was never restricted with the packets it
+    resolves itself. No production caller sets it.
     """
 
     def __init__(
@@ -630,6 +674,7 @@ class LocalApplicationRunner:
         limits: RunLimits | None = None,
         owner: str | None = None,
         clock: Callable[[], datetime] = utc_now,
+        submit_unapproved: bool = False,
     ) -> None:
         self.paths = paths
         self.interaction = interaction
@@ -638,6 +683,8 @@ class LocalApplicationRunner:
         self.candidates: SavedAnswerStore = candidates or LocalCandidateStore.from_paths(paths)
         self.resolver = resolver or FactualPacketResolver()
         self.prepare_only = prepare_only
+        self.submit_unapproved = submit_unapproved
+        """Synthetic tests only (see the class docstring)."""
         self.limits = limits or RunLimits()
         self.owner = owner or f"runner:{socket.gethostname()}:{os.getpid()}"
         self.clock = clock
@@ -822,8 +869,6 @@ class LocalApplicationRunner:
                     app = store.get_application(app_id)
                     if app.state in SUBMISSION_BLOCKING_STATES or app.state in TERMINAL_STATES:
                         return _outcome(store, app_id, _STATE_MESSAGES.get(app.state, ""))
-                    if self.prepare_only:
-                        store.require_preparation_only(claim)
                     approved: _Approved | None = None
                     authorization = (None if self.prepare_only
                                      else store.submission_authorization(app_id))
@@ -836,6 +881,10 @@ class LocalApplicationRunner:
                                             "approve the application again.")
                     if submission and approved is None:
                         return self._not_authorized(store, app_id)
+                    if self.prepare_only or (approved is None and not self.submit_unapproved):
+                        # Only an authorized approval is submitted: any other run records
+                        # the no-submit restriction (again) and prepares.
+                        store.require_preparation_only(claim)
                     try:
                         candidate = self.candidates.load(app.candidate_id)
                     except (CandidateNotFound, CandidateProfileInvalid) as exc:
@@ -1208,7 +1257,10 @@ class _Run:
     def _note_rejections(self, form: ApplicationForm) -> None:
         """Persist the field validation messages of a step this run acted on as one
         ``validation.rejected`` event, the rejection epoch of those questions. A step
-        counts as acted on once, until the next fill/advance/submit."""
+        counts as acted on once, until the next fill/advance/submit. Sites quote the
+        value that was typed ("'…' is not a valid e-mail"), and the event log is
+        append-only, so each message is stored redacted (``redact_detail``): the epoch
+        needs the question and the message's shape, not the value."""
         if form.step not in self.acted_steps:
             return
         self.acted_steps.discard(form.step)
@@ -1219,7 +1271,7 @@ class _Run:
             "form_url": form.url,
             "form_step": form.step,
             "fields": [{"field_id": f.id, "field_fingerprint": f.fingerprint,
-                        "message": f.validation_error} for f in rejected],
+                        "message": redact_detail(f.validation_error)} for f in rejected],
         })
 
     def _with_rejections(self, form: ApplicationForm, packet: ApplicationPacket) -> ApplicationPacket:
@@ -1552,7 +1604,11 @@ class _Run:
     async def _approved_step(self, page: PageInspection, form: ApplicationForm, *,
                              acted: bool) -> PageInspection:
         """Fill this step from its approved packet once the form is checked to ask
-        exactly the approved questions. Nothing is resolved or generated."""
+        exactly the approved questions. Nothing is resolved or generated. Every approved
+        page before this one must have been filled by this run first: a kept draft the
+        site opened at this page is walked back to them (``_walk_back``) or stops the run
+        (``_kept_draft``), and a page the site skipped on the way here is a changed
+        form."""
         approved = self.approved
         assert approved is not None
         if acted and (form.page_errors or any(f.validation_error for f in form.fields)):
@@ -1561,6 +1617,14 @@ class _Run:
                        for f in form.fields if f.validation_error)]
             raise self._not_approved(["the site did not accept the approved answers ("
                                       + "; ".join(_short(m, 160) for m in shown[:3]) + ")"])
+        earlier = self._unfilled_before(form.step)
+        if earlier:
+            if self.filled_steps:  # the site went past an approved page after this run's first
+                raise self._not_approved(self._unseen(earlier))
+            back = await self._walk_back(form, earlier[0])
+            if back is None:
+                raise self._kept_draft(form, earlier)
+            return back
         step = approved.steps.get(form.step)
         awaiting = _awaiting_user(step, form) if step is not None else []
         problems = approval_mismatches(step, form, final_step=approved.final_step,
@@ -1649,14 +1713,11 @@ class _Run:
         if form.is_final_step is True:
             approved = self.approved
             assert approved is not None
-            unseen = [step for step in sorted(approved.steps)
-                      if step < approved.final_step and step not in self.filled_steps]
+            unseen = self._unfilled_before(approved.final_step)
             if unseen:
-                # The site went straight to a later page (a kept draft): the approved
-                # answers of the earlier pages were not checked or filled by this run.
-                raise self._not_approved([f"the site did not show step {step + 1}, so its "
-                                          "approved answers could not be checked"
-                                          for step in unseen])
+                # Checked when each page is reached (``_approved_step``); kept as the last
+                # guard before the submit: every approved page was filled by this run.
+                raise self._not_approved(self._unseen(unseen))
             return await self._submit(packet)
         await self._verify_expected_page()
         try:
@@ -1666,6 +1727,61 @@ class _Run:
                              "Nothing was submitted.") from exc
         self._to(S.INSPECTING)
         return nav.inspection
+
+    def _unfilled_before(self, step: int) -> list[int]:
+        """The approved steps before ``step`` that this submission run has not filled."""
+        approved = self.approved
+        assert approved is not None
+        return [s for s in sorted(approved.steps) if s < step and s not in self.filled_steps]
+
+    @staticmethod
+    def _unseen(steps: Sequence[int]) -> list[str]:
+        return [f"the site did not show step {step + 1}, so its approved answers could not "
+                "be checked" for step in steps]
+
+    async def _walk_back(self, form: ApplicationForm, target: int) -> PageInspection | None:
+        """The page of step ``target`` (or an earlier one), reached from ``form``, the
+        later page a kept draft opened at, with the site's own previous-step control one
+        page at a time (``StepBack``). Nothing is filled on the way back; the run then
+        compares and fills every page from there as if the site had opened at it. None
+        when the browser cannot go back (no ``StepBack``, or no unambiguous Back control)
+        or a step back does not show an earlier page of the form."""
+        if not isinstance(self.browser, StepBack):
+            return None
+        await self.interaction.progress(
+            f"The site opened a draft it kept at step {form.step + 1}; going back to step "
+            f"{target + 1} to check and fill every approved page from there")
+        step, page = form.step, None
+        while step > target:
+            await self._verify_expected_page()
+            try:
+                page = await self.browser.previous_step()
+            except AmbiguousAction:
+                return None
+            self._renew()
+            if (page.kind is not PageKind.APPLICATION_FORM or page.form is None
+                    or page.form.step >= step):
+                return None
+            step = page.form.step
+        return page
+
+    def _kept_draft(self, form: ApplicationForm, earlier: Sequence[int]) -> _Stop:
+        """Stop before filling anything: the site opened a draft it kept at ``form``'s
+        page and the browser cannot go back to the approved pages before it, so this run
+        can neither check nor fill them. Preparing again would reopen the same draft and
+        pin the same pages, so the message names the manual remedy instead: the user
+        submits that draft in the browser. The approval is withdrawn (reason
+        ``KEPT_DRAFT_MESSAGE``), so nothing submits the application later on its own."""
+        pages = _steps_text([step + 1 for step in earlier])
+        self.store.invalidate_approval(self.claim, reason=KEPT_DRAFT_MESSAGE, details=[
+            f"the site opened its kept draft at step {form.step + 1}; {pages} could not be "
+            "checked or filled"])
+        return self._stop(S.NEEDS_INPUT, f"{KEPT_DRAFT_MESSAGE} at step {form.step + 1}, so "
+                          f"the approved answers of {pages} could not be checked or filled. "
+                          "Nothing was submitted and the approval was withdrawn. Preparing it "
+                          "again reopens the same draft: submit this application in the "
+                          "browser yourself, after checking each page against the answers "
+                          "you approved.", reason=KEPT_DRAFT_REASON)
 
     def _not_approved(self, problems: Sequence[str]) -> _Stop:
         """Stop before any submit: withdraw the approval (the no-submit restriction is
@@ -1752,6 +1868,12 @@ class _Run:
                              + (f" Review the open page in {location}." if location else ""),
                              reason="prepared for final review; submission disabled",
                              missing=[m for m in packet.missing_inputs if not m.required])
+        if self.approved is None and not self.runner.submit_unapproved:
+            # ``_run`` restricts every run without an authorized approval, so this is not
+            # reached; it stays as the last guard before ``begin_submission``.
+            raise self._stop(S.FAILED_RETRYABLE, f"{NOT_AUTHORIZED_MESSAGE}: only an "
+                             "approved application whose submission was authorized is "
+                             "submitted. Nothing was submitted.")
         has_expected_job = self.store.expected_job_identity(self.app_id) is not None
         if has_expected_job:
             await self.interaction.progress("Submitting the application")
@@ -1842,8 +1964,10 @@ def create_submission_runner(
 ) -> LocalApplicationRunner:
     """The runner behind ``interviewmaxxing submit``: ``prepare_only=False``, so an
     application whose approval was authorized is submitted with exactly its approved
-    packets (``LocalApplicationRunner.submit``). Every other application keeps its
-    stored no-submit restriction. Only an explicit, gated caller may build it."""
+    packets (``LocalApplicationRunner.submit``). Any other run it makes (``apply`` or
+    ``resume`` of an application without an authorized approval, restricted or never
+    restricted) records the no-submit restriction and only prepares; it never sets
+    ``submit_unapproved``. Only an explicit, gated caller may build it."""
     factory = None
     if dynamic_options is not None:
         from .dynamic import runtime_components
@@ -1876,6 +2000,8 @@ __all__ = [
     "ALLOW_SUBMISSION_ENV",
     "BUSY_MESSAGE",
     "CLAIMED_MESSAGE",
+    "KEPT_DRAFT_MESSAGE",
+    "KEPT_DRAFT_REASON",
     "MISMATCH_MESSAGE",
     "NEEDS_INPUT_EVENT",
     "NOT_AUTHORIZED_MESSAGE",
@@ -1888,6 +2014,7 @@ __all__ = [
     "NoninteractiveInteraction",
     "RunLimits",
     "RunnerBusy",
+    "StepBack",
     "approval_mismatches",
     "bound_packet",
     "browser_profile_lock",

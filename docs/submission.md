@@ -38,7 +38,10 @@ interviewmaxxing batch-report BATCH_ID         # prepare totals plus a Submissio
    you answer may carry on in the draft the site kept, so the pages an earlier run filled
    are pinned too (each question stop records the pages its run filled).
 2. **Review.** Check the filled form's evidence (`$IMX_HOME/artifacts/APP/`), the answers
-   (`status APP --json`, the dashboard's review lane) and the event history.
+   (`status APP --json`, the dashboard's review lane) and the event history. `status` is your
+   own working view and prints your answers, prompts and options as recorded (only URLs are
+   reduced to page addresses); `events` hides the values a question or the site quoted
+   unless `--verbose`, so share `events`, not `status` (see [What the CLI prints](#what-the-cli-prints)).
 3. **Approve.** `approve APP` approves the packet of the preparation the application is
    stopped at (`--packet PKT` names it explicitly; any other packet is refused). It prints
    every approved answer and records `application.approved`. Approving submits nothing and
@@ -51,7 +54,9 @@ interviewmaxxing batch-report BATCH_ID         # prepare totals plus a Submissio
    writes a receipt. An uncertain outcome (`SUBMISSION_UNKNOWN`) is never retried; `reconcile
    APP` re-reads the site. A form that changed, or answers the site rejected, end the run as
    `NEEDS_INPUT` with the approval withdrawn: prepare it again (`resume APP`), answer what is
-   asked, review and approve the new preparation.
+   asked, review and approve the new preparation. A site that reopens a draft it kept at a
+   later page is the exception: preparing again reopens the same draft, so that stop says to
+   submit it in the browser yourself (below).
 
 `submit` without `IMX_ALLOW_SUBMISSION=1` prints how to enable it and exits 4. Without
 `--yes`, or without a valid approval, it exits 4 too; nothing is opened in any of these
@@ -75,19 +80,30 @@ pinned resume and selected-job check), then for each form step:
 4. A value that does not read back (`VERIFICATION_MISMATCH`), a lookup whose approved value
    no longer commits (`NEEDS_CHOICE`), or an approved option the site now disables stops the
    run. A step that changes while filling is inspected and compared again.
-5. It advances with the same unambiguous-Next rules as preparation. Before the final
-   submit, every approved step must have been filled by this run: a site that goes straight
-   to a later page (a kept draft) is not submitted, because the earlier pages could not be
-   checked. On the final step it
-   calls `begin_submission` with the approved packet id, clicks the final submit control
-   once and records what the site shows (`record_submission_outcome`). These operations and
-   the `is_final_step` checks are the same as for any submission.
+5. It advances with the same unambiguous-Next rules as preparation. Every approved page
+   before a page must have been filled by this run before that page is filled, and again
+   before the final submit:
+   - A site that opens a draft it kept at a later page (it resumes where an earlier run
+     left off) is walked back to the first approved page with the site's own Back control,
+     one page at a time and filling nothing on the way, when the browser can do that (the
+     optional `runner.StepBack` capability, `previous_step()`). Every page is then compared
+     and filled from there as usual. The Playwright and OpenCLI browsers do not offer it
+     yet, and a Back control that is ambiguous or does not lead to an earlier page counts
+     the same: the run stops before filling anything, with the approval withdrawn and a
+     message that names the remedy, because preparing again would reopen the same draft
+     and pin the same pages: submit that application in the browser yourself.
+   - A page the site skips after the run filled an earlier one is a changed form.
+
+   On the final step it calls `begin_submission` with the approved packet id, clicks the
+   final submit control once and records what the site shows (`record_submission_outcome`).
+   These operations and the `is_final_step` checks are the same as for any submission.
 
 | What happened | State | Approval |
 | --- | --- | --- |
 | Confirmation tied to this job | `SUBMITTED`, receipt saved | used |
 | Submit dispatched, no tied confirmation, or interrupted during the submit | `SUBMISSION_UNKNOWN` (never retried; `reconcile`) | — |
-| A step that was not approved; a new, missing or changed question; changed options or required flag; the final step moved; a value that does not read back; a lookup that no longer commits; an approved option now disabled | `NEEDS_INPUT`: "The form no longer matches the approved application: …" | withdrawn |
+| A step that was not approved; an approved page the site skipped; a new, missing or changed question; changed options or required flag; the final step moved; a value that does not read back; a lookup that no longer commits; an approved option now disabled | `NEEDS_INPUT`: "The form no longer matches the approved application: …" | withdrawn |
+| The site opened a draft it kept at a later page and the browser could not go back to the earlier approved pages | `NEEDS_INPUT` before anything is filled: "The site resumed a draft it kept at step N, so the approved answers of step M could not be checked or filled. … submit this application in the browser yourself …" (stop reason `site resumed a kept draft`; `status` says "kept draft" and suggests no `resume`) | withdrawn; submit it in the browser yourself (preparing it again reopens the same draft) |
 | The site showed the form again with validation errors after the submit | `NEEDS_INPUT`: "… the site did not accept the approved answers (…)" (a `validation.rejected` event makes the next preparation ask again) | withdrawn |
 | Sign-in, CAPTCHA, or a custom control you set yourself while preparing | `NEEDS_INPUT` with the action (or, with `--act` in a visible browser, the run waits for you and continues) | kept |
 | A field that could not be operated (`FAILED`), a browser error before the submit, an ambiguous Next control | `FAILED_RETRYABLE`, nothing submitted | kept; `submit` again retries |
@@ -98,6 +114,28 @@ A withdrawn approval writes `application.approval_invalidated` and, when the sub
 authorized, `application.preparation_only` again: the restriction is back until the
 application is prepared and approved again. Approving again needs a new preparation, because
 the application is no longer stopped right after one.
+
+## Who may submit
+
+Only `submit` (and `submit-approved`, which runs it) builds a runner with
+`prepare_only=False` (`create_submission_runner`), and that runner submits only an
+application whose approval was authorized. Any other run it is asked to make (`apply` or
+`resume`, of an application that was never restricted too) records the no-submit restriction
+and prepares, as a preparation-only runner does; a last check before `begin_submission`
+refuses anything without an authorized approval. The runner flag `submit_unapproved` lets
+synthetic tests submit an unrestricted application with the answers the run resolves; no
+command sets it.
+
+## What the CLI prints
+
+`events APP` is the history you may paste into a report or hand to someone: form URLs
+become page addresses, and question prompts, answer candidates, lookup suggestions, chosen
+lookup labels, the site's rejection messages and routing traces are shown only with
+`--verbose`. `status APP` is your own working view of one application and prints what you
+need to answer it (each question's prompt, candidates and options, as `apply` and `resume`
+do); `status APP --json` adds the pending questions as recorded and the latest packet with
+its answers, with URLs reduced to page addresses and nothing else hidden. Do not keep or
+share `status` output; share `events`.
 
 ## The store's rules
 
@@ -137,8 +175,9 @@ future dashboard action call these operations (see `CONTRACTS.md` §7):
 | `preparation.ready` | runner (prepare-only run at the final review step) | `form_url`, `form_step`, `form_fingerprint`, `packet_id`, `submitted: false`, `browser_location`, `captcha_pending`, `steps: [{form_step, packet_id, form_url, form_fingerprint, final, fields: [{id, fingerprint, required, semantic_type, control_type, options, label}]}]` (`options` is a digest of the option values and labels, or null; `label` is the question's first line, at most 80 characters) |
 | `application.approved` | store (`approve_submission`) | `packet_id`, `approver` (`cli:<login>` from the CLI), `form_step`, `form_url`, `form_fingerprint`, `preparation_event_id`, `steps: [{form_step, packet_id}]`, `captcha_pending` |
 | `application.submission_authorized` | store (`authorize_submission`) | `packet_id`, `approval_event_id`, `approver` |
-| `application.approval_invalidated` | store (`invalidate_approval`, called by the runner) | `packet_id`, `approval_event_id`, `reason`, `details` (what differed, at most 20; values read from the page are redacted by `runner.redact_detail`: quoted values, emails, digit runs) |
-| `application.needs_input` (a question stop of a prepare-only run) | store transition, runner metadata | `missing_inputs`, `reason`, and `steps` (the pages this run filled, as in `preparation.ready`) |
+| `application.approval_invalidated` | store (`invalidate_approval`, called by the runner) | `packet_id`, `approval_event_id`, `reason` ("The form no longer matches the approved application", or "The site resumed a draft it kept"), `details` (what differed, at most 20; values read from the page are redacted by `runner.redact_detail`: quoted values, emails, URLs, digit runs) |
+| `validation.rejected` | runner (a step it acted on shows validation messages) | `form_url`, `form_step`, `fields: [{field_id, field_fingerprint, message}]`; `message` is the site's message redacted by `runner.redact_detail` (sites quote the typed value), and `events` shows it only with `--verbose` |
+| `application.needs_input` (a question stop of a prepare-only run) | store transition, runner metadata | `missing_inputs`, `reason`, and `steps` (the pages this run filled, as in `preparation.ready`); a submission run stopped by a kept draft records `reason: "site resumed a kept draft"` and no questions |
 | `application.submitting` → `application.submitted` / `application.submission_unknown` / … | store (`begin_submission`, `record_submission_outcome`) | `attempt_id`, `attempt_number`, `packet_id` (the approved packet); then the observation |
 
 A preparation recorded before this change has no `steps`. It can still be approved: the
@@ -157,7 +196,9 @@ question to have an approved answer.
 
 `1` is an error (no state database), `2` a usage error (for example an unknown `--batch`),
 `130` an interrupt. With `--json`, `submit` prints the `ApplyOutcome`, also for a refusal
-once the application is known.
+once the application is known, and `approve` prints the approval with its `form_url`
+reduced to the page address (step URLs carry per-session draft tokens; the store keeps them
+exactly).
 
 ## Ledger and report
 
@@ -183,7 +224,14 @@ submission stopped by the timeout while submitting is `uncertain`, never `error`
 lines and submission lines share the file without being mistaken for each other. Running the
 same ledger id again never launches an application it records as submitted or uncertain.
 Submission lines that cannot be read are counted (`ledger_lines_ignored` in the summary,
-`submissions.lines_ignored` in `batch-report`) and shown.
+`submissions.lines_ignored` in `batch-report`) and shown: lines marked `kind: "submission"`
+that do not validate and, in the summary, lines cut short by a crash that may have been
+submission lines. In the prepare batch's own ledger that means only those after its first
+submission line (before it, only prepare-batch wrote; its reader counts those); in a ledger
+of its own, every cut line. A submission line is never appended onto a line cut short by a
+crash: that line is ended first. Applications whose site resumed a kept draft are listed on
+their own (`kept_drafts` in `submission-summary.json`, `submissions.kept_drafts` in
+`batch-report`), with the remedy: submit them in the browser.
 `submission-summary.json` holds the run's summary (prepare-batch's `summary.json` is left
 alone). `prepare-batch --retry` never re-prepares an application that still has a valid
 approval (skipped as `approved (left to submit-approved)`), and its ledger reader does not
@@ -204,6 +252,9 @@ applications) and no longer says "nothing was submitted" once one was.
   submission run stops the same way.
 - A multi-step site that keeps drafts gets a new draft from the submission run; the draft
   the preparing run saved stays behind on the site. A site that resumes its draft at a later
-  page cannot be submitted through this path (the earlier pages cannot be checked); submit
-  it in the browser yourself.
+  page can be submitted through this path only by a browser that can go back through the
+  form (`runner.StepBack`), which neither the Playwright nor the OpenCLI browser offers yet;
+  otherwise the run stops as described above and you submit it in the browser yourself.
+  After that the store still shows the application as not submitted: the CLI has no command
+  to record a submission made outside this path.
 - The dashboard has no approve action yet; it is planned on top of `approve_submission`.

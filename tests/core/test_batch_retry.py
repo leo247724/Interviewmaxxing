@@ -29,6 +29,7 @@ from interviewmaxxing_cli.batch import (
     classify,
     read_ledger,
     read_summary,
+    render_retry_markdown,
     render_summary_markdown,
     run_batch,
 )
@@ -303,7 +304,7 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
     assert stats is not None and stats.retry_of == "b1"
     assert stats.model_dump() == {
         "retry_of": "b1", "outcomes": list(RETRY_OUTCOMES), "include_explicit": False,
-        "rerun_all": True, "considered": 8, "selected": 5,
+        "rerun_all": True, "user_actions": False, "considered": 8, "selected": 5,
         "skipped": {"prepared": 1, "closed": 1, "explicit answers only": 1},
         "retried": 5, "prepared": 3, "holds_before": 2, "holds_cleared": 2, "holds_open": 1,
         "transitions": {"needs_input": {"prepared": 1},
@@ -587,6 +588,42 @@ def test_a_mixed_hold_runs_again_with_all_or_once_something_is_answered(paths):
     assert (again.row.listing_id, len(again.holds_before)) == ("l-mixed", 3)
 
 
+def test_holds_only_a_browser_can_clear_are_skipped_as_such_unless_user_actions(paths):
+    """Sign-in, CAPTCHA, custom controls and files cannot be answered, so they never count
+    as answered: a held application with only those open is skipped by default under its
+    own reason (a headless retry meets them again) and runs with ``--user-actions``."""
+    url = f"{ORIGIN}/browser"
+    sign_in = MissingInput(field_id=None, label="Sign in to continue", prompt="Sign in in the browser.",
+                           reason=MissingReason.USER_ACTION)
+    captcha = MissingInput(field_id=None, label="Solve the CAPTCHA", prompt="Solve it in the browser.",
+                           reason=MissingReason.USER_ACTION)
+    pronouns = question(url, "pronouns", "Pronouns", MissingReason.UNSUPPORTED_CONTROL,
+                        control=ControlType.UNSUPPORTED)
+    cover = question(url, "cover", "Cover letter", MissingReason.NO_ANSWER, control=ControlType.FILE)
+    notice = question(url, "q", NOTICE, MissingReason.NO_ANSWER)
+    apps = {"signin": stored(paths, "signin", "held", [sign_in]),
+            "captcha": stored(paths, "captcha", "held", [captcha]),
+            "custom": stored(paths, "custom", "held", [pronouns, cover]),
+            "mixed": stored(paths, "mixed", "held", [pronouns, notice])}
+    write_ledger(paths, *(line(f"l-{name}", "needs_input", name, app) for name, app in apps.items()))
+
+    default = plan_retry(paths, "b1", candidate_id="default")
+    assert default.items == () and not default.stats.user_actions
+    assert default.stats.skipped == {"browser actions only": 3, "nothing answered since the stop": 1}
+    text = "\n".join(render_retry_markdown(default.stats))
+    assert "- skipped: browser actions only (3), nothing answered since the stop (1)" in text
+    assert "`interviewmaxxing resume APP --act`" in text and "with --user-actions" in text
+
+    acting = plan_retry(paths, "b1", candidate_id="default", user_actions=True)
+    assert [i.row.listing_id for i in acting.items] == ["l-signin", "l-captcha", "l-custom"]
+    assert [len(i.holds_before) for i in acting.items] == [1, 1, 2]
+    assert acting.stats.skipped == {"nothing answered since the stop": 1} and acting.stats.user_actions
+    text = "\n".join(render_retry_markdown(acting.stats))
+    assert "browser-action holds included (--user-actions)" in text and "resume APP --act" not in text
+    # --all runs every held one anyway, the mixed hold included.
+    assert len(plan_retry(paths, "b1", candidate_id="default", rerun_all=True).items) == 4
+
+
 # --- options and ids ---------------------------------------------------------------------------
 
 
@@ -646,12 +683,18 @@ def test_resume_argv_and_busy_outcomes(paths):
 # --- CLI ---------------------------------------------------------------------------------------
 
 
-def test_prepare_batch_retry_parser():
+def test_prepare_batch_retry_parser(tmp_path, capsys):
     parser = build_parser()
     args = parser.parse_args(["prepare-batch", "--retry", "b1", "--outcomes",
                               "needs_input,error,needs_input", "--include-explicit"])
     assert (args.retry, args.inventory, args.outcomes, args.include_explicit) == \
         ("b1", None, ["needs_input", "error"], True)
+    assert args.user_actions is False
+    assert parser.parse_args(["prepare-batch", "--retry", "b1", "--user-actions"]).user_actions
+    # --user-actions selects among a retried batch's holds; an inventory run has none.
+    assert main(["--home", str(tmp_path / "home"), "prepare-batch", "--inventory",
+                 str(tmp_path / "none.json"), "--user-actions"]) == EXIT_USAGE
+    assert "--user-actions apply to --retry" in capsys.readouterr().err
     for bad in (["--retry", "b1", "--inventory", "x.json"], ["--retry", "b1", "--outcomes", "prepared"],
                 ["--retry", "b1", "--outcomes", "closed"], ["--retry", "b1", "--outcomes", "bogus"],
                 ["--retry", "b1", "--outcomes", ","], ["--retry", "b1", "--outcomes",

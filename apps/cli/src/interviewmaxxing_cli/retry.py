@@ -14,6 +14,11 @@ are selected by where they stand now in the application store
   least one of its holds was answered after it stopped, on it or with a saved answer for
   its wording (``triage.recorded_holds``). ``--all`` runs every held one (after a fix).
   ``failed_retryable``, ``unknown`` and ``error`` applications always run again.
+* A ``needs_input`` application whose open holds are all browser actions (sign-in,
+  CAPTCHA, a custom control, a file: ``triage.needs_browser``) has nothing that can be
+  answered, and a headless retry usually meets the same page again, so it is skipped as
+  ``browser actions only`` unless ``--user-actions`` (or ``--all``); ``resume APP
+  --act`` clears it in a visible browser.
 * A ``needs_input`` application whose open holds are all EXPLICIT_ANSWER_REQUIRED is
   skipped unless ``--include-explicit``: only the person can answer those.
 
@@ -46,6 +51,7 @@ from interviewmaxxing_core import (
 )
 
 from .batch import (
+    BROWSER_ONLY_SKIP,
     LEDGER_NAME,
     BatchOptions,
     BatchRow,
@@ -58,7 +64,13 @@ from .batch import (
     read_ledger_lines,
     run_batch,
 )
-from .triage import candidate_saved_answers, current_outcome, hold_key, recorded_holds
+from .triage import (
+    candidate_saved_answers,
+    current_outcome,
+    hold_key,
+    needs_browser,
+    recorded_holds,
+)
 
 RETRY_OUTCOMES: tuple[str, ...] = ("needs_input", "failed_retryable", "unknown", "error")
 """What ``--outcomes`` may select; all of them by default."""
@@ -147,14 +159,16 @@ def _row(entry: LedgerEntry, application_id: str | None) -> BatchRow:
 
 def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                outcomes: Collection[str] = RETRY_OUTCOMES, include_explicit: bool = False,
-               rerun_all: bool = False, backends: Collection[str] | None = None,
+               rerun_all: bool = False, user_actions: bool = False,
+               backends: Collection[str] | None = None,
                limit: int | None = None) -> RetryPlan:
     """Select the applications of ``batch_id``'s ledger to run again (see the module
     docstring), in ledger order. Raises ``ValueError`` for a batch id that is not a
     plain name or an outcome that is never retried, and ``FileNotFoundError`` for a
     batch without a ledger. An application with a valid approval (a submission run of it
     stopped) is left to ``submit-approved``: preparing it again would withdraw the
-    approval. Reads only; creates nothing."""
+    approval. ``user_actions`` also runs held applications with nothing answered whose
+    open holds are all browser actions. Reads only; creates nothing."""
     unknown = sorted(set(outcomes) - set(RETRY_OUTCOMES))
     if unknown:
         raise ValueError(f"cannot retry {', '.join(unknown)}; choose from "
@@ -204,8 +218,12 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                 skipped[f"not selected ({current})"] += 1
                 continue
             holds = recorded_holds(store, app, events, saved, store.get_job(app.job_id))
-            if current == "needs_input" and not rerun_all and not holds.answered:
-                skipped["nothing answered since the stop"] += 1
+            browser_only = bool(holds.open) and all(needs_browser(m) for m in holds.open)
+            if (current == "needs_input" and not rerun_all and not holds.answered
+                    and not (user_actions and browser_only)):
+                # Browser actions cannot be answered, so they are told apart from holds
+                # that wait for an answer.
+                skipped[BROWSER_ONLY_SKIP if browser_only else "nothing answered since the stop"] += 1
                 continue
             if (not include_explicit and holds.open and all(
                     m.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED for m in holds.open)):
@@ -223,7 +241,7 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
         items = items[:max(limit, 0)]
     stats = RetryStats(retry_of=batch_id, outcomes=[o for o in RETRY_OUTCOMES if o in wanted],
                        include_explicit=include_explicit, rerun_all=rerun_all,
-                       considered=considered,
+                       user_actions=user_actions, considered=considered,
                        selected=len(items), skipped=dict(skipped.most_common()),
                        ledger_lines_ignored=ignored)
     return RetryPlan(retry_of=batch_id, items=tuple(items), stats=stats)

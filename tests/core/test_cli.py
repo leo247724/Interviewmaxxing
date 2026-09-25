@@ -330,10 +330,11 @@ def test_status_explains_a_prepared_application_and_points_to_review() -> None:
     from interviewmaxxing_cli.main import _preparation_lines, _review_steps
     from interviewmaxxing_core import ApplicationState
 
-    events = [SimpleNamespace(event="application.inspecting", metadata={}),
-              SimpleNamespace(event="preparation.ready",
+    S = ApplicationState
+    events = [SimpleNamespace(event="application.inspecting", metadata={}, to_state=S.INSPECTING),
+              SimpleNamespace(event="preparation.ready", to_state=None,
                               metadata={"form_step": 3, "submitted": False, "captcha_pending": True}),
-              SimpleNamespace(event="application.needs_input", metadata={})]
+              SimpleNamespace(event="application.needs_input", metadata={}, to_state=S.NEEDS_INPUT)]
     lines = _preparation_lines(ApplicationState.NEEDS_INPUT, events, [])
     assert lines[0].startswith("prepared:") and "form step 3" in lines[0] and "nothing was submitted" in lines[0]
     assert any(line.startswith("captcha:") for line in lines)
@@ -341,6 +342,11 @@ def test_status_explains_a_prepared_application_and_points_to_review() -> None:
     assert _preparation_lines(ApplicationState.NEEDS_INPUT, events, [object()]) == []  # type: ignore[list-item]
     assert _preparation_lines(ApplicationState.FAILED_RETRYABLE, events, []) == []
     assert _preparation_lines(ApplicationState.NEEDS_INPUT, events[:1], []) == []
+    # A later run stopped again (a submission run that found the form changed, a kept
+    # draft): the preparation is no longer the current stop.
+    later = [*events, SimpleNamespace(event="application.inspecting", metadata={}, to_state=S.INSPECTING),
+             SimpleNamespace(event="application.needs_input", metadata={}, to_state=S.NEEDS_INPUT)]
+    assert _preparation_lines(ApplicationState.NEEDS_INPUT, later, []) == []
     steps = _review_steps("app_x", Path("/tmp/artifacts"))
     assert steps[0].startswith("review the filled form evidence under")
     assert any("resume app_x" in step and "submission stays disabled" in step for step in steps)

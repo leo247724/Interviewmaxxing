@@ -170,6 +170,7 @@ def real_service(paths: LocalPaths, site: FictionalSite, *, prepare_only: bool =
             assert isinstance(runner, LocalApplicationRunner) and runner.prepare_only is True
             if not prepare_only:
                 runner.prepare_only = False  # fictional localhost acceptance only
+                runner.submit_unapproved = True  # the explicit synthetic-test flag
             return runner
         return make
 

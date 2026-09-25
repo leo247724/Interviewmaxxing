@@ -123,8 +123,8 @@ interviewmaxxing [--home DIR] prepare-batch --inventory inventory.json \
   [--candidate ID] [--json]
 
 interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
-  [--outcomes needs_input,failed_retryable,unknown,error] [--include-explicit] \
-  [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] \
+  [--outcomes needs_input,failed_retryable,unknown,error] [--all] [--include-explicit] \
+  [--user-actions] [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] \
   [--workers N] [--per-job-timeout S] [runtime flags] [--json]
 ```
 
@@ -335,7 +335,7 @@ A job stopped by the timeout leaves its application with a lapsing claim; the ne
 ```sh
 interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
   [--outcomes needs_input,failed_retryable,unknown,error] [--all] [--include-explicit] \
-  [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] [--json]
+  [--user-actions] [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] [--json]
 ```
 
 After a runtime fix, or after answering questions (see
@@ -349,7 +349,7 @@ the state database (a listing without an application id is looked up by its URL)
 | `prepared` | NEEDS_INPUT at the final review step | never |
 | `closed` | FAILED_PERMANENT | never |
 | `duplicate`, `blocked` | DUPLICATE, a submission state | never |
-| `needs_input` | NEEDS_INPUT for questions, sign-in, CAPTCHA or a custom control | with `--outcomes` (default), once one of its holds was answered since it stopped; every one with `--all` |
+| `needs_input` | NEEDS_INPUT for questions, sign-in, CAPTCHA or a custom control | with `--outcomes` (default), once one of its holds was answered since it stopped; held only on browser actions, with `--user-actions`; every one with `--all` |
 | `failed_retryable` | FAILED_RETRYABLE | with `--outcomes` (default) |
 | `unknown` | REQUESTED, INSPECTING, PACKET_READY or FILLING: a run started and recorded no outcome (it timed out or crashed) | with `--outcomes` (default) |
 | `error` | the job never recorded an application (for example the CLI could not start) | with `--outcomes` (default); it runs `apply URL` |
@@ -359,8 +359,15 @@ never retried either, whatever the store says now. A `needs_input` application r
 again only when something changed for it: at least one of its holds was answered since
 it stopped. Running it with nothing answered would stop it at the same questions, so
 by default it is skipped (`nothing answered since the stop`); after a runtime fix that
-may clear holds, `--all` runs every held one. `failed_retryable`, `unknown` and `error`
-applications always run again. A `needs_input` application whose open holds are all
+may clear holds, `--all` runs every held one. A held application whose open holds are all
+browser actions (a sign-in, a CAPTCHA, a custom control or a file: nothing `answer` can
+answer, so they never count as answered) is skipped as `browser actions only`: a headless
+retry meets the same page again, and hitting a site that challenged the run again only
+makes more challenges likely. Clear each with `interviewmaxxing resume APP --act` in a
+visible browser (`holds` lists the line), or run them headless again with `--user-actions`
+(for example after a transient challenge or a runtime fix for a control); the summary says
+so under "Retry of". `failed_retryable`, `unknown` and `error` applications always run
+again. A `needs_input` application whose open holds are all
 `EXPLICIT_ANSWER_REQUIRED` is skipped unless `--include-explicit` (also with `--all`):
 only the person can answer those. A hold is no longer open once, after the
 application stopped, the person answered exactly that question for it
@@ -389,10 +396,11 @@ whose summary predates `run_options` uses the flags given (a note says so).
 The retry's ledger lines carry `retry_of`, `previous_outcome`, `holds_before` and
 `holds_cleared`, and its `summary.json` a `retry` object: `retry_of`, the `outcomes`
 selected, `include_explicit`, `considered` (listings after `--backends`),
-`rerun_all` (`--all`), `selected`, `skipped` (counted by reason: `prepared`, `closed`,
-`duplicate`, `blocked`, `approved (left to submit-approved)`, `not selected
-(<outcome>)`, `nothing answered since the stop`, `explicit answers only`, `application
-not found`, `same application as another listing`, `over --limit`), `retried`,
+`rerun_all` (`--all`), `user_actions` (`--user-actions`), `selected`, `skipped` (counted by
+reason: `prepared`, `closed`, `duplicate`, `blocked`, `approved (left to submit-approved)`,
+`not selected (<outcome>)`, `nothing answered since the stop`, `browser actions only`,
+`explicit answers only`, `application not found`, `same application as another listing`,
+`over --limit`), `retried`,
 `prepared` (now prepared), `holds_before`, `holds_cleared`, `holds_open` (holding the
 retried applications now, new ones included), `transitions` (previous outcome ->
 outcome -> count) and `ledger_lines_ignored` (of the retried ledger). The Markdown
@@ -711,11 +719,18 @@ interviewmaxxing batch-report BATCH_ID   # now with a Submissions table
 It uses the same worker slots and browser profiles, appends one `kind: "submission"`
 line per application (outcome and receipt id) to the batch's ledger, and never
 launches an application that line records as submitted or uncertain again. A form
-that changed since you approved it is not submitted and comes back as `needs_input`.
+that changed since you approved it is not submitted and comes back as `needs_input`, and so
+does one whose site resumed a draft it kept at a later page; those are listed on their own
+(`kept_drafts`) with the remedy, submitting them in the browser yourself, because preparing
+them again reopens the same draft.
 `prepare-batch --retry` leaves an approved application alone (skipped as
 `approved (left to submit-approved)`): preparing it again would withdraw the
 approval. A submission line that cannot be read (cut short by a crash, edited) is
 counted as `ledger_lines_ignored` in `submission-summary.json` and its Markdown, and in
 `batch-report` (`submissions.lines_ignored`): its application counts as not submitted by
-that ledger, and the store still refuses a second submit. The rules, events and exit
+that ledger, and the store still refuses a second submit. The batch's own ledger holds its
+prepare lines too: a line cut short before the first submission line was a prepare line
+(counted by prepare-batch's reader, not as a submission), a submission line is never
+appended onto such a line, and a cut line after a submission line counts as possibly a
+submission. The rules, events and exit
 codes are in [submission.md](submission.md).
