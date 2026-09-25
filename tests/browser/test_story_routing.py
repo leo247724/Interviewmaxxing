@@ -1805,10 +1805,12 @@ def test_a_rubric_letter_is_written_first_time_with_the_profile_links(candidate,
 
 
 @pytest.mark.parametrize("rule", ["GREETING", "LETTER_LENGTH", "OPENING", "CLOSING", "STORY_MISSING",
-                                  "JOB_RESTATED", "EMPLOYER_NAME", "ATTRIBUTION"])
+                                  "JOB_RESTATED", "EMPLOYER_NAME", "ATTRIBUTION", "DATE_RANGE", "FACTS_UNCITED"])
 def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, mock_job, rule):
     from interviewmaxxing_browser.ai.routing import (
         ATTRIBUTION_FEEDBACK,
+        DATE_RANGE_FEEDBACK,
+        FACTS_UNCITED_FEEDBACK,
         JOB_RESTATED_FEEDBACK,
         LETTER_CLOSING_FEEDBACK,
         LETTER_GREETING_FEEDBACK,
@@ -1841,6 +1843,12 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
         bad[9] = {**bad[9], "text": "The posting asks for hands-on Google Ads management with conversion "
                                     "tracking across every account.", "fact_ids": [],
                   "job_evidence_ids": [POSTING["id"]]}
+    elif rule == "DATE_RANGE":
+        bad[3] = {**bad[3], "text": "When I took over the bakery chain's account, which I ran from 2022 to 2024, its "
+                                    "dashboard counted every phone call as an order."}
+    elif rule == "FACTS_UNCITED":
+        bad = [{**s, "fact_ids": [fid for fid in s["fact_ids"] if fid != "fact.bakery"] or
+                ([chunk["id"]] if s["fact_ids"] else [])} for s in bad]
     elif rule == "ATTRIBUTION":
         bad[9] = {**bad[9], "text": "Reporting to a sales team is the weekly habit I kept, and Mock Co holds this "
                                     "role accountable for exactly that kind of reporting."}
@@ -1858,7 +1866,8 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
     feedback = {"GREETING": LETTER_GREETING_FEEDBACK, "LETTER_LENGTH": LETTER_LENGTH_FEEDBACK,
                 "OPENING": LETTER_OPENING_FEEDBACK, "CLOSING": LETTER_CLOSING_FEEDBACK,
                 "STORY_MISSING": LETTER_STORY_FEEDBACK, "JOB_RESTATED": JOB_RESTATED_FEEDBACK,
-                "ATTRIBUTION": ATTRIBUTION_FEEDBACK}.get(rule)
+                "ATTRIBUTION": ATTRIBUTION_FEEDBACK, "DATE_RANGE": DATE_RANGE_FEEDBACK,
+                "FACTS_UNCITED": FACTS_UNCITED_FEEDBACK}.get(rule)
     issues = writer.calls[1]["review_feedback"]
     assert (feedback in issues) if feedback else any("Coda Fictional" in issue for issue in issues)
     # A letter still failing a checked line on its last attempt is held, never shipped.

@@ -565,6 +565,20 @@ LETTER_LENGTH_FEEDBACK = (
 LETTER_STORY_FEEDBACK = (
     "Draw the proof from a story passage (an entry keyed story) and cite it: one campaign told as "
     "constraint, what the applicant changed and the result, naming the tradeoff it states.")
+_MONTH = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+_DATE_RANGE = re.compile(
+    rf"\b(?:from|between)\s+(?:{_MONTH}\s+)?(?:19|20)\d{{2}}\s+(?:to|and|through|until)\s+(?:{_MONTH}\s+)?"
+    rf"(?:(?:19|20)\d{{2}}|present|now|today)\b|\b(?:{_MONTH}\s+)?(?:19|20)\d{{2}}\s*[-\u2013]\s*(?:{_MONTH}\s+)?"
+    rf"(?:(?:19|20)?\d{{2}}|present)\b(?!\s*%)", re.IGNORECASE)
+"""A date range in a letter's body ("from 2022 to 2023", "March 2024 to May 2025", "2022-23"):
+the rubric gives an employer one date where it first appears (round 6, the judge's fourth fix)."""
+DATE_RANGE_FEEDBACK = (
+    "Give each employer one date where it first appears: the year the work happened ('in 2023') or "
+    "'since <Month YYYY>' for current work. No date range ('from 2022 to 2023', 'March 2024 to May "
+    "2025'), and no date repeated for an employer already dated.")
+FACTS_UNCITED_FEEDBACK = (
+    "Cite at least one verified fact (an entry not keyed story or contact_links) for the claims it "
+    "states: a passage's claim that a verified fact also states cites both.")
 ATTRIBUTION_FEEDBACK = (
     "Cut every clause that attributes a requirement to the employer or compares the employer to "
     "the applicant's work ('<employer> wants / asks / needs / names / expects', 'holds this role "
@@ -4318,6 +4332,12 @@ class DynamicPacketResolver:
                 rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
             rejections.extend(self._letter_findings(context, candidate, purpose=purpose, job_evidence=job_evidence,
                                                     stories=bool(stories), contact=contact is not None))
+            cited = {fid for s in candidate.sentences for fid in s.fact_ids}
+            if (purpose == "cover_letter" and cited and cited <= set(supplied)
+                    and not cited & {fact.id for fact in relevant}):
+                # Provenance needs a verified fact; a letter citing only passages and links is
+                # rewritten rather than held at the end (round 6: a live letter held for it).
+                rejections.append(("FACTS_UNCITED", FACTS_UNCITED_FEEDBACK))
             if enumeration and _TOTALITY_WORDS.search(candidate.text) and not any(
                     re.search(r"\btotal\b", str(fact.value), re.IGNORECASE) for fact in relevant):
                 # A total the facts do not state: one corrective rewrite, like a review finding.
@@ -4468,6 +4488,8 @@ class DynamicPacketResolver:
         described = " ".join(evidence["text"] for evidence in job_evidence)
         if attribution_clauses(draft.text, employer_names(company, described) if company else []):
             findings.append(("ATTRIBUTION", ATTRIBUTION_FEEDBACK))
+        if purpose == "cover_letter" and _DATE_RANGE.search(draft.text):
+            findings.append(("DATE_RANGE", DATE_RANGE_FEEDBACK))
 
         def names(text: str) -> bool:
             return re.search(rf"(?<!\w){re.escape(company)}(?!\w)", text, re.IGNORECASE) is not None

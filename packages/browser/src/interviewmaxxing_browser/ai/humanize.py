@@ -451,7 +451,9 @@ def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[s
         findings.append(Finding("attribution_clause", len(clauses), tuple(clauses[:4])))
     month = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
     ranges = re.findall(rf"\b(?:from|between)?\s*{month}\s+(?:19|20)\d{{2}}\s*(?:to|and|through|-|\u2013)\s*"
-                        rf"(?:{month}\s+(?:19|20)\d{{2}}|present|now|today)\b", text, re.IGNORECASE)
+                        rf"(?:{month}\s+(?:19|20)\d{{2}}|present|now|today)\b"
+                        r"|\b(?:from|between)\s+(?:19|20)\d{2}\s+(?:to|and|through|until)\s+(?:(?:19|20)\d{2}|present)\b",
+                        text, re.IGNORECASE)
     since = re.findall(rf"\bsince\s+{month}\s+(?:19|20)\d{{2}}\b", text, re.IGNORECASE)
     repeats = [date for date in dict.fromkeys(d.casefold() for d in since) if dates_count(since, date) > 1]
     if ranges or repeats:
