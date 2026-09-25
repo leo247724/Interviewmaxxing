@@ -105,8 +105,10 @@ class FieldRouteDecision(BaseModel):
     semantic_pool_share: float | None = Field(default=None, ge=0, le=1)
     """Jev's semantic mass on the pool that can decide a field's meaning, when Jev classified
     it: on a single-choice control the residence types together (with CUSTOM_BOOLEAN on
-    Yes/No options while they outweigh it), on a text box whose label asks for an address
-    ADDRESS and LOCATION. The pooled gate reads this share."""
+    Yes/No options while they outweigh it), or the leading legal type (work authorization or
+    sponsorship) with the CUSTOM_BOOLEAN and CUSTOM_SELECT shapes while it outweighs both the
+    shapes and the residence types; on a text box whose label asks for an address ADDRESS
+    and LOCATION. The pooled gate reads this share."""
     narrative_probability: float | None = Field(default=None, ge=0, le=1)
     narrative_confidence: float | None = Field(default=None, ge=0, le=1)
     narrative_probabilities: dict[str, float] = Field(default_factory=dict)
@@ -251,6 +253,13 @@ split among them is one reading (ties go to the first in this order)."""
 _RESIDENCE_POOL = frozenset(t.value for t in RESIDENCE_TYPES)
 _SHAPE_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value})
 """On Yes/No options, the reading that only restates the control's yes/no shape."""
+LEGAL_TYPES: tuple[SemanticType, ...] = (SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP)
+"""Types the resolver derives from the stated work authorization status. On a single-choice
+control each pools with the choice shapes on its own (round 5): a split between the two is
+two different legal answers, never one reading."""
+_CHOICE_SHAPE_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value, SemanticType.CUSTOM_SELECT.value})
+"""On a select or radio, the readings that only restate the control's shape: a yes/no or
+a pick among the offered options, whatever the question asks."""
 _ADDRESS_POOL = frozenset({SemanticType.ADDRESS.value, SemanticType.LOCATION.value})
 """On a text box whose label asks for an address, the location reading is the address."""
 _ADDRESS_LABEL = re.compile(r"\baddress\b", re.IGNORECASE)
@@ -612,6 +621,20 @@ class AIFormRouter:
                 semantic_pool = _pool_share(semantic, pool)
                 if meaning is SemanticType.UNKNOWN and self._pooled(semantic, pool):
                     meaning = max(RESIDENCE_TYPES, key=lambda t: shares.get(t.value, 0.0))
+                # Rippling's "Is your authorization to work in the United States" (Permanent /
+                # Temporary) read WORK_AUTHORIZATION 0.86 / CUSTOM_BOOLEAN 0.08 / CUSTOM_SELECT
+                # 0.05: on a select or radio the custom readings restate the control's shape,
+                # not another meaning, so they join the leading legal type's pool while it
+                # outweighs them together (and the residence types, whose pool is read first).
+                # The pool never crosses the two legal types: a split between them is two
+                # different legal answers.
+                choice_shape = _pool_share(semantic, _CHOICE_SHAPE_POOL)
+                legal = max(LEGAL_TYPES, key=lambda t: shares.get(t.value, 0.0))
+                if shares.get(legal.value, 0.0) > max(choice_shape, residence):
+                    legal_pool = _CHOICE_SHAPE_POOL | {legal.value}
+                    semantic_pool = _pool_share(semantic, legal_pool)
+                    if meaning is SemanticType.UNKNOWN and self._pooled(semantic, legal_pool):
+                        meaning = legal
             elif fld.control_type is ControlType.TEXT and _ADDRESS_LABEL.search(fld.label):
                 # "What is your current home address?" reads as ADDRESS or LOCATION; its label
                 # asks for the address, so together they are the address.
