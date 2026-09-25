@@ -204,7 +204,9 @@ interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
 The runtime flags of `apply` are accepted and passed to every job unchanged:
 `--browser`, `--opencli-profile`, `--ai-routing`, `--env-file`, `--writer-model` and
 `--rag-connection-file` (see [dynamic-runtime.md](dynamic-runtime.md)). The batch
-uses the candidate from `--candidate` or `IMX_CANDIDATE_ID`.
+uses the candidate from `--candidate` or `IMX_CANDIDATE_ID`. `--captcha-solver` and
+`--captcha-budget-usd` are passed on too, with one spend cap for the whole batch; see
+[CAPTCHAs](#captchas).
 
 Exit status: `0` when the batch has at least one recorded job, `1` when nothing was
 recorded, `2` for a usage or validation error, `130` when interrupted. Ctrl-C or
@@ -461,7 +463,8 @@ application (`apply URL` for an `error` row without one), per-slot browser profi
 the per-job timeout, the card bookkeeping, and nothing submitted: `resume` keeps each
 application's preparation-only restriction. The worker count, per-job timeout, retry
 count, closed-card sync, candidate, browser and runtime flags (`--ai-routing`,
-`--env-file`, `--writer-model`, `--rag-connection-file`, `--opencli-profile`) come from
+`--env-file`, `--writer-model`, `--rag-connection-file`, `--opencli-profile`,
+`--captcha-solver`, `--captcha-budget-usd`) come from
 the retried batch's `summary.json` (`run_options`); a flag given with `--retry`
 replaces its recorded value, even when it is given with its default value. A batch
 whose summary predates `run_options` uses the flags given (a note says so).
@@ -921,3 +924,56 @@ prepare lines too: a line cut short before the first submission line was a prepa
 appended onto such a line, and a cut line after a submission line counts as possibly a
 submission. The rules, events and exit
 codes are in [submission.md](submission.md).
+
+## CAPTCHAs
+
+A CAPTCHA stops an application for you ("Solve the CAPTCHA", `needs_input`) unless the run
+solves it through your 2Captcha account:
+
+```sh
+interviewmaxxing prepare-batch --inventory inventory.json --workers 3 \
+  --ai-routing --env-file /abs/env.local --writer-model anthropic/claude-opus-5.5 \
+  --captcha-solver 2captcha --captcha-budget-usd 2.00
+```
+
+- **Off by default.** `--captcha-solver 2captcha` (or `IMX_CAPTCHA_SOLVER=2captcha` in the
+  command's environment) turns it on for `apply`, `resume`, `prepare-batch`, `submit` and
+  `submit-approved`. It needs `TWOCAPTCHA_API_KEY` beside the OpenRouter key: in the
+  `--env-file` file, else in the file `IMX_OPENROUTER_ENV_FILE` names, else in the
+  environment. Without the key the solver is simply off: every CAPTCHA stops the
+  application as before, and nothing else changes. The key is never printed or recorded.
+- **Budget.** `--captcha-budget-usd` (default 2.00, at most 100) caps what solving may
+  spend: per run for `apply`, `resume` and `submit`; for `prepare-batch` and
+  `submit-approved` once for the whole batch, whose jobs share `captcha-spend.jsonl` in the
+  batch directory. A retry batch has its own; `submit-approved --batch BATCH_ID` writes to
+  that batch's directory (unless `--batch-id` names another), so its solves count against
+  the same file as the batch's preparation. Each solve holds USD 0.003 before 2Captcha is
+  asked and then counts at the cost 2Captcha reports (a failed task costs nothing). A
+  solve that would pass the cap is not asked for.
+- **What is solved:** reCAPTCHA v2 (checkbox and invisible), reCAPTCHA v3, hCaptcha and
+  Cloudflare Turnstile,
+  - on a CAPTCHA page in front of the form and on a form step before the last, when the
+    run meets them;
+  - on the final form only when it is submitted. `prepare-batch` leaves it: the prepared
+    application says "A CAPTCHA on this form must be solved in the browser before it can
+    be submitted" and the review queue "CAPTCHA to solve when submitting". `submit` and
+    `submit-approved` with the solver on answer it right before the approved submit (a
+    token lasts about two minutes).
+- **What is never solved** (2Captcha is not asked; you solve it in the browser as before):
+  an invisible reCAPTCHA bound to the submit button (only its own callback, which sends
+  the form, takes the token), a CAPTCHA page that also holds a form, anything in a
+  `--browser opencli` session (it cannot write to the page), and image or text challenges
+  that are none of the four widgets.
+- **Solving never submits.** The token goes into the widget's answer field and nothing is
+  clicked; a widget's callback is called only on a CAPTCHA page in front of the form that
+  has nothing to fill.
+  Submission stays behind `approve`, `IMX_ALLOW_SUBMISSION=1` and `--yes`.
+- **Unsolved** (over budget, no answer from 2Captcha within 120 s, a 2Captcha error such as
+  `ERROR_ZERO_BALANCE`, a token the page refuses, more than three solves in one run): the
+  application is `needs_input` with "Solve the CAPTCHA", exactly as without the solver.
+- **Records and cost.** Each attempt is a `captcha.solve` event of the application
+  (`interviewmaxxing events APP`): widget kind, outcome, seconds, cost, 2Captcha's error
+  code and the site's host, never the token or the key. An attempt that reached 2Captcha
+  also counts as a provider call (`provider.budget`, purpose `captcha`), so the run's
+  "Provider cost", the [batch report](#batch-report)'s cost columns and the dashboard
+  include it.

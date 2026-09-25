@@ -94,9 +94,11 @@ from interviewmaxxing_browser import (
     ConfirmationTie,
     PlaywrightSessionFactory,
     SubmissionRefused,
+    consent_gate,
     reconciliation_from,
     user_action_needs,
 )
+from interviewmaxxing_browser.captcha import CaptchaAttempt, CaptchaSolver
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_core import (
     PRE_SUBMISSION_STATES,
@@ -112,6 +114,7 @@ from interviewmaxxing_core import (
     ApplicationState,
     ApplicationStore,
     ApplyOutcome,
+    BooleanValue,
     BrowserOptions,
     BrowserSessionFactory,
     CandidateLoader,
@@ -167,6 +170,16 @@ SUGGESTION_EVENT = "field.suggestion_chosen"
 """Emitted by the runner when the resolver chose one of a lookup's site suggestions:
 the question, the chosen label and the chooser's decision metadata. (The store
 reserves the ``application.`` prefix for its own events.)"""
+CONSENT_EVENT = "consent.accepted"
+"""Emitted by the runner when it accepted a data-processing consent page in front of the
+application form (round 14): the page's question ("I accept the <policy>"), its URL, and
+where the answer came from (the person's saved statement or input that covers it, by id).
+The page's own acceptance is the only thing it sends; no application is submitted."""
+CAPTCHA_EVENT = "captcha.solve"
+"""Emitted by the runner for each CAPTCHA it had solved through 2Captcha (``--captcha-solver
+2captcha``): the widget kind, the outcome, the seconds and the cost 2Captcha reported, the
+site's host; never the token or the key. A solve that reached 2Captcha is also counted in a
+``provider.budget`` event (purpose ``captcha``)."""
 PREPARED_EVENT = "preparation.ready"
 """Emitted by a prepare-only run at the final review step: the form step and URL, the
 prepared packet, ``submitted: False`` and every filled step with its questions
@@ -675,6 +688,7 @@ class LocalApplicationRunner:
         owner: str | None = None,
         clock: Callable[[], datetime] = utc_now,
         submit_unapproved: bool = False,
+        captcha_solver: CaptchaSolver | None = None,
     ) -> None:
         self.paths = paths
         self.interaction = interaction
@@ -689,6 +703,9 @@ class LocalApplicationRunner:
         self.owner = owner or f"runner:{socket.gethostname()}:{os.getpid()}"
         self.clock = clock
         """The store's clock (claims, events). Tests use a virtual clock."""
+        self.captcha_solver = captcha_solver
+        """2Captcha within its spend cap (``--captcha-solver 2captcha`` and a configured
+        ``TWOCAPTCHA_API_KEY``), or None: every CAPTCHA then stops the run for the person."""
 
     # --- public API -------------------------------------------------------------------
 
@@ -980,6 +997,9 @@ class _Run:
         self.provider_total: dict[str, Any] = {"calls": 0, "known_cost_usd": 0.0,
                                                "unknown_cost_calls": 0}
         """The provider usage this run recorded, for its outcome message."""
+        self.consent_tried = False
+        """Whether this run already accepted (or tried to accept) a data-processing consent
+        page; a consent page that comes back is the person's (``_accept_consent``)."""
 
     @property
     def app_id(self) -> str:
@@ -1134,6 +1154,17 @@ class _Run:
 
     async def _step(self, page: PageInspection) -> PageInspection:
         kind = page.kind
+        if consent_gate(page) and not self.consent_tried and self.approved is None:
+            # A submission run of an approval resolves nothing: the page is the person's.
+            accepted = await self._accept_consent()
+            if accepted is not None:
+                return accepted
+        if kind is PageKind.CAPTCHA:
+            # A CAPTCHA page in front of the form: solved through 2Captcha when the solver is
+            # on (its callback may be called: no application form is on this page).
+            solved = await self._solve_captcha(call_callback=True)
+            if solved is not None:
+                return solved
         if kind in (PageKind.SIGN_IN_REQUIRED, PageKind.CAPTCHA):
             return await self._user_action(page, user_action_needs(page))
         if kind is PageKind.ALREADY_APPLIED:
@@ -1199,6 +1230,90 @@ class _Run:
             return after
         # e.g. a sign-in that returns to the posting: go back to the application URL.
         return await self.browser.open(self.url)
+
+    async def _accept_consent(self) -> PageInspection | None:
+        """Round 14: a data-processing consent page in front of the form (Jobvite's "Data
+        Consent") is accepted when the person's own statement covers it. Its question ("I
+        accept the <policy>", the browser's ``data_consent``) is resolved like any consent
+        on a form: an exact saved answer or input, else the routing resolver's
+        statement-coverage decision over the person's saved statements. Only a checked
+        answer from the person's own answers lets the browser choose the policy and click
+        "I Accept" (``accept_data_consent``), once per preparation run (a submission run
+        of an approval resolves nothing). Returns the page it leads to, or None: the page
+        is then the person's to accept, as before."""
+        offer = getattr(self.browser, "data_consent", None)
+        accept = getattr(self.browser, "accept_data_consent", None)
+        if not callable(offer) or not callable(accept):
+            return None
+        self.consent_tried = True
+        residence = self.candidate.identity.address.country
+        question: ApplicationForm | None = await self._fenced(offer(residence))
+        self._renew()
+        if question is None or len(question.fields) != 1:
+            return None
+        (field,) = question.fields
+        packet = await self._resolve(question)
+        answer = packet.answer_for(field.id)
+        if (answer is None or answer.value != BooleanValue(checked=True)
+                or answer.provenance.source not in (AnswerSource.SAVED_ANSWER, AnswerSource.USER_INPUT)):
+            return None
+        await self.interaction.progress("Accepting the data-processing consent that your saved "
+                                        "statement covers")
+        after: PageInspection | None = await self._fenced(accept(question, residence))
+        self._renew()
+        if after is None:
+            return None
+        self.store.append_event(self.claim, CONSENT_EVENT, {
+            "question": field.question_text, "form_url": question.url,
+            "source": answer.provenance.source.value,
+            "reference_ids": list(answer.provenance.reference_ids),
+            "next_page": after.kind.value})
+        return after
+
+    async def _solve_step_captcha(self) -> None:
+        """A CAPTCHA widget on a step that is not the final one has to be answered before
+        the site lets the step go on: with the solver on, its token goes into the page
+        before ``advance`` (no callback: the step's own Next control goes on)."""
+        if self.runner.captcha_solver is None:
+            return
+        page = await self.browser.inspect()
+        if page.captcha_pending and page.form is not None and page.form.is_final_step is not True:
+            await self._solve_captcha(call_callback=False)
+
+    async def _solve_captcha(self, *, call_callback: bool) -> PageInspection | None:
+        """Have the CAPTCHA on the page solved through 2Captcha (``runner.captcha_solver``),
+        record the attempt, and return the page as it now reads; None when the solver is
+        off, the attempt did not succeed (over budget, unsupported, timed out) or the page
+        still asks for it, so the run goes on exactly as without the solver. Solving never
+        submits anything: see ``GenericApplicationBrowser.solve_captcha``."""
+        solver = self.runner.captcha_solver
+        solve = getattr(self.browser, "solve_captcha", None)
+        if solver is None or not callable(solve):
+            return None
+        await self.interaction.progress("Trying to solve the CAPTCHA through 2Captcha")
+        attempt, page_url, page = await self._fenced(solve(solver, call_callback=call_callback))
+        self._renew()
+        self._record_captcha(attempt, page_url, solver)
+        return page if isinstance(page, PageInspection) else None
+
+    def _record_captcha(self, attempt: CaptchaAttempt, page_url: str, solver: CaptchaSolver) -> None:
+        """``captcha.solve`` for the attempt and, when 2Captcha was asked, its cost as a
+        ``provider.budget`` event (purpose ``captcha``) so batch costs include it."""
+        with contextlib.suppress(Exception):  # a lost claim is reported by what follows
+            self.store.append_event(self.claim, CAPTCHA_EVENT, attempt.record(page_url))
+        if not attempt.task_created:
+            return
+        bucket = {"calls": 1, "known_cost_usd": round(attempt.cost_usd or 0.0, 6),
+                  "unknown_cost_calls": 0 if attempt.cost_usd is not None else 1,
+                  "latency_seconds": round(attempt.seconds, 3)}
+        usage = {**bucket, "by_purpose": {"captcha": dict(bucket)},
+                 "limits": {"captcha_budget_usd": solver.budget.cap_usd}}
+        try:
+            self.store.append_event(self.claim, PROVIDER_EVENT, usage)
+        except Exception:
+            return
+        for key in self.provider_total:
+            self.provider_total[key] += bucket[key]
 
     def _context(self, form: ApplicationForm) -> PacketContext:
         app = self.app()
@@ -1425,6 +1540,7 @@ class _Run:
         if form.is_final_step is True:
             return await self._submit(packet)
         await self._verify_expected_page()
+        await self._solve_step_captcha()
         try:
             nav = await self.browser.advance()
         except (SubmissionRefused, AmbiguousAction) as exc:
@@ -1720,6 +1836,7 @@ class _Run:
                 raise self._not_approved(self._unseen(unseen))
             return await self._submit(packet)
         await self._verify_expected_page()
+        await self._solve_step_captcha()
         try:
             nav = await self.browser.advance()
         except (SubmissionRefused, AmbiguousAction) as exc:
@@ -1875,6 +1992,10 @@ class _Run:
                              "approved application whose submission was authorized is "
                              "submitted. Nothing was submitted.")
         has_expected_job = self.store.expected_job_identity(self.app_id) is not None
+        if self.runner.captcha_solver is not None and (await self.browser.inspect()).captcha_pending:
+            # The form's CAPTCHA is solved right before the gated submit (a token lasts about
+            # two minutes). Only its field is written; the submit below sends the form.
+            await self._solve_captcha(call_callback=False)
         if has_expected_job:
             await self.interaction.progress("Submitting the application")
             await self._verify_expected_page()
@@ -1936,6 +2057,7 @@ def create_runner(
     interaction: UserInteraction,
     limits: RunLimits | None = None,
     dynamic_options: Any = None,
+    captcha_solver: CaptchaSolver | None = None,
 ) -> LocalApplicationRunner:
     """Production preparation-only runner with an explicitly selected runtime."""
     factory = None
@@ -1946,7 +2068,7 @@ def create_runner(
         factory, resolver = runtime_components(dynamic_options)
     return LocalApplicationRunner(paths=paths, interaction=interaction, headless=headless,
                                   limits=limits, browser_factory=factory, resolver=resolver,
-                                  prepare_only=True)
+                                  prepare_only=True, captcha_solver=captcha_solver)
 
 
 ALLOW_SUBMISSION_ENV = "IMX_ALLOW_SUBMISSION"
@@ -1961,6 +2083,7 @@ def create_submission_runner(
     interaction: UserInteraction,
     limits: RunLimits | None = None,
     dynamic_options: Any = None,
+    captcha_solver: CaptchaSolver | None = None,
 ) -> LocalApplicationRunner:
     """The runner behind ``interviewmaxxing submit``: ``prepare_only=False``, so an
     application whose approval was authorized is submitted with exactly its approved
@@ -1974,7 +2097,8 @@ def create_submission_runner(
 
         factory, _ = runtime_components(dynamic_options)
     return LocalApplicationRunner(paths=paths, interaction=interaction, headless=headless,
-                                  limits=limits, browser_factory=factory, prepare_only=False)
+                                  limits=limits, browser_factory=factory, prepare_only=False,
+                                  captcha_solver=captcha_solver)
 
 
 class NoninteractiveInteraction:

@@ -77,7 +77,7 @@ CAPTCHA_WIDGET_FIELD = "g-recaptcha-response"
 CONSENT_COOKIE = "bwa_consent"
 INTERNAL_FIELDS = frozenset(
     {"resume_upload_id", "captcha_token", "captcha_answer", CAPTCHA_WIDGET_FIELD, HONEYPOT_FIELD,
-     "phone_country"}
+     "phone_country", "captcha_kind", "h-captcha-response", "cf-turnstile-response"}
 )
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 US_PHONE_RE = re.compile(r"^\d{10}$")
@@ -217,6 +217,16 @@ class Field:
     lazy: bool = False
     """Rendered by page script only once its block scrolls into view (Teamtailor renders its
     custom questions late): until then the form holds an empty placeholder there."""
+    disabled_by: str | None = None
+    """A checkbox (by name) that takes this question away while it is checked (Paylocity's
+    "I currently work here" and the entry's end date): DISABLE_JS disables and hides the
+    question's block, and the server requires it only when that box was not posted."""
+    aria: bool = False
+    """A radio group, checkbox group or checkbox drawn as ARIA widgets (Greenhouse's job board,
+    Radix-style): each option is a ``button[role=checkbox|radio][aria-checked]`` named by a
+    ``<label for>``, beside an ``aria-hidden`` native "bubble" input (``tabindex=-1``,
+    invisible) that carries the name and value for the form post. ARIA_CHOICE_JS keeps
+    ``aria-checked`` and the bubble's ``checked`` together on a click."""
     placeholder: str | None = None
     """What a pcty_select shows while it holds no value ("Select a state")."""
     suggestions: tuple[str, ...] = ()
@@ -266,6 +276,8 @@ def revealed_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> tu
     for f in fields:
         if f.required_after and not f.required and any(form.get(f.required_after, [])):
             f = replace(f, required=True)
+        if f.disabled_by and f.required and any(form.get(f.disabled_by, [])):
+            f = replace(f, required=False)
         shown.append(f)
         if not f.reveals:
             continue
@@ -750,6 +762,26 @@ GH_EEO_VETERAN = Field(
                      ("2", "I identify as one or more of the classifications of a protected veteran"),
                      ("3", "I don't wish to answer")),
 )
+PW_COMPANY = Field("workHistory.companyName.0", "Company Name", "text", True)
+PW_POSITION = Field("workHistory.position.0", "Position", "text", True)
+PW_START = Field("txt-workHistory-startDate-0", "Start Date", "text", True, hint="MM/YYYY")
+PW_END = Field("txt-workHistory-endDate-0", "End Date", "text", True, hint="MM/YYYY",
+               disabled_by="workHistory.currentlyWorkingHere.0")
+PW_CURRENT = Field("workHistory.currentlyWorkingHere.0", "I currently work here", "checkbox")
+GH_ARIA_CLIENTS = Field(
+    "question_7201[]", "How many clients do you currently support?", "checkbox_group", True,
+    _options(("71", "1-3"), ("72", "4-7"), ("73", "8 or more")), aria=True,
+)
+GH_ARIA_BUDGETS = Field(
+    "question_7202", "What range of monthly budgets are you used to working with?", "radio", True,
+    _options(("81", "Under $50k"), ("82", "$50k to $250k"), ("83", "Over $250k")), aria=True,
+)
+GH_ARIA_DOUBLE_CHECK = Field(
+    "question_7203",
+    "Please double-check all the information provided above. Ensuring accuracy is crucial, as any "
+    "errors or omissions may impact the review of your application.",
+    "checkbox", True, aria=True,
+)
 TT_LINKEDIN = Field("candidate[answers_attributes][0][text]", "Linkedin profile", "text", True, lazy=True)
 """Teamtailor: a custom question rendered only once it scrolls into view."""
 BH_STATE = Field("state.value", "State", "fab_select", True,
@@ -781,6 +813,9 @@ JV_SPONSORSHIP = Field(
 )
 JV_CONSENT_COOKIE = "bwa_jv_consent"
 JV_POLICY_ID = "policy-7d1f"
+JV_REGIONAL = (("policy-ca-en", "Canada - English"), ("policy-ca-fr", "Canada - Français"),
+               ("policy-us-en", "United States - English"))
+"""The regional policies of ``/jobs/jobvite-like/apply?policies=regional``."""
 
 # --- upload and autofill scenarios (page behaviour in SCENARIO_JS) ----------------------
 
@@ -935,6 +970,17 @@ class Job:
     """Acceptance returns a bare "Thank you!" page with no job or reference."""
     captcha_widget: bool = False
     """Embeds an invisible reCAPTCHA-style badge; only its token is checked, on submit."""
+    captcha_gate: bool = False
+    """A CAPTCHA page in front of the form (``?kind=``, see ``SOLVABLE_CAPTCHAS``): its
+    callback posts the token to ``/jobs/<job>/captcha-verify``; the right token sets the
+    ``bwa_captcha_gate`` cookie to that kind (so passing one widget passes only its own
+    gate) and the page reloads into the form."""
+    solvable_captcha: bool = False
+    """The form carries a solvable CAPTCHA widget (``?kind=``); the POST is accepted only
+    with that widget's expected token (``captcha_expected_token``)."""
+    captcha_step: int | None = None
+    """Step (1-based) of a multistep form that carries a reCAPTCHA v2 checkbox whose
+    expected token the step's POST requires."""
     spa_loading: bool = False
     """Page script renders the form 1.5 s after load, behind a loading indicator."""
     flash_closed: bool = False
@@ -1001,6 +1047,9 @@ class Job:
             "honeypot": self.honeypot,
             "generic_thanks": self.generic_thanks,
             "captcha_widget": self.captcha_widget,
+            "captcha_gate": self.captcha_gate,
+            "solvable_captcha": self.solvable_captcha,
+            "captcha_step": self.captcha_step,
             "spa_loading": self.spa_loading,
             "flash_closed": self.flash_closed,
             "cookie_banner": self.cookie_banner,
@@ -1194,6 +1243,44 @@ JOBS: dict[str, Job] = {
             "only with a non-empty g-recaptcha-response token.",
             STANDARD_FIELDS,
             captcha_widget=True,
+        ),
+        Job(
+            "captcha-gate",
+            "BWA-CG-141",
+            "Security Operations Analyst",
+            "Engineering",
+            "Remote (US)",
+            "A CAPTCHA page in front of the core form (?kind=recaptcha-v2, recaptcha-v2-invisible, "
+            "hcaptcha or turnstile; default recaptcha-v2). The widget's callback posts its token; the "
+            "expected token passes the gate (a cookie) and the page reloads into the form.",
+            _single(*CORE_FIELDS),
+            captcha_gate=True,
+        ),
+        Job(
+            "captcha-form",
+            "BWA-CF-142",
+            "Platform Security Engineer",
+            "Engineering",
+            "Remote (US)",
+            "The core form carrying a solvable CAPTCHA widget (?kind=recaptcha-v2, "
+            "recaptcha-v2-invisible, recaptcha-v3, recaptcha-v2-submit, hcaptcha or turnstile); the "
+            "POST is accepted only with the widget's expected token.",
+            _single(*CORE_FIELDS),
+            solvable_captcha=True,
+        ),
+        Job(
+            "captcha-steps",
+            "BWA-CS-143",
+            "Detection Engineer",
+            "Engineering",
+            "Remote (US)",
+            "Contact information with a reCAPTCHA v2 checkbox, then the resume, then a review page; "
+            "the first step's POST requires the checkbox's expected token.",
+            (
+                Step("Contact information", (FIRST_NAME, LAST_NAME, EMAIL, PHONE, LINKEDIN)),
+                Step("Resume", (RESUME,)),
+            ),
+            captcha_step=1,
         ),
         Job(
             "spa-loading",
@@ -1402,6 +1489,35 @@ JOBS: dict[str, Job] = {
             "the server records the race answer only when \"No\" was posted.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, GH_EEO_AUTHORIZED, GH_EEO_GENDER, GH_EEO_HISPANIC,
                     GH_EEO_VETERAN),
+        ),
+        Job(
+            "paylocity-work-history",
+            "BWA-PL-213",
+            "Paid Media Manager",
+            "Marketing",
+            "Denver, CO",
+            "A Paylocity-style work-history entry for the most recent role: Company Name "
+            "(workHistory.companyName.0), Position (workHistory.position.0), Start Date and End "
+            "Date with the format \"MM/YYYY\" shown under them (txt-workHistory-startDate-0, "
+            "txt-workHistory-endDate-0, both required) and \"I currently work here\" "
+            "(workHistory.currentlyWorkingHere.0). Checking the box disables and hides the end date "
+            "(DISABLE_JS); the server then does not require it.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, PW_COMPANY, PW_POSITION, PW_START, PW_END, PW_CURRENT),
+        ),
+        Job(
+            "greenhouse-aria",
+            "BWA-GH-131",
+            "Paid Social Manager",
+            "Marketing",
+            "Remote (United States)",
+            "A Greenhouse-style form whose choices are ARIA widgets (Radix-style): a required checkbox "
+            "group \"How many clients do you currently support?\" (question_7201[]), a required radio "
+            "group \"What range of monthly budgets are you used to working with?\" (question_7202, a "
+            "role=radiogroup) and a required single checkbox \"Please double-check all the information "
+            "provided above. ...\" (question_7203). Every option is a button[role=checkbox|radio] with "
+            "aria-checked and a <label for>, beside an aria-hidden, invisible native bubble input that "
+            "carries the name and value; ARIA_CHOICE_JS keeps both in step on a click.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, GH_ARIA_CLIENTS, GH_ARIA_BUDGETS, GH_ARIA_DOUBLE_CHECK),
         ),
         Job(
             "teamtailor-late",
@@ -3395,11 +3511,17 @@ WIDGETS_JS = r"""(function () {
     var list = document.getElementById(cfg.id + "-autocomplete-list");
     var status = root.querySelector("[role=status]");
     window.__addressPicked = null;
+    // ?address_list=late: the list the input names in aria-controls does not exist until
+    // there are suggestions to show (a live Paylocity form), so a menu probe finds nothing.
+    var late = new URLSearchParams(location.search).get("address_list") === "late";
+    var slot = list.parentNode;
+    if (late) list.remove();
     function close() { list.hidden = true; list.textContent = ""; input.setAttribute("aria-expanded", "false"); }
     input.addEventListener("input", function () {
       var q = norm(input.value);
       if (q.length < 3) { close(); return; }
       var hits = cfg.suggestions.filter(function (s) { return norm(s).indexOf(q) >= 0; });
+      if (late && !list.isConnected) slot.appendChild(list);
       list.textContent = "";
       hits.forEach(function (s, i) {
         var li = el("li", {role: "option", id: cfg.id + "-suggestion-" + i, "aria-selected": "false"}, s);
@@ -3505,21 +3627,26 @@ JV_CONSENT_JS = r"""(function () {
   // Jobvite's consent form: choosing a policy shows it with "I Accept" (it submits the form
   // with the policy ids, and the site remembers the consent) and "I Decline" (back to the
   // posting); choosing nothing shows "Back" again.
+  // ?accept=link: "I Accept" is a link drawn as a button whose click submits the form.
   var select = document.getElementById("jv-country-select");
   var policy = document.getElementById("jv-policy");
   var back = document.getElementById("jv-back");
   var actions = document.getElementById("jv-accept-reject");
+  var asLink = new URLSearchParams(location.search).get("accept") === "link";
   select.addEventListener("change", function () {
     actions.textContent = "";
     var chosen = !!select.value;
     policy.hidden = !chosen;
     back.hidden = chosen;
     if (!chosen) return;
-    var accept = document.createElement("button");
-    accept.type = "submit";
+    var accept = document.createElement(asLink ? "a" : "button");
+    if (asLink) accept.href = "#"; else accept.type = "submit";
     accept.className = "jv-button jv-button-primary";
     accept.textContent = "I Accept";
-    accept.addEventListener("click", function () { document.cookie = "bwa_jv_consent=accepted; path=/"; });
+    accept.addEventListener("click", function (e) {
+      document.cookie = "bwa_jv_consent=accepted; path=/";
+      if (asLink) { e.preventDefault(); select.form.submit(); }
+    });
     var decline = document.createElement("a");
     decline.className = "jv-button";
     decline.href = back.querySelector("a").getAttribute("href");
@@ -3779,6 +3906,15 @@ REVEAL_JS = r"""(function () {
     function mount() {
       if (shown()) return;
       var fragment = template.content.cloneNode(true);
+      // ?reveal_extra=1: the reveal also adds a button that submits nothing (a definitions
+      // link drawn as a button), a control outside the revealed questions.
+      if (params.get("reveal_extra") === "1") {
+        var extra = document.createElement("button");
+        extra.type = "button";
+        extra.className = "reveal-extra";
+        extra.textContent = "Show definitions";
+        fragment.appendChild(extra);
+      }
       mounted = Array.prototype.slice.call(fragment.childNodes);
       template.parentNode.insertBefore(fragment, template.nextSibling);
       if (hintText && block && !hint) {
@@ -3873,6 +4009,49 @@ FABRIC_JS = r"""(function () {
   });
 })();"""
 
+DISABLE_JS = r"""(function () {
+  "use strict";
+  // Paylocity's work history: while "I currently work here" is checked, the entry's end date
+  // is disabled and hidden (never posted); unchecking brings it back, required again.
+  Array.prototype.forEach.call(document.querySelectorAll("[data-disabled-by]"), function (block) {
+    var box = document.querySelector('input[name="' + CSS.escape(block.getAttribute("data-disabled-by")) + '"]');
+    var input = block.querySelector("input, select, textarea");
+    if (!box || !input) return;
+    function sync() {
+      input.disabled = box.checked;
+      input.required = !box.checked && block.hasAttribute("data-required");
+      block.hidden = box.checked;
+    }
+    box.addEventListener("change", sync);
+    sync();
+  });
+})();"""
+
+ARIA_CHOICE_JS = r"""(function () {
+  "use strict";
+  // Radix-style ARIA options: a click toggles a role="checkbox" (or checks a role="radio"
+  // and unchecks the other radios of its radiogroup), keeping aria-checked, data-state and
+  // the aria-hidden bubble input's checked (the form post) together.
+  var mock = window.__mock = window.__mock || {log: []};
+  mock.ariaClicks = 0;
+  function set(button, on) {
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.setAttribute("data-state", on ? "checked" : "unchecked");
+    var bubble = button.nextElementSibling;
+    if (bubble && bubble.tagName === "INPUT") bubble.checked = on;
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('button[role="checkbox"], button[role="radio"]'), function (button) {
+    button.addEventListener("click", function () {
+      mock.ariaClicks++;
+      if (button.getAttribute("role") === "checkbox") { set(button, button.getAttribute("aria-checked") !== "true"); return; }
+      var group = button.closest('[role="radiogroup"]');
+      Array.prototype.forEach.call(group ? group.querySelectorAll('button[role="radio"]') : [button], function (other) {
+        set(other, other === button);
+      });
+    });
+  });
+})();"""
+
 LAZY_JS = r"""(function () {
   "use strict";
   // Teamtailor renders its custom questions late: a question's block is an empty
@@ -3889,6 +4068,13 @@ LAZY_JS = r"""(function () {
       if (!template) return;
       block.replaceChildren(template.content.cloneNode(true));
       block.removeAttribute("style");
+      if (new URLSearchParams(location.search).get("lazy_extra") === "1") {
+        // ?lazy_extra=1: the question comes with a button that submits nothing ("Clear").
+        var clear = document.createElement("button");
+        clear.type = "button";
+        clear.textContent = "Clear";
+        block.appendChild(clear);
+      }
       mock.lazyMounts++;
       mock.log.push({t: Math.round(performance.now()), event: "lazy-mount"});
     });
@@ -5318,6 +5504,45 @@ def _field_layout(job: Job, blocks: list[tuple[Field, str]]) -> str:
     return joined
 
 
+_BUBBLE_STYLE = ("transform:translateX(-100%);position:absolute;pointer-events:none;opacity:0;"
+                 "margin:0;width:16px;height:16px")
+
+
+def _render_aria_choices(f: Field, posted: list[str], current: str, error: str | None, marker: str,
+                         hint: str, err: str) -> str:
+    """A ``Field.aria`` question: Radix-style ``button[role=checkbox|radio]`` options, each
+    with a ``<label for>`` and an aria-hidden native bubble input for the form post."""
+    fid = f"f-{f.name}"
+    role = "radio" if f.kind == "radio" else "checkbox"
+    bubble = "radio" if f.kind == "radio" else "checkbox"
+    choices = f.options if f.kind != "checkbox" else (Option("yes", f.label),)
+    required = ' aria-required="true"' if f.required else ""
+    invalid = ' aria-invalid="true"' if error else ""
+    items = []
+    for i, o in enumerate(choices):
+        bid = f"{fid}-btn-{i}"
+        on = (o.value in posted) if f.kind != "checkbox" else current == "yes"
+        state = "checked" if on else "unchecked"
+        own_required = required if f.kind == "checkbox" else ""
+        text = f"{esc(o.label)}{marker}" if f.kind == "checkbox" else esc(o.label)
+        items.append(
+            f'<div class="aria-option"><button type="button" role="{role}" id="{bid}" value="on" '
+            f'aria-checked="{"true" if on else "false"}" data-state="{state}" class="aria-choice"'
+            f"{own_required}{invalid}></button>"
+            f'<input type="{bubble}" aria-hidden="true" tabindex="-1" name="{f.name}" value="{esc(o.value)}"'
+            f'{" checked" if on else ""} style="{_BUBBLE_STYLE}">'
+            f'<label for="{bid}" class="aria-label">{text}</label></div>'
+        )
+    if f.kind == "checkbox":
+        return f'<div class="field aria-field" id="{fid}">{hint}{err}{items[0]}</div>'
+    if f.kind == "radio":
+        return (f'<div class="field aria-field"><div class="label" id="{fid}-label">{esc(f.label)}{marker}</div>'
+                f'{hint}{err}<div role="radiogroup" id="{fid}" aria-labelledby="{fid}-label"{required}>'
+                + "".join(items) + "</div></div>")
+    return (f'<fieldset class="field aria-field" id="{fid}"{required}><legend>{esc(f.label)}{marker}</legend>'
+            f"{hint}{err}" + "".join(items) + "</fieldset>")
+
+
 def _reveals_template(f: Field, fid: str, values: dict[str, list[str]]) -> str:
     """A radio group's or select's follow-up questions, inert until REVEAL_JS mounts them
     after its block (with ``reveal_hint`` added to the block itself)."""
@@ -5394,6 +5619,9 @@ def render_field(
             f'<input type="{f.kind}" id="{fid}" name="{f.name}" value="{esc(current)}"'
             f"{auto}{required}{aria}>"
         )
+        if f.disabled_by:
+            return (f'<div class="field" data-disabled-by="{esc(f.disabled_by)}"'
+                    f'{" data-required" if f.required else ""}>{label}{hint}{err}{control}</div>')
         return f'<div class="field">{label}{hint}{err}{control}</div>'
 
     if f.kind == "textarea":
@@ -5417,6 +5645,9 @@ def render_field(
         )
         block = f'<div class="field">{label}{hint}{err}{control}</div>'
         return block + _reveals_template(f, fid, values)
+
+    if f.aria and f.kind in ("radio", "checkbox_group", "checkbox"):
+        return _render_aria_choices(f, posted, current, error, marker, hint, err)
 
     if f.kind in ("radio", "checkbox_group"):
         input_type = "radio" if f.kind == "radio" else "checkbox"
@@ -5640,6 +5871,134 @@ def render_captcha_widget(error: str | None) -> str:
     )
 
 
+# --- solvable CAPTCHA widgets (round 14: solved through 2Captcha by a runtime) ------------
+#
+# Fictional site keys. Nothing here talks to Google, hCaptcha or Cloudflare: the badge
+# iframes and api.js are local stubs under /fixture/, shaped like the vendors' URLs so a
+# detector reads the site key from them. A solved token is "fixture-solved:<site key>"
+# (``captcha_expected_token``): the fake 2Captcha transport of the tests returns exactly
+# that for the task's websiteKey, and the server accepts nothing else.
+
+SOLVABLE_CAPTCHAS: dict[str, dict[str, str]] = {
+    "recaptcha-v2": {"key": "6LfixtureV2CheckboxKeyAAAAAAAAAAAAAAAAAAAAA", "field": "g-recaptcha-response",
+                     "class": "g-recaptcha", "size": "normal"},
+    "recaptcha-v2-invisible": {"key": "6LfixtureV2InvisibleKeyAAAAAAAAAAAAAAAAAAAA",
+                               "field": "g-recaptcha-response", "class": "g-recaptcha", "size": "invisible"},
+    "recaptcha-v3": {"key": "6LfixtureV3ScoreKeyAAAAAAAAAAAAAAAAAAAAAAAAA", "field": "g-recaptcha-response",
+                     "class": "", "size": "invisible"},
+    "recaptcha-v2-submit": {"key": "6LfixtureV2SubmitKeyAAAAAAAAAAAAAAAAAAAAAAA",
+                            "field": "g-recaptcha-response", "class": "g-recaptcha", "size": "invisible"},
+    "hcaptcha": {"key": "10000000-ffff-ffff-ffff-00000000f1x7", "field": "h-captcha-response",
+                 "class": "h-captcha", "size": "normal"},
+    "turnstile": {"key": "0x4AAAAAAAFixtureTurnstile01", "field": "cf-turnstile-response",
+                  "class": "cf-turnstile", "size": "normal"},
+}
+CAPTCHA_GATE_COOKIE = "bwa_captcha_gate"
+
+
+def captcha_expected_token(kind: str) -> str:
+    return f"fixture-solved:{SOLVABLE_CAPTCHAS[kind]['key']}"
+
+
+def captcha_kind(value: str | None) -> str:
+    return value if value in SOLVABLE_CAPTCHAS else "recaptcha-v2"
+
+
+def _captcha_badge(kind: str) -> str:
+    key = SOLVABLE_CAPTCHAS[kind]["key"]
+    size = SOLVABLE_CAPTCHAS[kind]["size"]
+    if kind.startswith("recaptcha"):
+        src = f"/fixture/recaptcha/api2/anchor?k={key}&size={size}"
+    elif kind == "hcaptcha":
+        src = f"/fixture/hcaptcha.com/checkbox.html#frame=checkbox&sitekey={key}"
+    else:
+        src = f"/fixture/challenges.cloudflare.com/turnstile/{key}/normal"
+    return (f'<iframe src="{esc(src)}" title="{esc(kind)} widget" width="304" height="78" '
+            'style="border:0"></iframe>')
+
+
+def render_solvable_captcha(kind: str, *, callback: str | None = None) -> str:
+    """The widget of ``kind`` as the vendor's script leaves it on the page: the site-key
+    container (or, for reCAPTCHA v3, api.js?render=), a badge iframe and the hidden
+    response field the vendor fills. ``callback``: its ``data-callback``."""
+    spec = SOLVABLE_CAPTCHAS[kind]
+    field_name, key = spec["field"], spec["key"]
+    cb = f' data-callback="{esc(callback)}"' if callback else ""
+    if kind == "recaptcha-v3":
+        # No widget of its own: the page asks grecaptcha.execute for a token on submit.
+        return (f'<div class="captcha-v3"><script src="/fixture/recaptcha/api.js?render={esc(key)}"></script>'
+                f'<input type="hidden" name="{field_name}" value="">'
+                + _captcha_badge(kind)
+                + "<script>(function () {"
+                  "var form = document.currentScript.closest('form');"
+                  "if (!form) return;"
+                  "form.addEventListener('submit', function (e) {"
+                  f"var field = form.querySelector('[name=\"{field_name}\"]');"
+                  "if (field.value) return;"
+                  "e.preventDefault();"
+                  f"window.grecaptcha.execute('{key}', {{action: 'apply'}}).then(function (token) {{"
+                  "field.value = token; form.submit(); });"
+                  "});"
+                  "})();</script></div>")
+    size = ' data-size="invisible"' if spec["size"] == "invisible" else ""
+    # A hidden label, as on ``captcha-widget``: every non-hidden control of the site has one.
+    textarea = (f'<label for="{field_name}" hidden>CAPTCHA response</label>'
+                f'<textarea name="{field_name}" id="{field_name}" style="display:none"></textarea>'
+                if field_name != "cf-turnstile-response"
+                else f'<input type="hidden" name="{field_name}" value="">')
+    if kind == "recaptcha-v2-submit":
+        # The form's submit button is the widget (``captcha_submit_button``): its callback
+        # writes the token and sends the form.
+        return ('<div class="captcha-solvable">' + textarea + _captcha_badge(kind)
+                + "<script>window.bwaSubmitWithToken = function (token) {"
+                  f"var field = document.getElementById('{field_name}');"
+                  "field.value = token; field.form.submit(); };</script></div>")
+    return (f'<div class="captcha-solvable"><div class="{spec["class"]}" data-sitekey="{esc(key)}"{size}{cb}></div>'
+            + textarea + _captcha_badge(kind) + "</div>")
+
+
+def captcha_submit_button(kind: str) -> str | None:
+    """The submit button of a form whose invisible reCAPTCHA is bound to it, else None."""
+    if kind != "recaptcha-v2-submit":
+        return None
+    key = SOLVABLE_CAPTCHAS[kind]["key"]
+    return (f'<button type="submit" class="g-recaptcha" data-sitekey="{esc(key)}" '
+            'data-callback="bwaSubmitWithToken">Submit application</button>')
+
+
+def render_captcha_gate(job: Job, kind: str, *, with_form: bool = False, delay_ms: int = 0) -> str:
+    """A CAPTCHA page in front of the application form: the widget, and a callback that
+    posts its token and reloads into the form once the site accepts it (and records that
+    it ran in ``window.__bwaCallbackCalled``). ``with_form`` (``?form=email``): the page
+    also holds a small form, which a runtime must not let the callback send.
+    ``delay_ms`` (``?delay_ms=``, at most 9000): the reload waits that long after the
+    site's answer."""
+    verify = f"/jobs/{job.slug}/captcha-verify"
+    extra = (f'<form method="post" action="{esc(verify)}"><label for="gate_email">Email</label>'
+             '<input id="gate_email" name="email" type="email" autocomplete="email">'
+             '<button type="submit">Continue</button></form>') if with_form else ""
+    return (
+        '<h1>Verify you are human</h1>'
+        "<p>Complete the security check to continue to the application.</p>"
+        + render_solvable_captcha(kind, callback="bwaCaptchaPassed")
+        + extra
+        + "<script>window.bwaCaptchaPassed = function (token) {"
+          "window.__bwaCallbackCalled = true;"
+          f"fetch('{verify}', {{method: 'POST', headers: {{'Content-Type': 'application/json'}}, "
+          f"body: JSON.stringify({{kind: '{kind}', token: token}})}})"
+          ".then(function (r) { if (r.ok) setTimeout(function () { location.reload(); }, "
+          f"{max(0, min(int(delay_ms), 9000))}); }});"
+          "};</script>"
+    )
+
+
+CAPTCHA_FIXTURE_JS = (
+    "window.grecaptcha = window.grecaptcha || {ready: function (f) { f(); }, render: function () { return 0; },"
+    "execute: function () { return Promise.resolve('stub-unsolved'); }, getResponse: function () { return ''; }};"
+)
+"""The fixture api.js: a grecaptcha that hands out a token no server accepts."""
+
+
 def render_delayed(form_html: str) -> str:
     """An SPA-style page: a loading indicator first, the form injected by page script
     1.5 s later (no network involved)."""
@@ -5792,6 +6151,8 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/login", "POST", "post_login"),
         (r"/captcha/(?P<token>cap_\d{6})\.svg", "GET", "get_captcha_svg"),
         (r"/captcha/widget\.html", "GET", "get_captcha_widget"),
+        (r"/fixture/(?P<rest>[A-Za-z0-9_./-]+)", "GET", "get_captcha_fixture"),
+        (rf"/jobs/{SLUG}/captcha-verify", "POST", "post_captcha_verify"),
         (r"/closed", "GET", "get_closed"),
         (r"/closed/not-found", "GET", "get_closed_not_found"),
         (r"/postings/with-select", "GET", "get_posting_with_select"),
@@ -5970,6 +6331,14 @@ class Handler(BaseHTTPRequestHandler):
         morsel = cookie.get(CONSENT_COOKIE)
         return bool(morsel and morsel.value in ("accepted", "declined"))
 
+    def _captcha_passed(self, kind: str) -> bool:
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return False
+        morsel = cookie.get(CAPTCHA_GATE_COOKIE)
+        return bool(morsel and morsel.value == kind)
+
     def _data_consented(self) -> bool:
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", ""))
@@ -5981,7 +6350,14 @@ class Handler(BaseHTTPRequestHandler):
     def _render_data_consent(self, job: Job) -> None:
         """Jobvite's "Data Consent" page (a posting's apply URL until the consent is
         accepted): choosing the policy shows it with "I Accept" (a submit button that posts
-        the policy ids back to the apply URL) and "I Decline" (a link to the posting)."""
+        the policy ids back to the apply URL) and "I Decline" (a link to the posting).
+        ``?policies=regional`` offers one policy per location of residence and language
+        instead of the one global policy."""
+        if self.query.get("policies", [""])[0] == "regional":
+            policies = "".join(f'<option value="{value}">{label}</option>' for value, label in JV_REGIONAL)
+        else:
+            policies = (f'<option value="{JV_POLICY_ID}">Global {COMPANY.upper()} APPLICANT AND '
+                        "CANDIDATE PRIVACY POLICY</option>")
         body = (
             f'<h1 class="jv-logo">{COMPANY} Careers</h1>'
             '<article class="jv-page-body"><h3>Data Consent</h3>'
@@ -5989,8 +6365,7 @@ class Handler(BaseHTTPRequestHandler):
             '<div><label for="jv-country-select">Location of Residence and Language:</label></div>'
             '<select id="jv-country-select" required>'
             '<option value="" selected>Select your location of residence and language</option>'
-            f'<option value="{JV_POLICY_ID}">Global {COMPANY.upper()} APPLICANT AND CANDIDATE PRIVACY '
-            "POLICY</option></select>"
+            f"{policies}</select>"
             f'<div id="jv-back"><a class="jv-button" href="/jobs/{job.slug}">Back</a></div>'
             '<div id="jv-policy" hidden><p class="jv-policy-text">This fictional privacy policy '
             f"explains how {COMPANY} processes the personal data in your application.</p>"
@@ -6084,6 +6459,13 @@ class Handler(BaseHTTPRequestHandler):
         if job.data_consent and not self._data_consented():
             self._render_data_consent(job)
             return
+        if job.captcha_gate and not self._captcha_passed(captcha_kind(self._param("kind"))):
+            delay = self._param("delay_ms") or "0"
+            gate = render_captcha_gate(job, captcha_kind(self._param("kind")),
+                                       with_form=self._param("form") == "email",
+                                       delay_ms=int(delay) if delay.isdigit() else 0)
+            self._send_html(HTTPStatus.OK, page(f"Security check: {job.title}", gate))
+            return
         if job.slug == MODAL_WIZARD:  # the SDUI apply URL: the job view with its dialog open
             self._render_easy_apply(job, auto_open=True)
             return
@@ -6155,6 +6537,11 @@ class Handler(BaseHTTPRequestHandler):
             errors[HONEYPOT_FIELD] = "Your submission was flagged as automated."
         if job.captcha_widget and not (form.get(CAPTCHA_WIDGET_FIELD) or [""])[0].strip():
             errors[CAPTCHA_WIDGET_FIELD] = "Please complete the CAPTCHA."
+        if job.solvable_captcha:
+            kind = captcha_kind((form.get("captcha_kind") or [""])[0])
+            field_name = SOLVABLE_CAPTCHAS[kind]["field"]
+            if (form.get(field_name) or [""])[0] != captcha_expected_token(kind):
+                errors[field_name] = "Please complete the CAPTCHA."
         if errors:
             self.store.add_rejection(job, errors)
             if job.slug == STEPPER_AMBIGUOUS:
@@ -6239,6 +6626,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         if job.captcha_widget:
             fields_html += render_captcha_widget(errors.get(CAPTCHA_WIDGET_FIELD))
+        if job.solvable_captcha:
+            kind = captcha_kind((values.get("captcha_kind") or [self._param("kind")])[0])
+            fields_html += (f'<input type="hidden" name="captcha_kind" value="{esc(kind)}">'
+                            + render_solvable_captcha(kind))
         if job.formless:
             # No <form> element: page script collects the questions and posts them.
             form_html = (
@@ -6250,6 +6641,9 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             submit = '<button type="submit">Submit application</button>'
+            if job.solvable_captcha:
+                kind = captcha_kind((values.get("captcha_kind") or [self._param("kind")])[0])
+                submit = captcha_submit_button(kind) or submit
             if any(f.uploader == "greenhouse-async" for f in fields):
                 # Re-rendered once the upload completes, one level up (see ghUpload).
                 submit = f'<div class="form-actions"><div class="actions-row">{submit}</div></div>'
@@ -6269,6 +6663,10 @@ class Handler(BaseHTTPRequestHandler):
             form_html += f"<script>{FABRIC_JS}</script>"
         if any(f.lazy for f in fields):
             form_html += f"<script>{LAZY_JS}</script>"
+        if any(f.aria for f in fields):
+            form_html += f"<script>{ARIA_CHOICE_JS}</script>"
+        if any(f.disabled_by for f in fields):
+            form_html += f"<script>{DISABLE_JS}</script>"
         if job.formless:
             form_html += f"<script>{FORMLESS_JS}</script>"
         if job.validity:
@@ -6349,6 +6747,9 @@ class Handler(BaseHTTPRequestHandler):
             if draft and f.name in draft["files"]
         }
         values, files, errors = validate(step_fields, form, uploads, retained)
+        if job.captcha_step == n and (form.get("g-recaptcha-response") or [""])[0] != captcha_expected_token(
+                "recaptcha-v2"):
+            errors["g-recaptcha-response"] = "Please complete the CAPTCHA."
         files_meta = self._store_files(files)
         if errors:
             self.store.add_rejection(job, errors, step=n)
@@ -6412,6 +6813,7 @@ class Handler(BaseHTTPRequestHandler):
                 render_field(f, values, errors.get(f.name), retained.get(f.name))
                 for f in fields
             )
+            + (render_solvable_captcha("recaptcha-v2") if job.captcha_step == n else "")
             + f'<button type="submit"{submit_id}>Continue</button>{back}</form>'
         )
         widgets = any(f.scripted for f in fields)
@@ -7000,6 +7402,31 @@ class Handler(BaseHTTPRequestHandler):
             '<p style="margin:.5rem">Fixture badge</p></body></html>'
         )
         self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def get_captcha_fixture(self, rest: str) -> None:
+        # Local stand-ins for the CAPTCHA vendors' scripts and badge frames (round 14).
+        if rest.endswith(".js"):
+            self._send(HTTPStatus.OK, CAPTCHA_FIXTURE_JS.encode("utf-8"), "text/javascript; charset=utf-8")
+            return
+        body = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>CAPTCHA</title></head>'
+                '<body style="margin:0;font:12px system-ui"><p style="margin:.5rem">Fixture CAPTCHA badge</p>'
+                "</body></html>")
+        self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def post_captcha_verify(self, slug: str) -> None:
+        # The gate's callback: the right token for the widget passes the gate (a cookie).
+        job = self._job(slug)
+        raw = self._read_body()
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, ValueError):
+            data = {}
+        kind = captcha_kind(str(data.get("kind") or ""))
+        if not job.captcha_gate or data.get("token") != captcha_expected_token(kind):
+            self._send(HTTPStatus.BAD_REQUEST, b'{"ok": false}', "application/json")
+            return
+        self._send(HTTPStatus.OK, b'{"ok": true}', "application/json",
+                   headers=(("Set-Cookie", f"{CAPTCHA_GATE_COOKIE}={kind}; Path=/; Max-Age=3600; HttpOnly"),))
 
     def get_closed(self) -> None:
         # A job that is gone, worded the way some ATS vendors word it (HTTP 200).

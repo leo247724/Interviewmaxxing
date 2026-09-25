@@ -720,6 +720,17 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
     # Address Line 1) keeps what is typed: a text answer, never a choice among suggestions.
     suggests = (control_type is ControlType.TYPEAHEAD and _probed_lookup(first)
                 and semantic is SemanticType.ADDRESS)
+    if (not suggests and control_type is ControlType.UNSUPPORTED and first.kind == "native"
+            and first.type in TEXT_INPUT_TYPES and first.input_select is None
+            and (first.role == "combobox" or first.autocomplete_list)
+            and not (first.aria or {}).get("picker")):
+        # Round 14: the same input when its menu was never probed (a live Paylocity form
+        # held it: probing stopped before it) is still the street address once its wording
+        # says so: typed, its suggestions dismissed, read back.
+        as_text = classify(label=label, help_text=help_text or "", name=first.name, element_id=first.id,
+                           autocomplete=first.autocomplete, input_type=first.type, control_type=ControlType.TEXT)
+        if as_text is SemanticType.ADDRESS:
+            suggests, semantic = True, as_text
     if suggests:
         control_type, input_type, max_length = ControlType.TEXT, first.type, first.max_length
     app_field = ApplicationField(

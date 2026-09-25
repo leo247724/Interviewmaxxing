@@ -17,7 +17,7 @@ Public entry points:
 
 from .adapter import GenericAdapter
 from .driver import DriverError, NotActionable, PageContextLost, PageDriver, PlaywrightDriver
-from .needs import attestation_fields, unsupported_control_needs, user_action_needs
+from .needs import attestation_fields, consent_gate, unsupported_control_needs, user_action_needs
 from .normalize import PageModel, build_page, detect_ats, extract_job_identity
 from .opencli import (
     DEFAULT_SESSION,
@@ -78,6 +78,7 @@ __all__ = [
     "attestation_fields",
     "build_page",
     "classify",
+    "consent_gate",
     "detect_ats",
     "extract_job_identity",
     "inspector_script",

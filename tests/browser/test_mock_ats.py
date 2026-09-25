@@ -522,12 +522,21 @@ class SiteAndMarkupTests(MockATSTestCase):
             "/login",
             [("email", catalog["signin"]["email"]), ("password", catalog["signin"]["password"])],
         )
+        # captcha-gate shows its CAPTCHA page until the widget's token is posted (round 14).
+        passed = self.client.request(
+            "POST", "/jobs/captcha-gate/captcha-verify",
+            json.dumps({"kind": "recaptcha-v2",
+                        "token": mock_ats.captcha_expected_token("recaptcha-v2")}).encode(),
+            {"Content-Type": "application/json"})
+        self.assertEqual(passed.status, 200)
         for job in catalog["jobs"]:
             if job["formless"]:
                 continue  # rendered without a <form> on purpose (a Rippling-style SPA)
             form = self.open_form(job["job_id"]).form
             for c in form.controls:
-                if c.type != "hidden":
+                # An aria-hidden input is not a visible control: the native "bubble" behind a
+                # labelled ARIA checkbox or radio (greenhouse-aria) only carries the form post.
+                if c.type != "hidden" and c.attrs.get("aria-hidden") != "true":
                     self.assertTrue(form.label_of(c), f"{job['job_id']}: {c.name} unlabelled")
 
     def test_unknown_routes_and_methods(self) -> None:

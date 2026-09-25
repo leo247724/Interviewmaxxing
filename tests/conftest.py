@@ -41,6 +41,7 @@ def isolated_imx_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalP
         "IMX_ARTIFACTS_DIR",
         "IMX_BROWSER_DIR",
         "IMX_CANDIDATE_ID",
+        "IMX_CAPTCHA_SOLVER",  # a test turns the 2Captcha solver on itself, with a fake transport
     ):
         monkeypatch.delenv(name, raising=False)
     home = tmp_path / "imx-home"
