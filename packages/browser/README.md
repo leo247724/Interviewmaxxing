@@ -28,13 +28,13 @@ await browser.close()
 | Object | Contract |
 | --- | --- |
 | `PlaywrightSessionFactory` | `BrowserSessionFactory`. Launches Chromium, with a persistent profile when `profile_dir` is set (one process per profile). |
-| `PlaywrightApplicationBrowser` | `ApplicationBrowser` (`open`, `inspect`, `fill`, `advance`, `submit`, `confirm`, `wait_for_user`, `close`), plus `reconcile` and `.page`. |
+| `PlaywrightApplicationBrowser` | `ApplicationBrowser` (`open`, `inspect`, `fill`, `advance`, `submit`, `confirm`, `wait_for_user`, `close`), plus `reconcile`, `data_consent`/`accept_data_consent` (round 14) and `.page`. |
 | `GenericApplicationBrowser(driver, options, policy=)` | The same runtime over any `PageDriver`. |
 | `OpenCliSessionFactory(config)` / `OpenCliDriver` / `OpenCliApplicationBrowser` | The runtime in the user's own Chrome through OpenCLI (see below). |
 | `GenericAdapter` | `ATSAdapter` for native, accessible forms. |
 | `ConfirmationTie` | What ties a confirmation to this application: the job id or title, and references already visible before the submit. `ConfirmationTie.from_job(job_record)`. |
 | `reconciliation_from(observation, method=)` | The `SubmissionReconciliation` an ACCEPTED re-read establishes, or `None`. |
-| `user_action_needs`, `unsupported_control_needs`, `attestation_fields` | `MissingInput` items for sign-in and CAPTCHA pages and for custom controls, and the consent/attestation questions on a step. |
+| `user_action_needs`, `unsupported_control_needs`, `attestation_fields`, `consent_gate` | `MissingInput` items for sign-in and CAPTCHA pages and for custom controls, the consent/attestation questions on a step, and whether a page is a data-processing consent page in front of the form. |
 | `inspector_script()`, `DomSnapshot`, `build_page(snapshot, ...)` | The raw DOM snapshot and pure normalization, shared with any driver. |
 | `SubmissionRefused`, `AmbiguousAction`, `DriverError`, `NotActionable` | Refusals and driver failures. |
 
@@ -82,11 +82,21 @@ Details in `docs/dynamic-runtime.md` ("Round 13"); mocks `bamboohr-churn`, `gree
 - **Follow-up changes** (unanswered questions that appear anywhere; right after a choice, requiredness or help text that changes) are taken in and the fill goes on with the approved answers; the step is then inspected and resolved again, the new questions reported `SKIPPED` and named. A later question a choice changed stops the fill before its answer is written.
 - **Still a changed page:** a question that appears already answered, a reworded, removed or moved question, requiredness or help text changed after a typed answer, changed actions or context. The failure names what changed, an appeared question by its wording.
 
+## Round 14: appeared questions, ARIA choices and the consent page
+
+Details in `docs/dynamic-runtime.md` ("Round 14"); mocks `greenhouse-aria`, `paylocity-work-history`, `jobvite-like?policies=regional`, `paylocity-address?address_list=late`, `greenhouse-eeo?reveal_extra=1` and `teamtailor-late?lazy_extra=1`.
+
+- **Appeared questions** go back to inspection and resolution even when the page also changed controls outside the questions, as long as it is the same application step (`_same_application`: the page and its submitting actions); a choice that takes an unwritten question away is a follow-up change too.
+- **An unprobed address combobox** (its list mounts only with suggestions) is the typed address answer.
+- **ARIA checkboxes and radios** (`button[role=checkbox|radio][aria-checked]` with hidden bubble inputs) are questions with their options, clicked and read back by `aria-checked`.
+- **`data_consent(residence)` / `accept_data_consent(question, residence)`**: a data-processing consent page's question as a one-field `CONSENT` form (read-only), and its acceptance (choose the policy, click the one "I Accept") once the runner found the person's own statement covering it. `consent_gate(inspection)` tells such a page.
+
 ## Runner wiring (I1)
 
 Follow CONTRACTS.md section 7. Browser-specific points:
 
 - For `USER_ACTION_PAGES`: call `user.request_action(...)`, then `await browser.wait_for_user(reason, timeout_s)`, renewing the claim during long waits.
+- For a data-processing consent page (`consent_gate`), first resolve the question `await browser.data_consent(residence)` returns, like any consent; only a checked answer from the person's own answers (a saved answer or input) may call `accept_data_consent(question, residence)`, once per run. Otherwise treat it as any user-action page.
 - For required `UNSUPPORTED` fields (the resolver's `UNSUPPORTED_CONTROL` items): ask the user to operate them in the visible window, call `wait_for_user`, then re-inspect and resolve again.
 - `SubmitActionResult.dispatched=False` still needs `confirm()`, which returns the proof-bearing `NOT_SUBMITTED` observation to record.
 - To settle `SUBMISSION_UNKNOWN`: start a session, call `obs = await browser.reconcile(job.application_url, tie=ConfirmationTie.from_job(job), lookup_email=candidate.identity.email)`, and if `reconciliation_from(obs, method=...)` returns one, pass it to `store.reconcile_submission`. Never call the mock's `/__test__/` API from product code.

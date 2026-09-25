@@ -109,10 +109,12 @@ from .driver import (
     shown_names,
 )
 from .evidence import EvidenceRecorder
+from .needs import consent_gate
 from .normalize import TEXT_INPUT_TYPES, FieldBinding, PageModel, build_page, detect_ats
 from .signals import (
     APPLY_LINK,
     CONFIRMATION_LINK,
+    DATA_CONSENT_GATE,
     LOADING_STATE,
     MANUAL_APPLY,
     NOT_SUBMITTED_STATUS,
@@ -274,6 +276,8 @@ class _QuestionDelta:
                             else "required or optional"))
         if self.helped:
             parts.append(f"{len(self.helped)} question(s) ({named(self.helped)}) changed their help text")
+        if self.removed:
+            parts.append(f"{len(self.removed)} question(s) ({named(self.removed)}) disappeared")
         return " and ".join(parts)
 
 
@@ -324,6 +328,10 @@ _READ_CONTROL = """(sel) => {""" + DEEP_QUERY + """
   if (el.tagName === 'SELECT') return {values: Array.from(el.selectedOptions).map((o) => o.value)};
   if (el.type === 'file') return {files: Array.from(el.files || []).map((f) => ({name: f.name, size: f.size}))};
   if (el.type === 'checkbox' || el.type === 'radio') return {checked: el.checked};
+  // An ARIA checkbox, radio or switch (Greenhouse's role="checkbox" buttons) by aria-checked.
+  if (!(el instanceof HTMLInputElement) && /^(?:checkbox|radio|switch)$/.test(el.getAttribute('role') || '')) {
+    return {checked: el.getAttribute('aria-checked') === 'true'};
+  }
   return {value: el.value};
 }"""
 
@@ -333,6 +341,10 @@ _READ_CHECKED = """(sels) => { """ + DEEP_QUERY + """
     if (!e) return null;
     // A toggle-button option (Ashby's yes/no) is chosen when it is pressed.
     if (e.tagName === 'BUTTON' && e.hasAttribute('aria-pressed')) return e.getAttribute('aria-pressed') === 'true';
+    // An ARIA checkbox, radio or switch (Greenhouse's role="checkbox" buttons) by aria-checked.
+    if (!(e instanceof HTMLInputElement) && /^(?:checkbox|radio|switch)$/.test(e.getAttribute('role') || '')) {
+      return e.getAttribute('aria-checked') === 'true';
+    }
     return e.checked;
   });
 }"""
@@ -415,6 +427,16 @@ _RETYPE_MAX_CHARS = 200
 text is entered again as one input event)."""
 _STEP_WAIT_S = 3.0
 """How long a clicked Next may take to replace a step rendered in place (a dialog)."""
+_CONSENT_WAIT_S = 5.0
+"""How long a data-processing consent page's accept control may take to show once its
+policy is chosen (Jobvite draws the policy and "I Accept" after the choice)."""
+_CONSENT_ACCEPT = re.compile(r"^\s*(?:i\s+)?(?:accept|agree)(?:\s+(?:and|&)\s+continue)?\s*$",
+                             re.IGNORECASE)
+"""A consent page's accept control ("I Accept", "Accept", "I Agree")."""
+_CONSENT_FIELD_ID = "data-consent"
+"""The field id of a consent page's question (``data_consent``); no page control has it."""
+_COUNTRY_ABBREVIATIONS = {"united states": r"U\.?S\.?(?:A\.?)?", "united kingdom": r"U\.?K\.?"}
+"""Upper-case abbreviations by which a policy's name may name a country of residence."""
 _KEPT_TEXT = "already shows this value; left as it is"
 """A pre-filled text that says the answer already: nothing is written, so the sweep
 after the fill does not write it again either."""
@@ -465,6 +487,28 @@ class ActionPolicy:
 
     automation_may_navigate: bool = True
     automation_may_submit: bool = True
+
+
+def _names_residence(label: str, residence: str) -> bool:
+    """Whether a consent policy's name names the person's country of residence: the
+    country's name in any case, or its upper-case abbreviation ("US", "U.S.A.", "UK")."""
+    country = normalize_text(residence)
+    if not country:
+        return False
+    if re.search(rf"(?<!\w){re.escape(country)}(?!\w)", normalize_text(label)):
+        return True
+    short = _COUNTRY_ABBREVIATIONS.get(country)
+    return short is not None and re.search(rf"(?<![\w.]){short}(?!\w)", label) is not None
+
+
+@dataclass(frozen=True)
+class _ConsentOffer:
+    """What a data-processing consent page would accept (``data_consent``): the policy
+    chooser, the policy chosen for the person, and the page's question for it."""
+
+    chooser: str
+    value: str
+    question: ApplicationForm
 
 
 @dataclass
@@ -844,6 +888,8 @@ class GenericApplicationBrowser:
         (see ``_follow_ups``), for the page error that asks for a fresh inspection."""
         self._written_ids: set[str] = set()
         """Questions this fill has written its answer to (see ``_follow_ups``)."""
+        self._absorbed_removed: set[str] = set()
+        """Questions whose disappearing this fill already took in as a follow-up change."""
         self._attach_needed: dict[tuple[str, str], str] = {}
         """(document, resume field id) -> the pinned file the person has to attach there,
         because none of the resumes the site offers can be used and this session cannot
@@ -1500,6 +1546,7 @@ class GenericApplicationBrowser:
         self._reveal_source = None
         self._follow_up_after = []
         self._written_ids = set()
+        self._absorbed_removed = set()
         try:
             for app_field in self._fill_order(form, packet):
                 answer = packet.answer_for(app_field.id)
@@ -1619,8 +1666,9 @@ class GenericApplicationBrowser:
             as_base = base is not None and (
                 _guard_signature(after, stable=True) == _guard_signature(base, stable=True)
                 or await self._only_uploads_changed(after))
-            since = None if as_base or base is None else self._follow_ups(after, base)
-            follow_ups = delta is not None and delta.follow_ups and (as_base or since is not None)
+            since = None if as_base or base is None else (
+                self._follow_ups(after, base) or self._follow_ups(after, base, loose=True))
+            follow_ups = delta is not None and self._benign(delta) and (as_base or since is not None)
             ordered.extend(await self._contain_changed_questions(accepted, after, follow_ups=follow_ups))
             if follow_ups and delta is not None:
                 # Follow-up questions appeared, became required or changed their help text
@@ -1806,8 +1854,16 @@ class GenericApplicationBrowser:
                 # again once they are.
                 if self._reveal_source is not None:
                     self._follow_up_after.append(self._reveal_source.label)
+                self._absorbed_removed |= {q.id for q in follow_ups.removed}
                 await self._set_fill_model(fresh)
                 return rebind
+        loose = self._follow_ups(fresh, base, loose=True) if base is not None and follow_ups is None else None
+        if loose is not None:
+            # The same application with more (or re-required) questions, but other controls
+            # moved as well: nothing more is written; the step is inspected and resolved again.
+            when = (f"after the answer to {_short_label(self._reveal_source.label)!r}"
+                    if self._reveal_source is not None else "while filling")
+            raise _ConditionalReveal(f"{loose.describe()} {when}")
         raise PageContextLost(
             "questions, bindings, actions, or employer context changed while filling "
             f"({self._change_summary(fresh)}); remaining answers were not attempted; "
@@ -1970,7 +2026,7 @@ class GenericApplicationBrowser:
                                  skip_controls=uploaded | self._uploader_helpers)
                 == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded | helpers))
 
-    def _follow_ups(self, fresh: PageModel, base: PageModel) -> _QuestionDelta | None:
+    def _follow_ups(self, fresh: PageModel, base: PageModel, *, loose: bool = False) -> _QuestionDelta | None:
         """How ``fresh`` (renamed questions under their known ids) differs from ``base``
         when it is only follow-up changes (``_QuestionDelta.follow_ups``), or None:
 
@@ -1986,11 +2042,18 @@ class GenericApplicationBrowser:
         placeholder, control and options, and the actions, the employer context and every
         other control read as in ``base`` once the changed questions' own controls are left
         out (requiredness aside). A reworded, removed or moved question, changed actions or
-        context are never follow-up changes."""
+        context are never follow-up changes.
+
+        ``loose`` (round 14) compares only what makes it the same application besides its
+        questions (``_same_application``: the page and the actions that submit or move the
+        step on), not every other control: a live re-render also touches controls outside
+        the questions (a suggestion list left open, a helper's buttons), which the next
+        inspection reads anyway. It never lets the fill write on; it only decides that the
+        step is inspected and resolved again instead of failing."""
         if fresh.form is None or base.form is None or fresh.form.scope.key != base.form.scope.key:
             return None
         delta = _question_delta(base.form, fresh.form)
-        if not delta.follow_ups:
+        if not self._benign(delta):
             return None
         if any((b := fresh.bindings.get(q.id)) is None or b.checked_values for q in delta.added):
             # A question that appeared with a box already checked (a pre-checked attestation)
@@ -2000,6 +2063,8 @@ class GenericApplicationBrowser:
             # Requiredness and help text change only in answer to a choice this fill made;
             # after a typed answer they are a changed question.
             return None
+        if loose:
+            return delta if self._same_application(fresh, base) else None
         own_fresh: set[str] = set()
         for question in (*delta.added, *delta.helped):
             binding = fresh.bindings.get(question.id)
@@ -2018,6 +2083,45 @@ class GenericApplicationBrowser:
                                     ignore_required=True, ignore_preceding=True)):
             return None
         return delta
+
+    def _benign(self, delta: _QuestionDelta) -> bool:
+        """Follow-up changes (``_QuestionDelta.follow_ups``), or questions that disappeared
+        right after a choice of this fill without having been written (round 14: Paylocity
+        takes the end date away once "I currently work here" is checked)."""
+        if delta.follow_ups:
+            return True
+        if delta.reworded or delta.moved or not delta.removed:
+            return False
+        new = [q for q in delta.removed if q.id not in self._absorbed_removed]
+        return not new or (self._reveal_source is not None and not any(q.id in self._written_ids for q in new))
+
+    @staticmethod
+    def _same_application(fresh: PageModel, base: PageModel) -> bool:
+        """The same application step apart from its questions: the same page (address,
+        title, meta, structured data, job identity, kind and step) and the same actions that
+        submit or move the step on (each form's request, every button that submits a form,
+        the next and submit controls by what they are). A button that submits nothing (a
+        suggestion in a list left open, a file chip, a helper) is not such an action."""
+        def context(model: PageModel) -> tuple[Any, ...]:
+            identity = model.inspection.job_identity
+            return (model.snapshot.url, model.snapshot.title, model.snapshot.meta.model_dump(mode="json"),
+                    list(model.snapshot.ld_json),
+                    identity.model_dump(mode="json", exclude={"observed_at"}) if identity else None,
+                    model.inspection.kind.value,
+                    model.snapshot.step.model_dump(mode="json") if model.snapshot.step else None)
+
+        def actions(model: PageModel) -> tuple[Any, ...]:
+            identity = {b.selector: _button_identity(b) for b in model.snapshot.buttons}
+            submitting = sorted(identity[b.selector] for b in model.snapshot.buttons
+                                if b.submits_form and not (THIRD_PARTY_ASSIST.search(b.text)
+                                                           or LOADING_STATE.match(b.text)))
+            forms = sorted((f.method, f.action, f.no_validate) for f in model.snapshot.forms)
+            form = model.form
+            step = ((form.is_final_step, identity.get(form.next_selector or ""),
+                     identity.get(form.submit_selector or "")) if form is not None else None)
+            return (tuple(submitting), tuple(forms), step)
+
+        return context(fresh) == context(base) and actions(fresh) == actions(base)
 
     def _change_summary(self, fresh: PageModel) -> str:
         """What differs between the step as the fill writes against it and ``fresh``, for a
@@ -3052,6 +3156,89 @@ class GenericApplicationBrowser:
                 or (below and not (below.startswith("/") and below.count("/") == 1))):
             return inspection
         return inspection.model_copy(update={"job_identity": posting})
+
+    # --- a data-processing consent in front of the form (round 14) ---------------------
+
+    async def data_consent(self, residence: str | None = None) -> ApplicationForm | None:
+        """The question a data-processing consent page in front of the application form
+        asks (Jobvite's "Data Consent", ``consent_gate``), as a one-field form the runner
+        resolves like any consent: a required CONSENT checkbox, "I accept the <policy>",
+        under the page's heading. The policy is the page's only one, else the one naming
+        ``residence`` (the person's country). Read-only: nothing is chosen. None when the
+        page is not a consent page of that shape or no single policy is the person's."""
+        offer = self._consent_offer(await self._model(probe=False), residence)
+        return offer.question if offer is not None else None
+
+    async def accept_data_consent(self, question: ApplicationForm,
+                                  residence: str | None = None) -> PageInspection | None:
+        """Accept the consent ``data_consent`` returned, once the runner has found the
+        person's own statement covering it: choose its policy, wait for the page's one
+        accept control ("I Accept"), keep evidence of the policy shown, click it, and read
+        the page it leads to as ``open`` reads one (with the posting's identity when it
+        continues the posting). This sends the consent, never an application. None, with
+        nothing chosen, when navigation belongs to the user or the page no longer asks
+        exactly that question; None after the choice when no single accept control shows,
+        and the page is then the person's as before."""
+        if not self.policy.automation_may_navigate:
+            return None
+        offer = self._consent_offer(await self._model(probe=False), residence)
+        if offer is None or offer.question.fields != question.fields:
+            return None
+        await self.driver.select_values(offer.chooser, [offer.value])
+        accept = await self._consent_accept()
+        if accept is None:
+            return None
+        await self._model(evidence="data-consent", probe=False)
+        await self.driver.click(accept)
+        await self.driver.settle(self.settle_timeout_s)
+        await self._await_ready()
+        inspection = (await self._model(evidence="after-data-consent")).inspection
+        return self._continuing_posting(inspection)
+
+    def _consent_offer(self, model: PageModel, residence: str | None) -> _ConsentOffer | None:
+        """The consent page's policy chooser (its one question, a native select) and the
+        policy for the person: the only one offered, else the one naming ``residence``."""
+        if not consent_gate(model.inspection) or len(model.candidate_fields) != 1:
+            return None
+        (chooser,) = model.candidate_fields
+        binding = model.bindings.get(chooser.id)
+        if chooser.control_type is not ControlType.SELECT or binding is None:
+            return None
+        policies = [o for o in chooser.options or [] if not o.disabled and o.value.strip()]
+        if len(policies) != 1:
+            policies = [o for o in policies if _names_residence(o.label, residence or "")]
+        if len(policies) != 1:
+            return None
+        policy = " ".join(policies[0].label.split())
+        heading = next((" ".join(h.text.split()) for h in model.snapshot.headings
+                        if DATA_CONSENT_GATE.match(h.text)), "")
+        question = ApplicationField(
+            id=_CONSENT_FIELD_ID, selector=binding.selector, label=f"I accept the {policy}",
+            section_context=[heading] if heading else [], control_type=ControlType.CHECKBOX,
+            semantic_type=SemanticType.CONSENT, required=True)
+        return _ConsentOffer(chooser=binding.selector, value=policies[0].value,
+                             question=ApplicationForm(url=model.snapshot.url,
+                                                      ats_type=detect_ats(model.snapshot.url),
+                                                      fields=[question]))
+
+    async def _consent_accept(self) -> str | None:
+        """The one accept control of the consent page's form once its policy shows,
+        waited for up to ``_CONSENT_WAIT_S``; None when the page stops being the consent
+        page or no single one shows."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CONSENT_WAIT_S
+        while True:
+            model = await self._model(probe=False)
+            if not consent_gate(model.inspection):
+                return None
+            accepts = [b.selector for b in model.snapshot.buttons
+                       if _CONSENT_ACCEPT.match(b.text) and not b.disabled
+                       and b.form_index == model.form_index]
+            if len(accepts) == 1:
+                return accepts[0]
+            if loop.time() >= deadline:
+                return None
+            await asyncio.sleep(_READY_POLL_S)
 
     async def reconcile(
         self,

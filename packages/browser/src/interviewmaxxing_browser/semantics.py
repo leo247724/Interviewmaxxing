@@ -160,9 +160,16 @@ _ATTESTATION = _rx(
     r"\bcertif(?:y|ies|ied)\b|attest|affirm|declar|true and (?:complete|correct|accurate)|"
     r"accurate and complete|"
     r"acknowledg|i understand|i agree|i confirm|i have read|to the best of my knowledge|"
-    r"never been|signature"
+    r"never been|signature|"
+    # Round 14 (a live Greenhouse checkbox): "Please double-check all the information
+    # provided above. Ensuring accuracy is crucial ..." confirms that what was entered is
+    # accurate.
+    r"double[- ]?check(?:ed)? (?:all |that )?(?:of )?(?:the |your )?information|"
+    r"information (?:provided|above|entered|you (?:have )?(?:provided|entered)) is (?:accurate|correct|true)"
 )
 _FIRST_PERSON = _rx(r"^\s*(?:i|i'm|i am|i have|i will|i do|my)\b")
+_CURRENTLY_EMPLOYED = _rx(r"^\s*(?:i\s+)?(?:currently|still)\s+(?:work|employed)\b|^\s*i\s+(?:currently\s+)?work\s+here\b")
+"""A work-history entry's "I currently work here": a fact about the role, not a pledge."""
 # Free-text questions that ask for a signature or a sworn statement.
 _TEXT_ATTESTATION = _rx(
     r"\bcertif(?:y|ies|ied)\b|attest|signature|\bsign(?:ed)? (?:here|below)|i agree|i confirm|"
@@ -230,6 +237,8 @@ def classify(
         for pattern, semantic in _RULES[5:]:
             if semantic not in _PROFILE_URLS and pattern.search(label):
                 return semantic
+        if _CURRENTLY_EMPLOYED.search(label):
+            return SemanticType.CUSTOM_BOOLEAN
         # An unexplained first-person statement ("I am ...") is a personal attestation.
         if _FIRST_PERSON.search(label):
             return SemanticType.ATTESTATION

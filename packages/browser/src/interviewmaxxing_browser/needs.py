@@ -29,13 +29,21 @@ from .signals import CONSENT_GATE_ACTION
 ATTESTATION_TYPES = frozenset({SemanticType.ATTESTATION, SemanticType.CONSENT})
 
 
+def consent_gate(inspection: PageInspection) -> bool:
+    """Whether the page is a data-processing consent page in front of the application form
+    (Jobvite's "Data Consent"), reported as ``SIGN_IN_REQUIRED``. Round 14: the runner
+    accepts it only when the person's own statement covers it (``accept_data_consent``)."""
+    return (inspection.kind is PageKind.SIGN_IN_REQUIRED
+            and CONSENT_GATE_ACTION in (inspection.message or ""))
+
+
 def user_action_needs(inspection: PageInspection) -> list[MissingInput]:
     """A ``USER_ACTION`` item for a sign-in or CAPTCHA page, else nothing. A data-processing
     consent page in front of the form is reported as ``SIGN_IN_REQUIRED`` (the user passes
     it the same way); its item says to accept the consent."""
     if inspection.kind not in USER_ACTION_PAGES:
         return []
-    if CONSENT_GATE_ACTION in (inspection.message or ""):
+    if consent_gate(inspection):
         what = "Accept the data-processing consent"
     else:
         what = "Sign in" if inspection.kind is PageKind.SIGN_IN_REQUIRED else "Solve the CAPTCHA"

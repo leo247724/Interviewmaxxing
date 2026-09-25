@@ -128,9 +128,12 @@ _CONTEXT_LOST = re.compile(
 
 _INTERCEPTED = re.compile(r"intercepts pointer events", re.IGNORECASE)
 """A Playwright click that another element (an overlay) takes: its label would be too."""
-_CHECKABLE = ("(el) => el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')"
-              " && !el.disabled")
-"""Read-only: an enabled checkbox or radio input, the only element a click is dispatched to."""
+_CHECKABLE = ("(el) => (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')"
+              " && !el.disabled) || (!(el instanceof HTMLInputElement)"
+              " && /^(?:checkbox|radio|switch)$/.test(el.getAttribute('role') || '')"
+              " && el.getAttribute('aria-disabled') !== 'true')")
+"""Read-only: an enabled checkbox or radio input, or an enabled ARIA checkbox, radio or
+switch: the only elements a click is dispatched to."""
 
 
 def _context_lost(exc: Exception) -> bool:

@@ -94,6 +94,7 @@ from interviewmaxxing_browser import (
     ConfirmationTie,
     PlaywrightSessionFactory,
     SubmissionRefused,
+    consent_gate,
     reconciliation_from,
     user_action_needs,
 )
@@ -112,6 +113,7 @@ from interviewmaxxing_core import (
     ApplicationState,
     ApplicationStore,
     ApplyOutcome,
+    BooleanValue,
     BrowserOptions,
     BrowserSessionFactory,
     CandidateLoader,
@@ -167,6 +169,11 @@ SUGGESTION_EVENT = "field.suggestion_chosen"
 """Emitted by the runner when the resolver chose one of a lookup's site suggestions:
 the question, the chosen label and the chooser's decision metadata. (The store
 reserves the ``application.`` prefix for its own events.)"""
+CONSENT_EVENT = "consent.accepted"
+"""Emitted by the runner when it accepted a data-processing consent page in front of the
+application form (round 14): the page's question ("I accept the <policy>"), its URL, and
+where the answer came from (the person's saved statement or input that covers it, by id).
+The page's own acceptance is the only thing it sends; no application is submitted."""
 PREPARED_EVENT = "preparation.ready"
 """Emitted by a prepare-only run at the final review step: the form step and URL, the
 prepared packet, ``submitted: False`` and every filled step with its questions
@@ -980,6 +987,9 @@ class _Run:
         self.provider_total: dict[str, Any] = {"calls": 0, "known_cost_usd": 0.0,
                                                "unknown_cost_calls": 0}
         """The provider usage this run recorded, for its outcome message."""
+        self.consent_tried = False
+        """Whether this run already accepted (or tried to accept) a data-processing consent
+        page; a consent page that comes back is the person's (``_accept_consent``)."""
 
     @property
     def app_id(self) -> str:
@@ -1134,6 +1144,10 @@ class _Run:
 
     async def _step(self, page: PageInspection) -> PageInspection:
         kind = page.kind
+        if consent_gate(page) and not self.consent_tried:
+            accepted = await self._accept_consent()
+            if accepted is not None:
+                return accepted
         if kind in (PageKind.SIGN_IN_REQUIRED, PageKind.CAPTCHA):
             return await self._user_action(page, user_action_needs(page))
         if kind is PageKind.ALREADY_APPLIED:
@@ -1199,6 +1213,44 @@ class _Run:
             return after
         # e.g. a sign-in that returns to the posting: go back to the application URL.
         return await self.browser.open(self.url)
+
+    async def _accept_consent(self) -> PageInspection | None:
+        """Round 14: a data-processing consent page in front of the form (Jobvite's "Data
+        Consent") is accepted when the person's own statement covers it. Its question ("I
+        accept the <policy>", the browser's ``data_consent``) is resolved like any consent
+        on a form: an exact saved answer or input, else the routing resolver's
+        statement-coverage decision over the person's saved statements. Only a checked
+        answer from the person's own answers lets the browser choose the policy and click
+        "I Accept" (``accept_data_consent``), once per run. Returns the page it leads to,
+        or None: the page is then the person's to accept, as before."""
+        offer = getattr(self.browser, "data_consent", None)
+        accept = getattr(self.browser, "accept_data_consent", None)
+        if not callable(offer) or not callable(accept):
+            return None
+        self.consent_tried = True
+        residence = self.candidate.identity.address.country
+        question: ApplicationForm | None = await self._fenced(offer(residence))
+        self._renew()
+        if question is None or len(question.fields) != 1:
+            return None
+        (field,) = question.fields
+        packet = await self._resolve(question)
+        answer = packet.answer_for(field.id)
+        if (answer is None or answer.value != BooleanValue(checked=True)
+                or answer.provenance.source not in (AnswerSource.SAVED_ANSWER, AnswerSource.USER_INPUT)):
+            return None
+        await self.interaction.progress("Accepting the data-processing consent that your saved "
+                                        "statement covers")
+        after: PageInspection | None = await self._fenced(accept(question, residence))
+        self._renew()
+        if after is None:
+            return None
+        self.store.append_event(self.claim, CONSENT_EVENT, {
+            "question": field.question_text, "form_url": question.url,
+            "source": answer.provenance.source.value,
+            "reference_ids": list(answer.provenance.reference_ids),
+            "next_page": after.kind.value})
+        return after
 
     def _context(self, form: ApplicationForm) -> PacketContext:
         app = self.app()

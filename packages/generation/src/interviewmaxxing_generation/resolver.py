@@ -69,6 +69,7 @@ from .questions import (
     years_fact_area,
 )
 from .values import Mapped, RawValue, Unmapped, as_number, render_scalar, translate
+from .work_history import blank_while_current, work_history_value
 
 
 class PacketResolutionError(RuntimeError):
@@ -171,6 +172,12 @@ class _FieldResolver:
             return saved
         if fld.semantic_type in EXPLICIT_ANSWER_REQUIRED:
             return _Unresolved()
+        entry = work_history_value(self.candidate, fld)
+        if entry is not None and not answer_problems(fld, entry[0]):
+            # A work-history entry's dates or "currently work here" box: the profile's role
+            # (round 14, WP1), cited by its verified facts.
+            return _Answer(entry[0], Provenance(source=AnswerSource.CANDIDATE_FACT, reference_ids=entry[1],
+                                                note="the work-history entry's role in the profile"))
         if fld.control_type is ControlType.TYPEAHEAD:
             return self._lookup_control(fld)
         if fld.semantic_type is SemanticType.RESUME:
@@ -505,6 +512,15 @@ def resolve_packet(
             )
             continue
         if not fld.required:
+            continue
+        if blank_while_current(context.candidate, form, fld):
+            # The end date of the role the person still holds: left blank, the entry's
+            # "I currently work here" box is checked instead (round 14, WP1). Recorded, not
+            # asked: it does not hold the packet.
+            item = MissingInput.for_field(
+                form, fld, reason=MissingReason.NO_ANSWER,
+                prompt="Left blank: you still work in this role, so its \"currently work here\" box is checked.")
+            missing.append(item.model_copy(update={"id": missing_input_id(form, fld), "required": False}))
             continue
         reason = outcome.reason or _default_reason(fld)
         item = MissingInput.for_field(

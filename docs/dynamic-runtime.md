@@ -459,6 +459,87 @@ on each that ends at the final review step).
 - **Uploads.** An uploader's later re-render (Greenhouse) is compared with the structure the
   fill writes against now, follow-up questions it took in included.
 
+## Round 14: appeared questions in the same run, Paylocity's work history, ARIA choices and the consent page
+
+Retry seven's holds and failures, each reproduced on a fictional mock (tests
+`tests/browser/test_round14_live_fixes.py` and `tests/browser/test_round14_data_consent.py`,
+including preparation-only runs of the runner that end at the final review step). CAPTCHAs
+are solved through 2Captcha behind a flag (see "CAPTCHAs").
+
+- **Questions that appear are answered in the same run.** Round 13 named them ("appeared or
+  changed while filling (Are you Hispanic/Latino?); not answered by this packet") but the
+  run still failed: when the page also changed a control outside the questions (live, the
+  change summaries named only the questions), the strict comparison of every other control
+  failed and the step's readback took the change for a changed page. The question-level
+  change is now enough when the page is still the same application step
+  (`_same_application`: address, title, meta, structured data, job identity, kind and step,
+  every form's request, every button that submits a form, and the next and submit controls
+  by what they are; a button that submits nothing, such as "Show definitions" or "Clear",
+  does not count). Then:
+  - at the step's readback, the new questions are `SKIPPED` and named and the page error asks
+    for a fresh inspection; the runner inspects the step again, resolves it (the saved
+    `hispanic_latino`, `race_ethnicity` and `linkedin_url` answers answer them) and fills it
+    before going on to the final review step;
+  - during the fill, nothing more is written and the step goes back to inspection the same
+    way (the round-11 reveal path).
+  The comparison still rejects a reworded or moved question, a question that appears already
+  answered, and changes of the page or its submitting actions; those fail as before, named.
+  Mocks: `greenhouse-eeo?reveal_extra=1`, `teamtailor-late?lazy_extra=1`.
+- **A question a choice takes away.** Right after a choice this fill made, questions that
+  disappear without having been written are a follow-up change too (Paylocity hides the
+  entry's end date once "I currently work here" is checked); the readback names them ("1
+  question(s) (End Date) disappeared").
+- **Paylocity's "Address Line 1" when its list cannot be probed.** A live form names its
+  suggestion list in `aria-controls` but mounts it only once there are suggestions, so the
+  menu probe finds no list and the text combobox was an unsupported control. An unprobed
+  text combobox whose wording is an address is now the typed address answer (round 12's
+  path: typed, Escape, read back; a suggestion is never chosen). Mock
+  `paylocity-address?address_list=late`.
+- **Paylocity's work-history entry.** "Start Date", "End Date" (both stating `MM/YYYY`) and
+  "I currently work here" in an entry whose field paths name a work history
+  (`txt-workHistory-startDate-0`, `workHistory.currentlyWorkingHere.0`) are answered from the
+  profile's roles (`CandidateProfile.experience`, the resume's roles): entry 0 is the most
+  recent role (a current one first, then by start), a date is written only in a format the
+  question states (`MM/YYYY`, `YYYY-MM`, a month input), and every answer cites the role's
+  verified facts (`interviewmaxxing_generation.work_history`). For a role the person still
+  holds, the box is checked and the end date is left blank, which is not asked of the
+  person. "I currently work here" is a yes/no question (`CUSTOM_BOOLEAN`), not an
+  attestation. Mock `paylocity-work-history`.
+- **Checkbox and radio groups drawn as ARIA widgets** (Greenhouse's job board, Radix-style):
+  every option is a `button[role=checkbox|radio][aria-checked]` named by a `<label for>`,
+  beside an `aria-hidden`, invisible native "bubble" input that carries the name and value.
+  The inspector reads each group as one question with its options (a `fieldset` or
+  `role=group` of checkboxes, a `role=radiogroup` of radios, or one checkbox), the bubble
+  inputs are never questions of their own, and the runtime clicks the buttons and reads
+  them back by `aria-checked`. Routing can then answer "How many clients do you currently
+  support?" and "What range of monthly budgets are you used to working with?". Mock
+  `greenhouse-aria`.
+- **The "double-check" attestation.** "Please double-check all the information provided
+  above. Ensuring accuracy is crucial…" is one of those ARIA checkboxes and is typed
+  `ATTESTATION` (the wording asks the person to vouch for the information). Like any
+  attestation, only the person's own answer checks it: an exact saved answer, or the
+  statement-coverage decision over their saved statements (`certify_information_true`).
+- **Jobvite's data-processing consent page** ("Data Consent": choose a location of residence
+  and language, then "I Accept") is still reported as a page the person acts on
+  (`SIGN_IN_REQUIRED`), and `open`, `inspect` and `wait_for_user` still never touch it. The
+  runner now asks first whether the person's own statement covers it:
+  - `data_consent(residence)` reads the page's question without touching the page, as a
+    one-field form: a required `CONSENT` checkbox "I accept the <policy>" under the page's
+    heading. The policy is the page's only one, else the one naming the person's country of
+    residence (its name, or "US", "U.S.A.", "UK"); none, or several (English and French for
+    Canada), leaves the page to the person;
+  - the runner resolves that question like any consent on a form: an exact saved answer or
+    input, else the routing resolver's statement coverage over the person's saved
+    statements (`acknowledge_privacy_notice`);
+  - only a checked answer from the person's own answers lets `accept_data_consent` choose
+    the policy, wait for the page's one "I Accept", keep evidence of the policy shown
+    (`data-consent`), click it and read the form it leads to (with the posting's identity).
+    The runner records `consent.accepted` (the question, the page and the ids of the
+    answers that cover it), once per run.
+  Accepting sends the consent to the site; it never submits an application. A consent no
+  statement covers stops the run as before ("Accept the data-processing consent"). Mock
+  `jobvite-like` (`?policies=regional` for one policy per location).
+
 ## Uploads, autofill overlays and readback
 
 Hosted forms upload through styled controls and react to the upload: Ashby and Lever parse

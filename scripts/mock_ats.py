@@ -217,6 +217,16 @@ class Field:
     lazy: bool = False
     """Rendered by page script only once its block scrolls into view (Teamtailor renders its
     custom questions late): until then the form holds an empty placeholder there."""
+    disabled_by: str | None = None
+    """A checkbox (by name) that takes this question away while it is checked (Paylocity's
+    "I currently work here" and the entry's end date): DISABLE_JS disables and hides the
+    question's block, and the server requires it only when that box was not posted."""
+    aria: bool = False
+    """A radio group, checkbox group or checkbox drawn as ARIA widgets (Greenhouse's job board,
+    Radix-style): each option is a ``button[role=checkbox|radio][aria-checked]`` named by a
+    ``<label for>``, beside an ``aria-hidden`` native "bubble" input (``tabindex=-1``,
+    invisible) that carries the name and value for the form post. ARIA_CHOICE_JS keeps
+    ``aria-checked`` and the bubble's ``checked`` together on a click."""
     placeholder: str | None = None
     """What a pcty_select shows while it holds no value ("Select a state")."""
     suggestions: tuple[str, ...] = ()
@@ -266,6 +276,8 @@ def revealed_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> tu
     for f in fields:
         if f.required_after and not f.required and any(form.get(f.required_after, [])):
             f = replace(f, required=True)
+        if f.disabled_by and f.required and any(form.get(f.disabled_by, [])):
+            f = replace(f, required=False)
         shown.append(f)
         if not f.reveals:
             continue
@@ -750,6 +762,26 @@ GH_EEO_VETERAN = Field(
                      ("2", "I identify as one or more of the classifications of a protected veteran"),
                      ("3", "I don't wish to answer")),
 )
+PW_COMPANY = Field("workHistory.companyName.0", "Company Name", "text", True)
+PW_POSITION = Field("workHistory.position.0", "Position", "text", True)
+PW_START = Field("txt-workHistory-startDate-0", "Start Date", "text", True, hint="MM/YYYY")
+PW_END = Field("txt-workHistory-endDate-0", "End Date", "text", True, hint="MM/YYYY",
+               disabled_by="workHistory.currentlyWorkingHere.0")
+PW_CURRENT = Field("workHistory.currentlyWorkingHere.0", "I currently work here", "checkbox")
+GH_ARIA_CLIENTS = Field(
+    "question_7201[]", "How many clients do you currently support?", "checkbox_group", True,
+    _options(("71", "1-3"), ("72", "4-7"), ("73", "8 or more")), aria=True,
+)
+GH_ARIA_BUDGETS = Field(
+    "question_7202", "What range of monthly budgets are you used to working with?", "radio", True,
+    _options(("81", "Under $50k"), ("82", "$50k to $250k"), ("83", "Over $250k")), aria=True,
+)
+GH_ARIA_DOUBLE_CHECK = Field(
+    "question_7203",
+    "Please double-check all the information provided above. Ensuring accuracy is crucial, as any "
+    "errors or omissions may impact the review of your application.",
+    "checkbox", True, aria=True,
+)
 TT_LINKEDIN = Field("candidate[answers_attributes][0][text]", "Linkedin profile", "text", True, lazy=True)
 """Teamtailor: a custom question rendered only once it scrolls into view."""
 BH_STATE = Field("state.value", "State", "fab_select", True,
@@ -781,6 +813,9 @@ JV_SPONSORSHIP = Field(
 )
 JV_CONSENT_COOKIE = "bwa_jv_consent"
 JV_POLICY_ID = "policy-7d1f"
+JV_REGIONAL = (("policy-ca-en", "Canada - English"), ("policy-ca-fr", "Canada - Français"),
+               ("policy-us-en", "United States - English"))
+"""The regional policies of ``/jobs/jobvite-like/apply?policies=regional``."""
 
 # --- upload and autofill scenarios (page behaviour in SCENARIO_JS) ----------------------
 
@@ -1402,6 +1437,35 @@ JOBS: dict[str, Job] = {
             "the server records the race answer only when \"No\" was posted.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, GH_EEO_AUTHORIZED, GH_EEO_GENDER, GH_EEO_HISPANIC,
                     GH_EEO_VETERAN),
+        ),
+        Job(
+            "paylocity-work-history",
+            "BWA-PL-213",
+            "Paid Media Manager",
+            "Marketing",
+            "Denver, CO",
+            "A Paylocity-style work-history entry for the most recent role: Company Name "
+            "(workHistory.companyName.0), Position (workHistory.position.0), Start Date and End "
+            "Date with the format \"MM/YYYY\" shown under them (txt-workHistory-startDate-0, "
+            "txt-workHistory-endDate-0, both required) and \"I currently work here\" "
+            "(workHistory.currentlyWorkingHere.0). Checking the box disables and hides the end date "
+            "(DISABLE_JS); the server then does not require it.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, PW_COMPANY, PW_POSITION, PW_START, PW_END, PW_CURRENT),
+        ),
+        Job(
+            "greenhouse-aria",
+            "BWA-GH-131",
+            "Paid Social Manager",
+            "Marketing",
+            "Remote (United States)",
+            "A Greenhouse-style form whose choices are ARIA widgets (Radix-style): a required checkbox "
+            "group \"How many clients do you currently support?\" (question_7201[]), a required radio "
+            "group \"What range of monthly budgets are you used to working with?\" (question_7202, a "
+            "role=radiogroup) and a required single checkbox \"Please double-check all the information "
+            "provided above. ...\" (question_7203). Every option is a button[role=checkbox|radio] with "
+            "aria-checked and a <label for>, beside an aria-hidden, invisible native bubble input that "
+            "carries the name and value; ARIA_CHOICE_JS keeps both in step on a click.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, GH_ARIA_CLIENTS, GH_ARIA_BUDGETS, GH_ARIA_DOUBLE_CHECK),
         ),
         Job(
             "teamtailor-late",
@@ -3395,11 +3459,17 @@ WIDGETS_JS = r"""(function () {
     var list = document.getElementById(cfg.id + "-autocomplete-list");
     var status = root.querySelector("[role=status]");
     window.__addressPicked = null;
+    // ?address_list=late: the list the input names in aria-controls does not exist until
+    // there are suggestions to show (a live Paylocity form), so a menu probe finds nothing.
+    var late = new URLSearchParams(location.search).get("address_list") === "late";
+    var slot = list.parentNode;
+    if (late) list.remove();
     function close() { list.hidden = true; list.textContent = ""; input.setAttribute("aria-expanded", "false"); }
     input.addEventListener("input", function () {
       var q = norm(input.value);
       if (q.length < 3) { close(); return; }
       var hits = cfg.suggestions.filter(function (s) { return norm(s).indexOf(q) >= 0; });
+      if (late && !list.isConnected) slot.appendChild(list);
       list.textContent = "";
       hits.forEach(function (s, i) {
         var li = el("li", {role: "option", id: cfg.id + "-suggestion-" + i, "aria-selected": "false"}, s);
@@ -3779,6 +3849,15 @@ REVEAL_JS = r"""(function () {
     function mount() {
       if (shown()) return;
       var fragment = template.content.cloneNode(true);
+      // ?reveal_extra=1: the reveal also adds a button that submits nothing (a definitions
+      // link drawn as a button), a control outside the revealed questions.
+      if (params.get("reveal_extra") === "1") {
+        var extra = document.createElement("button");
+        extra.type = "button";
+        extra.className = "reveal-extra";
+        extra.textContent = "Show definitions";
+        fragment.appendChild(extra);
+      }
       mounted = Array.prototype.slice.call(fragment.childNodes);
       template.parentNode.insertBefore(fragment, template.nextSibling);
       if (hintText && block && !hint) {
@@ -3873,6 +3952,49 @@ FABRIC_JS = r"""(function () {
   });
 })();"""
 
+DISABLE_JS = r"""(function () {
+  "use strict";
+  // Paylocity's work history: while "I currently work here" is checked, the entry's end date
+  // is disabled and hidden (never posted); unchecking brings it back, required again.
+  Array.prototype.forEach.call(document.querySelectorAll("[data-disabled-by]"), function (block) {
+    var box = document.querySelector('input[name="' + CSS.escape(block.getAttribute("data-disabled-by")) + '"]');
+    var input = block.querySelector("input, select, textarea");
+    if (!box || !input) return;
+    function sync() {
+      input.disabled = box.checked;
+      input.required = !box.checked && block.hasAttribute("data-required");
+      block.hidden = box.checked;
+    }
+    box.addEventListener("change", sync);
+    sync();
+  });
+})();"""
+
+ARIA_CHOICE_JS = r"""(function () {
+  "use strict";
+  // Radix-style ARIA options: a click toggles a role="checkbox" (or checks a role="radio"
+  // and unchecks the other radios of its radiogroup), keeping aria-checked, data-state and
+  // the aria-hidden bubble input's checked (the form post) together.
+  var mock = window.__mock = window.__mock || {log: []};
+  mock.ariaClicks = 0;
+  function set(button, on) {
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.setAttribute("data-state", on ? "checked" : "unchecked");
+    var bubble = button.nextElementSibling;
+    if (bubble && bubble.tagName === "INPUT") bubble.checked = on;
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('button[role="checkbox"], button[role="radio"]'), function (button) {
+    button.addEventListener("click", function () {
+      mock.ariaClicks++;
+      if (button.getAttribute("role") === "checkbox") { set(button, button.getAttribute("aria-checked") !== "true"); return; }
+      var group = button.closest('[role="radiogroup"]');
+      Array.prototype.forEach.call(group ? group.querySelectorAll('button[role="radio"]') : [button], function (other) {
+        set(other, other === button);
+      });
+    });
+  });
+})();"""
+
 LAZY_JS = r"""(function () {
   "use strict";
   // Teamtailor renders its custom questions late: a question's block is an empty
@@ -3889,6 +4011,13 @@ LAZY_JS = r"""(function () {
       if (!template) return;
       block.replaceChildren(template.content.cloneNode(true));
       block.removeAttribute("style");
+      if (new URLSearchParams(location.search).get("lazy_extra") === "1") {
+        // ?lazy_extra=1: the question comes with a button that submits nothing ("Clear").
+        var clear = document.createElement("button");
+        clear.type = "button";
+        clear.textContent = "Clear";
+        block.appendChild(clear);
+      }
       mock.lazyMounts++;
       mock.log.push({t: Math.round(performance.now()), event: "lazy-mount"});
     });
@@ -5318,6 +5447,45 @@ def _field_layout(job: Job, blocks: list[tuple[Field, str]]) -> str:
     return joined
 
 
+_BUBBLE_STYLE = ("transform:translateX(-100%);position:absolute;pointer-events:none;opacity:0;"
+                 "margin:0;width:16px;height:16px")
+
+
+def _render_aria_choices(f: Field, posted: list[str], current: str, error: str | None, marker: str,
+                         hint: str, err: str) -> str:
+    """A ``Field.aria`` question: Radix-style ``button[role=checkbox|radio]`` options, each
+    with a ``<label for>`` and an aria-hidden native bubble input for the form post."""
+    fid = f"f-{f.name}"
+    role = "radio" if f.kind == "radio" else "checkbox"
+    bubble = "radio" if f.kind == "radio" else "checkbox"
+    choices = f.options if f.kind != "checkbox" else (Option("yes", f.label),)
+    required = ' aria-required="true"' if f.required else ""
+    invalid = ' aria-invalid="true"' if error else ""
+    items = []
+    for i, o in enumerate(choices):
+        bid = f"{fid}-btn-{i}"
+        on = (o.value in posted) if f.kind != "checkbox" else current == "yes"
+        state = "checked" if on else "unchecked"
+        own_required = required if f.kind == "checkbox" else ""
+        text = f"{esc(o.label)}{marker}" if f.kind == "checkbox" else esc(o.label)
+        items.append(
+            f'<div class="aria-option"><button type="button" role="{role}" id="{bid}" value="on" '
+            f'aria-checked="{"true" if on else "false"}" data-state="{state}" class="aria-choice"'
+            f"{own_required}{invalid}></button>"
+            f'<input type="{bubble}" aria-hidden="true" tabindex="-1" name="{f.name}" value="{esc(o.value)}"'
+            f'{" checked" if on else ""} style="{_BUBBLE_STYLE}">'
+            f'<label for="{bid}" class="aria-label">{text}</label></div>'
+        )
+    if f.kind == "checkbox":
+        return f'<div class="field aria-field" id="{fid}">{hint}{err}{items[0]}</div>'
+    if f.kind == "radio":
+        return (f'<div class="field aria-field"><div class="label" id="{fid}-label">{esc(f.label)}{marker}</div>'
+                f'{hint}{err}<div role="radiogroup" id="{fid}" aria-labelledby="{fid}-label"{required}>'
+                + "".join(items) + "</div></div>")
+    return (f'<fieldset class="field aria-field" id="{fid}"{required}><legend>{esc(f.label)}{marker}</legend>'
+            f"{hint}{err}" + "".join(items) + "</fieldset>")
+
+
 def _reveals_template(f: Field, fid: str, values: dict[str, list[str]]) -> str:
     """A radio group's or select's follow-up questions, inert until REVEAL_JS mounts them
     after its block (with ``reveal_hint`` added to the block itself)."""
@@ -5394,6 +5562,9 @@ def render_field(
             f'<input type="{f.kind}" id="{fid}" name="{f.name}" value="{esc(current)}"'
             f"{auto}{required}{aria}>"
         )
+        if f.disabled_by:
+            return (f'<div class="field" data-disabled-by="{esc(f.disabled_by)}"'
+                    f'{" data-required" if f.required else ""}>{label}{hint}{err}{control}</div>')
         return f'<div class="field">{label}{hint}{err}{control}</div>'
 
     if f.kind == "textarea":
@@ -5417,6 +5588,9 @@ def render_field(
         )
         block = f'<div class="field">{label}{hint}{err}{control}</div>'
         return block + _reveals_template(f, fid, values)
+
+    if f.aria and f.kind in ("radio", "checkbox_group", "checkbox"):
+        return _render_aria_choices(f, posted, current, error, marker, hint, err)
 
     if f.kind in ("radio", "checkbox_group"):
         input_type = "radio" if f.kind == "radio" else "checkbox"
@@ -5981,7 +6155,14 @@ class Handler(BaseHTTPRequestHandler):
     def _render_data_consent(self, job: Job) -> None:
         """Jobvite's "Data Consent" page (a posting's apply URL until the consent is
         accepted): choosing the policy shows it with "I Accept" (a submit button that posts
-        the policy ids back to the apply URL) and "I Decline" (a link to the posting)."""
+        the policy ids back to the apply URL) and "I Decline" (a link to the posting).
+        ``?policies=regional`` offers one policy per location of residence and language
+        instead of the one global policy."""
+        if self.query.get("policies", [""])[0] == "regional":
+            policies = "".join(f'<option value="{value}">{label}</option>' for value, label in JV_REGIONAL)
+        else:
+            policies = (f'<option value="{JV_POLICY_ID}">Global {COMPANY.upper()} APPLICANT AND '
+                        "CANDIDATE PRIVACY POLICY</option>")
         body = (
             f'<h1 class="jv-logo">{COMPANY} Careers</h1>'
             '<article class="jv-page-body"><h3>Data Consent</h3>'
@@ -5989,8 +6170,7 @@ class Handler(BaseHTTPRequestHandler):
             '<div><label for="jv-country-select">Location of Residence and Language:</label></div>'
             '<select id="jv-country-select" required>'
             '<option value="" selected>Select your location of residence and language</option>'
-            f'<option value="{JV_POLICY_ID}">Global {COMPANY.upper()} APPLICANT AND CANDIDATE PRIVACY '
-            "POLICY</option></select>"
+            f"{policies}</select>"
             f'<div id="jv-back"><a class="jv-button" href="/jobs/{job.slug}">Back</a></div>'
             '<div id="jv-policy" hidden><p class="jv-policy-text">This fictional privacy policy '
             f"explains how {COMPANY} processes the personal data in your application.</p>"
@@ -6269,6 +6449,10 @@ class Handler(BaseHTTPRequestHandler):
             form_html += f"<script>{FABRIC_JS}</script>"
         if any(f.lazy for f in fields):
             form_html += f"<script>{LAZY_JS}</script>"
+        if any(f.aria for f in fields):
+            form_html += f"<script>{ARIA_CHOICE_JS}</script>"
+        if any(f.disabled_by for f in fields):
+            form_html += f"<script>{DISABLE_JS}</script>"
         if job.formless:
             form_html += f"<script>{FORMLESS_JS}</script>"
         if job.validity:

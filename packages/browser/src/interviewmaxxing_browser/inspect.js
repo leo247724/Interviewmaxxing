@@ -442,9 +442,26 @@
   // that list's row, never to the form.
   const inListRow = (el) => ["radio", "checkbox"].includes((el.type || "").toLowerCase()) &&
     !!el.closest('[role="listbox"]') && inPickerPart(el);
+  // ARIA checkboxes, radios and switches (Greenhouse's job board draws its checkboxes as
+  // role="checkbox" buttons; component kits such as Radix add an aria-hidden native
+  // "bubble" input beside each that only carries the name and value for the form post):
+  // each is one checkable option, described like a native checkbox or radio
+  // (describeAriaChoice). Its proxy input is part of it, never a control of its own.
+  const ARIA_CHOICE_ROLES = new Set(["checkbox", "radio", "switch"]);
+  const ariaChoiceProxy = new Map();
+  const ariaChoiceProxies = new Set();
+  const ariaChoiceCandidates = deepAll('[role="checkbox"], [role="radio"], [role="switch"]').filter((el) =>
+    !NATIVE.has(el.tagName) && !el.closest('[role="listbox"], [role="menu"], [role="tree"], [role="grid"], [role="option"]'));
+  for (const el of ariaChoiceCandidates) {
+    const near = [el.nextElementSibling, el.previousElementSibling, ...el.querySelectorAll("input")];
+    const proxy = near.find((n) => n && n.tagName === "INPUT" && ["checkbox", "radio"].includes((n.type || "").toLowerCase())
+      && !ariaChoiceProxies.has(n)
+      && (n.getAttribute("aria-hidden") === "true" || n.tabIndex === -1 || !visible(n))) || null;
+    if (proxy) { ariaChoiceProxy.set(el, proxy); ariaChoiceProxies.add(proxy); }
+  }
   const nativeControls = deepAll("input, select, textarea")
     .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el) &&
-      !proxySelects.has(el) && !inTogglePopup(el) &&
+      !proxySelects.has(el) && !inTogglePopup(el) && !ariaChoiceProxies.has(el) &&
       (!segmentLead.has(el) || segmentLead.get(el) === el) && !inListRow(el));
 
   // A phone field's own country picker (an intl-tel-input flag, which may be a combobox
@@ -469,6 +486,10 @@
     if (inPhonePicker(el) || inTogglePopup(el)) continue;
     if (el.closest(CALENDAR)) continue;
     const role = el.getAttribute("role");
+    // ARIA checkable options are described as options (describeAriaChoice), and a radio
+    // group holding them is their question's box, not a control.
+    if (ARIA_CHOICE_ROLES.has(role)) continue;
+    if (role === "radiogroup" && el.querySelector('[role="radio"], [role="checkbox"], [role="switch"]')) continue;
     // A list inside a popup a combobox owns is that combobox's, never a question of its
     // own: Ashby's lookup names a wrapper around its suggestion listbox (a portal).
     if (["listbox", "menu", "tree", "grid"].includes(role) && Array.from(popupRoots).some((p) => p.contains(el))) continue;
@@ -500,7 +521,10 @@
   }
   const ownedEls = new Set(Array.from(ownedIds).map(byId).filter(Boolean));
   const widgets = customWidgets.filter((w) => !(w.id && ownedIds.has(w.id)));
-  const fieldEls = new Set([...nativeControls, ...widgets]);
+  const ariaChoices = ariaChoiceCandidates.filter((el) => !inPhonePicker(el) && !inTogglePopup(el) &&
+    !el.closest(CALENDAR) && !Array.from(popupRoots).some((p) => p.contains(el)) && !(el.id && ownedIds.has(el.id)) &&
+    !widgets.some((w) => w.contains(el)));
+  const fieldEls = new Set([...nativeControls, ...widgets, ...ariaChoices]);
 
   // A yes/no question drawn as toggle buttons (Ashby: two buttons with aria-pressed and a
   // display:none checkbox beside them that mirrors "yes"): the buttons are the question's
@@ -963,9 +987,114 @@
     };
   };
 
-  const controls = [...nativeControls.map(describeNative), ...widgets.map(describeCustom)];
+  // An ARIA checkable option (role="checkbox"/"radio"/"switch", see ariaChoices), described
+  // like a native checkbox or radio: checked by aria-checked, named and valued by its
+  // proxy input when it has one (else its own text is its value), grouped by the question
+  // box that holds several of its kind (a fieldset, role="group" or role="radiogroup"),
+  // whose legend or label is the question.
+  const ariaChoiceType = (el) => el.getAttribute("role") === "radio" ? "radio" : "checkbox";
+  const ariaChoiceBoxCache = new Map();
+  const ariaChoiceBox = (el) => {
+    const box = el.closest('fieldset, [role="radiogroup"], [role="group"]');
+    if (!box) return null;
+    const key = box.tagName + ":" + ariaChoiceType(el);
+    if (!ariaChoiceBoxCache.has(box)) ariaChoiceBoxCache.set(box, new Map());
+    const cache = ariaChoiceBoxCache.get(box);
+    if (!cache.has(key)) {
+      const inside = ariaChoices.filter((o) => box.contains(o) && ariaChoiceType(o) === ariaChoiceType(el));
+      cache.set(key, inside.length > 1 ? box : null);
+    }
+    return cache.get(key);
+  };
+  const REQUIRED_MARK = /[*\u2731\uff0a]\s*$/;
+  const describeAriaChoice = (el) => {
+    const proxy = ariaChoiceProxy.get(el) || null;
+    const type = ariaChoiceType(el);
+    const box = ariaChoiceBox(el);
+    const members = box ? ariaChoices.filter((o) => box.contains(o) && ariaChoiceType(o) === type) : [el];
+    const form = el.closest("form") || (proxy && proxy.form) || null;
+    const container = containerFor(members, form);
+    const exclude = new Set([...ownedEls, ...popupRoots]);
+    for (const m of members) {
+      for (const n of [...(m.labels || []), ...byIds(m.getAttribute("aria-labelledby")),
+        ...byIds(m.getAttribute("aria-describedby"))]) exclude.add(n);
+      if (m.id) for (const l of document.querySelectorAll('label[for="' + CSS.escape(m.id) + '"]')) exclude.add(l);
+      if (members.length > 1) { const b = ownBox(m); if (b) exclude.add(b); }
+    }
+    const [adjacent, adjacentErrors] = adjacentText(container, exclude);
+    const [ownLabel, labelSource] = labelOf(el);
+    const optionText = ownLabel || squashText(textOf(el)) ||
+      (() => { const b = ownBox(el); return b ? squashText(textOf(b)).slice(0, 300) : ""; })();
+    const [legend, legendSelector, legendDescribed] = legendOf(el);
+    const [groupLabel, groupDescribed] = groupLabelOf(el);
+    const labelEls = [...(el.labels || []),
+      ...(el.id && !(el.labels && el.labels.length) ? Array.from(document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]')) : [])];
+    const proxyValue = proxy ? proxy.value || "" : "";
+    const marked = [...labelEls, ...(legend ? [el.closest("fieldset")] : [])].some((n) =>
+      n && visible(n) && REQUIRED_MARK.test((n.tagName === "FIELDSET"
+        ? (Array.from(n.children).find((c) => c.tagName === "LEGEND") || {}).textContent || ""
+        : n.textContent || "").trim()));
+    return {
+      kind: "native",
+      tag: el.tagName.toLowerCase(),
+      type,
+      name: proxy ? proxy.getAttribute("name") || "" : el.getAttribute("name") || "",
+      id: el.id || "",
+      selector: selectorFor(el),
+      role: el.getAttribute("role") || "",
+      autocomplete_list: false,
+      label: optionText,
+      label_source: ownLabel ? labelSource : "text",
+      described: described(el),
+      error_message: "",
+      legend,
+      legend_selector: legendSelector,
+      legend_described: legendDescribed,
+      group_label: groupLabel,
+      group_described: groupDescribed,
+      section_context: sectionContextOf(el),
+      preceding: precedingTextOf(members, container),
+      ...(([q, qFor]) => ({question: q, question_for: qFor}))(questionOf(members, container)),
+      adjacent,
+      adjacent_errors: adjacentErrors,
+      option_text: "",
+      choice_group: box ? selectorFor(box) : "",
+      pressed_options: [],
+      label_selector: labelEls.length && visible(labelEls[0]) ? selectorFor(labelEls[0]) : null,
+      required: el.getAttribute("aria-required") === "true" || !!el.closest('[aria-required="true"]') ||
+        !!(proxy && proxy.required) || marked,
+      disabled: el.getAttribute("aria-disabled") === "true" || !!el.disabled || !!(proxy && proxy.disabled),
+      visible: visible(el),
+      label_visible: labelEls.some(visible),
+      readonly: el.getAttribute("aria-readonly") === "true",
+      // A proxy's own value names the option ("on" or "true" names nothing): else its text.
+      value: proxyValue && !/^(?:on|true|false|1|0)$/i.test(proxyValue) ? proxyValue : optionText,
+      checked: el.getAttribute("aria-checked") === "true",
+      files: [],
+      placeholder: "",
+      autocomplete: "",
+      accept: "",
+      max_length: null,
+      multiple: false,
+      options: [],
+      invalid: el.getAttribute("aria-invalid") === "true",
+      image_alts: [],
+      form_index: form ? forms.indexOf(form) : -1,
+      has_value: false,
+      aria: null,
+      phone_picker: "",
+      upload_trigger: "",
+      upload_anchor: "",
+      dialog_index: dialogIndexOf(el),
+      date_segments: [],
+      input_select: null,
+    };
+  };
+
+  const controls = [...nativeControls.map(describeNative), ...widgets.map(describeCustom),
+    ...ariaChoices.map(describeAriaChoice)];
   // Keep document order.
-  const order = [...nativeControls, ...widgets];
+  const order = [...nativeControls, ...widgets, ...ariaChoices];
   const positioned = controls.map((c, i) => [order[i], c]);
   positioned.sort((a, b) => composedOrder.get(a[0]) - composedOrder.get(b[0]));
 
