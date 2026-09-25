@@ -756,6 +756,57 @@ and waits 120 s, and a cover letter adds 24 calls / USD 2.50 of reservations to 
 allowance, raising the form's cap by the same (`FORM_LETTER_*`); `rag_answers.py draft` reserves
 up to 64 calls / USD 3.00. The lead's target is at most 15 calls and USD 0.60 per letter.
 
+## Round 7: the judge's batch 2-4 fixes, and never the applicant's age
+
+The judge graded the two letters that shipped in round 6: Maximus **A** (every HARD line passes;
+not A+ because only two sentences are true only of Maximus) and Base Power **C** (the 40-employer
+line: the posting's About line was its only Base-only sentence, the first move fit any employer,
+"direct mail" never appeared, and the rebuild was told four times). Its ten ranked fixes are now
+rules the pipeline carries, and the owner added one of his own.
+
+1. **The proof is told once.** After its paragraph it appears only as a clause; the company
+   paragraph links the company fact to the first move instead of retelling it (this reverses
+   round 6's "tie that fact to the proof's own work"). The code checks it: more than one
+   company-paragraph sentence citing the proof's passage is `PROOF_RETOLD`.
+2. **The company fact is one plain clause in the posting's own nouns** (what it sells or builds,
+   its product lines, its market), never its About or mission sentence: a letter sentence copying
+   more than 12 consecutive words of a job chunk is `COMPANY_FACT_COPIED`, and the lint names it
+   `job_restated` for the rewrite.
+3. **Every story figure beside the verified claim that states it.** Retrieval pins the verified
+   twin of each figure a retrieved passage states (`verified_twins`: the same value, "$400K+"
+   and "400k" alike, about the same work) ahead of the per-requirement facts; the receipt lists
+   the twins and counts the figures no verified fact states (`story_figure_twins`,
+   `story_unpaired_figures`). The writer prints the figure the way the verified fact does, and a
+   story sentence missing its twin is `FIGURE_UNPAIRED`.
+4. **A first move true only of the employer.** The resolver names the job chunk that best
+   matches the proof passage (guidance: "Build the first move from job_evidence entry N"), and the
+   writer names the role's channel the way the posting does ("direct mail"); the rubric reviewer
+   checks the 40-employer line's third criterion: one sentence of his own true only of this
+   employer, which the restated company fact does not satisfy.
+5. **The hook's metric is the money or cases result** whenever the evidence has one, never lead
+   or call volume (`HOOK_VOLUME`).
+6. **Scale figures that leave the hook are dropped, not moved;** the proof ends on its result
+   with its number (writer prompt).
+7. **Line 7 is judged against the resume and LinkedIn passages,** not the long-form stories; the
+   "stated constraint is enough" allowance is for line 8 only. When the lead passage is a resume
+   or LinkedIn bullet, the long-form story about the same employer is promoted to lead
+   (`story_long_form_promoted`).
+8. **A second project is judged by its content,** not by "I also": one clause at most.
+9. **Each of the applicant's employers is named at most once per paragraph**
+   (`EMPLOYER_REPEATED`; the lint's `repeated_employer`, with the names from the profile's
+   experience: the company, without its generic suffix, and a distinctive first word).
+10. **The no-slop rewrite never narrows a claim's scope:** a named group ("Glaze clients")
+    turned into a pointer ("those clients") is rejected (`narrowed_scope`).
+
+**Never the applicant's age** (the owner's decision, 2026-09-25). No narrative states or implies
+his age, birth year or career stage by age ("as a 26-year-old", "at 24", "fresh out of school",
+"the youngest in the room", "in my twenties"): `AGE_RULE` is in the writer's and the rewriter's
+prompts and the rubric reviewer's, `AGE_REVEALED` is a corrective rewrite for every narrative
+purpose (answers, motivation and cover letters), and `check_rewrite` rejects a rewrite that brings
+an age in (`age_revealed`). The story corpus keeps the age as he wrote it; the tension survives
+without the number ("the far less senior buyer asking for the spend the radio and TV veterans had
+held for years").
+
 ## Verification
 
 Mocked tests cover isolated retrieval, changed and revoked facts, source separation,

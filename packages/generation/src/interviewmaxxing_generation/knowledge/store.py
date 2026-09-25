@@ -389,8 +389,57 @@ def _below_ask(fact: CandidateFact, years: int, asks: list[tuple[int, frozenset[
     return years < ask
 
 
+_FIGURE = re.compile(r"(?<![\w.])[$\u20ac\u00a3]?(\d+(?:,\d{3})*(?:\.\d+)?)\s*([kKmMbB](?![a-z]))?")
+_GENERIC_EMPLOYER = frozenset({"consulting", "law", "inc", "llc", "ltd", "group", "marketing", "media", "digital",
+                               "solutions", "agency", "the", "and", "company", "partners", "firm", "studio", "labs",
+                               "resume"})
+
+
+def figure_values(text: str) -> set[float]:
+    """The figures a text states worth pairing with a verified claim, by value: money,
+    percentages and counts of ten or more ("$200K", "200k" and "$200,000" are one value),
+    never a calendar year or a small count."""
+    values = set()
+    for number, unit in _FIGURE.findall(text):
+        value = float(number.replace(",", "")) * {"k": 1e3, "m": 1e6, "b": 1e9}.get(unit.lower(), 1.0)
+        if value >= 10 and not (not unit and 1900 <= value <= 2100 and "." not in number):
+            values.add(round(value, 6))
+    return values
+
+
+def _content_words(text: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z]+", text.casefold()) if len(word) >= 4} - _GENERIC_EMPLOYER
+
+
+def _employer_key(name: str | None) -> frozenset[str]:
+    return frozenset(word for word in re.findall(r"[a-z0-9]+", (name or "").casefold())
+                     if len(word) >= 3 and word not in _GENERIC_EMPLOYER)
+
+
+def _story_derived(fact: CandidateFact) -> bool:
+    return fact.source.startswith("story:") or bool(fact.evidence and fact.evidence[0].startswith("Story "))
+
+
+def verified_twins(passage: str, facts: Sequence[CandidateFact]) -> tuple[list[CandidateFact], set[float]]:
+    """The verified facts stating a figure the story passage states, about the same work
+    (sharing two content words with it), resume and profile claims before facts drawn from the
+    stories; and the passage's figures no verified fact states (round 7, the judge's third fix:
+    "$400K+" beside a passage's bare "400k", the 58% on its $200K book)."""
+    figures = figure_values(passage)
+    words = _content_words(passage)
+    twins: list[tuple[bool, str, CandidateFact]] = []
+    stated: set[float] = set()
+    for fact in facts:
+        value = fact.value if isinstance(fact.value, str) else json.dumps(fact.value, ensure_ascii=False)
+        shared = figure_values(value) & figures
+        if shared and len(_content_words(value) & words) >= 2:
+            twins.append((_story_derived(fact), fact.id, fact))
+            stated |= shared
+    return [fact for _, _, fact in sorted(twins, key=lambda item: (item[0], item[1]))], figures - stated
+
+
 def select_requirement_facts(pools: list[list[CandidateFact]], fill: list[CandidateFact], *,
-                             requirements: list[str], limit: int,
+                             requirements: list[str], limit: int, pinned: Sequence[CandidateFact] = (),
                              ) -> tuple[list[CandidateFact], dict[str, Any]]:
     """Facts for a cover letter or motivation answer, per key requirement (round 6).
 
@@ -399,9 +448,13 @@ def select_requirement_facts(pools: list[list[CandidateFact]], fill: list[Candid
     a second, up to ``FACTS_PER_REQUIREMENT``; then ``fill`` (the whole description's
     ranking) tops the list up to ``limit``. A fact stating the same claim as one already
     chosen is left out, as is a second years-of-experience fact and any years fact below
-    the posting's stated ask for the same thing. Returns the facts and a receipt of ids."""
+    the posting's stated ask for the same thing. ``pinned`` facts (the verified twins of the
+    story passages' figures, round 7) come first. Returns the facts and a receipt of ids."""
     asks = _years_asks(requirements)
     chosen: list[CandidateFact] = []
+    for fact in pinned:
+        if len(chosen) < limit and all(fact.id != other.id for other in chosen):
+            chosen.append(fact)
     picked: list[list[str]] = [[] for _ in pools]
     skipped: dict[str, list[str]] = {"same_claim": [], "years_below_ask": [], "second_years": []}
     years_chosen = False
@@ -447,6 +500,7 @@ def select_requirement_facts(pools: list[list[CandidateFact]], fill: list[Candid
             break
         take(fact)
     return chosen, {"mode": "per_requirement", "requirements": len(pools), "limit": limit,
+                    "pinned_ids": [fact.id for fact in pinned][:limit],
                     "per_requirement_ids": picked, "skipped": skipped,
                     "years_asks": sorted({years for years, _ in asks})}
 
@@ -866,6 +920,21 @@ class PgKnowledgeStore:
 
         ranked_hits = ([(rank, hit, True) for rank, hit in long_form_first(priority_hits, lead=True)]
                        + [(rank, hit, False) for rank, hit in long_form_first(story_hits, lead=False)])
+        long_form_ids: set[str] = set()
+
+        def story_entry(hit: dict[str, Any], rank: int, header: dict[str, Any]) -> dict[str, Any]:
+            score = hit.get("score")
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+                score = 1.0 / (60 + rank)  # a driver without the fused score: its rank
+            if hit.get("source_id") == DEFAULT_STORY_SOURCE:
+                long_form_ids.add("story:" + hit["content_hash"])
+            return {"id": "story:" + hit["content_hash"], "text": hit["body"],
+                    "story_id": header["story_id"], "title": header["title"],
+                    "employer": header["employer"] or header["project"],
+                    "resume_role": header["resume_role"],
+                    "period": header["period"], "themes": list(header["themes"]),
+                    "source_version": hit["source_version"], "score": float(score), "rank": rank}
+
         for rank, hit, first_priority in ranked_hits:
             header = parse_chunk_header(hit["body"]) if _valid_hit_body(hit) else None
             if header is None:
@@ -876,18 +945,36 @@ class PgKnowledgeStore:
                 continue
             if first_priority:
                 priority_ids.append("story:" + hit["content_hash"])
-            score = hit.get("score")
-            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
-                score = 1.0 / (60 + rank)  # a driver without the fused score: its rank
-            stories.append({"id": "story:" + hit["content_hash"], "text": hit["body"],
-                            "story_id": header["story_id"], "title": header["title"],
-                            "employer": header["employer"] or header["project"],
-                            "resume_role": header["resume_role"],
-                            "period": header["period"], "themes": list(header["themes"]),
-                            "source_version": hit["source_version"], "score": float(score),
-                            "rank": rank})
+            stories.append(story_entry(hit, rank, header))
             seen_stories.add(hit["content_hash"])
             versions.add(hit["source_version"])
+        promoted: str | None = None
+        if stories and stories[0]["id"] not in long_form_ids:
+            # The lead passage is a resume or LinkedIn bullet: the long-form story about the same
+            # employer tells what the bullet cannot, so it leads (round 7, the judge's seventh fix).
+            lead = _employer_key(stories[0]["employer"]) | _employer_key(stories[0]["resume_role"])
+            for rank, hit in enumerate([*priority_hits, *story_hits], 1):
+                header = parse_chunk_header(hit["body"]) if _valid_hit_body(hit) else None
+                if (header is None or hit.get("source_id") != DEFAULT_STORY_SOURCE or not lead
+                        or not lead & (_employer_key(header["employer"] or header["project"])
+                                       | _employer_key(header["resume_role"]))):
+                    continue
+                entry = story_entry(hit, rank, header)
+                stories = [entry, *(story for story in stories if story["id"] != entry["id"])][:MAX_STORY_CHUNKS]
+                seen_stories.add(hit["content_hash"])
+                versions.add(hit["source_version"])
+                promoted = entry["id"]
+                break
+        verified = [fact for fact in current.values()]
+        twins: dict[str, list[str]] = {}
+        unpaired: dict[str, int] = {}
+        pinned: list[CandidateFact] = []
+        for story in stories:
+            paired, missing = verified_twins(story["text"], verified)
+            twins[story["id"]] = [fact.id for fact in paired]
+            if missing:
+                unpaired[story["id"]] = len(missing)
+            pinned.extend(fact for fact in paired if all(fact.id != other.id for other in pinned))
         voice_from_stories = False
         for hit in hits:
             if not _valid_hit_body(hit):
@@ -921,9 +1008,9 @@ class PgKnowledgeStore:
                         pool.append(fact)
                 pools.append(pool)
             facts, selection = select_requirement_facts(pools, ranked_facts, requirements=requirements,
-                                                        limit=limit)
+                                                        limit=limit, pinned=pinned)
         else:
-            facts = ranked_facts[:limit]
+            facts = [*pinned, *(fact for fact in ranked_facts if all(fact.id != other.id for other in pinned))][:limit]
         versions.update(fact_fingerprint(fact) for fact in facts)
 
         return RetrievalResult(facts, jobs, voices, {
@@ -944,6 +1031,8 @@ class PgKnowledgeStore:
             "story_scores": {s["id"]: s["score"] for s in stories},
             "story_query_applied": story_query is not None, "voice_from_stories": voice_from_stories,
             "story_priority_ids": priority_ids,
+            "story_long_form_promoted": promoted,
+            "story_figure_twins": twins, "story_unpaired_figures": unpaired,
             "story_query_sha256": _hash(story_query) if story_query else None,
             "story_query_bytes": len(story_query.encode("utf-8")) if story_query else 0,
             "stories_skipped_reason": ("identity_field" if narrative and identity_field

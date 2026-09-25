@@ -37,6 +37,7 @@ from interviewmaxxing_core import (
     CandidateFact,
     CandidateProfile,
     ControlType,
+    Experience,
     JobRecord,
     PacketContext,
     SemanticType,
@@ -1805,18 +1806,25 @@ def test_a_rubric_letter_is_written_first_time_with_the_profile_links(candidate,
 
 
 @pytest.mark.parametrize("rule", ["GREETING", "LETTER_LENGTH", "OPENING", "CLOSING", "STORY_MISSING",
-                                  "JOB_RESTATED", "EMPLOYER_NAME", "ATTRIBUTION", "DATE_RANGE", "FACTS_UNCITED"])
+                                  "JOB_RESTATED", "EMPLOYER_NAME", "ATTRIBUTION", "DATE_RANGE", "FACTS_UNCITED",
+                                  "PROOF_RETOLD", "COMPANY_FACT_COPIED", "HOOK_VOLUME", "EMPLOYER_REPEATED",
+                                  "FIGURE_UNPAIRED", "AGE_REVEALED"])
 def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, mock_job, rule):
     from interviewmaxxing_browser.ai.routing import (
+        AGE_FEEDBACK,
         ATTRIBUTION_FEEDBACK,
+        COMPANY_FACT_FEEDBACK,
         DATE_RANGE_FEEDBACK,
+        EMPLOYER_REPEATED_FEEDBACK,
         FACTS_UNCITED_FEEDBACK,
+        HOOK_VOLUME_FEEDBACK,
         JOB_RESTATED_FEEDBACK,
         LETTER_CLOSING_FEEDBACK,
         LETTER_GREETING_FEEDBACK,
         LETTER_LENGTH_FEEDBACK,
         LETTER_OPENING_FEEDBACK,
         LETTER_STORY_FEEDBACK,
+        PROOF_RETOLD_FEEDBACK,
     )
 
     chunk = story_chunk()
@@ -1852,6 +1860,27 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
     elif rule == "ATTRIBUTION":
         bad[9] = {**bad[9], "text": "Reporting to a sales team is the weekly habit I kept, and Mock Co holds this "
                                     "role accountable for exactly that kind of reporting."}
+    elif rule == "PROOF_RETOLD":  # the company paragraph tells the proof again, twice
+        bad[8] = {**bad[8], "fact_ids": [*bad[8]["fact_ids"], chunk["id"]]}
+        bad[9] = {**bad[9], "fact_ids": [*bad[9]["fact_ids"], chunk["id"]]}
+    elif rule == "COMPANY_FACT_COPIED":  # the posting's own sentence pasted in
+        bad[7] = {**bad[7], "text": "Mock Co wants someone to own paid search strategy for enterprise brands and "
+                                    "report results to the sales team, which is the weekly rhythm I kept."}
+    elif rule == "HOOK_VOLUME":  # lead volume as the headline metric while the fact states a result
+        bad[1] = {**bad[1], "text": "In 2024 my paid search work for a regional bakery chain produced 12,000 online "
+                                    "order leads from local searchers after I rebuilt how conversions were counted."}
+    elif rule == "EMPLOYER_REPEATED":  # one employer named twice in a paragraph
+        candidate = candidate.model_copy(update={"experience": [Experience(
+            id="exp.glaze", company="Glaze Agency Inc.", title="Paid Search Lead")]})
+        bad[3] = {**bad[3], "text": "When I took over the bakery chain's account at Glaze, its dashboard counted every "
+                                    "phone call as an order, so the budget kept flowing to searches that never sold."}
+        bad[4] = {**bad[4], "text": "At Glaze I rebuilt the tracking so that only paid orders counted, which halved "
+                                    "the reported conversions for two months and made the owner nervous that spring."}
+    elif rule == "FIGURE_UNPAIRED":  # the passage's figure printed without the verified fact that states it
+        bad[6] = {**bad[6], "fact_ids": [chunk["id"]]}
+    elif rule == "AGE_REVEALED":  # the passage gives his age; the letter never does
+        bad[4] = {**bad[4], "text": "As a 24-year-old analyst I rebuilt the tracking so that only paid orders counted, "
+                                    "which halved the reported conversions for two months and worried the owner."}
     else:  # EMPLOYER_NAME: the metadata carries a listing source's name, the description another
         job = mock_job.model_copy(update={"company": "Coda Fictional"})
         posting = {**POSTING, "text": "Superfictional Mail: " + POSTING["text"]}
@@ -1867,9 +1896,14 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
                 "OPENING": LETTER_OPENING_FEEDBACK, "CLOSING": LETTER_CLOSING_FEEDBACK,
                 "STORY_MISSING": LETTER_STORY_FEEDBACK, "JOB_RESTATED": JOB_RESTATED_FEEDBACK,
                 "ATTRIBUTION": ATTRIBUTION_FEEDBACK, "DATE_RANGE": DATE_RANGE_FEEDBACK,
-                "FACTS_UNCITED": FACTS_UNCITED_FEEDBACK}.get(rule)
+                "FACTS_UNCITED": FACTS_UNCITED_FEEDBACK, "PROOF_RETOLD": PROOF_RETOLD_FEEDBACK,
+                "COMPANY_FACT_COPIED": COMPANY_FACT_FEEDBACK, "HOOK_VOLUME": HOOK_VOLUME_FEEDBACK,
+                "EMPLOYER_REPEATED": EMPLOYER_REPEATED_FEEDBACK, "AGE_REVEALED": AGE_FEEDBACK}.get(rule)
     issues = writer.calls[1]["review_feedback"]
-    assert (feedback in issues) if feedback else any("Coda Fictional" in issue for issue in issues)
+    if rule == "FIGURE_UNPAIRED":
+        assert any("verified fact that states the same figure (fact.bakery)" in issue for issue in issues)
+    else:
+        assert (feedback in issues) if feedback else any("Coda Fictional" in issue for issue in issues)
     # A letter still failing a checked line on its last attempt is held, never shipped.
     writer = LetterWriter([bad])
     packet, _, ctx = resolve(letter_context(candidate, job), Retriever(list(candidate.facts), [chunk],
@@ -2302,3 +2336,117 @@ def test_a_letter_that_will_hold_spends_nothing_on_the_no_slop_pass(candidate, m
                              humanize=True)
     assert held(packet, ctx) and "humanize" not in transport.roles
     assert transport.roles == ["write", "review", "write", "review"]
+
+
+# --- round 7: the judge's batch 2-4 fixes and the owner's age rule -----------------------------
+
+AGE_PASSAGE = ("Pitching the bakery chain's owner meant asking a 24 year old analyst to take over a budget the "
+               "print buyers had held for a decade; I showed the order data and the owner approved it.")
+
+
+def test_no_narrative_ever_states_the_applicants_age(candidate, mock_job):
+    from interviewmaxxing_browser.ai.humanize import age_revealed, check_rewrite
+    from interviewmaxxing_browser.ai.routing import AGE_FEEDBACK
+
+    chunk = story_chunk(AGE_PASSAGE, title="The print budget")
+    with_age = [{"text": "As a 24-year-old analyst I moved the bakery chain's print budget into paid search, and "
+                         "online orders grew by 35%.", "fact_ids": ["fact.bakery", chunk["id"]]}]
+    without = [{"text": "As the far less senior analyst, I moved the bakery chain's print budget into paid search, "
+                        "and online orders grew by 35%.", "fact_ids": ["fact.bakery", chunk["id"]]}]
+    # An answer: the passage keeps the age as written; the answer loses it after one rewrite.
+    writer = DraftQueue(with_age, without)
+    packet, resolver, _ = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]], [chunk]), writer, Jev())
+    assert packet.is_complete and not age_revealed(packet.answers[0].value.text)
+    assert writer.calls[1]["review_feedback"] == [AGE_FEEDBACK]
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rejected_for"] == ["AGE_REVEALED"]
+    # A motivation answer too, and an age on the last attempt holds.
+    motivation = [{"text": "At 24, I moved a regional bakery chain's print budget into paid search, and I want "
+                           "that kind of measured budget at your company.",
+                   "fact_ids": ["fact.bakery"], "job_evidence_ids": [JOB_EVIDENCE["id"]]}]
+    writer = DraftQueue(motivation)
+    packet, _, ctx = resolve(context(with_career_motivation(candidate), mock_job, question=INTEREST),
+                             Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer,
+                             Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78))
+    assert held(packet, ctx) and len(writer.calls) == 2
+    # The no-slop rewrite can never bring an age in.
+    original = NarrativeDraft.model_validate(ready(without))
+    rewrite = NarrativeDraft.model_validate(ready(with_age))
+    assert check_rewrite(original, rewrite, purpose="answer", supplied_ids={"fact.bakery", chunk["id"]},
+                         job_ids=set(), max_length=None) == "age_revealed"
+    assert "age_revealed" in {f.pattern for f in lint("I was the youngest in the room when I pitched the owner.")}
+    for plain in ("I cut cost per order 24% at a bakery chain.", "We opened at 24 locations.",
+                  "I was 26 years into a family business."):
+        assert age_revealed(plain) == [], plain
+
+
+def test_the_lint_names_a_pasted_about_line_and_an_employer_named_twice() -> None:
+    posting = ("Fictional Ovens is a mission-driven kitchen robotics company that gives bakers speed, safety, and "
+               "consistency to delight customers, grow margins, and scale.")
+    pasted = ("Fictional Ovens is a mission-driven kitchen robotics company that gives bakers speed, safety, and "
+              "consistency. I cut cost per order 31% at a bakery chain.")
+    assert "job_restated" in {f.pattern for f in lint(pasted, company="Fictional Ovens", posting=[posting])}
+    assert "job_restated" not in {f.pattern for f in lint(
+        "Fictional Ovens builds kitchen robots for bakeries. I cut cost per order 31% at a bakery chain.",
+        company="Fictional Ovens", posting=[posting])}
+    employers = [["Glaze Agency Inc.", "Glaze"]]
+    twice = "At Glaze I rebuilt the tracking. Glaze clients then bid on paid orders.\\n\\nI can talk this week."
+    assert "repeated_employer" in {f.pattern for f in lint(twice, employers=employers)}
+    once = "At Glaze I rebuilt the tracking, and the clients then bid on paid orders.\\n\\nI can talk this week."
+    assert "repeated_employer" not in {f.pattern for f in lint(once, employers=employers)}
+
+
+def test_a_rewrite_may_not_narrow_a_claims_scope() -> None:
+    from interviewmaxxing_browser.ai.humanize import check_rewrite
+
+    draft = [{"text": "At a regional bakery chain I grew online orders by 35% after rebuilding the tracking.",
+              "fact_ids": ["fact.bakery"]},
+             {"text": "The weekly report I built for Glaze clients went to two store managers.",
+              "fact_ids": ["fact.reports"]}]
+    narrowed = [dict(draft[0]), {**draft[1], "text": "The weekly report I built for those clients went to two store "
+                                                     "managers."}]
+    kept = [dict(draft[0]), {**draft[1], "text": "The weekly report I built for Glaze clients reached two store "
+                                                 "managers."}]
+    ids = {"fact.bakery", "fact.reports"}
+    original = NarrativeDraft.model_validate(ready(draft))
+    assert check_rewrite(original, NarrativeDraft.model_validate(ready(narrowed)), purpose="answer",
+                         supplied_ids=ids, job_ids=set(), max_length=None) == "narrowed_scope"
+    assert check_rewrite(original, NarrativeDraft.model_validate(ready(kept)), purpose="answer",
+                         supplied_ids=ids, job_ids=set(), max_length=None) is None
+
+
+def test_the_first_move_is_built_from_the_chunk_that_matches_the_proof(candidate, mock_job):
+    from interviewmaxxing_browser.ai.routing import _proof_chunk_guidance
+
+    chunk = story_chunk()  # conversion tracking and online orders for a bakery chain
+    salary = {**POSTING, "id": "job:" + "e" * 64, "text": "Salary and benefits: we offer a generous package, remote "
+                                                          "work and learning budgets for everyone who joins."}
+    matching = {**POSTING, "id": "job:" + "f" * 64, "text": "You will connect campaign performance to conversion "
+                                                            "tracking and online orders across direct mail and search."}
+    guidance = _proof_chunk_guidance([chunk], [salary, matching])
+    assert guidance is not None and "job_evidence entry 2 of 2" in guidance and "channel" in guidance
+    assert _proof_chunk_guidance([chunk], [matching]) is None and _proof_chunk_guidance([], [salary, matching]) is None
+    writer = LetterWriter([rubric_letter("fact.bakery", matching["id"], story_id=chunk["id"])])
+    resolve(letter_context(candidate, mock_job),
+            Retriever(list(candidate.facts), [chunk], job_evidence=[salary, matching]), writer,
+            Jev(semantic="COVER_LETTER"))
+    assert any("job_evidence entry 2 of 2" in rule for rule in writer.calls[0]["guidance"])
+
+
+def test_the_letter_prompts_carry_the_judges_rules() -> None:
+    from interviewmaxxing_browser.ai.providers import (
+        AGE_RULE,
+        COVER_LETTER_RULES,
+        LETTER_RUBRIC_LINES,
+    )
+
+    for phrase in ("told once", "never lead or call volume", "dropped, not moved into the proof",
+                   "never retelling the proof", "one plain clause in the posting's own nouns",
+                   "never the posting's About or mission sentence", "however it is worded",
+                   "at most once per paragraph", "print the figure the way that fact prints it",
+                   "a direct-mail role says 'direct mail'", "end it on that result with its number"):
+        assert phrase in COVER_LETTER_RULES, phrase
+    for phrase in ("(c) at least one sentence of his own", "never against the long-form stories",
+                   "judged by its content, not its wording", "a retelling in the company paragraph or the close fails",
+                   "this is for line 8 only", "never the applicant's age"):
+        assert phrase in LETTER_RUBRIC_LINES, phrase
+    assert "the far less senior buyer" in AGE_RULE

@@ -68,6 +68,7 @@ from interviewmaxxing_core.answer_policies import (
 )
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
 from interviewmaxxing_core.preferences import names_work_mode, stated_metro_area
+from interviewmaxxing_generation.knowledge.store import figure_values
 from interviewmaxxing_generation.questions import (
     QuestionText,
     motivation_question,
@@ -164,12 +165,15 @@ from .humanize import (
     FIT_HEDGE_FEEDBACK,
     LETTER_PARAGRAPHS,
     LETTER_WORDS,
+    MAX_QUOTED_WORDS,
     QUOTED_STATEMENT_FEEDBACK,
+    age_revealed,
     attribution_clauses,
     employer_names,
     fit_hedges,
     greeting,
     humanize_draft,
+    quoted_run,
     quotes_statement,
     stock_closer,
     stock_opener,
@@ -687,6 +691,30 @@ DATE_RANGE_FEEDBACK = (
     "Date each employer once, where it first appears: current work 'since <Month YYYY>', past work "
     "by when it started ('starting in 2024') or not at all. No date range ('from 2022 to 2023', "
     "'March 2024 to May 2025'), and never one year for work that spanned more.")
+AGE_FEEDBACK = (
+    "Never state or imply the applicant's age, birth year or career stage by age ('as a "
+    "26-year-old', 'at 24', 'fresh out of school', 'the youngest in the room'): keep the tension "
+    "without the number, for example 'the far less senior buyer asking for the spend the radio "
+    "and TV veterans had held for years'.")
+PROOF_RETOLD_FEEDBACK = (
+    "Tell the proof once: after the proof paragraph it appears only as a clause. In the company "
+    "paragraph, link the company fact to the first move and never retell the proof; the close may "
+    "offer to walk through it.")
+COMPANY_FACT_FEEDBACK = (
+    "State the company fact as one plain clause in the posting's own nouns (what it sells or builds, "
+    "its product lines, its market); never paste the posting's About or mission sentence or its "
+    "triads.")
+HOOK_VOLUME_FEEDBACK = (
+    "Make the hook's one metric the money or cases result the passage or its verified fact states "
+    "(revenue, cost per acquisition, signed cases), not lead or call volume; drop the volume figure "
+    "rather than moving it into the proof.")
+EMPLOYER_REPEATED_FEEDBACK = (
+    "Name each of your employers at most once per paragraph; a later sentence about the same work "
+    "needs no name.")
+_VOLUME_HOOK = re.compile(r"\d[\d,.]*\+?\s+(?:[A-Za-z-]+\s+){0,3}(?:leads|calls|clicks|impressions|visits|sessions|"
+                          r"sign-?ups|downloads|contacts|inquiries|enquiries|followers)\b", re.IGNORECASE)
+_MONEY_OR_CASES = re.compile(r"[$\u20ac\u00a3]\s?\d|\d\s?%|\b\d+\s+figures?\b|\brevenue\b|\bsigned\s+cases?\b|"
+                             r"\bcost\s+per\b|\bCPA\b|\bROAS\b", re.IGNORECASE)
 IMPROVEMENT_LENGTH_FEEDBACK = (
     "Keep the letter at 280-380 words in its paragraphs: where you cut a sentence, tell more of the "
     "proof's own story from its passage (the constraint, the fight, what changed) instead of adding "
@@ -1269,6 +1297,101 @@ def _required_details(field: ApplicationField, purpose: str) -> list[str]:
 def _fact_evidence(fact: CandidateFact) -> dict[str, Any]:
     return {"id": fact.id, "key": fact.key, "value": fact.value,
             "source": fact.source, "evidence": fact.evidence}
+
+
+def applicant_employers(context: PacketContext) -> list[list[str]]:
+    """The names each of the applicant's employers goes by in a letter, longest first: the
+    profile's company name, without a legal or generic suffix, and a distinctive first word
+    ("Adscriptly" for "Adscriptly Consulting", "DJC" for "DJC Law")."""
+    generic = {"consulting", "law", "inc", "llc", "ltd", "group", "marketing", "media", "digital", "solutions",
+               "agency", "company", "partners", "firm", "studio", "labs", "co"}
+    names: list[list[str]] = []
+    for experience in context.candidate.experience:
+        full = experience.company.strip()
+        words = re.findall(r"[\w&.'-]+", full)
+        bare = full
+        while words and words[-1].strip(".,").casefold() in generic:
+            words = words[:-1]
+            bare = " ".join(words)
+        first = words[0] if words and (len(words[0]) >= 5 or words[0].isupper()) else ""
+        variants = sorted({name for name in (full, bare, first) if name and len(name) >= 3}, key=len, reverse=True)
+        if variants and variants not in names:
+            names.append(variants)
+    return names
+
+
+def _proof_chunk_guidance(story_chunks: Sequence[dict[str, Any]], job_evidence: Sequence[dict[str, str]]) -> str | None:
+    """Which job chunk the first move is built from (round 7, the judge's fourth fix): the one
+    whose words best match the proof passage listed first, named by its position."""
+    if not story_chunks or len(job_evidence) < 2:
+        return None
+
+    def words(text: str) -> set[str]:
+        return {word for word in re.findall(r"[a-z]+", text.casefold()) if len(word) >= 5}
+
+    proof = words(story_chunks[0]["text"])
+    scores = [len(proof & words(item["text"])) for item in job_evidence]
+    best = max(range(len(scores)), key=lambda index: (scores[index], -index))
+    if scores[best] == 0:
+        return None
+    return (f"Build the first move from job_evidence entry {best + 1} of {len(job_evidence)} (the chunk "
+            "that best matches the proof passage listed first): cite it, name the role's channel or "
+            "product the way it does, and make the move's object a priority that chunk names.")
+
+
+def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Sequence[Any],
+                     job_evidence: Sequence[dict[str, str]], facts: Sequence[CandidateFact],
+                     evidence: Sequence[CandidateFact]) -> list[tuple[str, str]]:
+    """The judge's batch 2-4 rules the code can check on a cover letter (round 7): the proof
+    told once (PROOF_RETOLD), the company fact never the posting's own sentence
+    (COMPANY_FACT_COPIED), a money or cases hook (HOOK_VOLUME), each employer named once per
+    paragraph (EMPLOYER_REPEATED), and each story figure beside its verified twin
+    (FIGURE_UNPAIRED)."""
+    findings: list[tuple[str, str]] = []
+    paragraphs = sorted({s.paragraph for s in body})
+    if len(paragraphs) >= 4:
+        hook, company = paragraphs[0], paragraphs[-2]
+        proof_stories = {fid for s in body if hook < s.paragraph < company
+                         for fid in s.fact_ids if fid.startswith("story:")}
+        retold = [s for s in body if s.paragraph == company and proof_stories & set(s.fact_ids)]
+        if len(retold) > 1:
+            findings.append(("PROOF_RETOLD", PROOF_RETOLD_FEEDBACK))
+    if any(len(quoted_run(s.text, item["text"])) > MAX_QUOTED_WORDS for s in body for item in job_evidence):
+        findings.append(("COMPANY_FACT_COPIED", COMPANY_FACT_FEEDBACK))
+    if body:
+        cited = {fid for s in draft.sentences for fid in s.fact_ids}
+        cited_text = " ".join(str(fact.value) for fact in evidence if fact.id in cited)
+        if (_VOLUME_HOOK.search(body[0].text) and not _MONEY_OR_CASES.search(body[0].text)
+                and _MONEY_OR_CASES.search(cited_text)):
+            findings.append(("HOOK_VOLUME", HOOK_VOLUME_FEEDBACK))
+    for variants in applicant_employers(context):
+        pattern = re.compile("|".join(rf"(?<![\w]){re.escape(name)}(?![\w])" for name in variants))
+        by_paragraph: dict[int, int] = {}
+        for sentence in body:
+            by_paragraph[sentence.paragraph] = by_paragraph.get(sentence.paragraph, 0) + len(pattern.findall(sentence.text))
+        if any(count > 1 for count in by_paragraph.values()):
+            findings.append(("EMPLOYER_REPEATED", EMPLOYER_REPEATED_FEEDBACK))
+            break
+    verified = [fact for fact in facts if not fact.id.startswith(("story:", CONTACT_ID))]
+    missing: list[str] = []
+    for sentence in body:
+        if not any(fid.startswith("story:") for fid in sentence.fact_ids):
+            continue
+        figures = figure_values(sentence.text)
+        for fact in verified:
+            value = str(fact.value)
+            if (fact.id not in sentence.fact_ids and figure_values(value) & figures
+                    and _words(value) & _words(sentence.text) and fact.id not in missing):
+                missing.append(fact.id)
+    if missing:
+        findings.append(("FIGURE_UNPAIRED", "For each figure a story passage states, cite beside it the verified "
+                         f"fact that states the same figure ({', '.join(missing[:6])}) and print the figure the way "
+                         "that fact prints it."))
+    return findings
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z]+", text.casefold()) if len(word) >= 4}
 
 
 def _sentence_key(sentence: Any) -> str:
@@ -5464,13 +5587,17 @@ class DynamicPacketResolver:
             "rewrite_attempt": rewrite_attempt, "review_feedback": review_feedback or []})
         job = {"title": context.job.title or "", "company": context.job.company or ""}
         enumeration = _enumeration_question(field.question_text)
+        guidance = [ENUMERATION_GUIDANCE] if enumeration else []
+        first_move = _proof_chunk_guidance(story_chunks, job_evidence) if purpose == "cover_letter" else None
+        if first_move:
+            guidance.append(first_move)
         attempts: list[dict[str, Any]] = []
         trace["attempts"] = attempts  # each writer call's finish reason and budget
         try:
             draft = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
                 max_length=field.max_length, job_evidence=job_evidence,
                 voice_samples=voice_samples, purpose=purpose, review_feedback=review_feedback,
-                guidance=[ENUMERATION_GUIDANCE] if enumeration else [], on_attempt=attempts.append)
+                guidance=guidance, on_attempt=attempts.append)
         except AIHold as exc:
             trace.update(status="WRITER_HELD", missing_information=list(getattr(exc, "missing_information", ())))
             raise
@@ -5487,6 +5614,9 @@ class DynamicPacketResolver:
                       if fact.key == "career_motivation" and isinstance(fact.value, str) and fact.value.strip()]
         def findings_of(candidate: NarrativeDraft) -> list[tuple[str, str]]:
             rejections: list[tuple[str, str]] = []
+            if age_revealed(candidate.text):
+                # The owner's decision: his age never appears in any narrative (round 7).
+                rejections.append(("AGE_REVEALED", AGE_FEEDBACK))
             if fit_hedges(candidate.text):
                 # Fit is given: the draft builds the case and never hedges or judges it; an
                 # unsupported requirement is left out, not disclaimed (round 5, addendum 2).
@@ -5496,7 +5626,8 @@ class DynamicPacketResolver:
                 # every "why us" answer, the statement reads as boilerplate (round 5).
                 rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
             rejections.extend(self._letter_findings(context, candidate, purpose=purpose, job_evidence=job_evidence,
-                                                    stories=bool(stories), contact=contact is not None))
+                                                    stories=bool(stories), contact=contact is not None,
+                                                    facts=relevant, evidence=evidence))
             cited = {fid for s in candidate.sentences for fid in s.fact_ids}
             if (purpose == "cover_letter" and cited and cited <= set(supplied)
                     and not cited & {fact.id for fact in relevant}):
@@ -5528,7 +5659,7 @@ class DynamicPacketResolver:
                 assert self.writer is not None
                 improved = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
                     max_length=field.max_length, job_evidence=job_evidence, voice_samples=voice_samples,
-                    purpose=purpose, review_feedback=[*issues[:7], IMPROVEMENT_LENGTH_FEEDBACK], guidance=[],
+                    purpose=purpose, review_feedback=[*issues[:7], IMPROVEMENT_LENGTH_FEEDBACK], guidance=guidance,
                     on_attempt=attempts.append)
                 if improved.status != "READY":
                     raise AIHold("The rubric rewrite needs input")
@@ -5579,7 +5710,9 @@ class DynamicPacketResolver:
                 supplied_ids=set(supplied), job_ids=set(supplied_job), ground=ground_again,
                 trace=trace_humanize, statements=statements,
                 names=employer_names(context.job.company or "", " ".join(e["text"] for e in job_evidence))
-                if context.job.company else ())
+                if context.job.company else (),
+                posting=[e["text"] for e in job_evidence] if purpose == "cover_letter" else (),
+                employers=applicant_employers(context) if purpose == "cover_letter" else ())
         value = TextValue(text=draft.text)
         from interviewmaxxing_core import answer_problems
         if answer_problems(field, value):
@@ -5639,7 +5772,8 @@ class DynamicPacketResolver:
     @staticmethod
     def _letter_findings(context: PacketContext, draft: NarrativeDraft, *, purpose: str,
                          job_evidence: list[dict[str, str]], stories: bool = False,
-                         contact: bool = False) -> list[tuple[str, str]]:
+                         contact: bool = False, facts: Sequence[CandidateFact] = (),
+                         evidence: Sequence[CandidateFact] = ()) -> list[tuple[str, str]]:
         """The owner's letter rules the code can check (round 6 and its rubric): the employer
         as the job description names it; job priorities paired with the applicant's work
         rather than restated (at most one sentence citing job evidence alone); for a cover
@@ -5687,6 +5821,8 @@ class DynamicPacketResolver:
                     findings.append(("CLOSING", LETTER_CLOSING_FEEDBACK))
             if stories and not any(fid.startswith("story:") for s in draft.sentences for fid in s.fact_ids):
                 findings.append(("STORY_MISSING", LETTER_STORY_FEEDBACK))
+            findings.extend(_round7_findings(context, draft, body=body, job_evidence=job_evidence,
+                                             facts=facts, evidence=evidence))
         return findings
 
     @staticmethod
