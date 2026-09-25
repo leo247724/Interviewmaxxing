@@ -263,6 +263,10 @@ page script involved is a fixed read-only script (also allowlisted for OpenCLI).
   is restored before the form is annotated, so the provider annotates, and later
   resolves reuse, exactly the form the runtime returns.
 - **Waiting for the user** never opens a menu, including the final read after the wait.
+  The exception is a wait that began on a page asking the person to act (a sign-in, a
+  CAPTCHA, a consent) and ended because that page is gone. The page it led to is new, so
+  it is read as `open` reads a page: once ready, with its menus probed (see "Workday
+  application wizards").
 - **Questions, not placeholders or ids.** A field's label is the question the page shows:
   its label, legend or accessible name. Without one, the question its own box states
   comes next: a `<label>` that labels nothing (Ashby's title `for` a field path no element
@@ -483,3 +487,127 @@ runtime handles them, with no site adapter:
 Mock scenarios `modal-wizard`, `iframe-embed`, `stepper-ambiguous` and
 `apply-in-alert-form` (`tests/browser/MOCK_ATS.md`) reproduce these structures; the tests
 are `tests/browser/test_wizard*.py`.
+
+## Workday application wizards
+
+Workday runs one careers site per employer tenant (`<tenant>.wdN.myworkdayjobs.com`).
+The shapes below were read on four public postings (Salesforce, Material, General Motors,
+Zendesk) on 2026-09-24, without typing anything and with LinkedIn hosts blocked.
+Salesforce, GM and Zendesk put an account step first; Material goes straight into the
+wizard, so its first page (My Information) was read live, menus opened and closed. The
+`workday-wizard` mock scenario (`scripts/mock_workday.py`, `tests/browser/MOCK_ATS.md`)
+reproduces them.
+
+- **Apply chooser.** The posting's Apply is `a[role=button][data-automation-id=
+  adventureButton]` to `<posting>/apply`. Clicked, it opens a `role=dialog` "Start Your
+  Application" popup in the page (the URL stays, the posting turns aria-hidden); opened as a
+  URL, as `open()` follows it, `<posting>/apply` shows the same three `a[role=button]` routes
+  on a page of its own (`applyAdventurePage`): "Autofill with Resume", "Apply Manually" and
+  "Use My Last Application". `open()` prefers a manual route ("Apply Manually") over every
+  other apply control; the autofill route, which uploads and parses the resume before any
+  question is shown, and "Use My Last Application", which copies another application, are
+  never followed. The resume is attached later on its own question (My Experience).
+  The popup appears only when Apply is clicked, for example by the person. If it is showing
+  when the page is inspected, it counts as an offer to autofill like any other (see "Overlays
+  and autofill offers" above): it is declined once with its own Close, and none of its
+  routes is followed.
+- **No LinkedIn traffic.** The same popup embeds an "Apply with LinkedIn" gadget
+  (`applywithlinkedin.myworkdaygadgets.com`) that posts to `www.linkedin.com` as soon as the
+  popup shows. `PlaywrightSessionFactory` aborts every request to `BLOCKED_HOSTS`
+  (`linkedin.com`, `licdn.com`, that gadget host) in every session (`blocked_hosts=` to
+  change it). OpenCLI drives the person's own Chrome and cannot block requests; use the
+  Playwright path for Workday.
+- **Account step.** `<posting>/apply/applyManually` shows, signed out, a progress list
+  ("current step 1 of N: Create Account/Sign In") and a Create Account form (Email
+  Address, Password, Verify New Password, a privacy-notice checkbox, a `click_filter`
+  overlay over a hidden submit), with "Already have an account? Sign In" and "Forgot your
+  password?" outside the form. A visible password box makes the page `SIGN_IN_REQUIRED`;
+  its message names the tenant and says an account is needed ("A Workday account for
+  salesforce (salesforce.wd12.myworkdayjobs.com) is needed to apply ..."; other sites
+  that offer "Create Account" get "An account on <host> is needed to apply ..."). The
+  runtime never types credentials. A prepare-only run stops as `NEEDS_INPUT` with that
+  `USER_ACTION`; `resume APP --act` opens the visible browser, where the person creates
+  an account or signs in once per tenant; the persistent profile (`IMX_HOME/browser`)
+  keeps the session for later runs as long as the tenant's cookies last. A wait that
+  began on a sign-in or CAPTCHA page ends once that page has been gone for two reads, and
+  menu controls no probe has seen yet never count as the person's work (waits never
+  probe); the page the sign-in leads to is then inspected afresh, its menus probed. A read
+  that the person's navigation interrupts ("Execution context was destroyed") is read again
+  once the new document has settled; writers still notice such a change through the
+  document identity.
+- **Honeypot.** Workday's account and apply pages carry `input[name=website]` labelled
+  "Enter website. This input is for robots only, do not enter if you're human." in a
+  1 x 0.01 px box whose 1 px label counted as visible, so it used to be a WEBSITE field.
+  A text box smaller than 2 px is not visible, a text box is never operated through its
+  label alone, and a control whose label, placeholder or description says it is for
+  robots (or asks humans to leave it blank) is never a field.
+- **One document, many steps.** After the account step the wizard (My Information, My
+  Experience, Application Questions (GM splits it in two), Voluntary Disclosures, Self
+  Identify on some tenants, Review) runs in one document whose URL never changes; the
+  document keeps the posting's JSON-LD, so every step carries the job identity. The step
+  comes from the progress list's screen-reader labels: "current step N of M" wins over
+  any other "step N of M" text ("completed step 1 of 7" comes first), and the number may
+  run straight into the step name ("current step 1 of 6My Information"). A changed step
+  number means the wizard advanced even when the next page reuses field ids. Probed menus
+  and restored uploads belong to the page they were observed on (the document and the
+  step it shows), so each step gets its own probing budget. Workday draws the progress
+  list and "Next" / "Save and Continue" before the step's questions: a step with no
+  question whose primary action is not the final one is not ready yet (only Review is
+  empty), in `open()`, `advance()` and after a wait for the person. "Submit" on Review is
+  the final action; prepare-only reads Review and stops with `preparation.ready`, Submit
+  is never clicked. An alert that only announces a page ("My Information page is
+  loaded") is not a validation error.
+- **Required errors.** A step shown again after "Save and Continue" (the mock: an alert
+  banner "Errors Found (n)" with one line per field, and per field an `aria-invalid`
+  control described by its "Error: ..." message) is `advanced=False` with those messages;
+  the field's `validation_error` carries its own message and the runner asks again.
+- **Dropdowns.** `button[type=button][aria-haspopup=listbox]` without a role is a menu
+  control. Opened, it sets `aria-expanded` and names a body-portal `ul[role=listbox]` in
+  `aria-controls` (a new short id such as "cq4q3" each time: such ids constrain nothing,
+  the reference and the option set do), moves focus into it, and closes on Escape or an
+  outside press. Options are `li[role=option]` with an opaque `data-value`; the first is
+  a disabled "Select One" with an empty value, which is not an option. Country lists 249
+  countries and is read in full. Its question is its `<label for>`; it has no
+  `aria-required`, so a menu button whose accessible name ends in "Required" (Workday:
+  "Country United States of America Required") or whose label shows an asterisk, even an
+  aria-hidden one, is required. A zero-size text input beside each button holds the value
+  and is never a field.
+- **Prompts (pickers).** "How Did You Hear About Us?" and "Country Phone Code" are search
+  boxes with no role, `aria-haspopup`, `aria-controls` or `aria-expanded`; each is
+  described by a hidden count ("0 items selected", "1 item selected, United States of
+  America (+1)"; "Expanded" while open, "Minimized" after) and has `enterkeyhint=search`;
+  chosen items are `role=option` pills in a `ul[role=listbox][aria-label="items
+  selected"]` beside it ("United States of America (+1), press delete to clear value.").
+  Such a picker's list is the one visible listbox no control names and no picker shows
+  its chosen items in, while its search box (or the list) has focus: a body-portal
+  `div[role=listbox][aria-label="Options Expanded"]` of categories (a chevron each; the
+  Country Phone Code list is flat, a radio per row). Option names drop the state their
+  `aria-label` adds ("Career Websites not checked"). The list closes on an outside press,
+  not on Escape. The chosen-items list and an open list are part of the picker, never
+  questions, and radios or checkboxes inside an open list are never fields. Unprobed, a
+  picker is `UNSUPPORTED` (typing alone commits nothing); probed, it is a `TYPEAHEAD` for
+  one value: a picker whose one chosen item already matches the answer is left alone
+  ("United States" matches "United States of America (+1)": a trailing dial code is not
+  part of a place); otherwise the answer is typed, Enter is pressed once when the list
+  shows no results (only where Enter cannot submit a form), the one matching result is
+  clicked unless it is already chosen, the list is closed the way the probe closed it,
+  and the picker must then show exactly that item; a result it already marks chosen is not
+  clicked, and the search typed to find it is cleared again.
+- **Dates.** Month / Day / Year spinbutton inputs in one wrapper (Self Identify) are one
+  `TEXT` field (`input_type` `date`, placeholder "MM/DD/YYYY") named by its label. The
+  answer (ISO "2026-09-24", "09/24/2026", "9/24/2026" or "September 24, 2026") is typed
+  into the first segment in the widget's order, "09/24/2026", as a person does; a widget
+  that does not move on by itself is typed segment by segment. Each segment is read back
+  as a number. (Mock only: no live date could be reached.)
+- **Phones and names.** "Country Phone Code" is a `COUNTRY` question, "Phone Device Type"
+  a choice of its own and "Phone Extension" a short text, never the number. A phone number
+  box right after a country-code picker gets the national number: "+1 (303) 555-0142" is
+  typed as "(303) 555-0142" when the picker holds "+1". "Middle Name"
+  (`legalName--middleName`) and "Address Line 2" are short texts, never the full name or
+  the street address.
+- **Not yet observed live.** The pages after My Information (My Experience, Application
+  Questions, Voluntary Disclosures, Self Identify, Review), the error banner, search
+  results, the uploader and the date widget are reproduced from Workday's published
+  conventions, not from a live page (reaching them needs typing or an account). The first
+  `resume --act` run on a real tenant is the check; `docs/application-schemas/workday.json`
+  is not updated.

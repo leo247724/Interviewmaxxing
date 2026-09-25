@@ -60,10 +60,20 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"cover letter"), SemanticType.COVER_LETTER),
     (_rx(r"\bresume\b|résumé|\bcv\b|curriculum vitae"), SemanticType.RESUME),
     (_rx(r"preferred (?:first )?name|nickname"), SemanticType.PREFERRED_NAME),
+    # A middle name is never the first, last or full name (Workday's "Middle Name" is
+    # named legalName--middleName, which would otherwise read as a legal/full name).
+    (_rx(r"\bmiddle (?:name|initial)\b"), SemanticType.CUSTOM_TEXT),
     (_rx(r"first name|given name|\bfname\b|forename"), SemanticType.FIRST_NAME),
     (_rx(r"last name|surname|family name|\blname\b"), SemanticType.LAST_NAME),
     (_rx(r"full name|legal name|^\s*name\s*$"), SemanticType.FULL_NAME),
     (_rx(r"e-?mail"), SemanticType.EMAIL),
+    # A phone number's separate dial-code picker (Workday "Country Phone Code") asks for
+    # the phone's country, not for the number.
+    (_rx(r"\bcountry (?:phone |calling |dial(?:ing)? )?code\b|\bphone country\b|"
+         r"\b(?:dial(?:ing)?|calling) code\b"), SemanticType.COUNTRY),
+    # Which kind of phone (Workday "Phone Device Type": Mobile, Home, Work) is a choice of
+    # its own, never the number.
+    (_rx(r"\bphone (?:device |number )?type\b|\btype of (?:phone|device)\b"), SemanticType.CUSTOM_SELECT),
     (_rx(r"phone|mobile|telephone|\bcell\b"), SemanticType.PHONE),
     (_rx(r"relocat"), SemanticType.RELOCATION),
     (_rx(r"years (?:of )?(?:professional |relevant |work )?experience"), SemanticType.YEARS_EXPERIENCE),
@@ -74,6 +84,8 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"highest (?:level of )?education|education level|degree level"), SemanticType.EDUCATION_LEVEL),
     (_rx(r"universit|college|school"), SemanticType.UNIVERSITY),
     (_rx(r"\bdegree\b|field of study|\bmajor\b"), SemanticType.DEGREE),
+    # A second address line (apartment, suite) is not the street address.
+    (_rx(r"\baddress line ?(?:2|3|two|three)\b|\b(?:apartment|suite)\b|\bapt\b"), SemanticType.CUSTOM_TEXT),
     (_rx(r"street|address line|^\s*address\s*$|mailing address"), SemanticType.ADDRESS),
     (_rx(r"\bcity\b|\btown\b"), SemanticType.CITY),
     (_rx(r"\bstate\b|province|region"), SemanticType.STATE),
@@ -81,6 +93,11 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"\bcountry\b"), SemanticType.COUNTRY),
     (_rx(r"\blocation\b|where are you (?:based|located)"), SemanticType.LOCATION),
 ]
+
+_EXTENSION = _rx(r"^\s*(?:(?:home|work|business|office|mobile|cell|phone|telephone|number)\s+){0,2}"
+                 r"(?:extension|ext)\.?(?:\s+number)?\s*[:*]?\s*$")
+"""A phone extension box ("Phone Extension", "Ext."): its own short answer, never the
+number, whatever its input type. A number that may include one is still the number."""
 
 _CONSENT = _rx(
     r"consent|privacy|data (?:processing|protection)|processing of (?:my|your) (?:personal )?data|"
@@ -203,6 +220,8 @@ def classify(
             return SemanticType.ATTESTATION
 
     auto = autocomplete.split()[-1] if autocomplete else ""
+    if control_type is ControlType.TEXT and (_EXTENSION.search(label) or auto == "tel-extension"):
+        return SemanticType.CUSTOM_TEXT
     if auto in _AUTOCOMPLETE and control_type in (ControlType.TEXT, ControlType.SELECT):
         return _AUTOCOMPLETE[auto]
     if control_type is ControlType.TEXT and input_type == "email":

@@ -7,6 +7,7 @@ to the application being submitted.
 
 from __future__ import annotations
 
+import datetime
 import re
 from collections.abc import Sequence
 from enum import StrEnum
@@ -122,7 +123,7 @@ CAPTCHA_TEXT = _rx(
 )
 APPLY_LINK = _rx(
     r"^(?!.*\bsubmit\b)(?!.*\bapply (?:with|using|via)\b)(?!.*\buse my\b)\s*(?:"
-    r"(?:easy |quick )?apply(?: now| here| online| today)?"
+    r"(?:easy |quick )?apply(?: now| here| online| today| manually)?"
     r"|apply (?:for|to) (?:this |the )?(?:job|role|position|opening)"
     r"|apply (?:without (?:an? )?account|as (?:an? )?guest)"
     r"|continue as (?:an? )?guest"
@@ -141,6 +142,15 @@ APPLY_ENTRY = _rx(
 )
 """Apply wording that only ever opens an application ("Easy Apply", "I'm interested",
 "Start your application"), never submits one, whatever form it sits in."""
+MANUAL_APPLY = _rx(r"^\s*(?:apply manually|manual(?:ly)? appl(?:y|ication))\s*[\u00bb\u203a>\u2192]?\s*$")
+"""The manual route of an apply-options chooser (Workday's "Start Your Application":
+"Autofill with Resume", "Apply Manually", "Use My Last Application"). It is preferred
+over every other apply control; autofill uploads and parses the resume before any
+question is shown, and "Use My Last Application" copies another application."""
+ACCOUNT_CREATION = _rx(
+    r"\bcreate (?:an |a |a new |your |my )?(?:candidate )?account\b|\bsign ?up\b|\bregister\b"
+)
+"""Wording of a sign-in page that also offers a new account ("Create Account")."""
 STATUS_LINK = _rx(
     r"application status|check (?:your )?status|already applied|my applications|candidate (?:home|portal)"
 )
@@ -266,6 +276,79 @@ def autofill_decline(text: str, buttons: Sequence[tuple[str, str]]) -> str | Non
                 None)
 
 
+# --- dates and phone numbers -------------------------------------------------------------
+
+_MONTHS = {name: i for i, names in enumerate(
+    (("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"), ("may",),
+     ("june", "jun"), ("july", "jul"), ("august", "aug"), ("september", "sep", "sept"),
+     ("october", "oct"), ("november", "nov"), ("december", "dec")), start=1) for name in names}
+
+
+def date_segment_values(text: str, kinds: Sequence[str]) -> list[str] | None:
+    """What to type into each segment of a segmented date (``kinds`` in page order:
+    "month", "day", "year") for an answer written as an ISO date ("2026-09-24",
+    "2026-09"), with the year first ("2026/09/24"), in the widget's own order ("09/24/2026"
+    or "9/24/2026" for Month/Day/Year) or with a month name ("September 24, 2026").
+    Two-digit months and days, four-digit years. None when it is not such a date."""
+    words = re.findall(r"[a-z]+|\d+", text.casefold())
+    if not words:
+        return None
+    named = [w for w in words if not w.isdigit()]
+    numbers = [w for w in words if w.isdigit()]
+    month: int | None = None
+    day: int | None = None
+    year: int | None = None
+    if named:
+        if len(named) != 1 or named[0] not in _MONTHS:
+            return None
+        month = _MONTHS[named[0]]
+        years = [n for n in numbers if len(n) == 4]
+        others = [n for n in numbers if len(n) != 4]
+        if len(years) != 1 or len(others) > 1:
+            return None
+        year = int(years[0])
+        day = int(others[0]) if others else None
+    elif len(numbers) >= 2 and len(numbers[0]) == 4:
+        if len(numbers) > 3:
+            return None
+        year, month = int(numbers[0]), int(numbers[1])
+        day = int(numbers[2]) if len(numbers) == 3 else None
+    else:
+        wanted = [k for k in kinds if k in ("month", "day", "year")]
+        if len(numbers) != len(wanted) or "year" not in wanted:
+            return None
+        if len(numbers[wanted.index("year")]) != 4:
+            return None
+        values = dict(zip(wanted, (int(n) for n in numbers), strict=True))
+        month, day, year = values.get("month"), values.get("day"), values.get("year")
+    if month is None or year is None or not 1 <= month <= 12 or not 1000 <= year <= 9999:
+        return None
+    if "day" in kinds:
+        if day is None:
+            return None
+        try:
+            datetime.date(year, month, day)
+        except ValueError:
+            return None
+    elif day is not None:
+        return None
+    parts = {"month": f"{month:02d}", "day": f"{day or 0:02d}", "year": f"{year:04d}"}
+    return [parts[k] for k in kinds]
+
+
+def national_number(phone: str, dial_code: str | None) -> str | None:
+    """``phone`` without its leading ``+<dial_code>`` when the country code is chosen
+    separately ("+1 (303) 555-0142" with "1" -> "(303) 555-0142"), or None when it does
+    not start with that code."""
+    if not dial_code:
+        return None
+    match = re.match(rf"^\s*\+\s*{re.escape(dial_code)}[\s.\-]*", phone)
+    if match is None:
+        return None
+    rest = phone[match.end():].strip()
+    return rest or None
+
+
 # --- lookup suggestions ------------------------------------------------------------------
 
 US_STATES: dict[str, str] = {
@@ -285,11 +368,16 @@ US_STATES: dict[str, str] = {
 _UNITED_STATES = frozenset({"us", "usa", "u s", "u s a", "united states", "united states of america"})
 
 
+_DIAL_SUFFIX = re.compile(r"\s*(?:\(\s*\+\s*\d{1,4}\s*\)|\+\s*\d{1,4})\s*$")
+"""A trailing dial code ("United States of America (+1)", Workday's Country Phone Code)."""
+
+
 def _place_segments(text: str) -> list[str]:
     """Comma segments, case- and punctuation-folded, with US state abbreviations and
-    United States synonyms spelled out ("Austin, TX, USA" -> austin|texas|united states)."""
+    United States synonyms spelled out ("Austin, TX, USA" -> austin|texas|united states)
+    and a trailing dial code left out ("United States of America (+1)" -> united states)."""
     segments = []
-    for raw in text.split(","):
+    for raw in _DIAL_SUFFIX.sub("", text).split(","):
         segment = " ".join(re.sub(r"[^\w\s]", " ", raw).casefold().split())
         if not segment:
             continue

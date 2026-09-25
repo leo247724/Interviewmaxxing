@@ -129,6 +129,11 @@ class DomControl(_Raw):
     own container)."""
     dialog_index: int = -1
     """Index in ``DomSnapshot.dialogs`` of the innermost dialog holding the control."""
+    date_segments: list[dict[str, str]] = Field(default_factory=list)
+    """For the first input of a segmented date (Month / Day / Year spinbuttons in one
+    wrapper): every segment in page order, ``{"kind": "month"|"day"|"year", "selector"}``.
+    The control stands for the whole date; its ``value`` joins the segments with "/" and
+    its ``placeholder`` is the format ("MM/DD/YYYY")."""
 
 
 class DomButton(_Raw):

@@ -86,7 +86,7 @@ from interviewmaxxing_core import (
 )
 
 from .annotations import FormAnnotator, SchemaHintLoader, observation_signature, semantic_only
-from .aria import LookupOutcome, MenuProbe, fill_lookup, fill_phone
+from .aria import LookupOutcome, MenuProbe, dial_code, fill_lookup, fill_phone
 from .driver import (
     _FILE_DIGEST,
     DEEP_QUERY,
@@ -103,6 +103,7 @@ from .normalize import TEXT_INPUT_TYPES, FieldBinding, PageModel, build_page, de
 from .signals import (
     APPLY_LINK,
     CONFIRMATION_LINK,
+    MANUAL_APPLY,
     NOT_SUBMITTED_STATUS,
     PENDING,
     STATUS_LINK,
@@ -112,8 +113,10 @@ from .signals import (
     application_records,
     autofill_decline,
     confirmation_references,
+    date_segment_values,
     job_ids,
     lookup_matches,
+    national_number,
 )
 from .snapshot import DomButton, DomLink, DomPrompt, DomSnapshot, inspector_script
 from .uploads import UPLOAD_STATE, UploadState
@@ -294,6 +297,16 @@ def _still_on(before: ApplicationForm, after: PageModel, by_progress: bool) -> b
     return _same_step_shown_again(before, after.form)
 
 
+def _left_behind(before: PageModel, form: ApplicationForm, after: PageModel, by_progress: bool) -> bool:
+    """The step ``form`` (read in ``before``) is still, or again, shown after Next. The
+    page's own step indicator showing another step settles it: a wizard may reuse field
+    ids on its next page (Workday's "Application Questions 1 of 2")."""
+    step, now = before.snapshot.step, after.snapshot.step
+    if step is not None and now is not None and now.current != step.current:
+        return False
+    return _still_on(form, after, by_progress)
+
+
 def _validation_errors(form: ApplicationForm) -> list[str]:
     errors = [f"{f.label}: {f.validation_error}" for f in form.fields if f.validation_error]
     return errors + [e for e in form.page_errors if e not in errors]
@@ -329,6 +342,33 @@ class _Upload:
     document: str
     index: int = -1
     """Position of the question in the approved form."""
+    step: int | None = None
+    """The step it was approved on: a single-page wizard keeps one document for every
+    step, and the file belongs to this step's uploader only."""
+
+
+def _dial_code_chosen(form: ApplicationForm, model: PageModel, packet: ApplicationPacket,
+                      field_id: str) -> str | None:
+    """The dial code ("1") a separate country-code picker holds for this fill: the
+    packet's answer for it, else what it showed when the step was inspected (Workday
+    shows "United States of America (+1)" there already)."""
+    picker = form.find(field_id)
+    if picker is None:
+        return None
+    answer = packet.answer_for(field_id)
+    label = ""
+    if answer is not None and isinstance(answer.value, ChoiceValue):
+        option = picker.option_for_value(answer.value.value)
+        label = option.label if option is not None else answer.value.label or ""
+    elif answer is not None and isinstance(answer.value, TextValue):
+        label = answer.value.text
+    code = dial_code(label)
+    if code is None:
+        binding = model.bindings.get(field_id)
+        current = binding.value if binding is not None else ""
+        option = picker.option_for_value(current) if picker.options else None
+        code = dial_code(option.label if option is not None else current)
+    return code
 
 
 def _binding_shape(bindings: Mapping[str, FieldBinding]) -> dict[str, Any]:
@@ -620,11 +660,19 @@ class GenericApplicationBrowser:
             try:
                 raw = await self.driver.evaluate(inspector_script())
                 return self.menus.merge(DomSnapshot.model_validate(raw))
+            except PageContextLost as exc:
+                # A navigation replaced the document mid-read (the person signing in while
+                # the runtime waits, a step loading): read the new document once it has
+                # settled. Writers still notice the change through the document identity.
+                last_error = exc
+                await self.driver.settle(self.settle_timeout_s)
             except DriverError:
                 raise
             except Exception as exc:  # e.g. the context was destroyed by a navigation
                 last_error = exc
                 await self.driver.settle(self.settle_timeout_s)
+        if isinstance(last_error, PageContextLost):
+            raise last_error
         raise DriverError(f"could not inspect the page: {last_error}")
 
     async def _probe(self, model: PageModel) -> bool:
@@ -712,7 +760,8 @@ class GenericApplicationBrowser:
         bindings = dict(model.bindings)
         changed = False
         for field_id, upload in sorted(self._uploads.items(), key=lambda item: item[1].index):
-            if upload.document != model.snapshot.document:
+            if upload.document != model.snapshot.document or (
+                    upload.step is not None and upload.step != form.step):
                 continue
             present = next((i for i, f in enumerate(fields) if f.id == field_id), None)
             if (present is not None and fields[present].fingerprint == upload.field.fingerprint
@@ -753,26 +802,29 @@ class GenericApplicationBrowser:
             model = await self._model(evidence=label)
         return model.inspection
 
-    async def _await_ready(self) -> PageModel:
-        """Bounded readiness before classifying a freshly loaded document.
+    async def _await_ready(self, model: PageModel | None = None) -> PageModel:
+        """Bounded readiness before classifying a freshly loaded document or step.
 
         A page that already classifies is used as it is. An ``UNKNOWN`` page (an SPA
         still rendering its form, a consent overlay) gets ``settle_timeout_s`` in
         total: the document and network settle first, then the page is re-read every
         ``_READY_POLL_S`` until it classifies, or until it stops changing between two
         consecutive reads while showing no loading indicator. Static pages therefore
-        classify within a couple of seconds; nothing on the page is touched."""
+        classify within a couple of seconds; nothing on the page is touched. So does a
+        step that shows no question yet and only a forward action: Workday draws its
+        progress list and "Next" before the step's questions."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.settle_timeout_s
-        model = await self._model()
+        if model is None:
+            model = await self._model()
         if model.inspection.kind is PageKind.JOB_CLOSED:
             model = await self._confirm_closed(model, deadline)
-        if model.inspection.kind is not PageKind.UNKNOWN:
+        if not self._unsettled(model):
             return model
         await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
         model = await self._model()
         previous = self._readiness_key(model)
-        while model.inspection.kind is PageKind.UNKNOWN and loop.time() < deadline:
+        while self._unsettled(model) and loop.time() < deadline:
             await asyncio.sleep(max(0.0, min(_READY_POLL_S, deadline - loop.time())))
             model = await self._model()
             key = self._readiness_key(model)
@@ -800,6 +852,14 @@ class GenericApplicationBrowser:
             if loop.time() >= deadline:
                 return model
             await asyncio.sleep(_READY_POLL_S)
+
+    @staticmethod
+    def _unsettled(model: PageModel) -> bool:
+        """Still rendering, as far as the page shows: unclassified, or a step without a
+        question whose primary action is not the final one (only a review step is empty)."""
+        form = model.form
+        return model.inspection.kind is PageKind.UNKNOWN or (
+            form is not None and not form.fields and form.is_final_step is not True)
 
     @staticmethod
     def _readiness_key(model: PageModel) -> tuple[str, int, int]:
@@ -1048,7 +1108,14 @@ class GenericApplicationBrowser:
                 entries.append(("link", link))
         entries += [("button", b) for b in model.apply_controls
                     if not b.disabled and (document, b.selector) not in self._apply_clicked]
-        return entries
+        # An apply-options chooser (Workday: "Autofill with Resume", "Apply Manually", "Use
+        # My Last Application") is answered with its manual route, link or control, before
+        # any other: autofill uploads and parses the resume before any question is shown,
+        # and the resume is attached later on its own question.
+        manual = [entry for entry in entries
+                  if entry[0] != "frame" and MANUAL_APPLY.search(entry[1].text)]
+        return ([entry for entry in entries if entry[0] == "frame"] + manual
+                + [entry for entry in entries if entry[0] != "frame" and entry not in manual])
 
     async def _follow_apply(self, model: PageModel) -> tuple[str, str] | None:
         """Take one step from a posting towards its application form. Returns how
@@ -1112,7 +1179,7 @@ class GenericApplicationBrowser:
                 break  # another page, with a way onwards of its own
             await asyncio.sleep(max(0.0, min(_READY_POLL_S, deadline - loop.time())))
             model = await self._model()
-        return await self._await_ready() if model.inspection.kind is PageKind.UNKNOWN else model
+        return await self._await_ready(model) if self._unsettled(model) else model
 
     async def _open_in_frame(self, posting: PageModel) -> PageModel | None:
         """The embedded application page did not show a form when opened on its own
@@ -1216,15 +1283,17 @@ class GenericApplicationBrowser:
                     continue
                 try:
                     await self._assert_fill_context()
-                    result, touched = await self._operate(
-                        app_field, answer.value if answer is not None else None)
+                    value = answer.value if answer is not None else None
+                    if isinstance(value, TextValue):
+                        value = self._national_number(form, packet, app_field.id, value)
+                    result, touched = await self._operate(app_field, value)
                     results[app_field.id] = result
                     if touched:
                         halted, accepted = await self._settle_after_upload(app_field.id, accepted)
-                    if (answer is not None and result.status is FieldFillStatus.FILLED
+                    if (result.status is FieldFillStatus.FILLED
                             and result.detail != _KEPT_TEXT
-                            and isinstance(answer.value, TextValue) and self._plain_text(app_field)):
-                        written[app_field.id] = answer.value.text
+                            and isinstance(value, TextValue) and self._plain_text(app_field)):
+                        written[app_field.id] = value.text
                     await self._assert_fill_context()
                 except PageContextLost as exc:
                     # The document or approved questions changed. Every remaining
@@ -1313,10 +1382,26 @@ class GenericApplicationBrowser:
                  and (a := packet.answer_for(f.id)) is not None and isinstance(a.value, FileValue)]
         return [*files, *(f for f in form.fields if f not in files)]
 
-    @staticmethod
-    def _plain_text(app_field: ApplicationField) -> bool:
+    def _plain_text(self, app_field: ApplicationField) -> bool:
+        """Text typed and read back exactly as written. A segmented date is not: its
+        boxes read back in the widget's own shape ("09/24/2026")."""
+        model = self._fill_model
+        binding = model.bindings.get(app_field.id) if model is not None else None
         return (app_field.control_type in (ControlType.TEXT, ControlType.TEXTAREA)
-                and not app_field.expects_international_phone)
+                and not app_field.expects_international_phone
+                and not (binding is not None and binding.date_segments))
+
+    def _national_number(self, form: ApplicationForm, packet: ApplicationPacket,
+                         field_id: str, value: TextValue) -> TextValue:
+        """A phone number whose country code is chosen in its own picker (Workday's
+        "Country Phone Code") goes into the number box as the national number."""
+        model = self._fill_model
+        binding = model.bindings.get(field_id) if model is not None else None
+        if model is None or binding is None or not binding.dial_code_field:
+            return value
+        code = _dial_code_chosen(form, model, packet, binding.dial_code_field)
+        national = national_number(value.text, code)
+        return TextValue(text=national) if national is not None else value
 
     async def _set_fill_model(self, model: PageModel, form: ApplicationForm | None = None) -> None:
         """The structure the fill writes against from now on: its bindings, the guard
@@ -1678,6 +1763,8 @@ class GenericApplicationBrowser:
                                    detail=f"reads back {observed!r}")
 
         ctype = app_field.control_type
+        if isinstance(value, TextValue) and ctype is ControlType.TEXT and binding.date_segments:
+            return await self._apply_date(fid, binding, value.text)
         if isinstance(value, TextValue) and ctype is ControlType.TEXT and app_field.expects_international_phone:
             # Typed as given: "+<code><number>" makes the widget's picker choose the
             # country itself. The readback compares digits, not the widget's formatting.
@@ -1960,8 +2047,10 @@ class GenericApplicationBrowser:
         if state.busy:
             return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
                                    detail="the upload was still in progress when the wait ended"), True
+        fill_form = self._fill_model.form if self._fill_model is not None else None
         upload = _Upload(app_field, binding, anchor, name,
-                         str(await self.driver.evaluate(_DOCUMENT_IDENTITY)), self._question_index(fid))
+                         str(await self.driver.evaluate(_DOCUMENT_IDENTITY)), self._question_index(fid),
+                         fill_form.step if fill_form is not None else None)
         if state.holds(name, artifact.size_bytes):
             # An uploader that keeps the file may still show its name beside the input.
             self._uploads[fid] = upload
@@ -2014,6 +2103,46 @@ class GenericApplicationBrowser:
         assert model.form is not None
         await self._set_fill_model(model, model.form)
         return None, model.form
+
+    async def _apply_date(self, fid: str, binding: FieldBinding, text: str) -> FieldFillResult:
+        """A segmented date (Month / Day / Year boxes): the date is typed into the first
+        segment in the widget's own order ("09/24/2026"), as a person does, and the widget
+        moves on by itself; a widget that does not is typed segment by segment. Each
+        segment is read back as a number."""
+        kinds = [kind for kind, _ in binding.date_segments]
+        selectors = [selector for _, selector in binding.date_segments]
+        parts = date_segment_values(text, kinds)
+        if parts is None:
+            shape = "/".join({"month": "MM", "day": "DD", "year": "YYYY"}.get(k, k) for k in kinds)
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.FAILED,
+                                   detail=f"{text!r} is not a date this {shape} field can take")
+
+        async def read_back() -> list[str]:
+            return [str((await self._read(selector)).get("value") or "") for selector in selectors]
+
+        def same(got: list[str]) -> bool:
+            digits = [re.sub(r"\D", "", g) for g in got]
+            return all(d and int(d) == int(p) for d, p in zip(digits, parts, strict=True))
+
+        async def type_whole() -> None:
+            for selector in selectors:
+                await self.driver.clear_text(selector)
+            await self.driver.type_text(selectors[0], "/".join(parts))
+
+        async def type_segments() -> None:
+            for selector, part in zip(selectors, parts, strict=True):
+                await self.driver.clear_text(selector)
+                await self.driver.type_text(selector, part)
+
+        await self._write(type_whole)
+        got = await read_back()
+        if not same(got):
+            await self._write(type_segments)
+            got = await read_back()
+        if same(got):
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED)
+        return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
+                               detail=f"reads back {'/'.join(got)!r}")
 
     async def _verify_group(self, fid: str, binding: FieldBinding, wanted: set[str]) -> FieldFillResult:
         values = list(binding.option_selectors)
@@ -2076,11 +2205,14 @@ class GenericApplicationBrowser:
         # its own: while the step just left is still shown without errors, wait a moment.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + min(self.settle_timeout_s, _STEP_WAIT_S)
-        while (_still_on(form, after, by_progress) and after.form is not None
+        while (_left_behind(model, form, after, by_progress) and after.form is not None
                and not _validation_errors(after.form) and loop.time() < deadline):
             await asyncio.sleep(_READY_POLL_S)
             after = await self._model()
-        if after.form is not None and _still_on(form, after, by_progress):
+        # A step drawn before its questions (Workday: the progress list and "Next"
+        # first) is waited for like a freshly loaded page.
+        after = await self._await_ready(after)
+        if after.form is not None and _left_behind(model, form, after, by_progress):
             self._steps_advanced -= 1
             after = await self._model(evidence=f"step-{form.step}-rejected")
             assert after.form is not None
@@ -2345,9 +2477,22 @@ class GenericApplicationBrowser:
         # session may submit; preparation never needs it and never waits for it.
         return (
             model.inspection.kind in USER_ACTION_PAGES
-            or bool(model.unsupported_pending)
+            or bool(self._pending_for_user(model))
             or (self.options.allow_submission and model.inspection.captcha_pending)
         )
+
+    def _pending_for_user(self, model: PageModel) -> list[str]:
+        """Required custom controls the person still has to operate. A menu control this
+        page's probing has not observed yet (waits never probe) is the runtime's to
+        probe and answer, not the person's: a Workday step reached by signing in shows
+        its dropdowns unprobed."""
+        if not model.unsupported_pending or not self.probe_menus:
+            return list(model.unsupported_pending)
+        unprobed = {c.selector for c in model.snapshot.controls
+                    if self.menus.candidate(c, model.form_index if model.form_index is not None else -1)
+                    and self.menus.key(c) not in self.menus.observations}
+        return [field_id for field_id in model.unsupported_pending
+                if model.bindings[field_id].selector not in unprobed]
 
     async def wait_for_user(self, reason: str, timeout_s: float | None = None) -> PageInspection:
         """Poll the live page until the user has finished (signed in, solved the
@@ -2359,15 +2504,37 @@ class GenericApplicationBrowser:
                 await self.driver.bring_to_front()
         loop = asyncio.get_running_loop()
         deadline = None if timeout_s is None else loop.time() + timeout_s
+        # The page the person was asked to act on: the one this runtime reported last (they
+        # may have finished before the wait began), else the wait's first read.
+        began_on: PageKind | None = self._last.inspection.kind if self._last is not None else None
+        gone = 0
         while True:
             # Never open a menu while the person may be operating the page.
             model = await self._model(probe=False)
-            if not self._needs_user(model):
+            if began_on is None:
+                began_on = model.inspection.kind
+            if began_on in USER_ACTION_PAGES:
+                # A sign-in (Workday's account step) or CAPTCHA is done once its page has
+                # gone for two reads in a row. The page it leads to is inspected afresh,
+                # menus probed, and its own questions follow (unprobed menus look like
+                # custom controls here, and are not what the person was asked to do).
+                gone = gone + 1 if model.inspection.kind not in USER_ACTION_PAGES else 0
+                if gone >= 2:
+                    break
+            elif not self._needs_user(model):
                 break
             if deadline is not None and loop.time() >= deadline:
                 break
             await asyncio.sleep(self.poll_interval_s)
-        inspection = (await self._model(evidence="after-user-action", probe=False)).inspection
+        if began_on in USER_ACTION_PAGES and gone >= 2:
+            # The person finished a sign-in, CAPTCHA or consent and that page is gone: the
+            # page it led to is a new page, read as ``open`` reads one, once ready (Workday
+            # draws a step's progress list before its questions) and with its menus probed.
+            await self._await_ready()
+            inspection = (await self._model(evidence="after-user-action")).inspection
+        else:
+            # A wait for the person to operate the form never opens a menu, not even here.
+            inspection = (await self._model(evidence="after-user-action", probe=False)).inspection
         return self._continuing_posting(inspection)
 
     def _continuing_posting(self, inspection: PageInspection) -> PageInspection:
