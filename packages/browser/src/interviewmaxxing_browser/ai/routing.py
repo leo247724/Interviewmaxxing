@@ -4422,7 +4422,7 @@ class DynamicPacketResolver:
                 if stock_opener(first.text) or not first.fact_ids or not named:
                     findings.append(("OPENING", LETTER_OPENING_FEEDBACK))
                 close = [s for s in body if s.paragraph == body[-1].paragraph]
-                if (stock_closer(close[-1].text) or len(close) != 2 or not _TALK.search(close[-1].text)
+                if (stock_closer(close[-1].text) or len(close) != 2 or not any(_TALK.search(s.text) for s in close)
                         or (contact and not any(CONTACT_ID in s.fact_ids for s in close))):
                     findings.append(("CLOSING", LETTER_CLOSING_FEEDBACK))
             if stories and not any(fid.startswith("story:") for s in draft.sentences for fid in s.fact_ids):
