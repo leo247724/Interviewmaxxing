@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import re
+import threading
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -26,6 +27,7 @@ from interviewmaxxing_selection.jev import (
     ChoiceAnswer,
     ChoiceQuestion,
     DecisionRequest,
+    JevClient,
     ProviderFailureKind,
 )
 
@@ -265,7 +267,14 @@ _APPLICANT_SCOPES = frozenset({SourceScope.APPLICANT_CURRENT.value,
 or an attestation reads as an explicit answer instead."""
 _SINGLE_CHOICE = (ControlType.SELECT, ControlType.RADIO)
 _RESUME_LABEL = re.compile(r"\bresume\b|résumé|\bcv\b|curriculum vitae", re.IGNORECASE)
-_COVER_LETTER_LABEL = re.compile(r"cover letter", re.IGNORECASE)
+_OTHER_DOCUMENT = re.compile(
+    r"cover letter|\btranscripts?\b|\bportfolios?\b|\bsamples?\b|\breferences?\b"
+    r"|\brecommendations?\b|\bcertificat|\bdiplomas?\b|\blicen[cs]es?\b", re.IGNORECASE)
+"""A document other than the resume that an upload label names ("Portfolio or resume")."""
+_RESUME_NEGATED = re.compile(
+    r"\b(?:no|not|don['\u2019]?t|never|without|except|excluding|other than|instead of|rather than)\b"
+    r"(?:\W+\w+){0,3}?\W+(?:resume|résumé|cv|curriculum vitae)\b", re.IGNORECASE)
+"""A label that says the upload is not the resume ("Transcript (do not attach your resume)")."""
 _CONSENT_WORDING = re.compile(
     r"\bconsent|\b(?:dis)?agree(?:s|d|ing)?\b|\backnowledg|\bauthori[sz](?:e|es|ing|ation)\b"
     r"|\bpermission|\bpermit (?:us|me|the|our)\b"
@@ -340,6 +349,10 @@ class AIFormRouter:
     max_reports: int = 128
     _reports: dict[str, FormRouteReport] = field(default_factory=dict, repr=False)
     _observations: dict[str, FormRouteReport] = field(default_factory=dict, repr=False)
+    _routes: tuple[BoundedDecisions, JevClient, BoundedDecisions] | None = field(
+        default=None, repr=False)
+    """The runtime's decisions, their client and the full-form decisions derived from them."""
+    _routes_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def classify_form(self, form: ApplicationForm, *, document_id: str,
                       schema_hints: dict[str, Any] | None = None) -> FormRouteReport:
@@ -448,13 +461,20 @@ class AIFormRouter:
     def _route_decisions(self) -> BoundedDecisions:
         """The runtime's decisions for full-form requests, with a per-call timeout of at
         least ``ROUTES_TIMEOUT_SECONDS``: the same budget, transport and model, so every
-        call, a retried one included, is reserved and recorded in the shared budget."""
-        client = self.decisions.client
+        call, a retried one included, is reserved and recorded in the shared budget. One
+        instance per runtime, so the annotator and the resolver's fallback share its
+        single flight and its cache."""
+        source = self.decisions
+        client = source.client
         if client.timeout_seconds >= ROUTES_TIMEOUT_SECONDS:
-            return self.decisions
-        return BoundedDecisions(client=replace(client, timeout_seconds=ROUTES_TIMEOUT_SECONDS),
-                                budget=self.decisions.budget, model=self.decisions.model,
-                                max_cache_entries=self.decisions.max_cache_entries)
+            return source
+        with self._routes_lock:
+            if self._routes is None or self._routes[0] is not source or self._routes[1] is not client:
+                self._routes = (source, client, BoundedDecisions(
+                    client=replace(client, timeout_seconds=ROUTES_TIMEOUT_SECONDS),
+                    budget=source.budget, model=source.model,
+                    max_cache_entries=source.max_cache_entries))
+            return self._routes[2]
 
     def _pack(self, sizes: list[int], header: int, target: int) -> list[list[int]]:
         """Consecutive fields per request: at most ``batch_size``, and the shared state plus
@@ -640,9 +660,13 @@ class AIFormRouter:
                       and document.confidence >= self.thresholds.confidence
                       and document.probabilities[document.choice] >= self.thresholds.probability)
         autofill = False
-        resume_label = (_RESUME_LABEL.search(fld.label or "") is not None
-                        and _COVER_LETTER_LABEL.search(fld.label or "") is None)
-        if (fld.control_type is ControlType.FILE and fld.required and (resume_typed or resume_label)
+        # A label that names another document or says "not your resume" is not the resume,
+        # whatever the inspector's "resume" keyword or Jev's type made of it.
+        other_document = (_OTHER_DOCUMENT.search(fld.label or "") is not None
+                          or _RESUME_NEGATED.search(fld.label or "") is not None)
+        resume_label = _RESUME_LABEL.search(fld.label or "") is not None
+        if (fld.control_type is ControlType.FILE and fld.required
+                and (resume_typed or resume_label) and not other_document
                 and (answer.probabilities.get(FieldRoute.APPROVED_DOCUMENT.value, 0.0) + _POOL_TOLERANCE
                          >= self.thresholds.probability
                      or (document is not None and self._pooled(document, _DOCUMENT_POOL)))):
@@ -667,6 +691,8 @@ class AIFormRouter:
                 or document.confidence < self.thresholds.confidence
                 or document.probabilities[document.choice] < self.thresholds.probability):
             route, reason = FieldRoute.AMBIGUOUS, "File control purpose is not a verified application attachment"
+        if other_document and meaning is SemanticType.RESUME:
+            meaning = SemanticType.UNKNOWN  # never attach the resume to it
         semantic_route = route
         if fld.control_type is ControlType.UNSUPPORTED:
             route, reason = FieldRoute.UNSUPPORTED, "Live control is unsupported or options were not observed"
