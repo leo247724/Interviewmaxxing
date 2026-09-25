@@ -32,6 +32,7 @@ from datetime import datetime
 from interviewmaxxing_core import (
     EXPLICIT_ANSWER_REQUIRED,
     PROTECTED_ATTRIBUTE_TYPES,
+    WORK_AUTHORIZATION_STATUSES,
     AnswerScope,
     AnswerSource,
     AnswerValue,
@@ -53,6 +54,7 @@ from interviewmaxxing_core import (
     UserInput,
     answer_problems,
     new_id,
+    stated_status,
     utc_now,
 )
 
@@ -212,7 +214,7 @@ class _FieldResolver:
         tier = self.saved_tier(fld, question)
         if not tier:
             return None
-        translated = [(a, translate(fld, a.value)) for a in tier]
+        translated = [(a, translate(fld, saved_value(a))) for a in tier]
         values: list[AnswerValue] = []
         for _, result in translated:
             if isinstance(result, Mapped) and result.value not in values:
@@ -381,6 +383,14 @@ def _fact_identity(value: object) -> object:
     return tuple(value) if isinstance(value, list) else (type(value).__name__, value)
 
 
+def saved_value(answer: SavedAnswer) -> RawValue:
+    """A saved answer's value as an answer to a question: the stated work authorization
+    status is a code (``work_authorization_status``) whose answer is its meaning in the
+    applicant's words, never the code."""
+    code = stated_status(answer)
+    return WORK_AUTHORIZATION_STATUSES[code] if code is not None else _raw(answer.value)
+
+
 def _raw(value: object) -> RawValue:
     if isinstance(value, str | int | float | bool):
         return value
@@ -390,7 +400,8 @@ def _raw(value: object) -> RawValue:
 
 
 def _describe(answer: SavedAnswer) -> str:
-    shown = ", ".join(answer.value) if isinstance(answer.value, list) else render_scalar(answer.value)
+    value = saved_value(answer)
+    shown = ", ".join(value) if isinstance(value, list) else render_scalar(value)
     return repr(shown)
 
 
@@ -552,9 +563,9 @@ def stored_value(context: PacketContext, fld: ApplicationField) -> StoredValue |
         return None
     tier = fields.saved_tier(fld, QuestionText.of(fld))
     if tier:
-        if len({_value_key(_raw(a.value)) for a in tier}) != 1:
+        if len({_value_key(saved_value(a)) for a in tier}) != 1:
             return None
-        return StoredValue(_raw(tier[0].value), Provenance(
+        return StoredValue(saved_value(tier[0]), Provenance(
             source=AnswerSource.SAVED_ANSWER, reference_ids=[a.id for a in tier],
             note=f"saved answer for {tier[0].question!r}"))
     attribute = _IDENTITY_ATTRIBUTES.get(fld.semantic_type)

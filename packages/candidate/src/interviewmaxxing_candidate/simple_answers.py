@@ -14,7 +14,8 @@ from typing import Self
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from interviewmaxxing_core import (
-    PERMANENT_STATUSES,
+    STATED_ANSWER_QUESTIONS,
+    STATUS_CONTRADICTIONS,
     WORK_AUTHORIZATION_STATUS_QUESTION,
     WORK_AUTHORIZATION_STATUSES,
     AnswerScope,
@@ -36,8 +37,7 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "gender": (SemanticType.EEO_GENDER, "Gender"),
     "where_are_you_based": (SemanticType.LOCATION, "Where are you based?"),
     "requires_visa_sponsorship": (
-        SemanticType.SPONSORSHIP,
-        "Will you now or in the future require visa sponsorship for employment?",
+        SemanticType.SPONSORSHIP, STATED_ANSWER_QUESTIONS["requires_visa_sponsorship"],
     ),
     "referral_source": (
         SemanticType.REFERRAL_SOURCE, "Where did you hear about us?",
@@ -47,7 +47,7 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     ),
     "above_age_18": (None, "Are you above the age of 18?"),
     "authorized_to_work_us": (
-        SemanticType.WORK_AUTHORIZATION, "Are you currently authorized to work in the US?",
+        SemanticType.WORK_AUTHORIZATION, STATED_ANSWER_QUESTIONS["authorized_to_work_us"],
     ),
     "school": (SemanticType.UNIVERSITY, "School"),
     "degree": (SemanticType.DEGREE, "Degree"),
@@ -364,6 +364,7 @@ class SimpleAnswers(BaseModel):
         if value is None:
             return None
         code = value.casefold().replace("-", "_").replace(" ", "_")
+        code = {"h_1b": "h1b"}.get(code, code)  # "H-1B" as people write it
         if code not in WORK_AUTHORIZATION_STATUSES:
             raise ValueError("Use one of " + ", ".join(WORK_AUTHORIZATION_STATUSES) + ", or null.")
         return code
@@ -374,17 +375,8 @@ class SimpleAnswers(BaseModel):
         status = self.work_authorization_status
         if status is None:
             return self
-        conflicts = []
-        if status in PERMANENT_STATUSES:
-            if self.requires_visa_sponsorship == "Yes":
-                conflicts.append("requires_visa_sponsorship")
-            if self.authorized_to_work_us == "No":
-                conflicts.append("authorized_to_work_us")
-        elif status == "not_authorized":
-            if self.authorized_to_work_us == "Yes":
-                conflicts.append("authorized_to_work_us")
-            if self.requires_visa_sponsorship == "No":
-                conflicts.append("requires_visa_sponsorship")
+        conflicts = [key for key, wrong in STATUS_CONTRADICTIONS.get(status, {}).items()
+                     if getattr(self, key) == wrong]
         if conflicts:
             raise ValueError(f"work_authorization_status {status!r} contradicts "
                              + " and ".join(f"{key} {getattr(self, key)!r}" for key in conflicts)

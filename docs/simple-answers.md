@@ -130,7 +130,14 @@ pronouns, familiarity with the company and county are free text in your words.
 `work_authorization_status` takes exactly one of these codes:
 - `us_citizen`: I am a U.S. citizen.
 - `us_permanent_resident`: I hold a green card.
-- `ead_opt`: I work on an Employment Authorization Document, such as OPT.
+- `asylee`: I was granted asylum in the U.S.
+- `refugee`: I was admitted to the U.S. as a refugee.
+- `daca`: I am a DACA recipient with an Employment Authorization Document (EAD).
+- `tps`: I hold Temporary Protected Status with an EAD.
+- `pending_adjustment`: my green card application (adjustment of status) is pending and I
+  hold an EAD.
+- `dependent_ead`: I am a dependent spouse (such as H-4 or L-2) with an EAD.
+- `ead_opt`: I am an F-1 student on OPT or STEM OPT with an EAD.
 - `h1b`: I hold an H-1B visa.
 - `tn`: I hold a TN visa.
 - `other_visa`: I am authorized on another visa.
@@ -139,16 +146,46 @@ pronouns, familiarity with the company and county are free text in your words.
 Every work-authorization and sponsorship question is derived from it, whatever its wording
 ("for any employer", "permanent or temporary", "now or in the future"). The derivation is
 described in [dynamic-application-routing.md](dynamic-application-routing.md), "Work
-authorization from the stated status". `authorized_to_work_us` and
-`requires_visa_sponsorship` stay your own answers. A status that contradicts them fails
-import and names both keys: a citizen or permanent resident who requires sponsorship or is
-not authorized, or `not_authorized` with authorized Yes or sponsorship No.
+authorization from the stated status". What each code settles:
+- **Never needs sponsorship.** A citizen, permanent resident, asylee or refugee is
+  authorized for any employer and never needs sponsorship, now or in the future.
+- **Will need sponsorship later.** OPT and STEM OPT authorize work now but need an
+  employer's sponsorship later, so "now or in the future" is Yes.
+- **Needs a new employer's sponsorship.** H-1B and TN holders need it.
+- **Future left to you.** DACA, TPS, a pending adjustment and a dependent EAD authorize work
+  for any employer for now. Whether they will need sponsorship later is left to you.
+- **Sponsorship never derived.** With `other_visa`, a sponsorship question is not derived at
+  all; only your own `requires_visa_sponsorship` answer can say it.
+
+A question that asks for the status itself in a text box ("Work authorization status") gets
+the code's wording in your words ("U.S. citizen"), never the code.
+
+`authorized_to_work_us` and `requires_visa_sponsorship` stay your own answers. Case, dashes
+and spaces do not matter, and "H-1B" is `h1b`. A status that contradicts one of them fails
+import and names both keys. A profile saved before the vocabulary grew may still contain
+such a pair: then nothing is derived, and your own answers decide. The contradictions are:
+- A citizen, permanent resident, asylee or refugee cannot require sponsorship or be
+  unauthorized.
+- DACA, TPS, a pending adjustment and a dependent EAD cannot be unauthorized.
+- OPT cannot be unauthorized and cannot need no sponsorship.
+- H-1B cannot need no sponsorship.
+- `not_authorized` cannot be authorized or need no sponsorship.
+- TN and `other_visa` are not checked.
 
 The five statements (`acknowledge_privacy_notice` through `consent_background_check`) are
 definitions you confirm once. A site's consent or attestation reuses your answer only when
 one Jev decision finds it fully covered by exactly one of them, adding no further
 obligation. Anything more holds with the statement quoted, for example "no AI tools during
-interviews", a non-compete, arbitration or drug testing. Each key that has a semantic type
+interviews", a non-compete, arbitration or drug testing. Some obligations hold before any
+decision, unless one of your saved statements names the same kind:
+- drug or alcohol tests;
+- contacting previous or current employers;
+- non-compete, non-solicitation or non-disclosure;
+- arbitration or waivers;
+- AI tools;
+- at-will employment;
+- a background check, which only `consent_background_check` names;
+- credit, driving-record, fingerprint, social-media or ongoing screening. Each key that has a semantic type
 imports with it: referral, sponsorship, work authorization, EEO (gender, Hispanic/Latino,
 race/ethnicity, veteran, disability), pronouns, location, school, degree, relocation,
 salary, start date and the statements (consent or attestation). Education discipline stays

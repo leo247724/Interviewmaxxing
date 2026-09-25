@@ -411,7 +411,8 @@ def test_the_status_takes_the_closed_vocabulary(given, code):
 def test_a_status_outside_the_vocabulary_is_rejected_with_the_choices():
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError, match="us_citizen, us_permanent_resident, ead_opt"):
+    with pytest.raises(ValidationError,
+                       match="us_citizen, us_permanent_resident, asylee, refugee, daca, tps"):
         _round7_answers(work_authorization_status="green card")
 
 
@@ -444,3 +445,266 @@ def test_consistent_statuses_import_as_one_untyped_global_answer(status, changes
     updates = answers.saved_answer_updates(confirmed_at=datetime(2026, 9, 24, tzinfo=UTC))
     [saved] = [a for a in updates if a.question == WORK_AUTHORIZATION_STATUS_QUESTION]
     assert (saved.value, saved.semantic_type, saved.scope) == (status, None, AnswerScope.GLOBAL)
+
+
+# --- round 9: the extended status vocabulary ---
+
+ROUND9_CODES = (
+    "us_citizen", "us_permanent_resident", "asylee", "refugee", "daca", "tps",
+    "pending_adjustment", "dependent_ead", "ead_opt", "h1b", "tn", "other_visa", "not_authorized",
+)
+ROUND9_NEW_CODES = ("asylee", "refugee", "daca", "tps", "pending_adjustment", "dependent_ead")
+ROUND9_RULED_OUT: dict[str, dict[str, str]] = {
+    **{code: {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "No"}
+       for code in ("us_citizen", "us_permanent_resident", "asylee", "refugee")},
+    **{code: {"authorized_to_work_us": "No"}
+       for code in ("daca", "tps", "pending_adjustment", "dependent_ead")},
+    "ead_opt": {"requires_visa_sponsorship": "No", "authorized_to_work_us": "No"},
+    "h1b": {"requires_visa_sponsorship": "No"},
+    "not_authorized": {"authorized_to_work_us": "Yes", "requires_visa_sponsorship": "No"},
+    "tn": {},
+    "other_visa": {},
+}
+"""The round 9 contract: the legal answers each stated status rules out."""
+ROUND9_LEGAL_KEYS = ("requires_visa_sponsorship", "authorized_to_work_us")
+ROUND9_STATUS_PHRASES = [
+    "Work authorization status", "What is your work authorization status?",
+    "What is your current U.S. work authorization?",
+]
+ROUND9_CONFIRMED = "2026-09-24T09:00:00Z"
+
+
+def _round9_rejection(status, **legal):
+    """The one model-level message importing ``status`` beside ``legal`` gives, or None."""
+    from pydantic import ValidationError
+
+    try:
+        _round7_answers(work_authorization_status=status, **legal)
+    except ValidationError as error:
+        [problem] = error.errors(include_input=False, include_url=False)
+        assert problem["loc"] == ()
+        return problem["msg"]
+    return None
+
+
+@pytest.mark.parametrize("given,code", [
+    ("DACA", "daca"), ("Pending-Adjustment", "pending_adjustment"),
+    ("dependent ead", "dependent_ead"), ("Asylee", "asylee"), ("REFUGEE", "refugee"),
+    ("Tps", "tps"), ("pending adjustment", "pending_adjustment"),
+    ("Dependent-EAD", "dependent_ead"), ("  daca  ", "daca"), ("asylee", "asylee"),
+])
+def test_round9_the_new_codes_are_accepted_with_normalization(given, code):
+    assert _round7_answers(work_authorization_status=given).work_authorization_status == code
+
+
+@pytest.mark.parametrize("code", ROUND9_CODES)
+def test_round9_every_code_is_accepted_in_any_case_with_dashes_or_spaces(code):
+    for given in (code, code.upper(), code.replace("_", " ").title(),
+                  code.replace("_", "-").upper()):
+        assert _round7_answers(work_authorization_status=given).work_authorization_status == code
+
+
+@pytest.mark.parametrize("given", ["green card", "asylum", "DACA recipient", "U.S. citizen",
+                                   "dependent_ead_h4", "opt"])
+def test_round9_a_status_outside_the_vocabulary_lists_all_thirteen_codes(given):
+    import re
+
+    from pydantic import ValidationError
+
+    from interviewmaxxing_core import WORK_AUTHORIZATION_STATUSES
+
+    with pytest.raises(ValidationError) as error:
+        _round7_answers(work_authorization_status=given)
+    [problem] = error.value.errors(include_input=False, include_url=False)
+    assert problem["loc"] == ("work_authorization_status",)
+    listed = re.fullmatch(r"Value error, Use one of (.+), or null\.", problem["msg"])
+    assert listed is not None, problem["msg"]
+    codes = listed.group(1).split(", ")
+    assert len(codes) == 13 and set(codes) == set(ROUND9_CODES)
+    assert codes == list(WORK_AUTHORIZATION_STATUSES)  # listed once each, in vocabulary order
+
+
+@pytest.mark.parametrize("status,key,wrong", [
+    (status, key, wrong) for status, ruled in ROUND9_RULED_OUT.items()
+    for key, wrong in ruled.items()
+])
+def test_round9_each_contradiction_is_rejected_naming_both_keys(status, key, wrong):
+    # The status and the legal answer are given in another spelling; both are normalized
+    # before the check and named in their normalized form.
+    message = _round9_rejection(status.replace("_", " ").upper(), **{key: wrong.lower()})
+    assert message is not None, f"{status} beside {key} {wrong} was imported"
+    assert f"work_authorization_status {status!r} contradicts {key} {wrong!r}" in message
+    [other] = set(ROUND9_LEGAL_KEYS) - {key}
+    assert other not in message
+
+
+@pytest.mark.parametrize("status", [s for s, ruled in ROUND9_RULED_OUT.items() if len(ruled) == 2])
+def test_round9_a_status_contradicting_both_answers_names_all_three_keys(status):
+    ruled = ROUND9_RULED_OUT[status]
+    message = _round9_rejection(status, **ruled)
+    assert message is not None
+    assert f"work_authorization_status {status!r} contradicts " in message
+    for key, wrong in ruled.items():
+        assert f"{key} {wrong!r}" in message
+
+
+@pytest.mark.parametrize("status", ROUND9_CODES)
+def test_round9_every_status_rules_out_exactly_its_contradictions(status):
+    ruled = ROUND9_RULED_OUT[status]
+    wrong = []
+    for sponsorship in (None, "Yes", "No"):
+        for authorized in (None, "Yes", "No"):
+            legal = {"requires_visa_sponsorship": sponsorship, "authorized_to_work_us": authorized}
+            expected = [key for key, value in legal.items()
+                        if value is not None and ruled.get(key) == value]
+            message = _round9_rejection(status, **legal)
+            if not expected:
+                if message is not None:
+                    wrong.append((legal, message))
+                continue
+            named = message is not None and all(
+                f"{key} {legal[key]!r}" in message for key in expected
+            ) and not any(key in message for key in set(ROUND9_LEGAL_KEYS) - set(expected))
+            if not named:
+                wrong.append((legal, message))
+    assert wrong == []
+
+
+def test_round9_a_legacy_alias_is_checked_against_the_status():
+    message = _round9_rejection(
+        "TPS", Are_you_currently_authorized_to_work_in_the_US="no")
+    assert message is not None
+    assert "work_authorization_status 'tps' contradicts authorized_to_work_us 'No'" in message
+
+
+@pytest.mark.parametrize("status,legal", [
+    ("ead_opt", {"requires_visa_sponsorship": "Yes"}),
+    ("ead_opt", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "Yes"}),
+    ("daca", {"requires_visa_sponsorship": "Yes"}),
+    ("daca", {"requires_visa_sponsorship": "No"}),
+    ("daca", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "Yes"}),
+    ("tps", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "Yes"}),
+    ("pending_adjustment", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "Yes"}),
+    ("pending_adjustment", {"requires_visa_sponsorship": "Yes"}),
+    ("dependent_ead", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "Yes"}),
+    ("dependent_ead", {"requires_visa_sponsorship": "No"}),
+    ("tn", {"requires_visa_sponsorship": "No"}),
+    ("tn", {"requires_visa_sponsorship": "Yes"}),
+    ("tn", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "No"}),
+    ("other_visa", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "Yes"}),
+    ("other_visa", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "No"}),
+    ("other_visa", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "Yes"}),
+    ("other_visa", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "No"}),
+    ("asylee", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "Yes"}),
+    ("refugee", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "Yes"}),
+    ("h1b", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "No"}),
+    ("not_authorized", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "No"}),
+    *[(code, {}) for code in ROUND9_CODES],
+])
+def test_round9_consistent_combinations_import_as_one_untyped_global_answer(status, legal):
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_core import (
+        WORK_AUTHORIZATION_STATUS_QUESTION,
+        AnswerScope,
+        SemanticType,
+        stated_status,
+    )
+
+    answers = _round7_answers(work_authorization_status=status, **legal)
+    confirmed = datetime(2026, 9, 24, tzinfo=UTC)
+    updates = answers.saved_answer_updates(confirmed_at=confirmed)
+    [saved] = [a for a in updates if a.question == WORK_AUTHORIZATION_STATUS_QUESTION]
+    assert (saved.value, saved.semantic_type, saved.scope) == (status, None, AnswerScope.GLOBAL)
+    assert (saved.job_identity_key, saved.job_url, saved.employer) == (None, None, None)
+    assert saved.match_phrases == ROUND9_STATUS_PHRASES
+    assert stated_status(saved) == status
+    # One answer states the status; the two legal answers keep their own types.
+    assert [a for a in updates if a.value == status] == [saved]
+    types = {"requires_visa_sponsorship": SemanticType.SPONSORSHIP,
+             "authorized_to_work_us": SemanticType.WORK_AUTHORIZATION}
+    assert {a.semantic_type: a.value for a in updates if a is not saved} == {
+        types[key]: value for key, value in legal.items()}
+    # A repeated import of the same map adds nothing.
+    assert answers.saved_answer_updates(confirmed_at=confirmed, current=updates) == []
+
+
+@pytest.mark.parametrize("code", ROUND9_NEW_CODES)
+def test_round9_a_new_status_exports_as_its_code(code, fictional_candidate):
+    from interviewmaxxing_candidate.simple_answers import SimpleAnswers
+    from interviewmaxxing_core import WORK_AUTHORIZATION_STATUS_QUESTION, AnswerScope, SavedAnswer
+
+    status = SavedAnswer(id="sa.status", scope=AnswerScope.GLOBAL,
+                         question=WORK_AUTHORIZATION_STATUS_QUESTION, value=code,
+                         match_phrases=ROUND9_STATUS_PHRASES, confirmed_at=ROUND9_CONFIRMED)
+    profile = fictional_candidate.model_copy(update={"saved_answers": [status]})
+    assert SimpleAnswers.from_profile(profile).work_authorization_status == code
+
+
+def test_round9_a_new_status_imports_through_the_script_and_exports_as_its_code(
+    write_candidate, candidate_store, tmp_path
+):
+    from interviewmaxxing_core import WORK_AUTHORIZATION_STATUS_QUESTION, AnswerScope
+
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    assert data["work_authorization_status"] is None
+    data.update(work_authorization_status="Pending-Adjustment", authorized_to_work_us="yes",
+                requires_visa_sponsorship="no")
+    target.write_text(json.dumps(data))
+    profile_before = (directory / "profile.json").read_bytes()
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["saved_answers_updated"] == 3
+    assert (directory / "profile.json").read_bytes() == profile_before
+    profile = candidate_store.load("default")
+    [status] = [a for a in profile.saved_answers if a.question == WORK_AUTHORIZATION_STATUS_QUESTION]
+    assert (status.value, status.semantic_type, status.scope) == (
+        "pending_adjustment", None, AnswerScope.GLOBAL)
+    assert status.match_phrases == ROUND9_STATUS_PHRASES
+    exported = tmp_path / "exported.json"
+    assert run("export", exported).returncode == 0
+    values = json.loads(exported.read_text())
+    assert values["work_authorization_status"] == "pending_adjustment"
+    assert (values["authorized_to_work_us"], values["requires_visa_sponsorship"]) == ("Yes", "No")
+
+
+def test_round9_a_contradicting_new_status_writes_nothing_through_the_script(
+    write_candidate, tmp_path
+):
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    data.update(email="changed@example.test", work_authorization_status="DACA",
+                authorized_to_work_us="No")
+    target.write_text(json.dumps(data))
+    before = (directory / "profile.json").read_bytes()
+    result = run("import", target)
+    assert result.returncode == 1
+    assert "work_authorization_status 'daca' contradicts authorized_to_work_us 'No'" in result.stderr
+    assert "changed@example.test" not in result.stderr
+    assert (directory / "profile.json").read_bytes() == before
+    assert not (directory / "answers.json").exists()
+
+
+@pytest.mark.parametrize("given", ["H-1B", "h-1b", "H1B"])
+def test_h1b_is_accepted_as_people_write_it(given):
+    assert _round7_answers(work_authorization_status=given).work_authorization_status == "h1b"
+
+
+def test_the_importer_and_the_derivation_share_one_contradiction_table():
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS
+    from interviewmaxxing_core import (
+        STATED_ANSWER_QUESTIONS,
+        STATUS_CONTRADICTIONS,
+        WORK_AUTHORIZATION_STATUSES,
+    )
+
+    assert set(STATUS_CONTRADICTIONS) <= set(WORK_AUTHORIZATION_STATUSES)
+    assert {key for rules in STATUS_CONTRADICTIONS.values() for key in rules} <= set(
+        STATED_ANSWER_QUESTIONS)
+    for key, question in STATED_ANSWER_QUESTIONS.items():
+        assert _REUSABLE_QUESTIONS[key][1] == question

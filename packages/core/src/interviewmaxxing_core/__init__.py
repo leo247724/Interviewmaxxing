@@ -24,10 +24,15 @@ from .artifacts import ArtifactRef, EvidenceKind, EvidenceRef, sha256_file
 from .authorization import (
     PAY_PERIOD_LABELS,
     PERMANENT_STATUSES,
+    SPONSORSHIP_UNSETTLED_STATUSES,
+    STATED_ANSWER_QUESTIONS,
+    STATUS_CONTRADICTIONS,
+    WORK_AUTHORIZATION_IMPLICATIONS,
     WORK_AUTHORIZATION_STATUS_QUESTION,
     WORK_AUTHORIZATION_STATUSES,
     is_pay_period_choice,
     pay_period_of,
+    stated_status,
 )
 from .candidate import (
     AnswerScope,
@@ -185,10 +190,14 @@ __all__ = [
     "PROFILE_IDENTITY_TYPES",
     "PROTECTED_ATTRIBUTE_TYPES",
     "QUESTION_PART_SEPARATOR",
+    "SPONSORSHIP_UNSETTLED_STATUSES",
+    "STATED_ANSWER_QUESTIONS",
+    "STATUS_CONTRADICTIONS",
     "SUBMISSION_BLOCKING_STATES",
     "TERMINAL_STATES",
     "TRANSITIONS",
     "USER_ACTION_PAGES",
+    "WORK_AUTHORIZATION_IMPLICATIONS",
     "WORK_AUTHORIZATION_STATUSES",
     "WORK_AUTHORIZATION_STATUS_QUESTION",
     "ATSAdapter",
@@ -320,5 +329,6 @@ __all__ = [
     "render_question",
     "sha256_file",
     "snapshot_hash",
+    "stated_status",
     "utc_now",
 ]
