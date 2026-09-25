@@ -11,7 +11,10 @@ choice, a saved answer that scored below the gate, a status derivation below the
 gate), the entry also carries a ``proposal`` with its ``proposal_basis``. A proposal is
 unconfirmed: nothing uses it unless the person copies it into ``answer``. Holds that
 need the browser (sign-in, CAPTCHA, an unsupported control, a file) are listed under
-``actions`` with their ``resume APP --act`` lines.
+``actions`` with their ``resume APP --act`` lines; they carry their applications in
+``fields`` as the questions do (the field id, or null for a page-level action). With
+``--batch-id`` (or ``--since``) the sheet covers only the applications those batches hold
+or failed (``retry.batch_applications``) and records the batches.
 
 ``interviewmaxxing answer --sheet FILE`` (``read_sheet``, ``apply_sheet``) applies every
 entry whose ``answer`` is not null to each of its applications through the same path as
@@ -19,9 +22,13 @@ entry whose ``answer`` is not null to each of its applications through the same 
 recorded on that application (an option's value or label; several separated by ``;``
 for a multi-select; yes or no for a checkbox), stored as the application's own user
 input, and saved for reuse with the entry's scope. An entry that fails validation is
-reported by its wording and skipped. A hold answered since its application stopped is
-left alone, so applying the same sheet twice changes nothing the second time, and a
-sheet generated afterwards no longer lists it.
+reported by its wording and skipped. An application whose recorded options for the
+question changed since the sheet was written (a run stopped it again on other options)
+is skipped (``options changed``): the answer was chosen among the options the sheet
+shows. A hold answered since its application stopped is left alone, so applying the same
+sheet twice changes nothing the second time, and a sheet generated afterwards no longer
+lists it. Every answered entry reports how many of its applications received it and why
+the others did not; ``dry_run`` checks and reports exactly that and saves nothing.
 
 The sheet holds the person's values, so it is written owner-only (``0600``) and its
 contents never reach the terminal: the commands print counts and wordings only.
@@ -32,7 +39,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,10 +50,12 @@ from pydantic import Field, ValidationError
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_core import (
     AnswerReuse,
+    Application,
     ApplicationState,
     ApplicationStore,
     ClaimUnavailable,
     Contract,
+    ControlType,
     LocalPaths,
     MissingInput,
     NotFound,
@@ -56,12 +65,13 @@ from interviewmaxxing_core import (
 )
 
 from .answers import AnswerError, user_input_for
-from .batch import LEDGER_NAME, list_batches, read_summary
+from .batch import LEDGER_NAME, BatchTree
 from .triage import (
     HoldOccurrence,
     act_line,
     candidate_saved_answers,
     command_line,
+    held_applications,
     hold_key,
     prepared_stop,
     recorded_holds,
@@ -156,6 +166,10 @@ class SheetAction(Contract):
     reason: str | None = None
     control_type: str | None = None
     applications: int = Field(ge=0)
+    fields: dict[str, str | None] = Field(default_factory=dict)
+    """Application id -> the field id of this action on it (None for a page-level action
+    such as a sign-in or a CAPTCHA), keyed like ``SheetQuestion.fields`` so that a filter
+    by application keeps the actions too."""
     application_ids: list[str] = Field(default_factory=list)
     resume: list[str] = Field(default_factory=list)
     """``interviewmaxxing resume APP --act`` for each application."""
@@ -168,6 +182,12 @@ class AnswerSheet(Contract):
     note: str = ("Fill in `answer` (an option's value or label; several separated by ';'; yes "
                  "or no for a checkbox); a `proposal` is unconfirmed and is used only when "
                  "copied into `answer`. Then: interviewmaxxing answer --sheet FILE.")
+    batches: list[str] = Field(default_factory=list)
+    """With ``holds --sheet --batch-id``/``--since``: the batches whose held and failed
+    applications the sheet covers; ``answer --sheet`` names their first batch in its
+    ``prepare-batch --retry`` lines. Empty: every held application of the candidate."""
+    since: datetime | None = None
+    """With ``--since``: the batches are those with a line finished at or after it."""
     held: int = Field(default=0, ge=0)
     """Applications with at least one open hold."""
     open_holds: int = Field(default=0, ge=0)
@@ -344,21 +364,29 @@ def _question_entry(holds: Sequence[_Hold], saved: dict[str, SavedAnswer]) -> Sh
 def _action_entry(holds: Sequence[_Hold], cli: Sequence[str]) -> SheetAction:
     first = holds[0]
     reasons = Counter(h.occurrence.reason for h in holds if h.occurrence.reason)
-    ids = list(dict.fromkeys(h.occurrence.application_id for h in holds
-                             if h.occurrence.application_id))
+    fields: dict[str, str | None] = {}
+    for hold in holds:
+        app_id = hold.occurrence.application_id
+        if app_id and app_id not in fields:
+            fields[app_id] = hold.item.field_id
+    ids = list(fields)
     return SheetAction(question=first.item.label,
                        reason=reasons.most_common(1)[0][0] if reasons else None,
                        control_type=first.occurrence.control_type, applications=len(ids),
-                       application_ids=ids, resume=[act_line(cli, app_id) for app_id in ids])
+                       fields=fields, application_ids=ids,
+                       resume=[act_line(cli, app_id) for app_id in ids])
 
 
-def build_sheet(paths: LocalPaths, candidate_id: str, *,
-                cli: Sequence[str] = (PROG,)) -> AnswerSheet:
-    """The answer sheet of every NEEDS_INPUT application of ``candidate_id``: its open
-    holds grouped by complete wording (as ``holds`` groups them). Reads only; without a
-    state database the sheet is empty."""
+def build_sheet(paths: LocalPaths, candidate_id: str, *, cli: Sequence[str] = (PROG,),
+                applications: Collection[str] | None = None, batches: Sequence[str] = (),
+                since: datetime | None = None) -> AnswerSheet:
+    """The answer sheet of every NEEDS_INPUT application of ``candidate_id`` (only those
+    in ``applications`` when it is given: the held and failed applications of
+    ``batches``): its open holds grouped by complete wording (as ``holds`` groups them).
+    Reads only; without a state database the sheet is empty."""
     now = datetime.now(UTC)
-    sheet = AnswerSheet(candidate_id=candidate_id, generated_at=now)
+    sheet = AnswerSheet(candidate_id=candidate_id, generated_at=now, batches=list(batches),
+                        since=since)
     if not paths.state_db.is_file():
         return sheet
     saved_answers = candidate_saved_answers(paths, candidate_id)
@@ -366,7 +394,7 @@ def build_sheet(paths: LocalPaths, candidate_id: str, *,
     groups: dict[str, list[_Hold]] = {}
     held = open_holds = 0
     with ApplicationStore.open(paths.state_db) as store:
-        for app in store.list_applications(candidate_id=candidate_id, states=[S.NEEDS_INPUT]):
+        for app in held_applications(store, candidate_id, applications):
             events = store.list_events(app.id)
             if prepared_stop(events):
                 continue
@@ -424,15 +452,19 @@ def read_sheet(path: Path) -> AnswerSheet:
 
 # --- applying it --------------------------------------------------------------------------------
 
+OPTIONS_CHANGED = "options changed"
 SKIP_KINDS: tuple[str, ...] = (
-    "invalid", "already answered", "not open", "not waiting", "not found", "busy",
+    "invalid", OPTIONS_CHANGED, "already answered", "not open", "not waiting", "not found",
+    "busy",
 )
 """Why an entry was not applied to an application: ``invalid`` (the answer does not fit
-the question as recorded there: not one of its options, or the wrong shape), ``already
-answered`` (a hold answered since the stop: nothing to do), ``not open`` (the field id is
-not a recorded question of the application's current stop), ``not waiting`` (the
-application is no longer NEEDS_INPUT), ``not found`` (no such application for the
-candidate) and ``busy`` (another run holds the application)."""
+the question as recorded there: not one of its options, or the wrong shape), ``options
+changed`` (the options recorded on the application now differ from those the sheet shows
+for it: a run stopped it again since the sheet was written), ``already answered`` (a hold
+answered since the stop: nothing to do), ``not open`` (the field id is not a recorded
+question of the application's current stop, or it now asks another question), ``not
+waiting`` (the application is no longer NEEDS_INPUT), ``not found`` (no such application
+for the candidate) and ``busy`` (another run holds the application)."""
 
 
 class SheetFailure(Contract):
@@ -441,9 +473,27 @@ class SheetFailure(Contract):
     applications: int = Field(ge=1)
 
 
-class SheetResult(Contract):
-    """What ``answer --sheet`` did; counts and wordings only."""
+class SheetEntryResult(Contract):
+    """One answered entry: how many of its applications received the answer, and why the
+    others did not."""
 
+    question: str
+    applications: int = Field(ge=0)
+    """Applications the entry names (``fields``)."""
+    applied: int = Field(ge=0)
+    """Those that received the answer (with ``dry_run``: would receive it)."""
+    options_changed: int = Field(default=0, ge=0)
+    """Those skipped because their recorded options changed since the sheet was written."""
+    skipped: dict[str, int] = Field(default_factory=dict)
+    """The others not applied, by every other ``SKIP_KINDS`` entry."""
+
+
+class SheetResult(Contract):
+    """What ``answer --sheet`` did (or, with ``dry_run``, would do); counts and wordings
+    only."""
+
+    dry_run: bool = False
+    """Checked and counted only: nothing was saved."""
     entries: int = Field(ge=0)
     """Entries of the sheet."""
     answered: int = Field(ge=0)
@@ -459,6 +509,8 @@ class SheetResult(Contract):
     failures: list[SheetFailure] = Field(default_factory=list)
     """Each entry not applied somewhere, with the wording, the kind and how many
     applications it concerns."""
+    per_entry: list[SheetEntryResult] = Field(default_factory=list)
+    """Every answered entry, in sheet order."""
 
 
 @dataclass
@@ -467,13 +519,37 @@ class _Tally:
     applications: set[str] = field(default_factory=set)
     skipped: Counter[str] = field(default_factory=Counter)
     failures: list[SheetFailure] = field(default_factory=list)
+    per_entry: list[SheetEntryResult] = field(default_factory=list)
+
+
+def _labels(options: Iterable[SheetOption]) -> frozenset[str]:
+    return frozenset(normalize_text(o.label) for o in options)
+
+
+def options_changed(shown: Sequence[SheetOption], item: MissingInput) -> bool:
+    """Whether the options recorded on the application (``item``) differ from those the
+    sheet showed for it: compared by label, case and spacing ignored, in any order (an
+    option's meaning is its label; a value that changed is ``invalid`` when typed). A
+    lookup's options are the site's suggestions for what was typed, searched again on
+    every run, so they never count as changed."""
+    if item.control_type is ControlType.TYPEAHEAD:
+        return False
+    return _labels(shown) != _labels(_usable(item))
+
+
+def _claimed(app: Application) -> bool:
+    return app.claim_expires_at is not None and app.claim_expires_at > datetime.now(UTC)
 
 
 def _apply_one(store: ApplicationStore, candidates: LocalCandidateStore, owner: str,
                candidate_id: str, saved_answers: Sequence[SavedAnswer], app_id: str,
-               field_id: str, value: SheetValue, reuse: AnswerReuse) -> str | None:
-    """Save ``value`` for the recorded question ``field_id`` of ``app_id`` exactly as
-    ``interviewmaxxing answer`` would; the skip kind when it was not saved."""
+               entry: SheetQuestion, value: SheetValue, reuse: AnswerReuse, *,
+               dry_run: bool = False) -> str | None:
+    """Save ``value`` for the entry's recorded question on ``app_id`` (its field id there)
+    exactly as ``interviewmaxxing answer`` would; the skip kind when it was not saved.
+    With ``dry_run`` every check runs (a claim held by another run is read, not taken) and
+    nothing is written."""
+    field_id = entry.fields[app_id]
     try:
         app = store.get_application(app_id)
     except NotFound:
@@ -486,14 +562,18 @@ def _apply_one(store: ApplicationStore, candidates: LocalCandidateStore, owner: 
     job = store.get_job(app.job_id)
     holds = recorded_holds(store, app, events, saved_answers, job)
     item = next((m for m in holds.recorded if m.field_id == field_id), None)
-    if item is None:
+    if item is None or hold_key(item.label, None) != hold_key(entry.question, None):
         return "not open"
     if item not in holds.open:
         return "already answered"
+    if options_changed(entry.options_by_application.get(app_id, entry.options), item):
+        return OPTIONS_CHANGED
     try:
         user_input: UserInput = user_input_for(item, value, reuse=reuse)
     except AnswerError:
         return "invalid"
+    if dry_run:
+        return "busy" if _claimed(app) else None
     try:
         claim = store.claim(app.id, owner)
     except ClaimUnavailable:
@@ -508,9 +588,11 @@ def _apply_one(store: ApplicationStore, candidates: LocalCandidateStore, owner: 
     return None
 
 
-def apply_sheet(paths: LocalPaths, sheet: AnswerSheet, *, owner: str) -> SheetResult:
+def apply_sheet(paths: LocalPaths, sheet: AnswerSheet, *, owner: str,
+                dry_run: bool = False) -> SheetResult:
     """Apply every answered entry of ``sheet`` to each of its applications (see the
-    module docstring). Raises ``FileNotFoundError`` without a state database."""
+    module docstring); with ``dry_run``, check and count the same way and save nothing.
+    Raises ``FileNotFoundError`` without a state database."""
     if not paths.state_db.is_file():
         raise FileNotFoundError("No state database.")
     answered = [q for q in sheet.questions if q.answer is not None]
@@ -522,37 +604,53 @@ def apply_sheet(paths: LocalPaths, sheet: AnswerSheet, *, owner: str) -> SheetRe
             assert entry.answer is not None
             reuse = AnswerReuse(entry.reuse.upper())
             kinds: Counter[str] = Counter()
-            for app_id, field_id in entry.fields.items():
+            applied = 0
+            for app_id in entry.fields:
                 kind = _apply_one(store, candidates, owner, sheet.candidate_id, saved_answers,
-                                  app_id, field_id, entry.answer, reuse)
+                                  app_id, entry, entry.answer, reuse, dry_run=dry_run)
                 if kind is None:
-                    tally.applied += 1
+                    applied += 1
                     tally.applications.add(app_id)
                 else:
                     kinds[kind] += 1
+            tally.applied += applied
             tally.skipped.update(kinds)
             tally.failures += [SheetFailure(question=entry.question, kind=kind, applications=n)
                                for kind, n in kinds.items() if kind != "already answered"]
-    return SheetResult(entries=len(sheet.questions), answered=len(answered),
+            tally.per_entry.append(SheetEntryResult(
+                question=entry.question, applications=len(entry.fields), applied=applied,
+                options_changed=kinds[OPTIONS_CHANGED],
+                skipped={k: kinds[k] for k in SKIP_KINDS if kinds[k] and k != OPTIONS_CHANGED}))
+    return SheetResult(dry_run=dry_run, entries=len(sheet.questions), answered=len(answered),
                        applied=tally.applied, applications=len(tally.applications),
                        already_answered=tally.skipped.get("already answered", 0),
                        skipped={k: tally.skipped[k] for k in SKIP_KINDS if tally.skipped[k]},
-                       failures=tally.failures)
+                       failures=tally.failures, per_entry=tally.per_entry)
 
 
-def newest_batch_id(paths: LocalPaths) -> str | None:
+def newest_batch_id(paths: LocalPaths, tree: BatchTree | None = None) -> str | None:
     """The batch to retry next: the one under ``$IMX_HOME/batches`` whose ledger was
-    written last; when that is itself a retry, the batch it retried (its ledger lists
-    every application of the run, a retry's only those it selected). None without a
-    batch."""
-    batches = list_batches(paths)
-    if not batches:
+    written last; when that is a retry, the first batch of its family
+    (``BatchTree.root``: its ledger lists every application of the run, a retry's only
+    those it selected). None without a batch."""
+    tree = BatchTree.read(paths) if tree is None else tree
+    if not tree.batches:
         return None
-    newest = max(batches, key=lambda b: (paths.home / "batches" / b / LEDGER_NAME).stat().st_mtime)
-    summary = read_summary(paths, newest)
-    if summary is not None and summary.retry is not None and summary.retry.retry_of in batches:
-        return summary.retry.retry_of
-    return newest
+    newest = max(tree.batches,
+                 key=lambda b: (paths.home / "batches" / b / LEDGER_NAME).stat().st_mtime)
+    return tree.root(newest)
+
+
+def retry_batch_ids(paths: LocalPaths, sheet: AnswerSheet) -> list[str]:
+    """The batches ``answer --sheet`` names in its ``prepare-batch --retry`` lines: the
+    first batch (``BatchTree.root``) of each batch the sheet covers that still has a
+    ledger, else the newest batch's (``newest_batch_id``); empty without a batch."""
+    tree = BatchTree.read(paths)
+    roots = list(dict.fromkeys(tree.root(b) for b in sheet.batches if b in tree.batches))
+    if roots:
+        return roots
+    newest = newest_batch_id(paths, tree)
+    return [newest] if newest is not None else []
 
 
 def retry_line(cli: Sequence[str], batch_id: str) -> str:
@@ -560,26 +658,39 @@ def retry_line(cli: Sequence[str], batch_id: str) -> str:
 
 
 def render_result(result: SheetResult, path: Path) -> list[str]:
-    """The lines ``answer --sheet`` prints: counts and the wordings not applied; never
-    an answer."""
-    lines = [f"answer sheet {path}: {result.answered} of {result.entries} entries answered; "
-             f"saved {result.applied} answer(s) for {result.applications} application(s)"]
+    """The lines ``answer --sheet`` prints: counts, then one line per answered entry with
+    how many of its applications received the answer, how many were skipped because their
+    options changed since the sheet was written and any other reason, and the wording;
+    never an answer or an option."""
+    if result.dry_run:
+        lines = [f"answer sheet {path} (dry run, nothing saved): {result.answered} of "
+                 f"{result.entries} entries answered; would save {result.applied} answer(s) "
+                 f"for {result.applications} application(s)"]
+    else:
+        lines = [f"answer sheet {path}: {result.answered} of {result.entries} entries "
+                 f"answered; saved {result.applied} answer(s) for {result.applications} "
+                 "application(s)"]
     if result.already_answered:
         lines.append(f"already answered since the stop (left as they are): "
                      f"{result.already_answered}")
-    for failure in result.failures:
-        lines.append(f"not applied ({failure.kind}, {failure.applications} application(s)): "
-                     f"{' '.join(failure.question.split())}")
+    verb = "would receive it" if result.dry_run else "received it"
+    for entry in result.per_entry:
+        others = "".join(f"; {kind} on {n}" for kind, n in entry.skipped.items())
+        lines.append(f"- {entry.applied} of {entry.applications} application(s) {verb}; "
+                     f"options changed on {entry.options_changed}{others}: "
+                     f"{' '.join(entry.question.split())}")
     return lines
 
 
 __all__ = [
     "BELOW_GATE_STAGES",
+    "OPTIONS_CHANGED",
     "SHEET_VERSION",
     "SKIP_KINDS",
     "AnswerSheet",
     "ProposalBasis",
     "SheetAction",
+    "SheetEntryResult",
     "SheetFailure",
     "SheetOption",
     "SheetQuestion",
@@ -587,9 +698,11 @@ __all__ = [
     "apply_sheet",
     "build_sheet",
     "newest_batch_id",
+    "options_changed",
     "propose",
     "read_sheet",
     "render_result",
+    "retry_batch_ids",
     "retry_line",
     "write_sheet",
 ]

@@ -188,11 +188,13 @@ def test_retry_after_answering_each_shared_question_once(ats: MockServer, cli: C
     answered = cli(*shlex.split(work_auth["answer"].replace("VALUE", "wa_authorized"))[1:])
     assert answered.code == 0, answered.stderr
     sheet_path = tmp_path / "sheet.json"
-    written = cli("holds", "--sheet", str(sheet_path))
+    written = cli("holds", "--sheet", str(sheet_path), "--batch-id", "loop")
     assert written.code == 0, written.stderr
     assert stat.S_IMODE(sheet_path.stat().st_mode) == 0o600
-    assert Q_SPONSORSHIP not in written.stdout and "wrote " in written.stdout
+    assert Q_SPONSORSHIP not in written.stdout and "held application(s) of loop to" in written.stdout
     sheet = json.loads(sheet_path.read_text())
+    assert sheet["batches"] == ["loop"]  # the applications this batch holds, nothing older
+    assert all(set(a["fields"]) == set(a["application_ids"]) for a in sheet["actions"])
     by_wording = {" ".join(q["question"].split()): q for q in sheet["questions"]}
     assert " ".join(Q_WORK_AUTH.split()) not in by_wording  # answered above: no longer open
     entry = by_wording[Q_SPONSORSHIP]
@@ -201,21 +203,33 @@ def test_retry_after_answering_each_shared_question_once(ats: MockServer, cli: C
     assert {o["value"] for o in entry["options"]} >= {"no_sponsorship"}
     entry["answer"] = "no_sponsorship"
     sheet_path.write_text(json.dumps(sheet))
-    applied = cli("answer", "--sheet", str(sheet_path), "--batch-id", "loop")
+
+    # A dry run checks every application and saves nothing.
+    dry = cli("answer", "--sheet", str(sheet_path), "--dry-run")
+    assert dry.code == 0, dry.stderr
+    assert "(dry run, nothing saved)" in dry.stdout
+    assert "would save 3 answer(s) for 3 application(s)" in dry.stdout
+    assert ("- 3 of 3 application(s) would receive it; options changed on 0: "
+            + Q_SPONSORSHIP) in dry.stdout.splitlines()
+    assert cli("holds", "--json").json()["answered"] == 0  # nothing saved by the dry run
+    applied = cli("answer", "--sheet", str(sheet_path))
     assert applied.code == 0, applied.stderr
     assert "saved 3 answer(s) for 3 application(s)" in applied.stdout
-    assert applied.stdout.rstrip().endswith("prepare-batch --retry loop")
+    assert applied.stdout.rstrip().endswith("prepare-batch --retry loop")  # the sheet's batch
     assert "no_sponsorship" not in applied.stdout
     again = cli("answer", "--sheet", str(sheet_path), "--batch-id", "loop")
     assert again.code == 0 and "saved 0 answer(s) for 0 application(s)" in again.stdout
+    assert "already answered on 3" in again.stdout
     after = cli("holds", "--json")
     assert (after.json()["answered"], after.json()["held"]) == (2, 1)
     assert set(_groups(after)) == {Q_NOTICE, *(q for q in groups if q not in (
         " ".join(Q_WORK_AUTH.split()), Q_SPONSORSHIP))}  # only those two were answered
 
+    # Without --all: the sheet's answers count as answered, so all three run again.
     final = _summary(cli("prepare-batch", "--retry", "loop", "--batch-id", "loop-r2", "--json",
                          timeout=600))
     assert final["retry"]["selected"] == 3 and final["retry"]["skipped"] == {}
+    assert final["retry"]["selected_by"] == {"answered since the stop": 3}
     assert final["totals"] == {"prepared": 2, "needs_input": 1}
     assert (final["retry"]["prepared"], final["retry"]["holds_cleared"]) == (2, 6)
     ledger = [json.loads(line) for line in
@@ -226,7 +240,43 @@ def test_retry_after_answering_each_shared_question_once(ats: MockServer, cli: C
         "lst_standard": ("loop", "needs_input", "prepared"),
         "lst_missing-required": ("loop", "needs_input", "needs_input")}
 
+    # One application again after a (pretend) fix, without --all.
+    held_app = next(line["application_id"] for line in ledger
+                    if line["listing_id"] == "lst_missing-required")
+    only = _summary(cli("prepare-batch", "--retry", "loop", "--only-app", held_app,
+                        "--batch-id", "loop-r3", "--json", timeout=600))
+    assert (only["launched"], only["retry"]["selected_by"]) == (1, {"--only-app": 1})
+    assert only["totals"] == {"needs_input": 1}
+
     combined = _summary(cli("batch-report", "loop", "loop-r2", "--json"))
     assert combined["rows"] == 3 and combined["totals"] == {"prepared": 2, "needs_input": 1}
+    family = _summary(cli("batch-report", "--family", "loop", "--json"))
+    [runs] = [f["runs"] for f in family["families"]]
+    assert [(r["batch_id"], r["ran"], r["prepared_total"], r["held"]) for r in runs] == [
+        ("loop", 3, 0, 3), ("loop-r1", 1, 0, 3), ("loop-r2", 3, 2, 1), ("loop-r3", 1, 2, 1)]
+    ready = {r["listing_id"]: r for r in family["ready"]}
+    assert set(ready) == {"lst_validation", "lst_standard"}
+    for row in ready.values():
+        assert row["approve"] == f"interviewmaxxing approve {row['application_id']}"
+        assert row["submit"] == (f"IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit "
+                                 f"{row['application_id']} --yes")
+    text = cli("batch-report", "--family", "loop")
+    assert text.code == 0 and "## Yield over retries" in text.stdout
+    assert "## At the final review step" in text.stdout
+
+    # The mass run over a whole inventory leaves out what this batch prepared or held.
+    mass_inventory = tmp_path / "mass-inventory.json"
+    mass_inventory.write_text(json.dumps([
+        {"listing_id": f"lst_{job}", "company": catalog[job]["company"],
+         "title": catalog[job]["title"], "source_application_url": ats.url(job),
+         "backend": "mock", "status": "resolved"} for job in [*RETRY_JOBS, "attestation"]]))
+    mass = _summary(cli("prepare-batch", "--inventory", str(mass_inventory), "--exclude-batches",
+                        "loop", "--batch-id", "mass", "--json", timeout=600))
+    assert mass["skipped_excluded"] == 3 and mass["launched"] == 1
+    assert mass["excluded_batches"] == ["loop", "loop-r1", "loop-r2", "loop-r3"]
+    assert [json.loads(line)["listing_id"] for line in
+            (home / "batches" / "mass" / "ledger.jsonl").read_text().splitlines()] == [
+        "lst_attestation"]
+    assert ats.submissions("attestation")["accepted_count"] == 0
     for job in RETRY_JOBS:
         assert ats.submissions(job)["accepted_count"] == 0, job

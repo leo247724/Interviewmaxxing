@@ -304,7 +304,9 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
     assert stats is not None and stats.retry_of == "b1"
     assert stats.model_dump() == {
         "retry_of": "b1", "outcomes": list(RETRY_OUTCOMES), "include_explicit": False,
-        "rerun_all": True, "user_actions": False, "considered": 8, "selected": 5,
+        "rerun_all": True, "user_actions": False, "only_apps": [], "considered": 8,
+        "selected": 5,
+        "selected_by": {"failed_retryable": 2, "--all": 1, "unknown": 1, "error": 1},
         "skipped": {"prepared": 1, "closed": 1, "explicit answers only": 1},
         "retried": 5, "prepared": 3, "holds_before": 2, "holds_cleared": 2, "holds_open": 1,
         "transitions": {"needs_input": {"prepared": 1},
@@ -624,6 +626,59 @@ def test_holds_only_a_browser_can_clear_are_skipped_as_such_unless_user_actions(
     assert len(plan_retry(paths, "b1", candidate_id="default", rerun_all=True).items) == 4
 
 
+def test_the_selection_reasons_combine_user_actions_only_app_and_all(paths):
+    """Each selected held application counts under the most specific reason: answered
+    since the stop, named by --only-app, ``user actions`` (only browser actions open,
+    --user-actions), then --all; nothing applies: its own skip reason."""
+    url = f"{ORIGIN}/reasons"
+    sign_in = MissingInput(field_id=None, label="Sign in to continue", prompt="Sign in.",
+                           reason=MissingReason.USER_ACTION)
+    upload = question(url, "cover", "Cover letter", MissingReason.NO_ANSWER,
+                      control=ControlType.FILE)
+    notice = question(url, "q", NOTICE, MissingReason.NO_ANSWER)
+    apps = {"signin": stored(paths, "signin", "held", [sign_in]),
+            "upload": stored(paths, "upload", "held", [upload]),
+            "plain": stored(paths, "plain", "held", [notice]),
+            "failing": stored(paths, "failing", "failed")}
+    write_ledger(paths, *(line(f"l-{name}", "needs_input" if name != "failing"
+                               else "failed_retryable", name, app)
+                          for name, app in apps.items()))
+
+    def plan(**kwargs: Any) -> Any:
+        return plan_retry(paths, "b1", candidate_id="default", **kwargs)
+
+    default = plan()
+    assert (default.stats.selected_by, default.stats.skipped) == (
+        {"failed_retryable": 1},
+        {"browser actions only": 2, "nothing answered since the stop": 1})
+    acting = plan(user_actions=True)
+    assert [i.row.listing_id for i in acting.items] == ["l-signin", "l-upload", "l-failing"]
+    assert acting.stats.selected_by == {"user actions": 2, "failed_retryable": 1}
+    assert acting.stats.skipped == {"nothing answered since the stop": 1}
+    everything = plan(user_actions=True, rerun_all=True)
+    assert everything.stats.selected_by == {"user actions": 2, "--all": 1, "failed_retryable": 1}
+    assert plan(rerun_all=True).stats.selected_by == {"--all": 3, "failed_retryable": 1}
+    # --only-app runs a named application held only on browser actions without
+    # --user-actions, and counts it as named even with --user-actions.
+    named = plan(only_apps=[apps["signin"], apps["plain"]])
+    assert [i.row.listing_id for i in named.items] == ["l-signin", "l-plain"]
+    assert named.stats.selected_by == {"--only-app": 2} and named.stats.considered == 2
+    both = plan(only_apps=[apps["upload"]], user_actions=True)
+    assert (both.stats.selected_by, both.stats.user_actions, both.stats.only_apps) == (
+        {"--only-app": 1}, True, [apps["upload"]])
+    text = "\n".join(render_retry_markdown(both.stats))
+    assert (f"(outcomes: needs_input, failed_retryable, unknown, error; browser-action holds "
+            f"included (--user-actions); only {apps['upload']})") in text
+    assert "- selected by: --only-app (1)" in text
+    # Something answered since the stop outranks every flag.
+    with ApplicationStore.open(paths.state_db) as store:
+        claim = store.claim(apps["plain"], "test")
+        store.save_user_inputs(claim, [UserInput.answering(notice, TextValue(text="fictional"))])
+        store.release(claim)
+    answered = plan(only_apps=[apps["plain"]], user_actions=True, rerun_all=True)
+    assert answered.stats.selected_by == {"answered since the stop": 1}
+
+
 # --- options and ids ---------------------------------------------------------------------------
 
 
@@ -790,3 +845,130 @@ def test_retry_of_a_batch_without_recorded_run_options_uses_the_given_flags(
     assert "recorded no run options" in err
     assert json.loads(out)["run_options"]["workers"] == 2
     assert len(calls(tmp_path)) - log_start == 2
+
+
+# --- round 4: sheet answers count as answered; --only-app --------------------------------------
+
+
+def test_sheet_answers_count_as_answered_for_the_default_retry(paths):
+    from interviewmaxxing_cli.retry import batch_applications
+    from interviewmaxxing_cli.sheet import apply_sheet, build_sheet, read_sheet, write_sheet
+
+    candidates = write_profile(paths)
+
+    def asks(name: str, *labels: str) -> str:
+        return stored(paths, name, "held", [
+            question(f"{ORIGIN}/{name}", f"q{n}", label, MissingReason.NO_ANSWER)
+            for n, label in enumerate(labels)])
+
+    held = {"one": asks("one", NOTICE, START), "two": asks("two", NOTICE, START),
+            "three": asks("three", NOTICE, START), "four": asks("four", START)}
+    later = asks("later", NOTICE)
+    write_ledger(paths, *(line(f"l-{name}", "needs_input", name, app)
+                          for name, app in held.items()))
+    append_ledger(paths.home / "batches" / "b2" / "ledger.jsonl",
+                  line("l-later", "needs_input", "later", later).model_copy(
+                      update={"batch_id": "b2"}))
+    assert plan_retry(paths, "b1", candidate_id="default").items == ()  # nothing answered yet
+
+    # The sheet of batch b1 answers the notice period (reuse global) for "one" and "two";
+    # the person took "three" out of the entry; the start date stays open everywhere.
+    sheet_path = paths.home / "sheet.json"
+    write_sheet(build_sheet(paths, "default", batches=["b1"],
+                            applications=batch_applications(paths, ["b1"], candidate_id="default")),
+                sheet_path)
+    data = json.loads(sheet_path.read_text())
+    [entry] = [q for q in data["questions"] if q["question"] == NOTICE]
+    assert set(entry["fields"]) == {held["one"], held["two"], held["three"]}  # not b2's "later"
+    del entry["fields"][held["three"]]
+    entry["answer"] = "Two weeks"
+    sheet_path.write_text(json.dumps(data))
+    result = apply_sheet(paths, read_sheet(sheet_path), owner="test")
+    assert (result.applied, result.applications) == (2, 2)
+    assert (NOTICE, AnswerScope.GLOBAL) in {(s.question, s.scope)
+                                            for s in candidates.load("default").saved_answers}
+
+    # Without --all: "one" and "two" (their own answers) and "three" (the global answer for
+    # its wording, saved after it stopped) count as answered; "four" does not.
+    plan = plan_retry(paths, "b1", candidate_id="default")
+    assert [i.row.listing_id for i in plan.items] == ["l-one", "l-two", "l-three"]
+    assert plan.stats.selected_by == {"answered since the stop": 3}
+    assert plan.stats.skipped == {"nothing answered since the stop": 1}
+    # The application of another batch that asks the same wording counts as answered too.
+    later_plan = plan_retry(paths, "b2", candidate_id="default")
+    assert [i.row.listing_id for i in later_plan.items] == ["l-later"]
+    assert later_plan.stats.selected_by == {"answered since the stop": 1}
+    text = render_summary_markdown(batch_module.summarize(
+        "r", [], started_at=datetime.now(UTC), finished_at=datetime.now(UTC), rows=0, launched=0,
+        skipped_settled=0, skipped_invalid_url=0, ledger_path=Path("ledger.jsonl"),
+        retry=plan.stats))
+    assert "- selected by: answered since the stop (3)" in text
+
+
+def test_only_app_selects_just_the_named_applications(paths):
+    url = f"{ORIGIN}/x"
+    x = stored(paths, "x", "held", [question(url, "q", START, MissingReason.NO_ANSWER)])
+    y = stored(paths, "y", "held", [question(url, "q", START, MissingReason.NO_ANSWER)])
+    failing = stored(paths, "failing", "failed")
+    ready = stored(paths, "ready", "prepared")
+    explicit = stored(paths, "explicit", "held", explicit_holds(f"{ORIGIN}/explicit"))
+    halfway = stored(paths, "halfway", "inspecting")
+    write_ledger(paths, line("l-x", "needs_input", "x", x), line("l-y", "needs_input", "y", y),
+                 line("l-failing", "failed_retryable", "failing", failing),
+                 line("l-ready", "prepared", "ready", ready),
+                 line("l-explicit", "needs_input", "explicit", explicit),
+                 line("l-halfway", "error", "halfway", None))  # the store has it by URL
+
+    def plan(*apps: str, **kwargs: Any) -> Any:
+        return plan_retry(paths, "b1", candidate_id="default", only_apps=list(apps), **kwargs)
+
+    one = plan(x)
+    assert [i.row.listing_id for i in one.items] == ["l-x"]  # nothing answered: named instead
+    assert (one.stats.only_apps, one.stats.considered, one.stats.selected_by, one.stats.skipped) \
+        == ([x], 1, {"--only-app": 1}, {})
+    two = plan(x, failing, halfway, x)
+    assert [i.row.listing_id for i in two.items] == ["l-x", "l-failing", "l-halfway"]
+    assert two.stats.selected_by == {"--only-app": 1, "failed_retryable": 1, "unknown": 1}
+    assert two.stats.only_apps == [x, failing, halfway]
+    assert plan(ready).stats.skipped == {"prepared": 1} and plan(ready).items == ()
+    assert plan(explicit).stats.skipped == {"explicit answers only": 1}
+    assert [i.row.listing_id for i in plan(explicit, include_explicit=True).items] == ["l-explicit"]
+    assert plan(x, outcomes=["failed_retryable"]).stats.skipped == {
+        "not selected (needs_input)": 1}
+    assert plan(x, rerun_all=True).stats.selected_by == {"--only-app": 1}  # the named reason
+    with pytest.raises(ValueError, match=r"not an application of batch 'b1'.*app_fictional_nope"):
+        plan(x, "app_fictional_nope")
+    # The ledger names it, but it is not this candidate's: listed as not found, as without
+    # --only-app.
+    theirs = plan_retry(paths, "b1", candidate_id="someone-else", only_apps=[x])
+    assert theirs.items == () and theirs.stats.skipped == {"application not found": 1}
+
+
+@pytest.mark.slow
+def test_prepare_batch_retry_only_app_command(fake, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(batch_module, "default_command", lambda: [sys.executable, str(fake)])
+    home = tmp_path / "home"
+    local = LocalPaths.from_env({}, home=home)
+    first_batch(fake, local, ["held", "flaky", "prepared", "notice"])
+    held_app = read_ledger(home / "batches" / "b1" / "ledger.jsonl")[0].application_id
+    assert held_app is not None
+    log_start = len(calls(tmp_path))
+    monkeypatch.setenv("FAKE_RESUME", json.dumps({"held": "prepared"}))
+    base = ["--home", str(home), "prepare-batch"]
+    assert main([*base, "--retry", "b1", "--only-app", held_app, "--batch-id", "r1",
+                 "--json"]) == EXIT_OK
+    out, err = capsys.readouterr()
+    summary = json.loads(out)
+    assert summary["totals"] == {"prepared": 1}  # the failed one was not named: not run
+    assert summary["retry"]["only_apps"] == [held_app]
+    assert summary["retry"]["selected_by"] == {"--only-app": 1}
+    assert "1 of 1 listing(s) selected (by: --only-app (1))" in err
+    assert [c["argv"][:2] for c in calls(tmp_path)[log_start:]] == [["resume", held_app]]
+    for bad in (["--retry", "b1", "--only-app", "app_fictional_nope"],
+                ["--inventory", str(tmp_path / "inv.json"), "--only-app", held_app],
+                ["--retry", "b1", "--exclude-batches", "b1"]):
+        assert main([*base, *bad]) == EXIT_USAGE, bad
+        assert capsys.readouterr().err.strip()
+    with pytest.raises(SystemExit) as exc:
+        main([*base, "--retry", "b1", "--only-app", ","])
+    assert exc.value.code == EXIT_USAGE

@@ -38,10 +38,14 @@ Guarantees:
 ``build_report`` reads the ledgers back (``interviewmaxxing batch-report``): outcomes,
 holds grouped into categories and by question wording (with the ``answer`` line that
 clears each question), fill failures grouped by detail, a per-backend readiness table,
-durations, pipeline links and
-submissions. ``prepare-batch --retry`` (``interviewmaxxing_cli.retry``)
-runs the held and failed applications of a ledger again through ``resume`` with the same
-harness; its ledger lines carry ``retry_of``.
+durations, pipeline links, submissions, the yield of each batch family over its retries
+and the applications waiting at their final review step (with the ``approve`` and
+``submit`` lines the person runs after reviewing them; the report submits nothing).
+``prepare-batch --retry`` (``interviewmaxxing_cli.retry``) runs the held and failed
+applications of a ledger again through ``resume`` with the same harness; its ledger
+lines carry ``retry_of``, which ties a batch and its retries into a family
+(``BatchTree``). ``prepare-batch --exclude-batches`` leaves out the inventory rows those
+families already prepared or held (``prepared_or_held``).
 
 Submitting approved applications (``run_submissions``, ``interviewmaxxing
 submit-approved``) is a separate entry point with its own gates: it runs only
@@ -65,8 +69,9 @@ import signal
 import statistics
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -93,6 +98,7 @@ from .triage import (
     HOLD_CATEGORIES,
     LEDGER_LABEL_LIMIT,
     NO_FORM_PREFIX,
+    PREPARED_EVENT,
     PROG,
     QUESTION_LIMIT,
     FailureGroup,
@@ -101,6 +107,8 @@ from .triage import (
     HoldGroup,
     HoldOccurrence,
     categorize_hold,
+    command_line,
+    current_outcome,
     group_failures,
     group_holds,
     render_failure_groups,
@@ -647,10 +655,20 @@ class RetryStats(Contract):
     user_actions: bool = False
     """``--user-actions``: held applications whose open holds are all browser actions
     (sign-in, CAPTCHA, custom controls, files) ran again with nothing answered."""
+    only_apps: list[str] = Field(default_factory=list)
+    """``--only-app``: only these applications of the ledger were considered; each held
+    one runs again even with nothing answered since it stopped."""
     considered: int = Field(default=0, ge=0)
-    """Listings in that ledger (after ``--backends``)."""
+    """Listings in that ledger (after ``--backends`` and ``--only-app``)."""
     selected: int = Field(default=0, ge=0)
     """Listings chosen to run again (after ``--limit``)."""
+    selected_by: dict[str, int] = Field(default_factory=dict)
+    """Why they were chosen, counted before ``--limit``, each under the first reason that
+    applies: its outcome (``failed_retryable``, ``unknown`` or ``error``) or, held,
+    ``answered since the stop`` (a question answered since it stopped, through
+    ``answer``, ``answer --sheet`` or a saved answer for its wording), ``--only-app``
+    (named, nothing answered), ``user actions`` (only browser actions open,
+    ``--user-actions``) or ``--all``."""
     skipped: dict[str, int] = Field(default_factory=dict)
     """Why the others were not: ``prepared``, ``closed``, ``duplicate``, ``blocked``,
     ``approved (left to submit-approved)``, ``not selected (<outcome>)``, ``nothing
@@ -688,6 +706,11 @@ class BatchSummary(Contract):
     """Rows not launched because an earlier row of this run has the same normalized URL
     (or, in a retry, the same application): run together they would collide on one
     application. A later run of the batch records them (``already_recorded``)."""
+    skipped_excluded: int = Field(default=0, ge=0)
+    """Inventory rows left out because ``excluded_batches`` prepared or held their listing
+    (``--exclude-batches``); they are not recorded in this batch's ledger."""
+    excluded_batches: list[str] = Field(default_factory=list)
+    """The batch families ``--exclude-batches`` named, each with every retry of it."""
     ledger_lines_ignored: int = Field(default=0, ge=0)
     """Ledger lines that could not be read (``read_ledger_lines``); their rows count as
     unrecorded, so they run again and ``--max-prepared`` does not count them."""
@@ -770,7 +793,8 @@ def summarize(batch_id: str, entries: Sequence[LedgerEntry], *, started_at: date
               stopped_at_max_prepared: bool = False,
               run_options: BatchRunOptions | None = None,
               retry: RetryStats | None = None, skipped_same_url: int = 0,
-              ledger_lines_ignored: int = 0) -> BatchSummary:
+              ledger_lines_ignored: int = 0, skipped_excluded: int = 0,
+              excluded_batches: Sequence[str] = ()) -> BatchSummary:
     """Aggregate a ledger: totals and per-backend counts use each row's latest entry;
     durations and missing-input tallies use every launched attempt in this ledger. For
     a retry batch, ``retry`` (what was selected) is completed from its lines."""
@@ -793,6 +817,7 @@ def summarize(batch_id: str, entries: Sequence[LedgerEntry], *, started_at: date
         batch_id=batch_id, started_at=started_at, finished_at=finished_at, rows=rows,
         launched=launched, skipped_settled=skipped_settled,
         skipped_invalid_url=skipped_invalid_url, skipped_same_url=skipped_same_url,
+        skipped_excluded=skipped_excluded, excluded_batches=list(excluded_batches),
         ledger_lines_ignored=ledger_lines_ignored,
         totals={k: totals[k] for k in OUTCOMES if totals[k]},
         by_backend={backend: {k: counts[k] for k in OUTCOMES if counts[k]}
@@ -852,6 +877,9 @@ def render_summary_markdown(summary: BatchSummary) -> str:
         f"already settled: {summary.skipped_settled}; invalid URL: {summary.skipped_invalid_url}"
         + (f"; same URL as another row: {summary.skipped_same_url}"
            if summary.skipped_same_url else ""),
+        *([f"- left out as prepared or held by earlier batches: {summary.skipped_excluded} "
+           f"(--exclude-batches: {', '.join(summary.excluded_batches)})"]
+          if summary.excluded_batches else []),
         "- nothing was submitted (preparation only)"
         + ("; stopped launching at --max-prepared" if summary.stopped_at_max_prepared else ""),
         *([f"- unreadable ledger lines ignored: {summary.ledger_lines_ignored} (their rows "
@@ -892,15 +920,21 @@ def render_summary_markdown(summary: BatchSummary) -> str:
     return "\n".join(lines) + "\n"
 
 
+def counted(counts: Mapping[str, int]) -> str:
+    """``reason (count), ...`` in the mapping's order."""
+    return ", ".join(f"{reason} ({count})" for reason, count in counts.items())
+
+
 def render_retry_markdown(retry: RetryStats) -> list[str]:
-    skipped = ", ".join(f"{reason} ({count})" for reason, count in retry.skipped.items())
     lines = [f"## Retry of {retry.retry_of}", "",
              f"- selected {retry.selected} of {retry.considered} listing(s) "
              f"(outcomes: {', '.join(retry.outcomes) or '-'}"
              + ("; every held one (--all)" if retry.rerun_all else "")
              + ("; browser-action holds included (--user-actions)" if retry.user_actions else "")
+             + (f"; only {', '.join(retry.only_apps)}" if retry.only_apps else "")
              + ("; explicit-only holds included" if retry.include_explicit else "") + ")",
-             f"- skipped: {skipped or 'none'}",
+             *([f"- selected by: {counted(retry.selected_by)}"] if retry.selected_by else []),
+             f"- skipped: {counted(retry.skipped) or 'none'}",
              *(["- held only on browser actions (sign-in, CAPTCHA, custom controls, files): "
                 "clear each with `interviewmaxxing resume APP --act` (`holds` lists them), or "
                 "run them headless again with --user-actions"]
@@ -1376,12 +1410,14 @@ async def run_batch(options: BatchOptions, rows: Sequence[BatchRow], *,
                     on_entry: Callable[[LedgerEntry], None] | None = None,
                     skipped_invalid_url: int = 0,
                     annotate: Callable[[LedgerEntry], LedgerEntry] | None = None,
-                    retry: RetryStats | None = None) -> BatchSummary:
+                    retry: RetryStats | None = None, skipped_excluded: int = 0,
+                    excluded_batches: Sequence[str] = ()) -> BatchSummary:
     """Prepare ``rows`` with at most ``options.workers`` concurrent ``apply`` (or, for a
     row with an ``application_id``, ``resume``) subprocesses, appending to the batch
     ledger as each finishes, and return the summary of the whole ledger (this run and
     earlier runs of the same batch id). ``annotate`` completes each finished entry before
-    its card is synced and its line is written; ``retry`` is what a retry selected."""
+    its card is synced and its line is written; ``retry`` is what a retry selected;
+    ``skipped_excluded`` and ``excluded_batches`` what ``--exclude-batches`` left out."""
     started_at = _now()
     batch_dir = default_batch_dir(options.paths, options.batch_id)  # ensure() first
     ledger_path = batch_dir / LEDGER_NAME
@@ -1480,7 +1516,8 @@ async def run_batch(options: BatchOptions, rows: Sequence[BatchRow], *,
                         rows=len(rows), launched=launched, skipped_settled=skipped_settled,
                         skipped_invalid_url=skipped_invalid_url, ledger_path=ledger_path,
                         stopped_at_max_prepared=stopped, run_options=options.run_options(),
-                        retry=retry, skipped_same_url=same_url, ledger_lines_ignored=ignored)
+                        retry=retry, skipped_same_url=same_url, ledger_lines_ignored=ignored,
+                        skipped_excluded=skipped_excluded, excluded_batches=excluded_batches)
     write_summary(summary, batch_dir)
     return summary
 
@@ -1968,6 +2005,148 @@ def render_submissions_markdown(summary: SubmissionSummary) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- batch families -------------------------------------------------------------------------
+
+
+def batch_ledger(paths: LocalPaths, batch_id: str) -> Path:
+    """``$IMX_HOME/batches/<batch id>/ledger.jsonl``; ``ValueError`` for an id that is not a
+    plain name."""
+    return paths.home / "batches" / _plain_batch_id(batch_id) / LEDGER_NAME
+
+
+def require_ledgers(paths: LocalPaths, batch_ids: Iterable[str]) -> list[str]:
+    """``batch_ids`` deduplicated in order. Raises ``ValueError`` for an id that is not a
+    plain name and ``FileNotFoundError`` for a batch without a ledger."""
+    ids = list(dict.fromkeys(_plain_batch_id(batch_id) for batch_id in batch_ids))
+    for batch_id in ids:
+        path = batch_ledger(paths, batch_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"no ledger for batch {batch_id!r} under {path.parent.parent}")
+    return ids
+
+
+def _since_utc(since: datetime) -> datetime:
+    return since if since.tzinfo is not None else since.replace(tzinfo=UTC)
+
+
+def batches_since(paths: LocalPaths, since: datetime) -> list[str]:
+    """The batches under ``$IMX_HOME/batches`` with a ledger line finished at or after
+    ``since`` (UTC when it names no offset), as ``batch-report --since`` selects them.
+    Creates nothing."""
+    since = _since_utc(since)
+    return [batch_id for batch_id in list_batches(paths)
+            if any(e.finished_at >= since for e in read_ledger(batch_ledger(paths, batch_id)))]
+
+
+def batch_retry_of(paths: LocalPaths, batch_id: str) -> str | None:
+    """The batch that ``batch_id`` ran again (``prepare-batch --retry``): its summary's
+    ``retry.retry_of``, else the ``retry_of`` its ledger lines carry (a run stopped before
+    it wrote its summary); None for a batch that is not a retry."""
+    summary = read_summary(paths, batch_id)
+    if summary is not None:
+        return summary.retry.retry_of if summary.retry is not None else None
+    return next((e.retry_of for e in read_ledger(batch_ledger(paths, batch_id)) if e.retry_of),
+                None)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchTree:
+    """How the batches under ``$IMX_HOME/batches`` ran one another again: a batch and
+    every retry of it (and of its retries) form a family whose root's ledger lists every
+    application of the run (a retry's lists only those it selected)."""
+
+    batches: tuple[str, ...]
+    """Every batch with a ledger, sorted."""
+    parents: Mapping[str, str]
+    """Retry batch -> the batch it retried, when that batch still has a ledger."""
+
+    @classmethod
+    def read(cls, paths: LocalPaths) -> BatchTree:
+        """Read the tree from the summaries (else the ledgers). Creates nothing."""
+        batches = tuple(list_batches(paths))
+        known = set(batches)
+        parents: dict[str, str] = {}
+        for batch_id in batches:
+            parent = batch_retry_of(paths, batch_id)
+            if parent is not None and parent != batch_id and parent in known:
+                parents[batch_id] = parent
+        return cls(batches=batches, parents=parents)
+
+    def root(self, batch_id: str) -> str:
+        """The first batch of ``batch_id``'s family (itself when it is no retry)."""
+        seen = {batch_id}
+        current = batch_id
+        while (parent := self.parents.get(current)) is not None and parent not in seen:
+            seen.add(parent)
+            current = parent
+        return current
+
+    def family(self, batch_id: str) -> list[str]:
+        """``batch_id``'s whole family: its root first, then every retry of a member, by id."""
+        root = self.root(batch_id)
+        members = {root}
+        grew = True
+        while grew:
+            grew = False
+            for child, parent in self.parents.items():
+                if parent in members and child not in members:
+                    members.add(child)
+                    grew = True
+        return [root, *sorted(members - {root})]
+
+
+def _normalized_url(url: str) -> str:
+    try:
+        return normalize_application_url(url)
+    except InvalidApplicationUrl:
+        return url
+
+
+HELD_OR_PREPARED = frozenset({"prepared", "needs_input"})
+"""Ledger outcomes ``--exclude-batches`` leaves out (with ``already_recorded`` lines of a
+NEEDS_INPUT application): the run reached the application's form and kept it."""
+
+
+def _held_or_prepared(entry: LedgerEntry) -> bool:
+    return entry.outcome in HELD_OR_PREPARED or (
+        entry.outcome == "already_recorded" and entry.state is S.NEEDS_INPUT)
+
+
+@dataclass(frozen=True, slots=True)
+class Exclusion:
+    """What ``prepare-batch --exclude-batches`` leaves out of an inventory run."""
+
+    batches: tuple[str, ...]
+    """The named batches' families (each with its root and every retry)."""
+    listing_ids: frozenset[str]
+    urls: frozenset[str]
+    """Normalized application URLs."""
+
+    def excludes(self, row: BatchRow) -> bool:
+        return (row.listing_id in self.listing_ids
+                or _normalized_url(row.application_url) in self.urls)
+
+
+def prepared_or_held(paths: LocalPaths, batch_ids: Iterable[str]) -> Exclusion:
+    """The listings that the named batches' families (``BatchTree.family``: the batch it
+    retried and every retry) ever prepared or held: a ``prepared`` or ``needs_input``
+    line, or an ``already_recorded`` line of a NEEDS_INPUT application. Failed, errored,
+    closed and duplicate listings are not in it. Raises as ``require_ledgers``; reads only
+    the ledgers."""
+    ids = require_ledgers(paths, batch_ids)
+    tree = BatchTree.read(paths)
+    family = list(dict.fromkeys(member for batch_id in ids for member in tree.family(batch_id)))
+    listing_ids: set[str] = set()
+    urls: set[str] = set()
+    for batch_id in family:
+        for entry in read_ledger(batch_ledger(paths, batch_id)):
+            if _held_or_prepared(entry):
+                listing_ids.add(entry.listing_id)
+                urls.add(_normalized_url(entry.application_url))
+    return Exclusion(batches=tuple(family), listing_ids=frozenset(listing_ids),
+                     urls=frozenset(urls))
+
+
 # --- report -------------------------------------------------------------------------------
 
 
@@ -2031,6 +2210,74 @@ class BackendReadiness(Contract):
     """Known AI provider cost of these listings (each at its latest line with a cost)."""
 
 
+class YieldRun(Contract):
+    """One run of a batch family (one batch id) in the "Yield over retries" table. The
+    counts after it are where the family's listings stood once it finished: each listing
+    at its latest launched line in this batch or an earlier one of the family (else its
+    latest ``already_recorded`` line), as ``BatchReport.rows`` counts them."""
+
+    batch_id: str
+    retry_of: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    ran: int = Field(default=0, ge=0)
+    """Listings this batch launched."""
+    prepared: int = Field(default=0, ge=0)
+    """Listings this batch prepared (its latest line for them)."""
+    prepared_total: int = Field(default=0, ge=0)
+    """The family's listings prepared after this run (cumulative)."""
+    held: int = Field(default=0, ge=0)
+    """The family's listings held (``needs_input``) after this run."""
+    failed: int = Field(default=0, ge=0)
+    """The family's listings ``failed_retryable`` or ``error`` after this run."""
+    holds_open: int = Field(default=0, ge=0)
+    """Questions and actions recorded on the held listings' latest lines after this run."""
+    cost_usd: float | None = None
+    """This run's known AI provider cost: the family's known cost after it minus before it
+    (a line's cost is its application's total so far, so a run of these applications
+    outside the family in between counts here). None while no line carries a cost."""
+    cost_total_usd: float | None = None
+    """The family's known cost after this run."""
+
+
+class BatchFamily(Contract):
+    """A batch and its retries among the ledgers read, with the yield of each run."""
+
+    root: str
+    """The first batch: the others ran its applications again (``retry_of``)."""
+    batches: list[str] = Field(default_factory=list)
+    """Every batch of the family that was read, in the order they started."""
+    listings: int = Field(default=0, ge=0)
+    """Distinct listings of the family."""
+    runs: list[YieldRun] = Field(default_factory=list)
+
+
+class ReadyApplication(Contract):
+    """An application stopped at its final review step (prepared, not submitted), with
+    the lines the person runs after reviewing it. The report runs none of them."""
+
+    application_id: str
+    listing_id: str
+    batch_id: str
+    """The batch whose line counts for the listing."""
+    company: str = ""
+    title: str = ""
+    backend: str = ""
+    approved: bool | None = None
+    """Whether the person already approved it (``approve``); None without a state
+    database."""
+    captcha_pending: bool = False
+    """The review step shows a CAPTCHA, solved in a visible window at submission
+    (``submit ... --act``)."""
+    review: str
+    """``interviewmaxxing status APP``: the prepared answers and where the evidence is."""
+    approve: str | None = None
+    """``interviewmaxxing approve APP``; None once approved."""
+    submit: str
+    """``IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit APP --yes``: submits exactly what
+    was approved, and refuses without an approval."""
+
+
 class SubmissionReport(Contract):
     """The submission lines of the ledgers read: each application once, at its latest
     submission line."""
@@ -2055,6 +2302,8 @@ class BatchReport(Contract):
     batches_dir: str
     since: datetime | None = None
     """With ``--since``: only batches with a line finished at or after it were read."""
+    requested_families: list[str] = Field(default_factory=list)
+    """With ``--family``: the batches whose whole family (every retry) was read."""
     ledger_lines_ignored: int = Field(default=0, ge=0)
     """Unreadable lines in the ledgers read (``read_ledger_lines``); left out of every count."""
     rows: int = Field(ge=0)
@@ -2087,6 +2336,12 @@ class BatchReport(Contract):
     submissions: SubmissionReport | None = None
     """Submissions of approved applications (``submit-approved``) recorded in these
     ledgers; None when there are none."""
+    families: list[BatchFamily] = Field(default_factory=list)
+    """"Yield over retries": each batch read with its retries among the batches read
+    (families of one batch only when ``--family`` asked for them)."""
+    ready: list[ReadyApplication] = Field(default_factory=list)
+    """The rows' applications stopped at their final review step now (by the state
+    database, else by a ``prepared`` line), each once."""
 
 
 def list_batches(paths: LocalPaths) -> list[str]:
@@ -2172,6 +2427,25 @@ class _StoreReader:
         except Exception:
             return None
         return stored_failure(events, app)
+
+    def final_step(self, application_id: str | None) -> tuple[bool, bool, bool] | None:
+        """Whether the application is stopped at its final review step now
+        (``current_outcome`` ``prepared``), whether it is approved, and whether its latest
+        ``preparation.ready`` noted a pending CAPTCHA; None without a readable store or
+        application."""
+        store = self._open() if application_id else None
+        if store is None or application_id is None:
+            return None
+        try:
+            app = store.get_application(application_id)
+            events = store.list_events(application_id)
+            approved = store.submission_approval(application_id) is not None
+        except Exception:
+            return None
+        if current_outcome(app, events) != "prepared":
+            return False, approved, False
+        ready = [e for e in events if e.event == PREPARED_EVENT]
+        return True, approved, bool(ready and ready[-1].metadata.get("captcha_pending"))
 
     def close(self) -> None:
         if self.store is not None:
@@ -2280,29 +2554,139 @@ def _readiness(rows: Sequence[LedgerEntry], runs: dict[str, list[float]],
     return table
 
 
+def _hold_count(entry: LedgerEntry) -> int:
+    return len(entry.missing_items) or len(entry.missing_labels)
+
+
+def _started(entries: Iterable[LedgerEntry]) -> datetime | None:
+    return min((e.started_at for e in entries), default=None)
+
+
+def _family_yield(root: str, members: Sequence[str],
+                  ledgers: Mapping[str, Sequence[LedgerEntry]],
+                  parent: Mapping[str, str | None]) -> BatchFamily:
+    """The "Yield over retries" rows of one family: its batches in the order they started
+    (the root first), each with where the family's listings stood once it finished."""
+    far = datetime.max.replace(tzinfo=UTC)
+    order = sorted(members, key=lambda b: (b != root, _started(ledgers[b]) or far, b))
+    newest: dict[str, LedgerEntry] = {}
+    launched: dict[str, LedgerEntry] = {}
+    costed: dict[str, LedgerEntry] = {}
+    runs: list[YieldRun] = []
+    before: float | None = None
+    for batch_id in order:
+        entries = sorted(ledgers[batch_id], key=lambda e: e.finished_at)
+        for entry in entries:
+            newest[entry.listing_id] = entry
+            if entry.outcome != "already_recorded":
+                launched[entry.listing_id] = entry
+            if entry.provider_cost_usd is not None:
+                costed[entry.listing_id] = entry
+        rows = [launched.get(listing, entry) for listing, entry in newest.items()]
+        outcomes = Counter(e.outcome for e in rows)
+        total = (round(sum(e.provider_cost_usd or 0.0 for e in costed.values()), 6)
+                 if costed else None)
+        runs.append(YieldRun(
+            batch_id=batch_id, retry_of=parent.get(batch_id), started_at=_started(entries),
+            finished_at=max((e.finished_at for e in entries), default=None),
+            ran=len({e.listing_id for e in entries if e.outcome != "already_recorded"}),
+            prepared=sum(1 for e in latest_entries(entries).values() if e.outcome == "prepared"),
+            prepared_total=outcomes["prepared"], held=outcomes["needs_input"],
+            failed=outcomes["failed_retryable"] + outcomes["error"],
+            holds_open=sum(_hold_count(e) for e in rows if e.outcome == "needs_input"),
+            cost_usd=None if total is None else round(total - (before or 0.0), 6),
+            cost_total_usd=total))
+        before = total
+    return BatchFamily(root=root, batches=order, listings=len(newest), runs=runs)
+
+
+def _families(ledgers: Mapping[str, Sequence[LedgerEntry]],
+              requested: Iterable[str]) -> list[BatchFamily]:
+    """The families among the batches read: a batch belongs to the batch its lines'
+    ``retry_of`` names, followed while that batch was read too. A family of one batch is
+    left out unless ``requested``."""
+    parent = {b: next((e.retry_of for e in entries if e.retry_of), None)
+              for b, entries in ledgers.items()}
+
+    def root_of(batch_id: str) -> str:
+        seen = {batch_id}
+        while (up := parent.get(batch_id)) is not None and up in ledgers and up not in seen:
+            seen.add(up)
+            batch_id = up
+        return batch_id
+
+    groups: dict[str, list[str]] = {}
+    for batch_id in ledgers:
+        groups.setdefault(root_of(batch_id), []).append(batch_id)
+    wanted = set(requested)
+    families = [_family_yield(root, members, ledgers, parent)
+                for root, members in groups.items() if len(members) > 1 or root in wanted]
+    far = datetime.max.replace(tzinfo=UTC)
+    families.sort(key=lambda f: ((f.runs[0].started_at or far) if f.runs else far, f.root))
+    return families
+
+
+def _ready_applications(rows: Iterable[LedgerEntry], stored: _StoreReader,
+                        cli: Sequence[str]) -> list[ReadyApplication]:
+    """The rows' applications at their final review step now, each once, with their
+    review, approve and submit lines (``ReadyApplication``). Without a state database, the
+    rows whose line says ``prepared``."""
+    ready: list[ReadyApplication] = []
+    seen: set[str] = set()
+    for entry in rows:
+        app_id = entry.application_id
+        if not app_id or app_id in seen:
+            continue
+        found = stored.final_step(app_id)
+        approved: bool | None = None
+        captcha = False
+        if found is None:
+            if entry.outcome != "prepared":
+                continue
+        else:
+            at_final, approved, captcha = found
+            if not at_final:
+                continue
+        seen.add(app_id)
+        ready.append(ReadyApplication(
+            application_id=app_id, listing_id=entry.listing_id, batch_id=entry.batch_id,
+            company=entry.company, title=entry.title, backend=entry.backend,
+            approved=approved, captcha_pending=captcha,
+            review=command_line(cli, "status", app_id),
+            approve=None if approved else command_line(cli, "approve", app_id),
+            submit=f"{ALLOW_SUBMISSION_ENV}=1 " + command_line(
+                cli, "submit", app_id, "--yes", *(["--act"] if captcha else []))))
+    return ready
+
+
 def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
                  top: int = 10, since: datetime | None = None,
-                 cli: Sequence[str] = (PROG,)) -> BatchReport:
-    """Read the named batch ledgers (default: every batch), keep those with a line
-    finished at or after ``since`` when it is given, and summarize them. ``cli`` is the
-    command prefix of the ``answer`` lines (``interviewmaxxing`` and any ``--home``).
-    Raises ``ValueError`` for a batch id that is not a plain name and
-    ``FileNotFoundError`` for a named batch without a ledger. Creates nothing and writes
-    no file; the existing application store is opened (as ``status`` does) only for
-    ledger lines older than ``missing_items`` or its field ids, and for the failures of
-    ``failed_retryable`` rows."""
+                 cli: Sequence[str] = (PROG,), families: Sequence[str] = ()) -> BatchReport:
+    """Read the named batch ledgers and the whole family (``BatchTree.family``) of each
+    batch in ``families`` (default, when neither is given: every batch), keep those with a
+    line finished at or after ``since`` when it is given, and summarize them. ``cli`` is
+    the command prefix of the ``answer``, ``approve`` and ``submit`` lines
+    (``interviewmaxxing`` and any ``--home``). Raises ``ValueError`` for a batch id that
+    is not a plain name and ``FileNotFoundError`` for a named batch without a ledger.
+    Creates nothing, writes no file and submits nothing; the existing application store
+    is opened (as ``status`` does) for ledger lines older than ``missing_items`` or its
+    field ids, the failures of ``failed_retryable`` rows, and which applications wait at
+    their final review step."""
     root = paths.home / "batches"
-    if batch_ids is None:
+    requested: list[str] = []
+    if batch_ids is None and not families:
         ids = list_batches(paths)
     else:
-        ids = sorted({_plain_batch_id(batch_id) for batch_id in batch_ids})
-        for batch_id in ids:
-            if not (root / batch_id / LEDGER_NAME).is_file():
-                raise FileNotFoundError(f"no ledger for batch {batch_id!r} under {root}")
+        named = require_ledgers(paths, batch_ids or ())
+        if families:
+            tree = BatchTree.read(paths)
+            requested = list(dict.fromkeys(tree.root(b) for b in require_ledgers(paths, families)))
+            named += [member for first in requested for member in tree.family(first)]
+        ids = sorted(set(named))
     read = {batch_id: read_ledger_lines(root / batch_id / LEDGER_NAME) for batch_id in ids}
     ledgers = {batch_id: entries for batch_id, (entries, _) in read.items()}
     if since is not None:
-        since = since if since.tzinfo is not None else since.replace(tzinfo=UTC)
+        since = _since_utc(since)
         ids = [b for b in ids if any(e.finished_at >= since for e in ledgers[b])]
     timeline = sorted(
         ((entry.finished_at.timestamp(), b, n, entry) for b, batch_id in enumerate(ids)
@@ -2355,6 +2739,7 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
                     app_ids[category][entry.application_id] = None
                 occurrences.append(item)
             failures += _failure_items(entry, stored)
+        ready = _ready_applications(rows, stored, cli)
     finally:
         stored.close()
     holds = [
@@ -2396,8 +2781,8 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
         provider_cost_rows=len(costed),
         cost_per_prepared_usd=(round(total_cost / prepared_rows, 6)
                                if total_cost is not None and prepared_rows else None),
-        batches=ids, batches_dir=str(root), since=since, rows=len(rows),
-        ledger_lines_ignored=sum(read[batch_id][1] for batch_id in ids),
+        batches=ids, batches_dir=str(root), since=since, requested_families=requested,
+        rows=len(rows), ledger_lines_ignored=sum(read[batch_id][1] for batch_id in ids),
         totals={k: totals[k] for k in OUTCOMES if totals[k]},
         by_backend={backend: {k: counts[k] for k in OUTCOMES if counts[k]}
                     for backend, counts in sorted(by_backend.items())},
@@ -2415,6 +2800,8 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
         questions=group_holds(occurrences, cli=cli),
         fill_failures=group_failures(failures),
         backends=_readiness(rows, runs, costed),
+        families=_families({b: ledgers[b] for b in ids}, requested),
+        ready=ready,
     )
 
 
@@ -2439,9 +2826,45 @@ def _readiness_lines(table: Sequence[BackendReadiness]) -> list[str]:
     return lines
 
 
+def _yield_lines(family: BatchFamily) -> list[str]:
+    lines = [f"### {family.root}: {family.listings} listing(s), {len(family.runs)} run(s)", "",
+             "| # | batch | finished (UTC) | ran | prepared | prepared total | held | failed | "
+             "holds open | cost USD |",
+             "| --- |" + " --- |" * 9]
+    for n, run in enumerate(family.runs, 1):
+        finished = (run.finished_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+                    if run.finished_at is not None else "-")
+        cost = "-" if run.cost_usd is None else f"{run.cost_usd:.4f}"
+        lines.append(f"| {n} | {_cell(run.batch_id)} | {finished} | {run.ran} | {run.prepared} | "
+                     f"{run.prepared_total} of {family.listings} | {run.held} | {run.failed} | "
+                     f"{run.holds_open} | {cost} |")
+    total = family.runs[-1].cost_total_usd if family.runs else None
+    if total is not None:
+        lines += ["", f"known provider cost over the family: USD {total:.4f}"]
+    return lines
+
+
+def _ready_lines(ready: Sequence[ReadyApplication]) -> list[str]:
+    approved = sum(1 for r in ready if r.approved)
+    lines = [f"{len(ready)} application(s) stopped at their final review step; nothing was "
+             "submitted" + (f"; {approved} already approved" if approved else "") + ". Review "
+             "each first (`interviewmaxxing status APP` and the evidence under "
+             "$IMX_HOME/artifacts/APP/), then approve it. `submit` needs "
+             "IMX_ALLOW_SUBMISSION=1 and --yes, submits exactly what you approved and refuses "
+             "an application you did not approve. This report runs none of these lines.", "",
+             "| application | job | backend | approve | submit |", "| --- | --- | --- | --- | --- |"]
+    for r in ready:
+        job = " — ".join(x for x in (r.company, r.title) if x) or r.listing_id
+        approve = "approved" if r.approve is None else f"`{r.approve}`"
+        lines.append(f"| {r.application_id} | {_cell(job)} | {_cell(r.backend or '-')} | "
+                     f"{_cell(approve)} | `{_cell(r.submit)}` |")
+    return lines
+
+
 def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
     """The report as Markdown: no CLI messages, wording truncated to 80 characters, at
-    most ``top`` question and failure groups (the JSON has them all)."""
+    most ``top`` question and failure groups (the JSON has them all), every application
+    at its final review step."""
     lines = ["# Batch report", ""]
     if not report.batches:
         where = f"No batch ledgers under {report.batches_dir}"
@@ -2454,6 +2877,8 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
     lines += [
         f"- batches: {', '.join(report.batches)} (in {report.batches_dir})",
         *([f"- since: {_iso(report.since)}"] if report.since is not None else []),
+        *([f"- families: {', '.join(report.requested_families)} (each with every retry)"]
+          if report.requested_families else []),
         f"- rows: {report.rows} (each listing once: its latest launched outcome, else "
         "already_recorded)",
         *([f"- unreadable ledger lines ignored: {report.ledger_lines_ignored}"]
@@ -2492,6 +2917,13 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
             lines += ["", "the site resumed a draft it kept (submit each in the browser yourself; "
                           "preparing it again reopens the same draft): "
                       + ", ".join(submissions.kept_drafts)]
+    if report.families:
+        lines += ["", "## Yield over retries", "",
+                  "Each run is one batch of the family; its counts are where the family's "
+                  "listings stood once it finished (each at its latest line). Cost is the run's "
+                  "own known provider cost."]
+        for family in report.families:
+            lines += ["", *_yield_lines(family)]
     if report.by_backend:
         columns = [k for k in OUTCOMES if any(k in c for c in report.by_backend.values())]
         lines += ["", "## By backend", "", "| backend | " + " | ".join(columns) + " |",
@@ -2542,11 +2974,14 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
         if pipeline.problems:
             lines.append("- problems: " + ", ".join(f"{p.label} ({p.count})"
                                                     for p in pipeline.problems))
+    if report.ready:
+        lines += ["", "## At the final review step", "", *_ready_lines(report.ready)]
     return "\n".join(lines) + "\n"
 
 
 __all__ = [
     "BROWSER_ONLY_SKIP",
+    "HELD_OR_PREPARED",
     "HOLD_CATEGORIES",
     "OUTCOMES",
     "PREPARED_PREFIX",
@@ -2555,16 +2990,20 @@ __all__ = [
     "SUBMISSION_OUTCOMES",
     "BackendDurations",
     "BackendReadiness",
+    "BatchFamily",
     "BatchOptions",
     "BatchOutcome",
     "BatchReport",
     "BatchRow",
     "BatchRunOptions",
     "BatchSummary",
+    "BatchTree",
+    "Exclusion",
     "HoldCategory",
     "LedgerEntry",
     "MissingItem",
     "PipelineCounts",
+    "ReadyApplication",
     "RetryStats",
     "StateReader",
     "SubmissionEntry",
@@ -2574,12 +3013,17 @@ __all__ = [
     "SubmissionSummary",
     "SubmissionTarget",
     "SubmitBatchOptions",
+    "YieldRun",
     "append_ledger",
     "approved_targets",
+    "batch_ledger",
+    "batch_retry_of",
+    "batches_since",
     "build_report",
     "categorize_hold",
     "classify",
     "classify_submission",
+    "counted",
     "default_batch_dir",
     "default_batch_id",
     "default_command",
@@ -2590,6 +3034,7 @@ __all__ = [
     "list_batches",
     "load_inventory",
     "plan",
+    "prepared_or_held",
     "private_dirs",
     "read_inventory",
     "read_ledger",
@@ -2601,6 +3046,7 @@ __all__ = [
     "render_retry_markdown",
     "render_submissions_markdown",
     "render_summary_markdown",
+    "require_ledgers",
     "retry_stats",
     "run_batch",
     "run_submissions",

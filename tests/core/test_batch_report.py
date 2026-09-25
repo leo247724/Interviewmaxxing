@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -587,7 +588,7 @@ def test_list_batches_and_empty_reports_create_nothing(tmp_path):
         "provider_cost_usd": None, "provider_calls": 0, "provider_cost_rows": 0,
         "cost_per_prepared_usd": None, "since": None, "questions": [], "fill_failures": [],
         "backends": [], "ledger_lines_ignored": 0,
-        "submissions": None,
+        "submissions": None, "requested_families": [], "families": [], "ready": [],
     }
     assert f"No batch ledgers under {batches_dir}." in text
 
@@ -1103,3 +1104,193 @@ def test_report_json_schema(paths, capsys):
     for name, keys in (("HoldGroup", QUESTION_KEYS), ("FailureGroup", FAILURE_KEYS),
                        ("BackendReadiness", BACKEND_KEYS)):
         assert set(definitions[name]["properties"]) == keys, name
+
+
+# --- round 4: yield over retries, applications at their final review step -----------------------
+
+
+def write_family(paths: LocalPaths) -> None:
+    """pilot (four listings) and two retries of it, with cumulative provider costs, plus an
+    unrelated batch."""
+    def line(batch_id: str, listing: str, outcome: str, minute: float, cost: float, *,
+             holds: int = 0, retry_of: str | None = None) -> LedgerEntry:
+        return entry(batch_id, listing, outcome, minute=minute, duration=30.0, app=f"app_{listing}",
+                     items=[item(f"Fictional question {n} of {listing}?") for n in range(holds)],
+                     provider_cost_usd=cost, provider_calls=3, retry_of=retry_of)
+
+    write(paths,
+          line("pilot", "l1", "prepared", 1, 1.0),
+          line("pilot", "l2", "needs_input", 2, 0.5, holds=2),
+          line("pilot", "l3", "failed_retryable", 3, 0.2),
+          line("pilot", "l4", "needs_input", 4, 0.3, holds=1))
+    write(paths,
+          line("pilot-r1", "l2", "prepared", 600, 0.9, retry_of="pilot"),
+          line("pilot-r1", "l3", "needs_input", 601, 0.4, holds=1, retry_of="pilot"),
+          line("pilot-r1", "l4", "needs_input", 602, 0.5, holds=1, retry_of="pilot"))
+    write(paths,
+          line("pilot-r2", "l3", "prepared", 1200, 0.6, retry_of="pilot"),
+          line("pilot-r2", "l4", "needs_input", 1201, 0.7, holds=1, retry_of="pilot"))
+    write(paths, line("other", "o1", "needs_input", 5, 0.1, holds=1))
+
+
+def test_yield_over_retries_of_a_batch_family(paths, capsys):
+    write_family(paths)
+    report = build_report(paths, families=["pilot-r2"])  # any member names the family
+    assert report.batches == ["pilot", "pilot-r1", "pilot-r2"]
+    assert report.requested_families == ["pilot"]
+    [family] = report.families
+    assert (family.root, family.batches, family.listings) == (
+        "pilot", ["pilot", "pilot-r1", "pilot-r2"], 4)
+    runs = [(r.batch_id, r.retry_of, r.ran, r.prepared, r.prepared_total, r.held, r.failed,
+             r.holds_open, r.cost_usd, r.cost_total_usd) for r in family.runs]
+    assert runs == [
+        ("pilot", None, 4, 1, 1, 2, 1, 3, 2.0, 2.0),
+        ("pilot-r1", "pilot", 3, 1, 2, 2, 0, 2, 0.8, 2.8),
+        ("pilot-r2", "pilot", 2, 1, 3, 1, 0, 1, 0.4, 3.2)]
+    assert family.runs[0].finished_at == T0 + timedelta(minutes=4)
+    assert family.runs[1].started_at == T0 + timedelta(minutes=600, seconds=-30)
+    assert report.totals == {"prepared": 3, "needs_input": 1}  # the family's rows now
+
+    text = render_report_markdown(report)
+    assert "- families: pilot (each with every retry)" in text
+    assert "## Yield over retries" in text and "### pilot: 4 listing(s), 3 run(s)" in text
+    assert ("| # | batch | finished (UTC) | ran | prepared | prepared total | held | failed | "
+            "holds open | cost USD |") in text
+    assert "| 1 | pilot | 2026-09-23 02:04 | 4 | 1 | 1 of 4 | 2 | 1 | 3 | 2.0000 |" in text
+    assert "| 2 | pilot-r1 | 2026-09-23 12:02 | 3 | 1 | 2 of 4 | 2 | 0 | 2 | 0.8000 |" in text
+    assert "| 3 | pilot-r2 | 2026-09-23 22:01 | 2 | 1 | 3 of 4 | 1 | 0 | 1 | 0.4000 |" in text
+    assert "known provider cost over the family: USD 3.2000" in text
+
+    # Every batch: the family gets its table; a batch without retries does not.
+    everything = build_report(paths)
+    assert [f.root for f in everything.families] == ["pilot"] and everything.rows == 5
+    assert build_report(paths, ["other"]).families == []
+    [alone] = build_report(paths, ["other"], families=["other"]).families
+    assert (alone.root, [r.batch_id for r in alone.runs], alone.listings) == ("other", ["other"], 1)
+    # Retries read without the batch they retried have no family table: its first run and
+    # its listings are missing.
+    assert build_report(paths, ["pilot-r1", "pilot-r2"]).families == []
+
+    home = str(paths.home)
+    assert main(["--home", home, "batch-report", "--family", "pilot", "--json"]) == EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    assert set(data["families"][0]) == {"root", "batches", "listings", "runs"}
+    assert data["families"][0]["runs"][2]["prepared_total"] == 3
+    assert main(["--home", home, "batch-report", "other", "--family", "pilot", "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["batches"] == ["other", "pilot", "pilot-r1",
+                                                              "pilot-r2"]
+    assert main(["--home", home, "batch-report", "--family", "nope"]) == EXIT_ERROR
+    assert "no ledger for batch 'nope'" in capsys.readouterr().err
+    assert main(["--home", home, "batch-report", "--family", "pilot", "--since",
+                 "2026-09-23"]) == EXIT_USAGE
+    assert "not both" in capsys.readouterr().err
+
+
+def _prepared(store: ApplicationStore, name: str, *, captcha: bool = False) -> tuple[str, str]:
+    """An application a prepare-only run stopped at its final review step."""
+    from interviewmaxxing_core import (
+        AnswerSource,
+        ApplicationField,
+        ApplicationForm,
+        PacketAnswer,
+        Provenance,
+        SemanticType,
+        TextValue,
+    )
+
+    url = f"{ORIGIN}/{name}"
+    form = ApplicationForm(url=url, step=0, is_final_step=True, submit_selector="#submit", fields=[
+        ApplicationField(id="first_name", label="First name", selector="#first_name",
+                         semantic_type=SemanticType.FIRST_NAME, control_type=ControlType.TEXT,
+                         required=True)])
+    app = store.record_request("default", url).application
+    claim = store.claim(app.id, "runner")
+    store.require_preparation_only(claim)
+    store.transition(claim, S.INSPECTING)
+    packet = ApplicationPacket(
+        application_id=app.id, job_id=app.job_id, candidate_id=app.candidate_id, form_url=url,
+        form_step=0, form_fingerprint=form.fingerprint,
+        answers=[PacketAnswer(field_id="first_name", semantic_type=SemanticType.FIRST_NAME,
+                              value=TextValue(text="Avery"),
+                              provenance=Provenance(source=AnswerSource.PROFILE_IDENTITY))])
+    store.save_packet(claim, packet)
+    store.transition(claim, S.PACKET_READY)
+    store.transition(claim, S.FILLING)
+    store.append_event(claim, "preparation.ready", {
+        "form_url": url, "form_step": 0, "form_fingerprint": form.fingerprint,
+        "packet_id": packet.id, "submitted": False, "captcha_pending": captcha})
+    store.transition(claim, S.INSPECTING)
+    store.transition(claim, S.NEEDS_INPUT, metadata={"missing_inputs": [], "reason": "prepared"})
+    store.release(claim)
+    return app.id, packet.id
+
+
+def test_applications_at_their_final_review_step_with_their_approve_and_submit_lines(paths, capsys):
+    paths.ensure()
+    with ApplicationStore.open(paths.state_db) as store:
+        ready, _ = _prepared(store, "ready")
+        approved, packet = _prepared(store, "approved")
+        claim = store.claim(approved, "cli:approve")
+        store.approve_submission(claim, packet_id=packet, approver="cli:test")
+        store.release(claim)
+        captcha, _ = _prepared(store, "captcha", captcha=True)
+        moved_on, _ = _prepared(store, "moved-on")  # resumed since and held on a new question
+        claim = store.claim(moved_on, "runner")
+        store.transition(claim, S.INSPECTING)
+        store.transition(claim, S.NEEDS_INPUT, metadata={"reason": "x", "missing_inputs": [
+            MissingInput(field_id="q", form_url=f"{ORIGIN}/moved-on", form_step=0,
+                         field_fingerprint="ab" * 32, label=SPONSOR,
+                         reason=MissingReason.NO_ANSWER, prompt="Please answer.").model_dump(
+                             mode="json")]})
+        store.release(claim)
+        caught_up, _ = _prepared(store, "caught-up")  # held in the batch, prepared by hand since
+    write(paths,
+          entry("b", "ready", "prepared", minute=1, app=ready),
+          entry("b", "approved", "prepared", minute=2, app=approved, backend="lever"),
+          entry("b", "captcha", "prepared", minute=3, app=captcha),
+          entry("b", "moved-on", "prepared", minute=4, app=moved_on),
+          entry("b", "caught-up", "needs_input", minute=5, app=caught_up, items=[item(SPONSOR)]),
+          entry("b", "alias", "already_recorded", minute=6, app=ready),  # the same application
+          entry("b", "never", "error", minute=7))
+    home = str(paths.home)
+    quoted = shlex.quote(home)
+    cli = ("interviewmaxxing", "--home", home)
+    report = build_report(paths, cli=cli)
+    assert [(r.application_id, r.listing_id, r.approved, r.captcha_pending) for r in report.ready] \
+        == [(ready, "ready", False, False), (approved, "approved", True, False),
+            (captcha, "captcha", False, True), (caught_up, "caught-up", False, False)]
+    first = report.ready[0]
+    assert (first.batch_id, first.company, first.title, first.backend) == (
+        "b", "Brambleway", "Fictional role", "greenhouse")
+    assert first.review == f"interviewmaxxing --home {quoted} status {ready}"
+    assert first.approve == f"interviewmaxxing --home {quoted} approve {ready}"
+    assert first.submit == f"IMX_ALLOW_SUBMISSION=1 interviewmaxxing --home {quoted} submit {ready} --yes"
+    assert report.ready[1].approve is None  # already approved: only the submit line
+    assert report.ready[2].submit.endswith(f"submit {captcha} --yes --act")
+
+    assert main(["--home", home, "batch-report", "b"]) == EXIT_OK
+    text = capsys.readouterr().out
+    section = text[text.index("## At the final review step"):]
+    assert section.startswith("## At the final review step\n\n4 application(s) stopped at their "
+                              "final review step; nothing was submitted; 1 already approved.")
+    assert "This report runs none of these lines." in section
+    assert (f"| {ready} | Brambleway — Fictional role | greenhouse | "
+            f"`interviewmaxxing --home {quoted} approve {ready}` | "
+            f"`IMX_ALLOW_SUBMISSION=1 interviewmaxxing --home {quoted} submit {ready} --yes` |") \
+        in section
+    assert f"| {approved} | Brambleway — Fictional role | lever | approved | " in section
+    assert moved_on not in section and SECRET not in text
+    # The report only printed the lines: nothing was submitted or changed.
+    with ApplicationStore.open(paths.state_db) as store:
+        for app_id in (ready, approved, captcha, moved_on, caught_up):
+            assert store.get_application(app_id).state is S.NEEDS_INPUT
+            assert store.list_attempts(app_id) == []
+        assert store.submission_approval(approved) is not None
+        assert store.submission_approval(ready) is None
+
+    # Without a state database the ledger's prepared rows are listed, approval unknown.
+    paths.state_db.unlink()
+    listed = build_report(paths).ready
+    assert [(r.listing_id, r.approved) for r in listed] == [
+        ("ready", None), ("approved", None), ("captcha", None), ("moved-on", None)]
+    assert listed[0].approve == f"interviewmaxxing approve {ready}"

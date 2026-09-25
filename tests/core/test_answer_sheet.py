@@ -8,22 +8,25 @@ from __future__ import annotations
 import json
 import shutil
 import stat
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from interviewmaxxing_candidate import LocalCandidateStore
-from interviewmaxxing_cli.batch import summarize, write_summary
+from interviewmaxxing_cli.batch import LedgerEntry, append_ledger, summarize, write_summary
 from interviewmaxxing_cli.main import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
+from interviewmaxxing_cli.retry import batch_applications
 from interviewmaxxing_cli.sheet import (
     AnswerSheet,
+    SheetEntryResult,
     SheetResult,
     apply_sheet,
     build_sheet,
     newest_batch_id,
     read_sheet,
+    retry_batch_ids,
     write_sheet,
 )
 from interviewmaxxing_cli.triage import build_holds
@@ -205,10 +208,12 @@ def test_sheet_lists_each_open_question_once_with_its_field_on_every_application
     assert restaurant_entry["fields"] == {a: "restaurant"} and restaurant_entry["options"] == []
     assert data["actions"] == [
         {"question": "Sign in", "reason": "USER_ACTION", "control_type": None, "applications": 1,
-         "application_ids": [c], "resume": [f"interviewmaxxing --home '{home}' resume {c} --act"]},
+         "fields": {c: None}, "application_ids": [c],
+         "resume": [f"interviewmaxxing --home '{home}' resume {c} --act"]},
         {"question": "Upload your CV", "reason": "NO_ANSWER", "control_type": "FILE",
-         "applications": 1, "application_ids": [c],
+         "applications": 1, "fields": {c: "cv"}, "application_ids": [c],
          "resume": [f"interviewmaxxing --home '{home}' resume {c} --act"]}]
+    assert (data["batches"], data["since"]) == ([], None)
 
     # An existing sheet is kept (it may hold typed answers) unless --force.
     assert main(["--home", home, "holds", "--sheet", str(path)]) == EXIT_USAGE
@@ -366,8 +371,15 @@ def test_answer_sheet_applies_every_filled_entry_through_the_answer_path(paths, 
     lines = out.splitlines()
     assert lines[0] == (f"answer sheet {path}: 6 of 6 entries answered; saved 8 answer(s) "
                         "for 3 application(s)")
-    assert lines[1] == "not applied (invalid, 1 application(s)): " + FAMILIAR
-    assert lines[2] == f"next: interviewmaxxing --home '{home}' prepare-batch --retry big1"
+    # One line per answered entry, in sheet order: received, options changed, the rest.
+    assert sorted(lines[1:7]) == sorted([
+        "- 2 of 2 application(s) received it; options changed on 0: " + SPONSOR,
+        "- 2 of 2 application(s) received it; options changed on 0: " + AI_TOOLS,
+        "- 1 of 1 application(s) received it; options changed on 0: " + RESTAURANT,
+        "- 2 of 2 application(s) received it; options changed on 0: " + " ".join(TOOLS.split()),
+        "- 1 of 1 application(s) received it; options changed on 0: " + NON_COMPETE,
+        "- 0 of 1 application(s) received it; options changed on 0; invalid on 1: " + FAMILIAR])
+    assert lines[7] == f"next: interviewmaxxing --home '{home}' prepare-batch --retry big1"
     assert PRIVATE not in out + err and "Extremely" not in out + err and "no_sponsorship" not in out
 
     saved_a, saved_b, saved_c = user_inputs(paths, a), user_inputs(paths, b), user_inputs(paths, c)
@@ -494,3 +506,247 @@ def test_answer_sheet_usage_errors_never_quote_the_sheet(paths, tmp_path, capsys
                                 "generated_at": "2026-09-25T00:00:00Z", "questions": []}))
     assert main(["--home", home, "answer", "--sheet", str(path)]) == EXIT_ERROR
     assert "No state database" in capsys.readouterr().err
+
+
+# --- round 4: a sheet for some batches, actions keyed by application, per-entry counts -----------
+
+
+def ledger_line(batch_id: str, name: str, outcome: str, app_id: str | None, *, minute: int = 0,
+                day: int = 24, retry_of: str | None = None) -> LedgerEntry:
+    finished = datetime(2026, 9, day, 9, 0, tzinfo=UTC) + timedelta(minutes=minute)
+    return LedgerEntry(batch_id=batch_id, listing_id=f"lst_{name}",
+                       application_url=f"{ORIGIN}/{name}", backend="greenhouse", attempt=1,
+                       application_id=app_id, outcome=outcome, retry_of=retry_of,
+                       started_at=finished, finished_at=finished, duration_s=1.0)
+
+
+def write_ledger(paths: LocalPaths, *entries: LedgerEntry) -> None:
+    for entry in entries:
+        append_ledger(paths.home / "batches" / entry.batch_id / "ledger.jsonl", entry)
+
+
+def test_sheet_and_holds_cover_only_what_the_named_batches_hold_or_failed(paths, capsys):
+    url = ORIGIN + "/{}"
+    a = application(paths, "a", [sponsor(url.format("a")), sign_in()])
+    b = application(paths, "b", [ai_tools(url.format("b"))], ats="lever")
+    c = application(paths, "c", [sponsor(url.format("c"))])
+    d = application(paths, "d", [sponsor(url.format("d")),
+                                 question(url.format("d"), "restaurant", RESTAURANT)])
+    e = application(paths, "e", [question(url.format("e"), "cv", "Upload your CV",
+                                          control=ControlType.FILE)])
+    theirs = application(paths, "f", [sponsor(url.format("f"))], candidate="someone")
+    write_ledger(
+        paths,
+        ledger_line("pilot", "a", "needs_input", a),
+        ledger_line("pilot", "b", "failed_retryable", b),  # failed there, held since
+        ledger_line("pilot", "c", "prepared", c),  # prepared there: a retry never runs it
+        ledger_line("pilot", "e", "error", None),  # timed out; the store has it by URL
+        ledger_line("pilot", "f", "needs_input", theirs),  # another candidate's
+        ledger_line("other", "d", "needs_input", d, day=25))
+    assert batch_applications(paths, ["pilot"], candidate_id="default") == {a, b, e}
+    home = str(paths.home)
+    path = paths.home / "pilot-sheet.json"
+
+    assert main(["--home", home, "holds", "--sheet", str(path), "--batch-id", "pilot"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("wrote 2 question(s) (0 with an unconfirmed proposal) and 2 browser "
+                          "action(s) for 3 held application(s) of pilot to ")
+    sheet = read_sheet(path)
+    assert (sheet.batches, sheet.since, sheet.held, sheet.open_holds) == (["pilot"], None, 3, 4)
+    assert [(q.question, q.fields) for q in sheet.questions] == [
+        (SPONSOR, {a: "sponsorship"}), (AI_TOOLS, {b: "ai_tools"})]
+    # Browser actions carry their applications in ``fields`` like the questions, so a filter
+    # by application (the batch's, or any other) keeps them.
+    assert [(x.question, x.fields, x.application_ids) for x in sheet.actions] == [
+        ("Sign in", {a: None}, [a]), ("Upload your CV", {e: "cv"}, [e])]
+    keep = {b, e}
+    data = json.loads(path.read_text())
+    kept = [x["question"] for kind in ("questions", "actions") for x in data[kind]
+            if set(x["fields"]) & keep]
+    assert kept == [AI_TOOLS, "Upload your CV"]
+
+    # ``holds`` without --sheet groups the same applications; the store is only read.
+    assert main(["--home", home, "holds", "--batch-id", "pilot", "--json"]) == EXIT_OK
+    report = json.loads(capsys.readouterr().out)
+    assert (report["batches"], report["held"], report["open_holds"]) == (["pilot"], 3, 4)
+    assert {q["question"]: q["application_ids"] for q in report["questions"]} == {
+        SPONSOR: [a], AI_TOOLS: [b], "Sign in": [a], "Upload your CV": [e]}
+    assert main(["--home", home, "holds", "--batch-id", "pilot", "--batch-id", "other"]) == EXIT_OK
+    text = capsys.readouterr().out
+    assert "- only the applications held or failed in: pilot, other" in text
+    assert "held applications: 4, with 6 open hold(s)" in text
+
+    # --since: the batches with a line finished at or after the date.
+    since = paths.home / "since-sheet.json"
+    assert main(["--home", home, "holds", "--sheet", str(since), "--since", "2026-09-25"]) == EXIT_OK
+    assert "for 1 held application(s) of other to" in capsys.readouterr().out
+    later = read_sheet(since)
+    assert later.batches == ["other"] and later.since == datetime(2026, 9, 25, tzinfo=UTC)
+    assert [(q.question, q.fields) for q in later.questions] == [
+        (SPONSOR, {d: "sponsorship"}), (RESTAURANT, {d: "restaurant"})]
+    assert main(["--home", home, "holds", "--since", "2031-01-01", "--json"]) == EXIT_OK
+    none = json.loads(capsys.readouterr().out)
+    assert (none["batches"], none["held"], none["questions"]) == ([], 0, [])
+
+    # Without a filter every held application of the candidate is listed, as before.
+    whole = build_sheet(paths, "default")
+    assert whole.batches == [] and whole.held == 5
+    # Errors: a batch without a ledger, an id that is not a plain name, both filters.
+    assert main(["--home", home, "holds", "--batch-id", "nope"]) == EXIT_ERROR
+    assert "no ledger for batch 'nope'" in capsys.readouterr().err
+    assert main(["--home", home, "holds", "--batch-id", "../x"]) == EXIT_USAGE
+    capsys.readouterr()
+    assert main(["--home", home, "holds", "--batch-id", "pilot", "--since", "2026-09-24"]) \
+        == EXIT_USAGE
+    assert "not both" in capsys.readouterr().err
+
+
+def restop(paths: LocalPaths, app_id: str, missing: list[MissingInput]) -> None:
+    """A run of ``app_id`` since the sheet was written stopped it again on ``missing``."""
+    with ApplicationStore.open(paths.state_db) as store:
+        claim = store.claim(app_id, "test")
+        store.transition(claim, S.INSPECTING)
+        store.transition(claim, S.NEEDS_INPUT, metadata={"reason": "x", "missing_inputs": [
+            m.model_dump(mode="json") for m in missing]})
+        store.release(claim)
+
+
+def test_answer_sheet_skips_applications_whose_options_changed_since_it_was_written(paths, capsys):
+    write_profile(paths)
+    path, apps = _filled(paths)
+    a, c = apps["a"], apps["c"]
+    data = json.loads(path.read_text())
+    for entry in data["questions"]:
+        if entry["question"] == FAMILIAR:
+            entry["answer"] = "Very familiar"
+    path.write_text(json.dumps(data))
+    # A retry stopped c again: the familiarity options only changed order (still the same
+    # choice), the tools question gained an option (the answer was chosen without it).
+    url = f"{ORIGIN}/c"
+    restop(paths, c, [
+        question(url, "fam", FAMILIAR, control=ControlType.SELECT,
+                 options=list(reversed(FAMILIAR_OPTIONS))),
+        question(url, "tools", TOOLS, control=ControlType.MULTISELECT,
+                 options=[*TOOL_OPTIONS, FieldOption(value="t4", label="Queries")])])
+
+    assert main(["--home", str(paths.home), "answer", "--sheet", str(path)]) == EXIT_OK
+    lines = capsys.readouterr().out.splitlines()
+    tools = " ".join(TOOLS.split())
+    assert f"- 1 of 2 application(s) received it; options changed on 1: {tools}" in lines
+    assert f"- 1 of 1 application(s) received it; options changed on 0: {FAMILIAR}" in lines
+    saved_c = user_inputs(paths, c)
+    assert "tools" not in saved_c and saved_c["fam"].value == ChoiceValue(value="f2",
+                                                                          label="Very familiar")
+    assert "tools" in user_inputs(paths, a)
+
+    result = apply_sheet(paths, read_sheet(path), owner="test")  # again: nothing new
+    [entry] = [e for e in result.per_entry if e.question == TOOLS]
+    assert entry == SheetEntryResult(question=TOOLS, applications=2, applied=0,
+                                     options_changed=1, skipped={"already answered": 1})
+    assert result.skipped["options changed"] == 1
+    assert {(f.question, f.kind) for f in result.failures} == {(TOOLS, "options changed")}
+
+
+def test_options_changed_compares_labels_and_ignores_lookup_suggestions():
+    from interviewmaxxing_cli.sheet import SheetOption, options_changed
+
+    shown = [SheetOption(value="f0", label="Not at all"), SheetOption(value="f1", label="Very")]
+    url = f"{ORIGIN}/a"
+
+    def select(*options: FieldOption, control: ControlType = ControlType.SELECT) -> MissingInput:
+        return question(url, "fam", FAMILIAR, control=control, options=list(options))
+
+    same = select(FieldOption(value="x1", label=" VERY "), FieldOption(value="x0", label="not at all"),
+                  FieldOption(value="", label="Select..."))  # order, values, case, placeholder
+    assert not options_changed(shown, same)
+    assert options_changed(shown, select(FieldOption(value="f1", label="Very")))  # one gone
+    assert options_changed(shown, select(*FAMILIAR_OPTIONS))  # relabelled
+    assert options_changed([], select(FieldOption(value="f1", label="Very")))  # text -> choice
+    # A lookup's options are the suggestions for what was typed: never "changed".
+    assert not options_changed(shown, select(FieldOption(value="Denver", label="Denver, CO"),
+                                             control=ControlType.TYPEAHEAD))
+
+
+def test_answer_sheet_skips_a_field_that_now_asks_another_question(paths):
+    write_profile(paths)
+    path, apps = _filled(paths)
+    data = json.loads(path.read_text())
+    for item in data["questions"]:
+        if item["question"] == FAMILIAR:
+            item["answer"] = "Very familiar"  # one of the options, under either wording
+    path.write_text(json.dumps(data))
+    # The same field id asks something else after a new run: the sheet's answer is not for it.
+    restop(paths, apps["c"], [question(f"{ORIGIN}/c", "fam", "How did you hear about us?",
+                                       control=ControlType.SELECT, options=FAMILIAR_OPTIONS)])
+    [entry] = [e for e in apply_sheet(paths, read_sheet(path), owner="test").per_entry
+               if e.question == FAMILIAR]
+    assert (entry.applications, entry.applied, entry.options_changed, entry.skipped) == \
+        (1, 0, 0, {"not open": 1})
+    assert "fam" not in user_inputs(paths, apps["c"])
+
+
+def test_answer_sheet_dry_run_checks_and_saves_nothing(paths, capsys):
+    candidates = write_profile(paths)
+    path, apps = _filled(paths)
+    answers = candidates.answers_path("default")
+    before = answers.read_bytes() if answers.exists() else None
+    with ApplicationStore.open(paths.state_db) as store:
+        events = {app_id: len(store.list_events(app_id)) for app_id in apps.values()}
+        busy = store.claim(apps["b"], "another-run")  # a run holds b
+    home = str(paths.home)
+
+    assert main(["--home", home, "answer", "--sheet", str(path), "--dry-run"]) == EXIT_OK
+    out, err = capsys.readouterr()
+    lines = out.splitlines()
+    assert lines[0] == (f"answer sheet {path} (dry run, nothing saved): 6 of 6 entries answered; "
+                        "would save 6 answer(s) for 2 application(s)")
+    assert f"- 1 of 2 application(s) would receive it; options changed on 0; busy on 1: {SPONSOR}" \
+        in lines
+    assert f"- 0 of 1 application(s) would receive it; options changed on 0; invalid on 1: " \
+           f"{FAMILIAR}" in lines
+    assert lines[-1] == f"next: interviewmaxxing --home '{home}' answer --sheet '{path}'   (saves them)"
+    assert PRIVATE not in out + err and "no_sponsorship" not in out
+    # Nothing was written: no user input, no saved answer, no event, the claim untouched.
+    assert all(user_inputs(paths, app_id) == {} for app_id in apps.values())
+    assert (answers.read_bytes() if answers.exists() else None) == before
+    with ApplicationStore.open(paths.state_db) as store:
+        assert {app_id: len(store.list_events(app_id)) for app_id in apps.values()} == events
+        assert store.get_application(apps["b"]).claim_owner == "another-run"
+        store.release(busy)
+
+    # Once the other run is done, the dry run and the real run agree.
+    dry = apply_sheet(paths, read_sheet(path), owner="test", dry_run=True)
+    real = apply_sheet(paths, read_sheet(path), owner="test")
+    assert dry.dry_run and not real.dry_run
+    assert (dry.applied, dry.applications, dry.skipped) == (real.applied, real.applications,
+                                                           real.skipped) == (8, 3, {"invalid": 1})
+    assert dry.per_entry == real.per_entry
+    assert main(["--home", home, "answer", "app_x", "--dry-run", "--set", "a=b"]) == EXIT_USAGE
+    assert "--dry-run applies to --sheet" in capsys.readouterr().err
+
+
+def test_answer_sheet_retries_the_first_batch_of_the_batches_it_covers(paths, capsys):
+    write_profile(paths)
+    path, _ = _filled(paths)
+    home = str(paths.home)
+    batch(paths, "pilot", mtime=1_000_000)
+    batch(paths, "pilot-r1", retry_of="pilot", mtime=2_000_000)
+    batch(paths, "pilot-r2", retry_of="pilot-r1", mtime=3_000_000)  # a retry of a retry
+    batch(paths, "other", mtime=4_000_000)
+    assert newest_batch_id(paths) == "other"
+    data = json.loads(path.read_text())
+    data["batches"] = ["pilot-r2", "other", "pilot"]
+    path.write_text(json.dumps(data))
+    assert retry_batch_ids(paths, read_sheet(path)) == ["pilot", "other"]
+    assert main(["--home", home, "answer", "--sheet", str(path)]) == EXIT_OK
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        f"next: interviewmaxxing --home '{home}' prepare-batch --retry pilot",
+        f"next: interviewmaxxing --home '{home}' prepare-batch --retry other"]
+    assert main(["--home", home, "answer", "--sheet", str(path), "--batch-id", "pilot-r1"]) == EXIT_OK
+    assert capsys.readouterr().out.splitlines()[-1] == \
+        f"next: interviewmaxxing --home '{home}' prepare-batch --retry pilot-r1"
+    data["batches"] = ["gone"]  # batches deleted since: the newest batch's family
+    path.write_text(json.dumps(data))
+    assert retry_batch_ids(paths, read_sheet(path)) == ["other"]
+    batch(paths, "other-r1", retry_of="other", mtime=5_000_000)
+    assert newest_batch_id(paths) == "other"

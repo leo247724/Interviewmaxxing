@@ -34,7 +34,7 @@ from interviewmaxxing_cli.batch import (
     run_batch,
     summarize,
 )
-from interviewmaxxing_cli.main import EXIT_OK, EXIT_USAGE, build_parser, main
+from interviewmaxxing_cli.main import EXIT_ERROR, EXIT_OK, EXIT_USAGE, build_parser, main
 from interviewmaxxing_core import (
     Application,
     ApplicationState,
@@ -1499,3 +1499,123 @@ def test_batch_ledger_lines_carry_the_applications_provider_cost(cost_fake, path
     assert (report.provider_cost_usd, report.provider_calls, report.provider_cost_rows) == \
         (0.0363, 6, 2)
     assert report.cost_per_prepared_usd == 0.0121
+
+
+# --- round 4: batch families and --exclude-batches -----------------------------------------------
+
+
+def _pilot_line(batch_id: str, listing: str, kind: str, outcome: str, *, app: str | None = None,
+                retry_of: str | None = None, day: int = 24,
+                state: S | None = None) -> LedgerEntry:
+    finished = datetime(2026, 9, day, 9, 0, tzinfo=UTC)
+    return LedgerEntry(batch_id=batch_id, listing_id=listing,
+                       application_url=f"{ORIGIN}/{listing}/{kind}", backend="mock", attempt=1,
+                       application_id=app, outcome=outcome, retry_of=retry_of, state=state,
+                       started_at=finished, finished_at=finished, duration_s=1.0)
+
+
+def _write_pilot(paths: LocalPaths) -> None:
+    """A pilot batch and a retry of it (ledgers only), and an unrelated batch."""
+    from interviewmaxxing_cli.batch import append_ledger
+
+    def write(*lines: LedgerEntry) -> None:
+        for line in lines:
+            append_ledger(paths.home / "batches" / line.batch_id / "ledger.jsonl", line)
+
+    write(_pilot_line("pilot", "lst_a", "prepared", "prepared", app="app_a"),
+          _pilot_line("pilot", "lst_b", "needs", "needs_input", app="app_b"),
+          _pilot_line("pilot", "lst_c", "prepared", "failed_retryable", app="app_c"),
+          _pilot_line("pilot", "lst_d", "closed", "closed", app="app_d"),
+          _pilot_line("pilot", "lst_e", "prepared", "error"),
+          _pilot_line("pilot", "lst_f", "needs", "already_recorded", app="app_f",
+                      state=S.NEEDS_INPUT))
+    write(_pilot_line("pilot-r1", "lst_c", "prepared", "needs_input", app="app_c",
+                      retry_of="pilot", day=25),
+          _pilot_line("pilot-r1", "lst_d", "closed", "failed_retryable", app="app_d",
+                      retry_of="pilot", day=25))
+    write(_pilot_line("unrelated", "lst_g", "needs", "needs_input", app="app_g", day=25))
+
+
+def test_batch_tree_families_and_what_they_prepared_or_held(paths):
+    from interviewmaxxing_cli.batch import BatchTree, batches_since, prepared_or_held
+
+    _write_pilot(paths)
+    tree = BatchTree.read(paths)  # no summary yet: the ledger lines' retry_of
+    assert tree.batches == ("pilot", "pilot-r1", "unrelated")
+    assert dict(tree.parents) == {"pilot-r1": "pilot"}
+    assert (tree.root("pilot-r1"), tree.root("pilot"), tree.root("unrelated")) == \
+        ("pilot", "pilot", "unrelated")
+    assert tree.family("pilot-r1") == tree.family("pilot") == ["pilot", "pilot-r1"]
+    assert batches_since(paths, datetime(2026, 9, 25)) == ["pilot-r1", "unrelated"]
+
+    exclusion = prepared_or_held(paths, ["pilot-r1"])  # a retry names its whole family
+    assert exclusion.batches == ("pilot", "pilot-r1")
+    assert exclusion.listing_ids == {"lst_a", "lst_b", "lst_c", "lst_f"}  # not d, e, g
+    alias = BatchRow(listing_id="lst_other", application_url=f"{ORIGIN}/lst_b/needs?utm_source=x")
+    assert exclusion.excludes(alias) and not exclusion.excludes(row("prepared"))
+    with pytest.raises(FileNotFoundError, match="no ledger for batch 'nope'"):
+        prepared_or_held(paths, ["pilot", "nope"])
+    with pytest.raises(ValueError):
+        prepared_or_held(paths, ["../pilot"])
+    assert not paths.state_db.exists()  # reads the ledgers only
+
+
+@pytest.mark.slow
+def test_exclude_batches_leaves_out_what_earlier_batches_prepared_or_held(fake, tmp_path,
+                                                                          monkeypatch, capsys):
+    monkeypatch.setattr(batch_module, "default_command", lambda: [sys.executable, str(fake)])
+    home = tmp_path / "home"
+    paths = LocalPaths.from_env({}, home=home)
+    _write_pilot(paths)
+    rows = [("lst_a", "prepared"), ("lst_b", "needs"), ("lst_c", "prepared"), ("lst_d", "closed"),
+            ("lst_e", "prepared"), ("lst_f", "needs"), ("lst_g", "needs"), ("lst_i", "prepared")]
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps(
+        [{"listing_id": listing, "company": "Brambleway", "title": kind,
+          "source_application_url": f"{ORIGIN}/{listing}/{kind}", "backend": "mock",
+          "status": "resolved"} for listing, kind in rows]
+        + [{"listing_id": "lst_h", "company": "Brambleway", "title": "alias of b",
+            "source_application_url": f"{ORIGIN}/lst_b/needs/?utm_source=board", "backend": "mock",
+            "status": "resolved"}]))
+    base = ["--home", str(home), "prepare-batch", "--inventory", str(inventory)]
+
+    assert main([*base, "--exclude-batches", "pilot", "--batch-id", "mass", "--json"]) == EXIT_OK
+    out, err = capsys.readouterr()
+    summary = json.loads(out)
+    assert (summary["skipped_excluded"], summary["excluded_batches"]) == (5, ["pilot", "pilot-r1"])
+    assert summary["rows"] == 4 and summary["launched"] == 4
+    launched = sorted(x["url"].split("/")[-2] for x in log_lines(tmp_path) if x["phase"] == "start")
+    assert launched == ["lst_d", "lst_e", "lst_g", "lst_i"]  # closed, errored, other batches, new
+    assert summary["totals"] == {"prepared": 2, "closed": 1, "needs_input": 1}
+    assert "5 row(s) left out as prepared or held by pilot, pilot-r1" in err
+    ledger = read_ledger(home / "batches" / "mass" / "ledger.jsonl")
+    assert sorted(e.listing_id for e in ledger) == ["lst_d", "lst_e", "lst_g", "lst_i"]
+    text = render_summary_markdown(summarize(
+        "mass", ledger, started_at=FINISHED, finished_at=FINISHED, rows=4, launched=4,
+        skipped_settled=0, skipped_invalid_url=0, ledger_path=Path("ledger.jsonl"),
+        skipped_excluded=5, excluded_batches=["pilot", "pilot-r1"]))
+    assert "- left out as prepared or held by earlier batches: 5 (--exclude-batches: pilot, " \
+           "pilot-r1)" in text
+
+    # --limit counts the rows left after the exclusion; several batches, repeated or not.
+    assert main([*base, "--exclude-batches", "pilot,unrelated", "--exclude-batches", "pilot",
+                 "--limit", "1", "--batch-id", "mass2", "--json"]) == EXIT_OK
+    second = json.loads(capsys.readouterr().out)
+    assert second["excluded_batches"] == ["pilot", "pilot-r1", "unrelated"]
+    assert (second["skipped_excluded"], second["rows"]) == (6, 1)
+
+    # Usage: an unknown batch, a batch id that is not a plain name, nothing left to run.
+    assert main([*base, "--exclude-batches", "nope"]) == EXIT_ERROR
+    assert "no ledger for batch 'nope'" in capsys.readouterr().err
+    assert main([*base, "--exclude-batches", "../x"]) == EXIT_USAGE
+    capsys.readouterr()
+    only_pilot = tmp_path / "only-pilot.json"
+    only_pilot.write_text(json.dumps([
+        {"listing_id": "lst_a", "source_application_url": f"{ORIGIN}/lst_a/prepared",
+         "status": "resolved"}]))
+    assert main(["--home", str(home), "prepare-batch", "--inventory", str(only_pilot),
+                 "--exclude-batches", "pilot"]) == EXIT_USAGE
+    assert "1 prepared or held by the excluded batches" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        main([*base, "--exclude-batches", ","])
+    assert exc.value.code == EXIT_USAGE
