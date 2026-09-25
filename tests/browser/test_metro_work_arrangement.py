@@ -511,3 +511,173 @@ def test_saved_answer_fixture_shape() -> None:
                          value=METRO, confirmed_at=NOW)
     assert answer.applies_to(JobRecord(id="j", application_url="https://example.test/a",
         normalized_url="https://example.test/a", created_at=NOW, updated_at=NOW))
+
+
+# --- round 14: on-site questions that name no place ---------------------------------------------
+
+ONSITE_DAYS = "Are you able to work on-site three days a week?"
+HYBRID_OFFICE = "This role is hybrid (3 days in the office). Are you comfortable with that?"
+
+
+def onsite_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
+    return [t for t in arrangement_traces(resolver) if t["question"] == "onsite"]
+
+
+def outcome(packet: Any) -> tuple[list[tuple[str, Any]], list[tuple[str, str]]]:
+    """The packet's answers and holds, comparable across two runs."""
+    return ([(a.field_id, label_of(a)) for a in packet.answers],
+            [(m.field_id, m.reason.value) for m in packet.missing_inputs])
+
+
+@pytest.mark.parametrize("label", [ONSITE_DAYS, HYBRID_OFFICE])
+@pytest.mark.parametrize(("location", "verdict"), [
+    ("Austin, TX", "IN_METRO"), ("Round Rock, TX (Hybrid)", "IN_METRO"),
+    ("Austin, Texas Metropolitan Area", "IN_METRO"), ("Remote (Austin, TX)", "IN_METRO"),
+])
+def test_an_on_site_question_naming_no_place_is_yes_for_a_metro_job(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, location: str, verdict: str,
+) -> None:
+    candidate = austin_candidate(fictional_candidate)
+    packet, _, resolver = resolve(Jev(), candidate, job_at(mock_job, location), typed_field(label, R, YES_NO))
+    [answer] = packet.answers
+    assert label_of(answer) == "Yes"
+    assert answer.provenance.source is AnswerSource.SAVED_ANSWER
+    assert answer.provenance.reference_ids == [metro_id(candidate)]
+    [trace] = onsite_traces(resolver)
+    assert (trace["metro"], trace["place_source"], trace["status"], trace["choice"]) == (
+        verdict, "job", "ANSWERED", "yes")
+    assert trace["reference_ids"] == [metro_id(candidate)]
+
+
+@pytest.mark.parametrize("label", [ONSITE_DAYS, HYBRID_OFFICE])
+@pytest.mark.parametrize(("location", "verdict"), [
+    ("San Francisco, CA", "OUTSIDE"), ("Remote", "REMOTE"), ("Remote - US", "REMOTE"), (None, "REMOTE"),
+])
+@pytest.mark.parametrize(("relocate", "expected"), [(None, "No"), ("No", "No"), ("Yes", "Yes")])
+def test_an_on_site_question_naming_no_place_is_no_elsewhere_unless_the_person_relocates(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, location: str | None,
+    verdict: str, relocate: str | None, expected: str,
+) -> None:
+    candidate = austin_candidate(fictional_candidate, relocate=relocate)
+    packet, _, resolver = resolve(Jev(), candidate, job_at(mock_job, location), typed_field(label, R, YES_NO))
+    [answer] = packet.answers
+    assert label_of(answer) == expected
+    assert answer.provenance.reference_ids == [metro_id(candidate)]  # relocation is traced, not cited
+    [trace] = onsite_traces(resolver)
+    assert (trace["metro"], trace["place_source"]) == (verdict, "job")
+    assert trace["relocation"] == ({"Yes": "yes", "No": "no"}.get(relocate or "", "unstated"))
+
+
+def test_an_unreadable_job_location_leaves_the_on_site_question_to_its_earlier_route(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    job = job_at(mock_job, "Multiple Locations")
+    field = typed_field(ONSITE_DAYS, R, YES_NO)
+    packet, _, resolver = resolve(Jev(), austin_candidate(fictional_candidate), job, field)
+    [trace] = onsite_traces(resolver)
+    assert (trace["metro"], trace["status"]) == ("UNKNOWN", "NOT_DECIDED")
+    before, _, earlier = resolve(Jev(), austin_candidate(fictional_candidate, metro=None), job, field)
+    assert outcome(packet) == outcome(before) and not arrangement_traces(earlier)
+
+
+@pytest.mark.parametrize("location", ["Austin, TX", "San Francisco, CA", None])
+def test_without_a_metro_area_an_on_site_question_naming_no_place_keeps_its_route(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, location: str | None,
+) -> None:
+    packet, _, resolver = resolve(Jev(), austin_candidate(fictional_candidate, metro=None),
+                                  job_at(mock_job, location), typed_field(ONSITE_DAYS, R, YES_NO))
+    assert not arrangement_traces(resolver)
+    assert not [a for a in packet.answers if a.provenance.note and "metro" in a.provenance.note]
+
+
+@pytest.mark.parametrize("label", [
+    "Are you able to attend an in-person interview?",
+    "Are you willing to travel on-site to client locations up to 25% of the time?",
+    "Are you comfortable with in-person onboarding during your first week?",
+    "Do you have experience working in a hybrid team?",
+    "Have you worked on-site before?",
+    "Do you currently work on-site?",
+    "Is your current role remote or in-office? Are you able to share details?",
+])
+def test_on_site_wording_about_something_else_is_not_the_metros(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+) -> None:
+    _, _, resolver = resolve(Jev(), austin_candidate(fictional_candidate), job_at(mock_job, "Austin, TX"),
+                             typed_field(label, R, YES_NO))
+    assert not arrangement_traces(resolver)
+
+
+@pytest.mark.parametrize(("label", "location", "expected", "verdict"), [
+    # The employer's name after "at" is no place: the job's location decides.
+    ("Are you able to work on-site at Mock Co three days a week?", "Austin, TX", "Yes", "IN_METRO"),
+    ("Are you comfortable working in-office at Mock Co's headquarters?", "Denver, CO", "No", "OUTSIDE"),
+    # "with us" is the pronoun, not the country.
+    ("Are you able to work on-site with us three days a week?", "Austin, TX", "Yes", "IN_METRO"),
+    # The person's own state or country is too broad to place the work.
+    ("Are you able to work on-site in Texas three days a week?", "Austin, TX", "Yes", "IN_METRO"),
+    ("Are you able to work on-site in Texas three days a week?", "Houston, TX", "No", "OUTSIDE"),
+    ("Are you willing to work in-office in the US?", "Round Rock, TX", "Yes", "IN_METRO"),
+])
+def test_what_an_on_site_question_names_that_is_no_place(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, location: str,
+    expected: str, verdict: str,
+) -> None:
+    candidate = austin_candidate(fictional_candidate)
+    packet, _, resolver = resolve(Jev(), candidate, job_at(mock_job, location), typed_field(label, R, YES_NO))
+    [answer] = packet.answers
+    assert label_of(answer) == expected
+    [trace] = arrangement_traces(resolver)
+    assert (trace["question"], trace["metro"], trace["place_source"]) == ("onsite", verdict, "job")
+
+
+def test_another_state_in_the_question_places_the_work_outside(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    label = "Are you able to work on-site in Colorado three days a week?"
+    packet, _, resolver = resolve(Jev(), austin_candidate(fictional_candidate), job_at(mock_job, "Austin, TX"),
+                                  typed_field(label, R, YES_NO))
+    [answer] = packet.answers
+    assert label_of(answer) == "No"
+    [trace] = arrangement_traces(resolver)
+    assert (trace["metro"], trace["place"], trace["place_source"]) == ("OUTSIDE", "CO", "question")
+
+
+def test_a_city_question_naming_only_the_employer_is_read_by_the_job(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Before round 14 "at Mock Co" made this a city question placed OUTSIDE (the company).
+    label = "This role requires working on-site at Mock Co five days a week. Are you able to?"
+    packet, _, resolver = resolve(Jev(), austin_candidate(fictional_candidate), job_at(mock_job, "Austin, TX"),
+                                  typed_field(label, R, YES_NO))
+    [answer] = packet.answers
+    assert label_of(answer) == "Yes"
+    assert [t["question"] for t in arrangement_traces(resolver)] == ["onsite"]
+
+
+@pytest.mark.parametrize(("text", "verdict", "place"), [
+    ("Are you able to work on-site with us?", MetroVerdict.UNKNOWN, None),
+    ("Are you able to work on-site in the US?", MetroVerdict.UNKNOWN, None),
+    ("Are you able to work on-site in the U.S.?", MetroVerdict.UNKNOWN, None),
+    ("Are you able to work on-site in Texas?", MetroVerdict.UNKNOWN, None),
+    ("Are you able to work on-site in Colorado?", MetroVerdict.OUTSIDE, "CO"),
+    ("Are you able to work on-site in the UK?", MetroVerdict.OUTSIDE, "uk"),
+    ("Are you able to work on-site in Canada?", MetroVerdict.OUTSIDE, "canada"),
+    ("Are you able to work on-site in Houston, TX?", MetroVerdict.OUTSIDE, "Houston, TX"),
+    ("Are you able to work on-site in Round Rock, Texas?", MetroVerdict.IN_METRO, "Round Rock"),
+])
+def test_a_question_reading_skips_the_persons_own_state_and_country(
+    metro: Any, text: str, verdict: MetroVerdict, place: str | None,
+) -> None:
+    reading = read_place(text, metro, question=True)
+    assert (reading.verdict, reading.place) == (verdict, place)
+
+
+@pytest.mark.parametrize(("location", "verdict"), [
+    ("United States", MetroVerdict.OUTSIDE), ("US", MetroVerdict.OUTSIDE), ("Texas", MetroVerdict.OUTSIDE),
+    ("Toronto, Canada", MetroVerdict.OUTSIDE),
+])
+def test_a_job_location_still_reads_the_country_and_the_state_as_elsewhere(
+    metro: Any, mock_job: JobRecord, location: str, verdict: MetroVerdict,
+) -> None:
+    # Unchanged from round 13: only a question's reading treats them as too broad.
+    assert job_place(job_at(mock_job, location), metro).verdict is verdict

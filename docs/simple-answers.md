@@ -200,13 +200,20 @@ With it set, the job's place decides the work arrangement instead of
   - the answer is remote, and a remote / hybrid / on-site select takes Remote;
   - "Are you able to work on-site in our San Francisco office?" is No, unless your
     `willing_to_relocate` is Yes.
+- **An on-site or hybrid question that names no place** (round 14): "Are you able to work
+  on-site three days a week?", "This role is hybrid (3 days in the office). Are you comfortable
+  with that?". The job's location decides: Yes in your metro, No anywhere else or for a remote
+  job, unless your `willing_to_relocate` is Yes. The employer's name ("at Mock Co"), your own
+  state ("in Texas") and the country name no place. Questions about an in-person interview,
+  travel, onboarding or client sites are never decided this way.
 - **An office list** ("Location Preference": Burlingame, CA / Columbus, OH / Austin, TX / New
   York City, NY / Remote) takes the office in your metro when the list has one, else Remote.
 - **A relocation question that names your own city** ("If you are not currently based in
   Austin, would you be willing to relocate?") takes the option that says you are already there
   ("I'm based in Austin"), from your verified address.
 - **A job location nothing can be read from** ("Multiple Locations") leaves the decision to
-  `work_arrangement_preference`, as before. So does a null `metro_area`.
+  `work_arrangement_preference`, as before (an on-site question naming no place keeps its
+  earlier route). So does a null `metro_area`.
 
 `metro_area` never answers a question by its wording; it only feeds this decision.
 

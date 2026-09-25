@@ -363,6 +363,31 @@ The person does not answer screeners one by one: at retry five (2026-09-25) they
   - `modes` and `posted` for a select, and `relocation` when it was read;
   - the status: `ANSWERED`, `NOT_DECIDED` (the preference then decides), `NO_OPTION`, `INVALID` or `NO_METRO`.
 
+## Round 14: the stated years in the factual pass, on-site questions with no place, the job's location
+
+- **The stated years win in the factual pass.** `prefer_stated` and the source helpers moved to `interviewmaxxing_generation.resolver`, below the browser package: `stated_by_person`, `derived`, `USER_SOURCE` and `DERIVED_SOURCE` moved with it. `ai/experience.py` re-exports the same names, so routing and the answer policies are unchanged.
+  - The factual resolver (`_FieldResolver`) now reads `prefer_stated(candidate.verified_facts())`, so round 11's rule also holds in the pass `DynamicPacketResolver.resolve` runs first.
+  - "How many years of experience do you have?" with a stated 8 beside a derived 5 copies "8", citing the stated fact, without a Jev call. "How many years of paid media experience do you have?" with a stated 7 beside a derived 4 copies "7".
+  - Only a derived fact gives way. A resume total, or a second stated total, that disagrees still holds the question for the person.
+- **On-site questions that name no place (`_is_onsite_question`).** Examples: "Are you able to work on-site three days a week?" and "This role is hybrid (3 days in the office). Are you comfortable with that?".
+  - Such a question is a yes/no select or radio with:
+    - on-site or hybrid working wording;
+    - wording asking whether the applicant can or will do it (able, willing, comfortable, open to, …);
+    - no place named.
+  - With a `metro_area`, the job's location decides, through the same `_metro_onsite` as round 13:
+    - in the metro, Yes;
+    - elsewhere, for a remote job, or for a job with no location, No unless `willing_to_relocate` is Yes;
+    - UNKNOWN (for example "Multiple Locations"), the question keeps its earlier route, exactly as without a metro.
+  - The trace is stage `work_arrangement`, `question: onsite`, `place_source: job`, and the answer cites the `metro_area` saved answer.
+  - Wording about something other than the regular way of working is never the metro's: an in-person interview, travel, training, onboarding, events, meetings, client or customer sites. Neither is a question about the current or an earlier arrangement ("currently", "previous"), or one that does not ask whether the applicant can ("Do you have experience working in a hybrid team?").
+- **What a question names that is no place.**
+  - The employer's own name is taken out before a question's places are read (`_without_employer`), for city questions too. Before round 14, "This role requires working on-site at Mock Co" was a city question placed OUTSIDE by the company's name.
+  - A question's reading (`read_place(..., question=True)`) treats the person's own state and country as too broad to place the work. So "on-site in Texas" and "in the US" read the job's location, while "in Colorado" or "in Canada" is OUTSIDE.
+  - Country codes count only in capitals ("US", "U.S.", "USA", "UK"), so "work on-site with us" names no country. A job location's reading is unchanged: "United States", "US" and "Texas" are OUTSIDE there, as in round 13.
+- **Where the job's location comes from.** `PacketContext.job` is the stored job (`ApplicationStore.get_job`). Its `location` is written only by `bind_job_identity`, from the identity the page shows (`extract_job_identity`: a schema.org `JobPosting` with a single `jobLocation`, its `addressLocality`).
+  - On the `prepare-batch` path the listing's own location is not carried: the inventory has no location column and only the URL reaches `apply` (the round 14 report lists the files and lines).
+  - A job whose apply page shows no such posting therefore has no location, and the metro rule reads it as remote.
+
 ## Narrative escalation
 
 Jev classifies and selects facts; it never authors prose. `COPY_KNOWN` describes responsibility, not ready-to-fill status. Readiness requires an actual verified source and canonical validation. `EXPLICIT_ANSWER`, unclear or low-confidence source applicability blocks both copy and writing unless an exact scoped user/saved answer already resolves the question. Demographic answers require an explicit verified saved answer; identity never implies them.
