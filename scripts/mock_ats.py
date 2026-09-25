@@ -183,6 +183,15 @@ class Field:
     under a Stimulus controller: the script-made input takes its label's id; a file hides
     it, a fresh input replaces it and a preview whose hidden URL input reuses the id shows
     "Uploading…" until the upload ends)."""
+    reveals: tuple[Field, ...] = ()
+    """Follow-up questions (conditional fields) the page shows right after this radio
+    group's block the moment one of its options is chosen (BambooHR): rendered into an
+    inert ``<template>`` and mounted by REVEAL_JS on the change event (or on load, when the
+    trigger is already checked and the server did not render them). The server validates
+    and records them only when the trigger option was posted (``revealed_fields``)."""
+    reveals_on: str | None = None
+    """The option value that reveals them (choosing another option removes them again);
+    None: any chosen option reveals them."""
 
     @property
     def multi(self) -> bool:
@@ -211,7 +220,23 @@ class Field:
                 for o in self.options
             ],
             "disabled": self.disabled,
+            "reveals": [r.describe() for r in self.reveals],
+            "reveals_on": self.reveals_on,
         }
+
+
+def revealed_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> tuple[Field, ...]:
+    """``fields`` with the follow-up questions whose trigger option ``form`` posts (or
+    shows) inserted right after their trigger, as the page shows them."""
+    shown: list[Field] = []
+    for f in fields:
+        shown.append(f)
+        if not f.reveals:
+            continue
+        chosen = [v for v in form.get(f.name, []) if v]
+        if chosen and (f.reveals_on is None or f.reveals_on in chosen):
+            shown.extend(revealed_fields(f.reveals, form))
+    return tuple(shown)
 
 
 WIDGET_KINDS = frozenset({
@@ -550,6 +575,41 @@ BH_COUNTRIES = _options(
     ("1", "United States"), ("2", "Canada"), ("3", "Australia"), ("4", "United Kingdom"),
     ("5", "Ireland"), ("6", "Germany"), ("7", "France"), ("8", "Mexico"), ("9", "India"),
     ("10", "New Zealand"),
+)
+BH_SPONSORSHIP = Field(
+    "sponsorship",
+    "Will you now or will you in the future require employment visa sponsorship?",
+    "radio",
+    True,
+    _options(("yes", "Yes"), ("no", "No")),
+    reveals=(
+        Field(
+            "authorization_basis",
+            "What is the basis of your current authorization to work in the United States?",
+            "select",
+            True,
+            _options(
+                ("citizen", "U.S. citizen or national"),
+                ("permanent_resident", "Lawful permanent resident"),
+                ("visa", "A work visa or another status"),
+            ),
+        ),
+        Field(
+            "authorization_proof",
+            "Can you provide documentation of your work authorization at hire?",
+            "radio",
+            True,
+            _options(("yes", "Yes"), ("no", "No")),
+        ),
+    ),
+)
+"""BambooHR: a Yes/No whose answer reveals two follow-up questions (conditional fields)."""
+BH_LOCATED = Field(
+    "located_austin",
+    "This position is located in Austin, Texas. Are you currently located in the Austin area?",
+    "radio",
+    True,
+    _options(("yes", "Yes"), ("no", "No")),
 )
 BH_STATE = Field("state.value", "State", "fab_select", True,
                  _options(*((str(i + 1), name) for i, name in enumerate(US_STATE_NAMES))),
@@ -1133,6 +1193,19 @@ JOBS: dict[str, Job] = {
             "an outside press) and stays in the document hidden. Country already shows "
             "\"United States\"; State shows \"\N{EN DASH}Select\N{EN DASH}\".",
             _single(FIRST_NAME, LAST_NAME, EMAIL, BH_STATE, BH_COUNTRY, BH_EDUCATION),
+        ),
+        Job(
+            "bamboohr-conditional",
+            "BWA-BH-182",
+            "Paid Media Manager",
+            "Marketing",
+            "Austin, TX (Hybrid)",
+            "A BambooHR-style form with conditional fields: choosing Yes or No on the "
+            "employment visa sponsorship radio mounts two follow-up questions (a select and "
+            "a Yes/No radio) right after it, synchronously (?reveal_ms=<n> delays them), "
+            "before the location question that follows. The server validates and records "
+            "the follow-ups only when the sponsorship answer was posted.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, BH_SPONSORSHIP, BH_LOCATED),
         ),
         Job(
             "workable-like",
@@ -3277,6 +3350,50 @@ FORMLESS_JS = r"""(function () {
 })();"""
 
 
+REVEAL_JS = r"""(function () {
+  "use strict";
+  // BambooHR-style conditional fields: the follow-up questions a radio group's
+  // <template data-reveals-for> holds are mounted right after the group's block the
+  // moment a (trigger) option is chosen, synchronously like a React state update, or
+  // ?reveal_ms=<n> later. Choosing a non-trigger option removes them again. On load a
+  // trigger already checked mounts them unless the server rendered them already.
+  // window.__mock.reveals counts the mounts for tests.
+  var mock = window.__mock = window.__mock || {log: []};
+  mock.reveals = 0;
+  var params = new URLSearchParams(location.search);
+  var delay = parseInt(params.get("reveal_ms"), 10);
+  if (isNaN(delay) || delay < 0) delay = 0;
+  Array.prototype.forEach.call(document.querySelectorAll("template[data-reveals-for]"), function (template) {
+    var name = template.getAttribute("data-reveals-for");
+    var on = template.getAttribute("data-reveals-on") || "";
+    var first = template.content.querySelector("[id]");
+    var mounted = [];
+    function shown() { return !!(first && document.getElementById(first.id)); }
+    function mount() {
+      if (shown()) return;
+      var fragment = template.content.cloneNode(true);
+      mounted = Array.prototype.slice.call(fragment.childNodes);
+      template.parentNode.insertBefore(fragment, template.nextSibling);
+      mock.reveals++;
+      mock.log.push({t: Math.round(performance.now()), event: "reveal", detail: name});
+    }
+    function unmount() {
+      mounted.forEach(function (node) { if (node.parentNode) node.parentNode.removeChild(node); });
+      mounted = [];
+    }
+    function triggers(value) { return on === "" || value === on; }
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="' + CSS.escape(name) + '"]'), function (radio) {
+      radio.addEventListener("change", function () {
+        if (!radio.checked) return;
+        if (triggers(radio.value)) { if (delay) setTimeout(mount, delay); else mount(); }
+        else unmount();
+      });
+      if (radio.checked && triggers(radio.value)) mount();
+    });
+  });
+})();"""
+
+
 SCENARIO_STYLE = """
 .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .spinner{display:inline-block;width:.8rem;height:.8rem;margin-right:.4rem;border:2px solid #8a94a6;border-top-color:transparent;border-radius:50%;vertical-align:-1px}
@@ -4709,12 +4826,21 @@ def render_field(
         group_aria = f' aria-describedby="{" ".join(described)}"' if described else ""
         role = ' role="radiogroup"' if f.kind == "radio" else ""
         req = ' aria-required="true"' if f.required and f.kind == "radio" else ""
-        return (
+        group = (
             f'<fieldset class="field" id="{fid}"{role}{req}{group_aria}>'
             f"<legend>{esc(f.label)}{legend_marker}</legend>{hint}{err}"
             + "".join(choices)
             + "</fieldset>"
         )
+        if f.reveals:
+            # The follow-up questions, inert until REVEAL_JS mounts them after this block.
+            on = f' data-reveals-on="{esc(f.reveals_on)}"' if f.reveals_on else ""
+            group += (
+                f'<template id="{fid}-reveals" data-reveals-for="{esc(f.name)}"{on}>'
+                + "".join(render_field(r, values, None) for r in f.reveals)
+                + "</template>"
+            )
+        return group
 
     if f.kind == "checkbox":
         checked = " checked" if current == "yes" else ""
@@ -5367,7 +5493,7 @@ class Handler(BaseHTTPRequestHandler):
         prior = self.store.get_upload((form.get("resume_upload_id") or [""])[0])
         if prior:
             retained["resume"] = prior
-        fields = self._fields(job)
+        fields = revealed_fields(self._fields(job), form)
         values, files, errors = validate(
             fields, form, uploads, retained, strict_phone=job.strict_phone
         )
@@ -5454,7 +5580,9 @@ class Handler(BaseHTTPRequestHandler):
         status: HTTPStatus,
     ) -> tuple[str, str, str]:
         """(title, main body, head extra) of a single-page application form."""
-        fields = self._fields(job)  # the fields the server serves now (a reload may add one)
+        # The fields the server serves now (a reload may add one; a posted choice shows
+        # its follow-up questions, as page script would after the choice).
+        fields = revealed_fields(self._fields(job), values)
         entries = _summary_entries(fields, errors)
         if captcha_error:
             entries.append(("f-captcha_answer", "Characters shown in the image", captcha_error))
@@ -5500,6 +5628,8 @@ class Handler(BaseHTTPRequestHandler):
         widgets = any(f.scripted for f in fields)
         if widgets:
             form_html += f"<script>{WIDGETS_JS}</script>"
+        if any(f.reveals for f in fields):
+            form_html += f"<script>{REVEAL_JS}</script>"
         if job.formless:
             form_html += f"<script>{FORMLESS_JS}</script>"
         if job.validity:
@@ -5571,7 +5701,7 @@ class Handler(BaseHTTPRequestHandler):
         form: dict[str, list[str]],
         uploads: dict[str, list[Upload]],
     ) -> None:
-        step_fields = job.steps[n - 1].fields
+        step_fields = revealed_fields(job.steps[n - 1].fields, form)
         retained = {
             f.name: draft["files"][f.name]
             for f in step_fields
@@ -5620,7 +5750,8 @@ class Handler(BaseHTTPRequestHandler):
             action = f"/jobs/{job.slug}/apply"
         else:
             action = f"/jobs/{job.slug}/apply/{draft['draft_id']}/step/{n}"
-        has_file = any(f.kind == "file" for f in step.fields)
+        fields = revealed_fields(step.fields, values)
+        has_file = any(f.kind == "file" for f in fields)
         enctype = "multipart/form-data" if has_file else "application/x-www-form-urlencoded"
         back = ""
         if n > 1 and draft is not None:
@@ -5628,16 +5759,18 @@ class Handler(BaseHTTPRequestHandler):
         body = (
             _job_heading(job)
             + self._progress(job, n)
-            + render_error_summary(_summary_entries(step.fields, errors))
+            + render_error_summary(_summary_entries(fields, errors))
             + f'<form method="post" action="{action}" enctype="{enctype}" '
             f'aria-labelledby="form-title"><h2 id="form-title">{esc(step.title)}</h2>'
             '<p class="hint">Fields marked with * are required.</p>'
             + "".join(
                 render_field(f, values, errors.get(f.name), retained.get(f.name))
-                for f in step.fields
+                for f in fields
             )
             + f'<button type="submit">Continue</button>{back}</form>'
         )
+        if any(f.reveals for f in fields):
+            body += f"<script>{REVEAL_JS}</script>"
         prefix = "Error: " if errors else ""
         self._send_html(status, page(f"{prefix}{step.title}: {job.title}", body))
 

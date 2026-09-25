@@ -769,3 +769,82 @@ def test_the_career_motivation_fact_is_null_safe_and_idempotent():
     assert answers.saved_answer_updates(confirmed_at=when) == []  # never a saved answer
     assert "career_motivation" in SimpleAnswers.model_fields
     assert json.loads((REPO / "examples/simple-answers.example.json").read_text())["career_motivation"] is None
+
+
+# --- round 10: the work-arrangement preference ---------------------------------------------------
+
+ROUND10_PREFERENCE_PHRASES = [
+    "Location Preference", "Work location preference", "Preferred work location",
+    "Preferred work arrangement", "What is your preferred work arrangement?",
+    "Which work setting do you prefer?", "Remote, hybrid or on-site?",
+    "What is your work location preference?",
+]
+
+
+def test_round10_the_work_arrangement_preference_is_a_closed_vocabulary_and_untyped():
+    from datetime import UTC, datetime
+
+    from pydantic import ValidationError
+
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_PHRASES, _REUSABLE_QUESTIONS
+    from interviewmaxxing_core import WORK_ARRANGEMENT_PREFERENCE_QUESTION, AnswerScope
+
+    assert _REUSABLE_QUESTIONS["work_arrangement_preference"] == (None, WORK_ARRANGEMENT_PREFERENCE_QUESTION)
+    assert _REUSABLE_PHRASES["work_arrangement_preference"] == ROUND10_PREFERENCE_PHRASES
+    assert _round7_answers().work_arrangement_preference is None
+    assert _round7_answers(work_arrangement_preference="  ").work_arrangement_preference is None
+    for given, code in (("Remote", "remote"), ("Fully remote", "remote"), ("WFH", "remote"),
+                        ("hybrid", "hybrid"), ("On-site", "on-site"), ("Onsite", "on-site"),
+                        ("In office", "on-site")):
+        assert _round7_answers(work_arrangement_preference=given).work_arrangement_preference == code
+    for given in ("Remote or hybrid", "Anywhere", "Flexible"):
+        with pytest.raises(ValidationError, match='"remote", "hybrid", "on-site", or null'):
+            _round7_answers(work_arrangement_preference=given)
+    answers = _round7_answers(work_arrangement_preference="Remote")
+    [saved] = answers.saved_answer_updates(confirmed_at=datetime(2026, 9, 25, tzinfo=UTC))
+    assert (saved.question, saved.value, saved.semantic_type, saved.scope) == (
+        WORK_ARRANGEMENT_PREFERENCE_QUESTION, "remote", None, AnswerScope.GLOBAL)
+    assert saved.match_phrases == ROUND10_PREFERENCE_PHRASES
+    assert answers.saved_answer_updates(confirmed_at=datetime(2026, 9, 26, tzinfo=UTC),
+                                        current=[saved]) == []  # a repeated import is a no-op
+
+
+def test_round10_the_preference_round_trips_through_the_script(write_candidate, candidate_store, tmp_path):
+    from interviewmaxxing_core import WORK_ARRANGEMENT_PREFERENCE_QUESTION
+
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    assert data["work_arrangement_preference"] is None
+    data["work_arrangement_preference"] = "Remote"  # stored as its code
+    target.write_text(json.dumps(data))
+    profile_before = (directory / "profile.json").read_bytes()
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["saved_answers_updated"] == 1
+    assert "Remote" not in result.stdout
+    assert (directory / "profile.json").read_bytes() == profile_before
+    profile = candidate_store.load("default")
+    [saved] = [a for a in profile.saved_answers if a.question == WORK_ARRANGEMENT_PREFERENCE_QUESTION]
+    assert (saved.value, saved.semantic_type) == ("remote", None)
+    exported = tmp_path / "exported.json"
+    assert run("export", exported).returncode == 0
+    assert json.loads(exported.read_text())["work_arrangement_preference"] == "remote"
+
+
+def test_round10_the_blank_template_and_the_docs_list_every_key():
+    from interviewmaxxing_candidate.simple_answers import (
+        _CONTACT_KEYS,
+        _REUSABLE_QUESTIONS,
+        SimpleAnswers,
+    )
+
+    example = json.loads((REPO / "examples/simple-answers.example.json").read_text())
+    assert set(example) == set(SimpleAnswers.model_fields) == (
+        _CONTACT_KEYS | set(_REUSABLE_QUESTIONS) | {"career_motivation"})
+    assert len(_REUSABLE_QUESTIONS) == 40
+    docs = (REPO / "docs/simple-answers.md").read_text()
+    for key in _REUSABLE_QUESTIONS:
+        assert f"`{key}`" in docs, key
+    assert "forty explicit reusable answers" in docs

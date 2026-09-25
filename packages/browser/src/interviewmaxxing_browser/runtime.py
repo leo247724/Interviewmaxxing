@@ -137,6 +137,26 @@ class _Rebound(Exception):
     the field is operated again through its re-resolved binding."""
 
 
+class _ConditionalReveal(PageContextLost):
+    """A choice this fill made revealed follow-up questions (conditional fields): the
+    approved questions, their bindings, the actions and the employer context all read as
+    before and only *additional* questions appeared. Nothing more is written; the step
+    is inspected and resolved again with the answered choice still in place."""
+
+
+def _short_label(label: str, limit: int = 60) -> str:
+    """A question's wording as one line, cut for a page error."""
+    text = " ".join(label.split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+_CHOICE_CONTROLS = frozenset({
+    ControlType.RADIO, ControlType.SELECT, ControlType.MULTISELECT, ControlType.CHECKBOX,
+    ControlType.CHECKBOX_GROUP, ControlType.TYPEAHEAD,
+})
+"""Controls whose answer a site may condition follow-up questions on."""
+
+
 _READ_CONTROL = """(sel) => {""" + DEEP_QUERY + """
   const el = deepOne(sel);
   if (!el) return null;
@@ -629,6 +649,8 @@ class GenericApplicationBrowser:
         """The page structure the current (then the last) fill writes against: the approved
         observation, re-read after this runtime's own uploads and re-renders."""
         self._stable_fill_signature: str | None = None
+        self._reveal_source: ApplicationField | None = None
+        """The choice control this fill wrote last (see ``_only_questions_added``)."""
         self._attach_needed: dict[tuple[str, str], str] = {}
         """(document, resume field id) -> the pinned file the person has to attach there,
         because none of the resumes the site offers can be used and this session cannot
@@ -1266,8 +1288,11 @@ class GenericApplicationBrowser:
         written: dict[str, str] = {}
         lost: PageContextLost | None = None
         halted: str | None = None
+        halt_label = "changed-after-upload"
+        halt_description = "page after an upload changed its questions"
         accepted = current
         await self._set_fill_model(model, form)
+        self._reveal_source = None
         try:
             for app_field in self._fill_order(form, packet):
                 answer = packet.answer_for(app_field.id)
@@ -1288,6 +1313,11 @@ class GenericApplicationBrowser:
                         value = self._national_number(form, packet, app_field.id, value)
                     result, touched = await self._operate(app_field, value)
                     results[app_field.id] = result
+                    # A choice just written may reveal follow-up questions; a later write
+                    # that finds only additional questions halts for a fresh inspection.
+                    self._reveal_source = (
+                        app_field if answer is not None and app_field.control_type in _CHOICE_CONTROLS
+                        and result.status is FieldFillStatus.FILLED else None)
                     if touched:
                         halted, accepted = await self._settle_after_upload(app_field.id, accepted)
                     if (result.status is FieldFillStatus.FILLED
@@ -1295,6 +1325,13 @@ class GenericApplicationBrowser:
                             and isinstance(value, TextValue) and self._plain_text(app_field)):
                         written[app_field.id] = value.text
                     await self._assert_fill_context()
+                except _ConditionalReveal as exc:
+                    # A choice revealed follow-up questions (nothing else changed). The
+                    # field about to be written is not attempted; the choice stays
+                    # answered, and the step is inspected and resolved again.
+                    halted = str(exc)
+                    halt_label, halt_description = "questions-revealed", (
+                        "page after a choice revealed follow-up questions")
                 except PageContextLost as exc:
                     # The document or approved questions changed. Every remaining
                     # answer is reported without writing through stale bindings.
@@ -1310,12 +1347,17 @@ class GenericApplicationBrowser:
             if lost is None and halted is None and written:
                 try:
                     await self._sweep(accepted, written, results)
+                except _ConditionalReveal as exc:
+                    halted = str(exc)
+                    halt_label, halt_description = "questions-revealed", (
+                        "page after a choice revealed follow-up questions")
                 except PageContextLost as exc:
                     lost = exc
                     self._context_lost = True
                     self._inspected_after_loss = False
                     self.menus.reset()
             structure = self._active_fill_signature or _guard_signature(model)
+            stable_structure = self._stable_fill_signature
         finally:
             self._active_fill_signature = None
             self._stable_fill_signature = None
@@ -1333,17 +1375,17 @@ class GenericApplicationBrowser:
                 page_errors=[f"{lost}; the step must be inspected and resolved again"],
             )
         if halted is not None:
-            # Our own upload changed the step (new questions, other constraints). The
-            # file stays attached (it is not attached again); the rest waits for a
-            # fresh inspection and packet.
+            # Our own upload changed the step (new questions, other constraints), or a
+            # choice revealed follow-up questions. The file stays attached (it is not
+            # attached again) and the choice stays answered; the rest waits for a fresh
+            # inspection and packet.
             self._filled = None
             self._context_lost = True
             self._inspected_after_loss = False
             evidence = []
             with contextlib.suppress(DriverError):
                 evidence = await self._evidence.capture(
-                    self.driver, f"changed-after-upload-step-{form.step}",
-                    description="page after an upload changed its questions")
+                    self.driver, f"{halt_label}-step-{form.step}", description=halt_description)
             return FillResult(
                 form_step=form.step, fields=ordered, evidence=evidence,
                 page_errors=[f"{halted}; inspect this step and resolve it again before continuing"],
@@ -1362,11 +1404,20 @@ class GenericApplicationBrowser:
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
         if (after.form is None or after.form.fingerprint != accepted.fingerprint
                 or await self._changed_since_fill(after.form)):
-            ordered.extend(await self._contain_changed_questions(accepted, after))
-            new_errors.append(
-                "questions on this step changed while filling; re-inspect and resolve again "
-                "before continuing"
-            )
+            revealed = self._only_questions_added(after, stable=stable_structure)
+            ordered.extend(await self._contain_changed_questions(accepted, after, revealed=revealed))
+            if revealed is not None:
+                # The last choice revealed follow-up questions: the step is inspected and
+                # resolved again with every answer, including that choice, in place.
+                self._filled = None
+                self._context_lost = True
+                self._inspected_after_loss = False
+                new_errors.append(f"{revealed}; inspect this step and resolve it again before continuing")
+            else:
+                new_errors.append(
+                    "questions on this step changed while filling; re-inspect and resolve again "
+                    "before continuing"
+                )
         return FillResult(
             form_step=form.step,
             fields=ordered,
@@ -1503,6 +1554,11 @@ class GenericApplicationBrowser:
             # Ashby mounts a lookup's suggestion list in a portal of its own while it is
             # operated: the page returns to the approved observation once it closes.
             return False
+        revealed = self._only_questions_added(fresh)
+        if revealed is not None:
+            # BambooHR shows follow-up questions once a Yes/No is chosen: not a lost
+            # context but a step to inspect and resolve again, the choice kept.
+            raise _ConditionalReveal(revealed)
         raise PageContextLost(
             "questions, bindings, actions, or employer context changed while filling; "
             "remaining answers were not attempted; re-inspect and resolve again"
@@ -1650,6 +1706,47 @@ class GenericApplicationBrowser:
                                  skip_controls=uploaded | self._uploader_helpers)
                 == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded | helpers))
 
+    def _only_questions_added(self, fresh: PageModel, *, stable: str | None = None) -> str | None:
+        """Why ``fresh`` is the approved step plus follow-up questions a choice of this
+        fill revealed (conditional fields), or None when it is anything else. Every
+        approved question is still shown, in its order, with the same wording, options
+        and binding shape; the actions and the employer context read as approved
+        (``_guard_signature`` with the revealed questions' own controls left out); and
+        the control written last was a choice (``_CHOICE_CONTROLS``) that was filled. A
+        reworded or removed question, a changed action or a change after a text write
+        is never a reveal."""
+        approved, form, source = self._fill_model, self._fill_form, self._reveal_source
+        stable = stable if stable is not None else self._stable_fill_signature
+        if approved is None or form is None or source is None or stable is None or fresh.form is None:
+            return None
+        if fresh.form.scope.key != form.scope.key:
+            return None
+        known = {f.id: f.fingerprint for f in form.fields}
+        added = [f for f in fresh.form.fields if f.id not in known]
+        kept = [f for f in fresh.form.fields if f.id in known]
+        if not added or [f.id for f in kept] != [f.id for f in form.fields]:
+            return None
+        if any(known[f.id] != f.fingerprint for f in kept):
+            return None
+        own: set[str] = set()
+        for new in added:
+            binding = fresh.bindings.get(new.id)
+            if binding is None:
+                return None
+            own.add(binding.selector)
+            own.update(binding.option_selectors.values())
+        reduced = replace(
+            fresh,
+            inspection=fresh.inspection.model_copy(update={
+                "form": fresh.form.model_copy(update={"fields": kept})}),
+            bindings={fid: b for fid, b in fresh.bindings.items() if fid in known},
+        )
+        if _guard_signature(reduced, skip_controls=own, stable=True) != stable:
+            return None
+        labels = ", ".join(repr(_short_label(f.label)) for f in added)
+        return (f"{len(added)} follow-up question(s) ({labels}) appeared after the answer to "
+                f"{_short_label(source.label)!r}")
+
     async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
         if await self._assert_fill_freshness(rebind=True):
             raise _Rebound
@@ -1667,10 +1764,13 @@ class GenericApplicationBrowser:
         await self._assert_fill_context()
 
     async def _contain_changed_questions(
-        self, approved: ApplicationForm, after: PageModel
+        self, approved: ApplicationForm, after: PageModel, *, revealed: str | None = None
     ) -> list[FieldFillResult]:
         """Questions that appeared or changed while filling were not authorized by the
-        packet. Never leave a pre-checked consent/attestation among them checked."""
+        packet. Never leave a pre-checked consent/attestation among them checked.
+        ``revealed`` (see ``_only_questions_added``): they are follow-up questions a
+        choice revealed, reported as not yet attempted (``SKIPPED``) rather than failed;
+        the next resolution answers them."""
         if after.form is None:
             return []
         known = {f.id: f.fingerprint for f in approved.fields}
@@ -1678,7 +1778,9 @@ class GenericApplicationBrowser:
         for new in after.form.fields:
             if known.get(new.id) == new.fingerprint:
                 continue
-            detail = "appeared or changed while filling; not answered by this packet"
+            status = FieldFillStatus.FAILED if revealed is None else FieldFillStatus.SKIPPED
+            detail = ("appeared or changed while filling; not answered by this packet" if revealed is None
+                      else "appeared after a choice; answered once this step is resolved again")
             binding = after.bindings[new.id]
             if (
                 new.control_type is ControlType.CHECKBOX
@@ -1688,8 +1790,7 @@ class GenericApplicationBrowser:
                 await self._write(partial(self.driver.set_checked,
                     binding.selector, False, label_selector=binding.label_selectors.get("")))
                 detail += "; cleared its pre-checked box"
-            results.append(FieldFillResult(field_id=new.id, status=FieldFillStatus.FAILED,
-                                           detail=detail))
+            results.append(FieldFillResult(field_id=new.id, status=status, detail=detail))
         return results
 
     async def _leave_unanswered(self, app_field: ApplicationField, binding: FieldBinding) -> FieldFillResult:

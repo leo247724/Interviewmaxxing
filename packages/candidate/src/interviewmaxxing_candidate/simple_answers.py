@@ -16,6 +16,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from interviewmaxxing_core import (
     STATED_ANSWER_QUESTIONS,
     STATUS_CONTRADICTIONS,
+    WORK_ARRANGEMENT_PREFERENCE_QUESTION,
     WORK_AUTHORIZATION_STATUS_QUESTION,
     WORK_AUTHORIZATION_STATUSES,
     AnswerScope,
@@ -29,6 +30,7 @@ from interviewmaxxing_core import (
     VerificationMethod,
     VerificationStatus,
     new_id,
+    normalize_work_arrangement,
 )
 
 from .answers import question_key, value_key
@@ -113,6 +115,9 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "consent_background_check": (
         SemanticType.CONSENT, "I consent to a background check, subject to applicable law.",
     ),
+    # Round 10: the work-arrangement preference (remote, hybrid, on-site), untyped so a
+    # single choice among work modes takes it whatever the site typed the field as.
+    "work_arrangement_preference": (None, WORK_ARRANGEMENT_PREFERENCE_QUESTION),
 }
 STATEMENT_KEYS = frozenset({
     "acknowledge_privacy_notice", "certify_information_true", "consent_to_contact",
@@ -246,6 +251,13 @@ _REUSABLE_PHRASES = {
         "Before applying, how familiar were you with our company?",
     ],
     "county": ["County of residence", "What county do you live in?"],
+    # Observed on live forms (Upstart's "Location Preference" select: remote, hybrid, on-site).
+    "work_arrangement_preference": [
+        "Location Preference", "Work location preference", "Preferred work location",
+        "Preferred work arrangement", "What is your preferred work arrangement?",
+        "Which work setting do you prefer?", "Remote, hybrid or on-site?",
+        "What is your work location preference?",
+    ],
 }
 _MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",
@@ -345,6 +357,7 @@ class SimpleAnswers(BaseModel):
     consent_to_contact: str | None = None
     consent_reference_checks: str | None = None
     consent_background_check: str | None = None
+    work_arrangement_preference: str | None = None
 
     @field_validator("*", mode="after")
     @classmethod
@@ -368,6 +381,16 @@ class SimpleAnswers(BaseModel):
         if value.casefold() not in choices:
             raise ValueError('Use "Yes", "No", or null for this answer.')
         return choices[value.casefold()]
+
+    @field_validator("work_arrangement_preference", mode="after")
+    @classmethod
+    def _work_arrangement(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        code = normalize_work_arrangement(value)
+        if code is None:
+            raise ValueError('Use "remote", "hybrid", "on-site", or null for this answer.')
+        return code
 
     @field_validator("work_authorization_status", mode="after")
     @classmethod

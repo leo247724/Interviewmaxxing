@@ -108,6 +108,8 @@ many jobs (preparation only):
   interviewmaxxing prepare-batch --inventory FILE   prepare Saved jobs, --workers at a time
   interviewmaxxing batch-report [BATCH_ID ...]      outcomes, questions, fill failures
   interviewmaxxing holds                            open questions, each with its answer line
+  interviewmaxxing holds --sheet FILE               ... or as an answer sheet to fill in once
+  interviewmaxxing answer --sheet FILE              apply the filled-in sheet everywhere
   interviewmaxxing prepare-batch --retry BATCH_ID   run the held and failed ones again
 
 local data (never in source control):
@@ -668,7 +670,43 @@ def _raw_answers(args: argparse.Namespace) -> dict[str, Any]:
     return raw
 
 
+def _answer_sheet(args: argparse.Namespace) -> int:
+    """``answer --sheet FILE``: see ``interviewmaxxing_cli.sheet.apply_sheet``. Prints
+    counts and the wordings not applied, never an answer, then the retry line."""
+    from .sheet import apply_sheet, newest_batch_id, read_sheet, render_result, retry_line
+
+    if args.application_id or args.set or args.answers:
+        print("error: --sheet takes no APPLICATION_ID, --set or --answers (the sheet names "
+              "them)", file=sys.stderr)
+        return EXIT_USAGE
+    paths = _paths(args)
+    path = Path(args.sheet)
+    try:
+        sheet = read_sheet(path)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        result = apply_sheet(paths, sheet, owner=_owner())
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
+    for line in render_result(result, path):
+        print(line)
+    batch_id = args.batch_id or newest_batch_id(paths)
+    if batch_id is not None:
+        print(f"next: {retry_line(_cli_prefix(args), batch_id)}")
+    else:
+        print(f"next: {PROG} resume APP (no batch under {paths.home / 'batches'} to retry)")
+    return EXIT_OK
+
+
 def cmd_answer(args: argparse.Namespace) -> int:
+    if args.sheet:
+        return _answer_sheet(args)
+    if not args.application_id:
+        print("error: give APPLICATION_ID, or --sheet FILE", file=sys.stderr)
+        return EXIT_USAGE
     paths = _paths(args)
     store = _open_existing(paths)
     if store is None:
@@ -1073,6 +1111,22 @@ def cmd_holds(args: argparse.Namespace) -> int:
     from .triage import build_holds, render_holds_markdown
 
     paths = _paths(args)
+    if args.sheet:
+        from .sheet import build_sheet, write_sheet
+        from .triage import command_line
+
+        sheet = build_sheet(paths, args.candidate or paths.candidate_id, cli=_cli_prefix(args))
+        try:
+            write_sheet(sheet, Path(args.sheet), force=args.force)
+        except (OSError, FileExistsError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        proposed = sum(1 for q in sheet.questions if q.proposal is not None)
+        print(f"wrote {len(sheet.questions)} question(s) ({proposed} with an unconfirmed "
+              f"proposal) and {len(sheet.actions)} browser action(s) for {sheet.held} held "
+              f"application(s) to {args.sheet} (owner-only). Fill in `answer`, then: "
+              f"{command_line(_cli_prefix(args), 'answer', '--sheet', args.sheet)}")
+        return EXIT_OK
     report = build_holds(paths, args.candidate or paths.candidate_id, cli=_cli_prefix(args))
     if args.json:
         print(_dump(report))
@@ -1294,6 +1348,13 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
     )
     p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
     p.add_argument("--json", action="store_true", help="print the groups as JSON")
+    p.add_argument("--sheet", metavar="FILE",
+                   help="instead of printing the groups, write an answer sheet (owner-only "
+                        "JSON): one entry per distinct question with its options, its field "
+                        "id on every application, `reuse` and `answer: null`, plus browser "
+                        "actions; fill it in and run `answer --sheet FILE`")
+    p.add_argument("--force", action="store_true",
+                   help="with --sheet: replace an existing sheet file")
     p.set_defaults(func=cmd_holds)
 
     p = sub.add_parser("classify", help="observe one URL without filling or advancing forms")
@@ -1314,14 +1375,24 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         description="Save answers to the exact recorded questions (see `status`). Choices "
         "may be given by option value or label; several choices are separated by ';'; "
         "checkboxes take yes or no. Answers stay with this application unless --reuse "
-        "says otherwise. Then run `resume`.",
+        "says otherwise. Then run `resume`. With --sheet FILE (no APPLICATION_ID), apply "
+        "every filled-in entry of an answer sheet written by `holds --sheet` to each of its "
+        "applications with the entry's `reuse`; an entry that does not fit a question as "
+        "recorded is reported by its wording and skipped, a hold answered since its stop is "
+        "left alone, and the output never shows an answer. Then run `prepare-batch --retry`.",
     )
-    p.add_argument("application_id", metavar="APPLICATION_ID")
+    p.add_argument("application_id", nargs="?", metavar="APPLICATION_ID")
     p.add_argument("--set", action="append", metavar="FIELD=VALUE", help="one answer (repeatable)")
     p.add_argument("--answers", metavar="FILE", help="JSON object mapping field id to value")
     p.add_argument("--reuse", choices=["application", "job", "global"], default="application",
                    help="application: this application only (default); job: this job; "
                         "global: any job")
+    p.add_argument("--sheet", metavar="FILE",
+                   help="apply the filled-in answer sheet (from `holds --sheet FILE`) to every "
+                        "application it names")
+    p.add_argument("--batch-id", metavar="ID",
+                   help="with --sheet: the batch to name in the `prepare-batch --retry` line "
+                        "printed at the end (default: the newest batch under $IMX_HOME/batches)")
     p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser(
