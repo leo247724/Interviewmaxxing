@@ -381,6 +381,54 @@ salary from the saved figure), consent and attestation statements (the person's 
 keys), earliest start date (the saved value does not fit the sites' option wordings), and one-off
 questions (county, pronouns, AI tools, familiarity, location preference).
 
+**Second retry on the merged head (22:29, `prepare-batch --retry pilot7-20260924 --all --batch-id
+pilot7-retry2`, j-workspace 9ca484b = WP2 round 9 + WP12 rounds 3–4 + WP7 + WP1 round 10).** 29 of the
+40 applications were run again (9 prepared, 2 need only explicit answers): 0 more prepared, 27 held,
+2 failed (the same BambooHR conditional reveals; WP1 round 11 is on them). Holds went 118 → 115 at
+USD 7.80 of provider cost over 1,846 calls (median 15 s per application). Read from the projected
+`routing.trace` events, the holds fall into six causes, none of them the widget work of the day:
+
+1. *The person's empty keys* (about 20 holds). Thirteen simple-answer keys are still null: pronouns,
+   county, disability status, family government official, non-compete, AI-tools use, familiarity with
+   the company, `career_motivation`, and the five consent/attestation keys. They map one-to-one onto
+   the pronouns, county, "have you used AI tools", "how familiar were you with Upstart", government
+   official (three fields), non-compete, SMS/privacy/AI-policy consents and "I certify" attestations.
+2. *Motivation narratives* (four "why us / why you're a good fit / what interests you" fields). WP12
+   round 4 requires a cited story passage or the `career_motivation` statement before writing; the
+   statement is null and the stories do not mention these employers, so the fields hold before any
+   writer call (trace `motivation_narrative/MOTIVATION_PURPOSE`, no draft). Writing the statement once
+   unlocks them.
+3. *Experience screeners* (34 yes/no, 6 multi-selects, 4 numeric). Story facts are UNVERIFIED until
+   the person trims and imports the two `.confirm.json` files, so the screeners see resume facts only:
+   the platform multi-selects end `fact_screener/UNDECIDED` (SUPPORTED 0.97–1.0 but no option source),
+   the numeric ones `UNKNOWN`. Several are genuine gaps the stories do not cover (Amazon DSP, MMM/MTA,
+   incrementality tests, orthodontics, 500-account portfolios); absence of a fact is never a "No", so
+   those need the person's answer once, globally.
+4. *Saved answers that exist but do not reach the field* (13 holds, all WP2 round 10 follow-up, sent
+   to the cloud session): eight salary wordings (base, target, monthly, hourly, annual, total, "be as
+   specific as possible", range minimum) fail wording equivalence (NONE or BELOW_GATE 0.59–0.67) now
+   that round 9 took SALARY_EXPECTATION out of the type-anchored gate → derive from the saved figure
+   with period conversion; "Earliest Start Date?" (Lever select, four applications) ends
+   `VALUE_DOES_NOT_FIT` 0.87–0.92 then option NONE → bucket the saved date onto the option ranges;
+   "Can you work legally in the United States?" (JazzHR, five options) flipped between Jev 0.98 and
+   0.91 on the status derivation → deterministic plain Yes/No within larger option sets and a repeat
+   decision near the gate; "Location Preference" and "fully in-person in Austin" → a
+   `work_arrangement_preference` key.
+5. *Classifier misses* (seven wordings, sent to the WP10 round 5 cloud session): "Are you authorized
+   to be employed in the United States?" untyped (so no status derivation), "Do you have experience
+   working at a digital marketing agency?" typed CONSENT, "largest overall annual ad spend" typed
+   WEBSITE, the time-zone multi-select untyped although `available_time_zones` is saved, County
+   UNKNOWN, the Paylocity "Company name" untyped, "How well do you know us" UNKNOWN.
+6. *Unsupported controls* (nine holds): Paylocity's address block (Country, State, Address Line 1,
+   County) on two applications, two Greenhouse checkbox groups whose options were not observed, one
+   "double-check the information above" attestation, one CAPTCHA. Candidate WP1 round 12 (Paylocity).
+
+Process bottleneck found: 107 distinct open questions across the 27 held applications, most of them
+legitimately personal, and `holds` answers them one command each. A new cloud round (WP9 round 3)
+builds an answer sheet: `holds --sheet FILE` writes every open question with its options and any
+below-gate proposal marked as unconfirmed, the person fills the answers in one sitting,
+`answer --sheet FILE` saves them with `--reuse global`, then `prepare-batch --retry`.
+
 **Merged late evening (j-workspace 99485ca).** WP1 rounds 7–9 (labels from the shown question,
 BambooHR comboboxes, hidden import inputs, Jobvite, lookup portals and Floating UI's page-wide
 aria-hidden marks, referral wording typed on any control); WP6 with WP8 (dialog wizards, embedded
@@ -404,53 +452,56 @@ carry only stated or resume-linked dates and re-indexes; it also writes "what in
 us" questions as cover-letter narratives (today skipped as personal preferences) and derives
 years-of-experience facts from the resume timeline.
 
-## Bottlenecks to debug next (ordered by jobs affected)
+## Bottlenecks to debug next (ordered by holds affected, after the second retry)
 
-1. **Sign-in-gated backends need the user's Chrome.** LinkedIn Easy Apply (78),
-   Wellfound (30), Indeed (10), Workday (51, account creation), iCIMS (8) and the other
-   blocked buckets total 122–200 jobs. They need the OpenCLI session, one at a time,
-   and OpenCLI cannot attach the resume file itself (Browser Bridge upload is refused),
-   so each needs a manual attach step.
-2. **Custom controls on the largest backends.** Greenhouse and Lever forms use React
-   select widgets for country, work authorization, sponsorship, start date and
-   "how did you hear about us". The runtime operates only unambiguous single-select
-   ARIA listboxes; anything else stops as `needs_input`. The post-fix pilot confirmed
-   it on every Greenhouse and Rippling form reached (phone country picker, location
-   typeahead, work authorization, sponsorship, gender, referral source).
-3. **Resume upload behind styled buttons.** Greenhouse hides the file input behind
-   "Attach / Dropbox / Google Drive / Enter manually"; Lever behind "Attach Resume/CV".
-   The runtime uploads only to a visible or labelled `input[type=file]`.
-4. **Jev near-threshold holds on trivial fields.** A GitHub URL field held once at a
-   0.94 applicant-source score. Profile-URL fields now accept the current-versus-
-   historical ambiguity without an extra call; other identity fields still use the
-   strict clarification, which can flake at the 0.95 threshold.
-5. **Consistency review cost.** Half of the narrative fields escalate to the Opus
-   consistency review (USD 0.056 each) because the Jev check holds compatible facts
-   with the same key. Tightening the consistency criteria or caching the verdict per
-   fact set would cut cost by a third.
-6. **Stale inventory.** 2–3% of Saved jobs are already closed by HTTP evidence alone;
-   run the batch's `closed` outcomes back into the pipeline before the next sweep.
-7. **Dashboard path is single-run and TEST_ONLY.** The service executor runs one
-   application at a time and refuses non-loopback URLs. Bulk preparation goes through
-   the CLI harness; switching the dashboard to LIVE and queueing runs is future work.
-8. **Machine capacity.** Each headless Chromium worker costs 150–300 MB; the
-   find-500 run pushed this 24 GB machine into 19 GB of swap with 30 agents. Keep the
-   batch at 3–4 workers and measure before raising it.
-9. **Submission is still disabled everywhere by design.** Turning it on needs an
-   explicit change to the runner, the store restriction and the browser policy, plus
-   the CAPTCHA-at-submit user step on Greenhouse, Lever, JazzHR and SmartRecruiters.
+1. **The person's inputs.** Thirteen empty simple-answer keys, the `career_motivation`
+   statement and the two story `.confirm.json` files cover roughly half of the 115 holds
+   (one-off consents and attestations, pronouns, county, AI-tools use, familiarity, the
+   motivation narratives, and every screener the stories support). The rest of the
+   personal questions need one global answer each; WP9 round 3 (cloud) builds the answer
+   sheet so that is one sitting rather than 107 commands.
+2. **Saved answers that do not reach typed fields.** Salary wordings (eight variants),
+   the Lever start-date select, the five-option legal select and the work-arrangement
+   questions all have an answer in the profile and still hold on wording equivalence.
+   WP2 round 10 (cloud) derives them from the saved values the way the work-authorization
+   status is derived.
+3. **Classifier misses.** Seven live wordings were untyped or mistyped (an authorization
+   question with no type, an agency-experience question typed CONSENT, an ad-spend
+   question typed WEBSITE, the time-zone multi-select untyped). WP10 round 5 (cloud) adds
+   them to the v13 gates.
+4. **Controls the runtime still cannot operate.** BambooHR conditional reveals fail two
+   applications (WP1 round 11, cloud); Paylocity's address block (country, state, address
+   line, county) and two Greenhouse checkbox groups whose options were never observed
+   hold four more (candidate WP1 round 12).
+5. **Sign-in-gated backends.** LinkedIn Easy Apply is out of scope (the person applies
+   by hand). Wellfound (30), Indeed (10), Workday (51; the account step is left to the
+   person, WP7) and iCIMS (8) still need the person's browser session or an account.
+6. **Submission stays disabled by design.** WP8's approve → authorize → submit path is
+   mock-only; the reviewer's rule stands: no `submit-approved` on a real employer before
+   the cloud rounds land and a review pass covers 551717e..HEAD.
+7. **Cost and capacity.** A 29-application retry costs about USD 7.80 in provider calls
+   (median 15 s per application) at four headless workers; narratives at high effort
+   add USD 0.10–0.30 per field. Keep batches at four workers on this machine.
+8. **Stale inventory and the dashboard.** 2–3% of Saved jobs are already closed
+   (`prepare-batch` moves their cards to Closed); the dashboard executor is still
+   single-run and loopback-only, so bulk preparation goes through the CLI.
 
 ## How to run the next batch
 
 ```bash
-uv run --no-sync python scripts/index_saved_jobs.py --inventory /abs/private/application-urls.json \
-  --env-file /abs/env.local --connection-file /abs/private/connection.json --receipt /abs/private/index.json
-
+# fresh inventory
 uv run --no-sync interviewmaxxing prepare-batch --inventory /abs/private/application-urls.json \
   --backends greenhouse,ashby,lever,workable,rippling,jazzhr,bamboohr,breezy,gem \
-  --workers 3 --limit 40 --ai-routing --env-file /abs/env.local \
+  --workers 4 --per-job-timeout 600 --limit 40 --ai-routing --env-file /abs/env.local \
+  --writer-model anthropic/claude-opus-5.5 --rag-connection-file /abs/private/connection.json
+
+# after answers or fixes: every held and failed application of a batch again
+uv run --no-sync interviewmaxxing prepare-batch --retry BATCH_ID --all --batch-id BATCH_ID-retryN \
+  --workers 4 --per-job-timeout 600 --retry-retryable 1 --ai-routing --env-file /abs/env.local \
   --writer-model anthropic/claude-opus-5.5 --rag-connection-file /abs/private/connection.json
 ```
 
-Review prepared applications with `interviewmaxxing status APP`, the evidence under
-`$IMX_HOME/artifacts/APP/`, and the dashboard. Nothing is submitted by either command.
+A batch that predates recorded run options (pilot 7) does not carry its worker count into a
+retry, so pass `--workers` explicitly. Read the result with `batch-report BATCH_ID`, the open
+questions with `holds`, and one application with `status APP` or `events APP --verbose`.
+Nothing is submitted by any of these commands.
