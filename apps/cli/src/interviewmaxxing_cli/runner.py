@@ -186,6 +186,11 @@ _TRACE_VALUE_KEYS = frozenset({
 """Trace keys that carry fact values, generated prose, review text or typed text."""
 _TRACE_TEXT_LIMIT = 300
 _QUOTED = re.compile(r"""(['"]).*?\1""")
+_UNQUOTED_VALUES = re.compile(
+    r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"          # an email address
+    r"|https?://\S+"                          # a URL
+    r"|\+?\d[\d\s().-]{5,}\d",               # a phone-like run of seven or more digits
+)
 
 
 def project_trace(trace: dict[str, Any]) -> dict[str, Any]:
@@ -207,11 +212,12 @@ def project_trace(trace: dict[str, Any]) -> dict[str, Any]:
 
 
 def redact_detail(detail: str | None) -> str | None:
-    """A fill result's detail with every quoted value replaced by an ellipsis, so the
-    shape ("reads back ['…']") is kept and the value read from the page is not."""
+    """A fill result's detail with every quoted value, and every unquoted email address,
+    URL or phone-like digit run, replaced by an ellipsis, so the shape ("reads back
+    ['…']") is kept and the value read from the page is not."""
     if not detail:
         return None
-    redacted = _QUOTED.sub("'…'", detail)
+    redacted = _UNQUOTED_VALUES.sub("…", _QUOTED.sub("'…'", detail))
     return redacted if len(redacted) <= _TRACE_TEXT_LIMIT else redacted[:_TRACE_TEXT_LIMIT] + "…"
 
 

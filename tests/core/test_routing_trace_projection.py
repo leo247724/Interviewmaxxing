@@ -51,5 +51,9 @@ def test_redact_detail_keeps_the_shape_but_not_the_values():
     assert redact_detail("reads back [\"display '+ 1'\"]") == "reads back ['…']"
     assert redact_detail("reads back 'jane@example.com'") == "reads back '…'"
     assert redact_detail("option not found") == "option not found"
+    assert redact_detail("reads back +1 512 555 0142 (+1)") == "reads back … (+1)"
+    assert redact_detail("typed jane.doe+jobs@example.co.uk into the box") == "typed … into the box"
+    assert redact_detail("shows https://example.com/profile/jane") == "shows …"
+    assert redact_detail("2 of 3 options matched") == "2 of 3 options matched"
     assert redact_detail(None) is None
     assert len(redact_detail("a" * 900) or "") <= 301  # the limit plus the ellipsis
