@@ -134,6 +134,10 @@ class DomControl(_Raw):
     wrapper): every segment in page order, ``{"kind": "month"|"day"|"year", "selector"}``.
     The control stands for the whole date; its ``value`` joins the segments with "/" and
     its ``placeholder`` is the format ("MM/DD/YYYY")."""
+    input_select: dict[str, Any] | None = None
+    """An input-select (a react-select without ARIA roles, Paylocity's Country and State):
+    ``{"display": what its value element shows, "placeholder": bool}``. Its label never
+    includes that text."""
 
 
 class DomButton(_Raw):

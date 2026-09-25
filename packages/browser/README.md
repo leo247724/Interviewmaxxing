@@ -61,6 +61,19 @@ await browser.close()
 - `wait_for_user(reason, timeout_s)` does nothing to the page. It polls until there is no sign-in, CAPTCHA or unoperated required custom control, or the timeout passes, then returns a fresh inspection.
 - `reconcile(url, tie=, lookup_email=)` re-reads the site for a `SUBMISSION_UNKNOWN` application. It follows application-status links and explicit same-origin "View confirmation/receipt" links, and submits only lookup forms with one email field whose *effective* request (including the button's `formmethod`, `formaction` and `formtarget`, re-read from the live page just before the click) is a same-origin GET in the same tab. A page listing several applications (sibling cards, articles, list items or rows of any mix of tags, carrying a status or job identity) is read one record at a time: a status counts only with identity inside the same outermost record, page-level text never ties it, a record also showing a draft/incomplete status is ambiguous, and a new reference ties only a single-record page. When repeated-record boundaries are absent, acceptance, identity and references must share an explicit heading-delimited receipt/job section or one affirmative clause in an ungrouped leaf statement. Sections stop at the next heading; a generic collection heading such as "My applications" is not a job record. Separate paragraphs without that scope, missing scope evidence, conflicting statuses and multiple job ids inside a scope remain UNKNOWN. A newly seen reference alone ties only a single dedicated receipt section immediately after submission. The job id or title must identify this application; a reference seen for the first time ties only the immediate post-submit result, never a later portal. It returns ACCEPTED with signals and a reference, or UNKNOWN, and never touches an application form.
 
+## Round 12: Paylocity controls, cookie banners and four live fixes
+
+Details in `docs/dynamic-runtime.md` ("Round 12"); mocks `paylocity-address` and `bamboohr-required`.
+
+- **react-widgets DropdownList** (`div[role=combobox][aria-owns=<id>__listbox]` showing `--`): probed, a `SELECT` of the shown option texts, chosen by click and read back from its display. Its question is the visible `<label for>` pointing at the div, else `data-for` when that text is shown; required when that label ends with an asterisk.
+- **Input-select** (a react-select without ARIA roles; Paylocity's Country and State): `DomControl.input_select` reports its display; the label leaves it out; `FieldBinding.input_select` routes the `TYPEAHEAD` to `aria.fill_input_select` (focus, type, click the one option equal to the answer, read the display back; a display already equal is left as is; no equal option is `NEEDS_CHOICE`). The browser-validity read skips one that shows a choice.
+- **Street address with suggestions** (`FieldBinding.suggests`): a `TEXT` answer typed, Escape, read back; a suggestion is never chosen.
+- **Cookie banners**: only a decline ("Reject All", "I do not accept", "Necessary cookies only" …) is clicked, when the page opens, before `inspect`/`fill` and when a banner slides in mid-fill; never an accept, "Got it" or "OK".
+- **Uploads** wait for the uploader's own progress (in the upload's own field, not a helper stuck "Loading..." elsewhere, nor a marker that outlasted a bounded wait) up to 60 s.
+- **A choice that makes a question required or optional** re-inspects like a revealed follow-up (round 11) instead of failing; any other change still stops the fill, and the failure names what changed (positions, field ids, kinds of change).
+- **Checkboxes and radios** under something that takes the pointer are set by a click dispatched to the input itself (never a forced pointer click) and read back.
+- **Phone readback** compares digits (formatting and a leading country code 1 ignored).
+
 ## Runner wiring (I1)
 
 Follow CONTRACTS.md section 7. Browser-specific points:

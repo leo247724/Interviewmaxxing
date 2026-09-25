@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-UPLOAD_STATE = r"""({selector, names, anchor}) => {
+UPLOAD_STATE = r"""({selector, names, anchor, stuck}) => {
   const squash = (t) => String(t || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
   const shown = (el) => {
     if (!el || !el.isConnected) return false;
@@ -61,16 +61,35 @@ UPLOAD_STATE = r"""({selector, names, anchor}) => {
     if (!t || BAD.test(t)) continue;
     if (mentions(t) || (box.contains(r) && DONE.test(t))) { notice = t.slice(0, 200); break; }
   }
+  // Progress counts in the control's own field only: the largest box around the input,
+  // inside its container, that holds no other visible field. A helper elsewhere in the
+  // form that stays "Loading..." (Lever's "Apply with LinkedIn" above the resume) is not
+  // this upload's progress, and neither is a marker that already outlasted a whole
+  // bounded wait in this document (``stuck``, worded as the inspector reports it).
+  const FIELDS = 'input:not([type="hidden"]), select, textarea';
+  let field = null;
+  if (el) {
+    for (let n = el.parentElement; n && box.contains(n); n = n.parentElement) {
+      if (Array.from(n.querySelectorAll(FIELDS)).some((f) => f !== el && shown(f))) break;
+      field = n;
+      if (n === box) break;
+    }
+  }
+  field = field || (el && el.parentElement) || box;
+  const known = new Set((stuck || []).map((s) => squash(s)));
   const BUSY = /^(?:uploading|parsing|processing|analy[sz]ing|scanning|loading|autofilling|reading|please wait)\b/i;
   let busy = false;
-  for (const b of box.querySelectorAll('[aria-busy="true"], [role="progressbar"]')) {
-    if (shown(b)) { busy = true; break; }
+  for (const b of field.querySelectorAll('[aria-busy="true"], [role="progressbar"]')) {
+    if (!shown(b)) continue;
+    const marker = ((b.getAttribute('role') || 'busy') + ': ' + (squash(b.innerText) || b.getAttribute('aria-label') || '')).slice(0, 80);
+    if (!known.has(squash(marker))) { busy = true; break; }
   }
   if (!busy) {
-    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(field, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const t = squash(n.nodeValue);
-      if (t && t.length <= 80 && BUSY.test(t) && shown(n.parentElement)) { busy = true; break; }
+      if (!t || t.length > 80 || !BUSY.test(t) || !shown(n.parentElement)) continue;
+      if (!known.has(squash(('text: ' + squash(n.parentElement.textContent)).slice(0, 80)))) { busy = true; break; }
     }
   }
   const FAILED = /\b(?:upload(?:ing)? failed|failed to (?:upload|attach)|could ?n[o'\u2019]?t (?:upload|attach)|unable to (?:upload|attach)|too large|exceeds the maximum|file type is not (?:allowed|supported)|unsupported file|invalid file)\b/i;
@@ -84,7 +103,9 @@ UPLOAD_STATE = r"""({selector, names, anchor}) => {
 }"""
 """Read-only: what one upload control and its surroundings show now. ``names`` are the
 file names to look for (the file the runtime attached); ``anchor`` (optional) is the
-uploader's own container, read when the input itself is gone."""
+uploader's own container, read when the input itself is gone; ``stuck`` (optional) are
+busy markers, as the inspector words them ("text: Loading…"), that already outlasted a
+whole bounded wait in this document and so are not this upload's progress."""
 
 
 @dataclass(frozen=True)
@@ -100,7 +121,7 @@ class UploadState:
     notice: str | None = None
     """A live region or status message that names the file or says it was uploaded."""
     busy: bool = False
-    """A spinner, progress bar or "Uploading..."-style text in the control's box."""
+    """A spinner, progress bar or "Uploading..."-style text in the control's own field."""
     error: str | None = None
     """A visible upload failure message ("Upload failed", "File too large")."""
 

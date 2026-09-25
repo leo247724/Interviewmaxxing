@@ -32,7 +32,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email.message import Message
 from email.utils import collapse_rfc2231_value
@@ -120,7 +120,12 @@ class Field:
     # react_multi, react_async (lookup), div_combobox, search_combobox,
     # remote_lookup (role-less lookup input), rippling_phone and intl_tel; fab_select
     # (BambooHR: a menu button over a hidden proxy <select> that holds only the chosen
-    # option's id, which the form posts).
+    # option's id, which the form posts). Paylocity: rw_dropdown (a react-widgets
+    # DropdownList: a div combobox owning a listbox it mounts on opening, named by a
+    # <label for> and its data-for), pcty_select (a react-select without ARIA roles: an
+    # input under a value div that covers it, a menu of plain divs) and
+    # address_autocomplete (a native combobox input that keeps what is typed and lists
+    # address suggestions; posted natively).
     # Custom uploaders mounted by page script (see SCENARIO_JS) and validated like
     # file: custom_file (a styled button and drop zone over a hidden, unlabeled
     # input) and label_file (a visually hidden input wrapped in its label).
@@ -192,6 +197,15 @@ class Field:
     reveals_on: str | None = None
     """The option value that reveals them (choosing another option removes them again);
     None: any chosen option reveals them."""
+    required_after: str | None = None
+    """A radio group that is optional (no marker at all, as on BambooHR) until the named
+    radio group is answered: the page then marks it required (an asterisk after its
+    question, ``required`` and ``aria-required``) the moment an option there is chosen,
+    and the server requires it only when that group was posted (``revealed_fields``)."""
+    placeholder: str | None = None
+    """What a pcty_select shows while it holds no value ("Select a state")."""
+    suggestions: tuple[str, ...] = ()
+    """The address suggestions an address_autocomplete lists for what is typed."""
 
     @property
     def multi(self) -> bool:
@@ -222,14 +236,18 @@ class Field:
             "disabled": self.disabled,
             "reveals": [r.describe() for r in self.reveals],
             "reveals_on": self.reveals_on,
+            "required_after": self.required_after,
         }
 
 
 def revealed_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> tuple[Field, ...]:
     """``fields`` with the follow-up questions whose trigger option ``form`` posts (or
-    shows) inserted right after their trigger, as the page shows them."""
+    shows) inserted right after their trigger, and the questions ``required_after`` a
+    group ``form`` answers made required, as the page shows them."""
     shown: list[Field] = []
     for f in fields:
+        if f.required_after and not f.required and any(form.get(f.required_after, [])):
+            f = replace(f, required=True)
         shown.append(f)
         if not f.reveals:
             continue
@@ -242,6 +260,7 @@ def revealed_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> tu
 WIDGET_KINDS = frozenset({
     "react_select", "react_multi", "react_async", "div_combobox", "search_combobox",
     "remote_lookup", "rippling_phone", "intl_tel", "fab_select",
+    "rw_dropdown", "pcty_select", "address_autocomplete",
 })
 UPLOADER_KINDS = frozenset({"custom_file", "label_file"})
 FILE_KINDS = frozenset({"file"}) | UPLOADER_KINDS
@@ -493,6 +512,37 @@ STATE_ABBREVIATIONS = {
     "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA",
     "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
 }
+
+# Paylocity (Recruiting/Jobs/Apply): the SMS consent and "worked with us before" are
+# react-widgets DropdownLists; Country and State are input-selects whose value div covers
+# the input; the address line keeps what is typed while it lists suggestions.
+PC_SMS = Field(
+    "info.smsOptedIn", "We may use SMS during the hiring process. Do you give us permission to text you?",
+    "rw_dropdown", True, _options(("true", "Yes"), ("false", "No")), dom_id="info.smsOptedIn",
+    hint="By opting in, you agree to receive text messages about your application from Brambleway "
+         "Analytics. Message and data rates may apply. Reply STOP to opt out at any time.",
+)
+PC_WORKED = Field(
+    "info.haveYouWorkedWithUsBefore", "Have you worked with us before?", "rw_dropdown", True,
+    _options(("true", "Yes"), ("false", "No")), dom_id="info.haveYouWorkedWithUsBefore",
+)
+PC_COUNTRIES = _options(("US", "United States"), ("CA", "Canada"), ("MX", "Mexico"),
+                        ("GB", "United Kingdom"), ("IE", "Ireland"))
+PC_COUNTRY = Field("address.country", "Country", "pcty_select", True, PC_COUNTRIES,
+                   dom_id="public-site-address-country", prefill="US", placeholder="Select a country")
+PC_ADDRESS1 = Field(
+    "address.address1", "Address Line 1", "address_autocomplete", True,
+    dom_id="public-site-address-address-1",
+    suggestions=("1600 Larimer Street, Denver, CO, USA", "1600 Larkspur Lane, Boulder, CO, USA",
+                 "1234 Fictional Avenue, Denver, CO, USA", "1234 Fictional Avenue Suite 200, Denver, CO, USA",
+                 "4455 Brambleway Court, Austin, TX, USA"),
+)
+PC_ADDRESS2 = Field("address.address2", "Address Line 2", "text", dom_id="public-site-address-address-2")
+PC_CITY = Field("address.city", "City", "text", True, dom_id="public-site-address-city")
+PC_STATE = Field("address.state", "State", "pcty_select", True,
+                 tuple(Option(STATE_ABBREVIATIONS[n], n) for n in US_STATE_NAMES),
+                 dom_id="public-site-address-us-state", placeholder="Select a state")
+PC_ZIP = Field("address.zip", "Zip", "text", True, dom_id="public-site-address-zip")
 GH_LOCATION = Field("candidate_location", "Location (City)", "react_async", True, _labels(*CITIES_LONG),
                     dom_id="candidate-location", remote="/__fixture__/cities?style=long&q=")
 RP_LOCATION = Field("location_short", "Location", "remote_lookup", options=_labels(*CITIES_SHORT),
@@ -610,6 +660,33 @@ BH_LOCATED = Field(
     "radio",
     True,
     _options(("yes", "Yes"), ("no", "No")),
+)
+BH_AUTHORIZED = Field(
+    "customQuestionAnswers.yes_no_2101",
+    "Are you legally authorized to work in the United States for any employer?",
+    "radio",
+    True,
+    _options(("Yes", "Yes"), ("No", "No")),
+)
+BH_SPONSORSHIP_ONCE = Field(
+    "customQuestionAnswers.yes_no_2102",
+    "Will you now or will you in the future require employment visa sponsorship?",
+    "radio",
+    options=_options(("Yes", "Yes"), ("No", "No")),
+    required_after="customQuestionAnswers.yes_no_2101",
+)
+"""BambooHR: optional (no marker) until work authorization is answered, then required."""
+BH_IN_AUSTIN = Field(
+    "customQuestionAnswers.yes_no_2103",
+    "This position is in Austin, TX. Are you currently located in Austin?",
+    "radio",
+    options=_options(("Yes", "Yes"), ("No", "No")),
+)
+BH_ONSITE = Field(
+    "customQuestionAnswers.yes_no_2104",
+    "Are you able to work onsite in our Austin office?",
+    "radio",
+    options=_options(("Yes", "Yes"), ("No", "No")),
 )
 BH_STATE = Field("state.value", "State", "fab_select", True,
                  _options(*((str(i + 1), name) for i, name in enumerate(US_STATE_NAMES))),
@@ -801,6 +878,15 @@ class Job:
     the posting and its form (an SPA's first render)."""
     cookie_banner: bool = False
     """A modal cookie-consent dialog covers the page (main is inert) until dismissed."""
+    onetrust: bool = False
+    """A OneTrust cookie banner (``#onetrust-consent-sdk``) slides in over the bottom half of
+    the page shortly after it loads (``?cookie_ms``, 600 ms) and takes the clicks there;
+    "Reject All", "Accept All Cookies" and "Cookies Settings" (ONETRUST_JS)."""
+    review: bool = False
+    """A one-step form that is still followed by the review page (Paylocity: the form's
+    Next control, then the final review); every step uses the step flow."""
+    next_id: str | None = None
+    """Element id of the step form's Next control (Paylocity's ``btn-submit``)."""
     formless: bool = False
     """The questions are not in a <form>: page script posts them (a Rippling-style SPA)."""
     autofill: bool = False
@@ -823,7 +909,7 @@ class Job:
 
     @property
     def multistep(self) -> bool:
-        return len(self.steps) > 1
+        return len(self.steps) > 1 or self.review
 
     @property
     def fields(self) -> tuple[Field, ...]:
@@ -851,6 +937,7 @@ class Job:
             "spa_loading": self.spa_loading,
             "flash_closed": self.flash_closed,
             "cookie_banner": self.cookie_banner,
+            "onetrust": self.onetrust,
             "formless": self.formless,
             "autofill": self.autofill,
             "validity": self.validity,
@@ -1206,6 +1293,41 @@ JOBS: dict[str, Job] = {
             "before the location question that follows. The server validates and records "
             "the follow-ups only when the sponsorship answer was posted.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, BH_SPONSORSHIP, BH_LOCATED),
+        ),
+        Job(
+            "bamboohr-required",
+            "BWA-BH-183",
+            "Paid Media Manager",
+            "Marketing",
+            "Austin, TX (Hybrid)",
+            "A BambooHR-style form of four Yes/No questions whose visa sponsorship question is "
+            "optional (no marker) until the work authorization question above it is answered: "
+            "the page then marks it required (an asterisk after the question, required, "
+            "aria-required) at once, and the server requires it only when the authorization "
+            "answer was posted. No question appears or disappears.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, BH_AUTHORIZED, BH_SPONSORSHIP_ONCE, BH_IN_AUSTIN,
+                    BH_ONSITE),
+        ),
+        Job(
+            "paylocity-address",
+            "BWA-PL-212",
+            "Paid Media Manager",
+            "Marketing",
+            "Denver, CO (Hybrid)",
+            "A Paylocity-style application step before the review page (its Next control is "
+            "#btn-submit). The SMS consent and \"Have you worked with us before?\" are "
+            "react-widgets DropdownLists: a div combobox owning the listbox it mounts on "
+            "opening, named by a <label for> that points at it and by data-for. Country "
+            "(already \"United States\") and State (\"Select a state\") are input-selects "
+            "without ARIA roles: the <label> wraps the widget, a value div covers the input and "
+            "takes the pointer, and typing lists the matches as plain divs. Address Line 1 is a "
+            "combobox input that keeps what is typed while it lists longer address suggestions. "
+            "A OneTrust banner slides over the bottom half of the page 600 ms after it loads.",
+            (Step("Application", (FIRST_NAME, LAST_NAME, EMAIL, PHONE, PC_SMS, PC_WORKED, PC_COUNTRY,
+                                  PC_ADDRESS1, PC_ADDRESS2, PC_CITY, PC_STATE, PC_ZIP)),),
+            review=True,
+            onetrust=True,
+            next_id="btn-submit",
         ),
         Job(
             "workable-like",
@@ -1811,6 +1933,8 @@ def _required_message(f: Field) -> str:
     if f.kind in ("select", "radio", "custom_combobox", "react_select", "div_combobox",
                   "search_combobox", "react_async", "remote_lookup", "fab_select"):
         return "Select an answer."
+    if f.kind in ("rw_dropdown", "pcty_select"):
+        return "Select an answer."
     if f.kind == "checkbox":
         return "Check this box to continue."
     if f.multi:
@@ -2028,6 +2152,28 @@ dl.review dd{margin:0}
 
 
 WIDGET_STYLE = """
+.pcty-label{display:block;font-weight:600;margin-bottom:.3rem}
+.rw-dropdownlist{display:flex;align-items:center;border:1px solid #8a94a6;border-radius:4px;min-height:38px;
+background:#fff;position:relative;cursor:pointer;padding:0 .5rem}
+.rw-dropdownlist .rw-input{flex:1}
+.rw-dropdownlist-picker{width:1.25rem;height:1.25rem;display:inline-block}
+.rw-popup-container{position:absolute;top:100%;left:0;right:0;z-index:30;background:#fff;border:1px solid #8a94a6}
+.rw-list{list-style:none;margin:0;padding:0}
+.rw-list-option{padding:.4rem .6rem}
+.pcty-input-select{position:relative;font-weight:400;margin-top:.3rem}
+.pcty-input-select__control{display:flex;align-items:center;border:1px solid #8a94a6;border-radius:4px;min-height:38px;background:#fff}
+.pcty-input-select__value-container{position:relative;flex:1;min-height:36px}
+.pcty-input-select__input input{width:100%;border:0;min-height:36px;padding:0 .5rem;box-sizing:border-box}
+.input-select-input-single-value{position:absolute;inset:0;z-index:2;background:#fff;padding:.5rem;cursor:text}
+.input-select-input-placeholder{color:#6b7280}
+.pcty-input-select__indicator{display:inline-block;width:1.5rem}
+.pcty-input-select__menu{position:absolute;top:100%;left:0;right:0;z-index:30;background:#fff;border:1px solid #8a94a6}
+.pcty-input-select__option{padding:.4rem .6rem;cursor:pointer}
+.pcty-input-select__option--is-focused{background:#e2e8f0}
+.pcty-address{position:relative}
+.pcty-address-list{position:absolute;top:100%;left:0;right:0;z-index:30;background:#fff;border:1px solid #8a94a6;
+list-style:none;margin:0;padding:0}
+.pcty-address-list li{padding:.4rem .6rem}
 .tt-upload label{display:block;font-weight:600;margin-bottom:.3rem}
 .tt-trigger{position:relative;border:2px dashed #8a94a6;border-radius:6px;padding:1rem;overflow:hidden}
 .tt-preview{border:1px solid #cbd5e0;border-radius:6px;padding:.6rem 1rem}
@@ -3038,9 +3184,134 @@ WIDGETS_JS = r"""(function () {
     render();
   }
 
+  // Paylocity's react-widgets DropdownList: a div combobox (aria-haspopup="true") owning the
+  // listbox it mounts inside itself on opening (a click, or Space/ArrowDown while focused);
+  // a choice, Escape or a click elsewhere removes it. The choice's text replaces "--" in
+  // .rw-input. Fixture control: hooks.selectNext[name] takes the next option.
+  function rwDropdown(holder) {
+    var cfg = config(holder);
+    var box = holder.querySelector("[role=combobox]");
+    var display = box.querySelector(".rw-input");
+    var st = state[cfg.name] = {value: cfg.initial || null};
+    var popup = null;
+    var labelOf = function (v) { var hit = cfg.options.filter(function (o) { return o[0] === v; })[0]; return hit ? hit[1] : ""; };
+    function render() { display.textContent = st.value === null ? "--" : labelOf(st.value); }
+    function close() {
+      if (popup) { popup.remove(); popup = null; }
+      box.setAttribute("aria-expanded", "false");
+      box.removeAttribute("aria-activedescendant");
+    }
+    function open() {
+      if (popup) return;
+      popup = el("div", {"class": "rw-popup-container"});
+      var list = el("ul", {id: cfg.id + "__listbox", role: "listbox", tabindex: "-1", "class": "rw-list"});
+      cfg.options.forEach(function (o, i) {
+        var li = el("li", {id: cfg.id + "__option__" + i, role: "option", tabindex: "-1", "class": "rw-list-option",
+                           "aria-selected": String(o[0] === st.value)}, o[1]);
+        li.addEventListener("mousedown", function (e) { e.preventDefault(); });
+        li.addEventListener("click", function (e) {
+          e.stopPropagation();
+          st.value = cfg.options[shift(cfg.name, i, cfg.options.length)][0];
+          render(); close();
+        });
+        list.appendChild(li);
+      });
+      popup.appendChild(list);
+      box.appendChild(popup);
+      box.setAttribute("aria-expanded", "true");
+    }
+    box.addEventListener("click", function () { if (popup) close(); else open(); });
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      else if (!popup && (e.key === " " || e.key === "ArrowDown")) { e.preventDefault(); open(); }
+    });
+    document.addEventListener("mousedown", function (e) { if (popup && !box.contains(e.target)) close(); });
+    render();
+  }
+
+  // Paylocity's input-select, a react-select without ARIA roles: a text input under a
+  // "single value" div that covers it and takes the pointer (a press on it focuses the
+  // input). Typing lists the matching options as plain divs in the same container; Enter
+  // takes the first, a click the one clicked; the value div then shows the choice and the
+  // input is emptied. Blur or Escape drops the typed text.
+  function pctySelect(root) {
+    var cfg = config(root);
+    var input = root.querySelector("input");
+    var single = root.querySelector(".input-select-input-single-value");
+    var st = state[cfg.name] = {value: cfg.initial || null};
+    var menu = null, shown = [];
+    var labelOf = function (v) { var hit = cfg.options.filter(function (o) { return o[0] === v; })[0]; return hit ? hit[1] : ""; };
+    function render() {
+      var has = st.value !== null;
+      single.textContent = has ? labelOf(st.value) : cfg.placeholder;
+      single.className = "input-select-input-single-value" + (has ? "" : " input-select-input-placeholder");
+      single.style.visibility = input.value ? "hidden" : "visible";
+    }
+    function close() { if (menu) { menu.remove(); menu = null; } }
+    function list() {
+      var q = norm(input.value);
+      shown = cfg.options.filter(function (o) { return q && norm(o[1]).indexOf(q) >= 0; });
+      close();
+      if (!q) return;
+      menu = el("div", {"class": "pcty-input-select__menu"});
+      var inner = el("div", {"class": "pcty-input-select__menu-list"});
+      if (!shown.length) inner.appendChild(el("div", {"class": "pcty-input-select__menu-notice"}, "No options"));
+      shown.forEach(function (o, i) {
+        var item = el("div", {"class": "pcty-input-select__option" + (i === 0 ? " pcty-input-select__option--is-focused" : "")}, o[1]);
+        item.addEventListener("mousedown", function (e) { e.preventDefault(); });
+        item.addEventListener("click", function () { choose(o); });
+        inner.appendChild(item);
+      });
+      menu.appendChild(inner);
+      root.appendChild(menu);
+    }
+    function choose(o) { st.value = o[0]; input.value = ""; close(); render(); }
+    single.addEventListener("mousedown", function (e) { e.preventDefault(); input.focus(); });
+    input.addEventListener("input", function () { render(); list(); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && menu && shown.length) { e.preventDefault(); choose(shown[0]); }
+      else if (e.key === "Escape") { close(); input.value = ""; render(); }
+    });
+    input.addEventListener("blur", function () { close(); input.value = ""; render(); });
+    render();
+  }
+
+  // Paylocity's address line: a native combobox input that keeps what is typed. Three or
+  // more typed characters list the fictional addresses that contain them (longer than
+  // what was typed); Escape or a click elsewhere closes the list; a click on a suggestion
+  // writes it into the input.
+  function addressAutocomplete(root) {
+    var cfg = config(root);
+    var input = root.querySelector("input");
+    var list = document.getElementById(cfg.id + "-autocomplete-list");
+    var status = root.querySelector("[role=status]");
+    window.__addressPicked = null;
+    function close() { list.hidden = true; list.textContent = ""; input.setAttribute("aria-expanded", "false"); }
+    input.addEventListener("input", function () {
+      var q = norm(input.value);
+      if (q.length < 3) { close(); return; }
+      var hits = cfg.suggestions.filter(function (s) { return norm(s).indexOf(q) >= 0; });
+      list.textContent = "";
+      hits.forEach(function (s, i) {
+        var li = el("li", {role: "option", id: cfg.id + "-suggestion-" + i, "aria-selected": "false"}, s);
+        li.addEventListener("mousedown", function (e) { e.preventDefault(); });
+        li.addEventListener("click", function () { input.value = s; window.__addressPicked = s; close(); });
+        list.appendChild(li);
+      });
+      list.hidden = !hits.length;
+      input.setAttribute("aria-expanded", hits.length ? "true" : "false");
+      status.textContent = hits.length ? hits.length + " suggestions available" : "";
+    });
+    input.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
+    document.addEventListener("mousedown", function (e) { if (!root.contains(e.target)) close(); });
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-mount]"), function (holder) {
     holder.innerHTML = JSON.parse(holder.getAttribute("data-widget-mount")).html;
   });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=rw-dropdown]"), rwDropdown);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=pcty-select]"), pctySelect);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=address-autocomplete]"), addressAutocomplete);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=react-select]"), reactSelect);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=div-combobox]"), divCombobox);
   Array.prototype.forEach.call(document.querySelectorAll("[data-widget-kind=fab-select]"), fabSelect);
@@ -3060,6 +3331,28 @@ WIDGETS_JS = r"""(function () {
       });
     });
   });
+})();"""
+
+
+ONETRUST_JS = r"""(function () {
+  "use strict";
+  // OneTrust's banner: shown shortly after load unless a choice was made on an earlier
+  // page; the choice is recorded for the tests and the banner hidden.
+  var banner = document.getElementById("onetrust-banner-sdk");
+  var params = new URLSearchParams(location.search);
+  var delay = parseInt(params.get("cookie_ms") || "600", 10);
+  var closed = document.cookie.split("; ").filter(function (c) { return c.indexOf("OptanonAlertBoxClosed=") === 0; })[0];
+  window.__cookieChoice = closed ? closed.split("=")[1] : null;
+  window.__cookieSettingsOpened = 0;
+  function choose(choice) {
+    window.__cookieChoice = choice;
+    document.cookie = "OptanonAlertBoxClosed=" + choice + "; path=/; max-age=86400";
+    banner.classList.remove("ot-show");
+  }
+  document.getElementById("onetrust-reject-all-handler").addEventListener("click", function () { choose("reject"); });
+  document.getElementById("onetrust-accept-btn-handler").addEventListener("click", function () { choose("accept"); });
+  document.getElementById("onetrust-pc-btn-handler").addEventListener("click", function () { window.__cookieSettingsOpened += 1; });
+  if (!closed) setTimeout(function () { banner.classList.add("ot-show"); }, delay);
 })();"""
 
 
@@ -3389,6 +3682,32 @@ REVEAL_JS = r"""(function () {
         else unmount();
       });
       if (radio.checked && triggers(radio.value)) mount();
+    });
+  });
+  // BambooHR-style conditional requiredness: a question [data-required-after=<group>]
+  // becomes required (an asterisk after its question, required, aria-required) the
+  // moment an option of that group is chosen. window.__mock.required counts the marks.
+  mock.required = 0;
+  Array.prototype.forEach.call(document.querySelectorAll("[data-required-after]"), function (box) {
+    var name = box.getAttribute("data-required-after");
+    function mark() {
+      if (box.getAttribute("aria-required") === "true") return;
+      box.setAttribute("aria-required", "true");
+      Array.prototype.forEach.call(box.querySelectorAll("input"), function (input) { input.required = true; });
+      var legend = box.querySelector("legend");
+      if (legend) {
+        var star = document.createElement("span");
+        star.setAttribute("aria-hidden", "true");
+        star.textContent = "*";
+        legend.appendChild(document.createTextNode(" "));
+        legend.appendChild(star);
+      }
+      mock.required++;
+      mock.log.push({t: Math.round(performance.now()), event: "required", detail: box.id});
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="' + CSS.escape(name) + '"]'), function (radio) {
+      radio.addEventListener("change", function () { if (radio.checked) mark(); });
+      if (radio.checked) mark();
     });
   });
 })();"""
@@ -4458,6 +4777,65 @@ def render_widget(f: Field, values: dict[str, list[str]], error: str | None) -> 
            f"{esc(error)}</p>") if error else ""
     options = [[o.value, o.label] for o in f.options]
 
+    if f.kind == "rw_dropdown":
+        # Paylocity's react-widgets DropdownList: a div combobox (aria-haspopup="true")
+        # that owns its listbox by aria-owns; the listbox exists only while it is open. The
+        # <label for> points at the div (not a labelable element), and data-for repeats the
+        # question. The chosen option's text replaces "--" in .rw-input.
+        chosen = current if current is not None else f.prefill
+        shown = next((o.label for o in f.options if o.value == chosen), "")
+        settings = {"id": dom, "name": f.name, "options": options, "initial": chosen if shown else None}
+        hint = (f'<p class="hint pcty-hint" id="{esc(dom)}-hint">{esc(f.hint)}</p>') if f.hint else ""
+        return (
+            f'<div class="field pcty-field"><label class="pcty-label" for="{esc(dom)}">{esc(f.label)}{marker}</label>'
+            f'{hint}{err}<div class="rw-holder"{_widget_attrs("rw-dropdown", settings)}>'
+            f'<div data-for="{esc(f.label)}" id="{esc(dom)}" role="combobox" aria-owns="{esc(dom)}__listbox" '
+            'aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" tabindex="0" '
+            'class="rw-dropdownlist rw-widget"><span tabindex="-1" title="open dropdown" aria-label="open dropdown" '
+            'class="rw-dropdownlist-picker rw-select rw-btn"><svg aria-hidden="true" viewBox="0 0 16 16"></svg></span>'
+            f'<div class="rw-input">{esc(shown) if shown else "--"}</div></div></div></div>'
+        )
+
+    if f.kind == "pcty_select":
+        # Paylocity's input-select (a react-select without ARIA roles): the <label> (for the
+        # input) wraps the whole widget, so its text holds what the widget shows; a "single
+        # value" div covers the input (and takes the pointer), and typing lists the matching
+        # options as plain divs in the same container.
+        chosen = current if current is not None else f.prefill
+        shown = next((o.label for o in f.options if o.value == chosen), "")
+        placeholder = f.placeholder or "Select..."
+        settings = {"id": dom, "name": f.name, "options": options, "initial": chosen if shown else None,
+                    "placeholder": placeholder}
+        value_class = "input-select-input-single-value" + ("" if shown else " input-select-input-placeholder")
+        return (
+            f'<div class="field pcty-field"><label class="pcty-label pcty-select-label" for="{esc(dom)}">'
+            f'<span class="pcty-label-text">{esc(f.label)}{marker}</span>{err}'
+            f'<div class="pcty-input-select"{_widget_attrs("pcty-select", settings)}>'
+            '<div class="pcty-input-select__control"><div class="pcty-input-select__value-container">'
+            f'<div class="{value_class}">{esc(shown or placeholder)}</div>'
+            '<div class="pcty-input-select__input"><input aria-autocomplete="list" autocapitalize="none" '
+            f'autocorrect="off" id="{esc(dom)}" maxlength="250"{" required" if f.required else ""} type="text" value="">'
+            '</div></div><div class="pcty-input-select__indicators"><span class="pcty-input-select__indicator">'
+            '<svg aria-hidden="true" viewBox="0 0 16 16"></svg></span></div></div></div></label></div>'
+        )
+
+    if f.kind == "address_autocomplete":
+        # Paylocity's address line: a native combobox input that keeps whatever is typed;
+        # page script lists address suggestions under it (two role=status regions announce
+        # them). Posted natively.
+        typed = current or ""
+        settings = {"id": dom, "suggestions": list(f.suggestions)}
+        return (
+            f'<div class="field"><label for="{esc(dom)}">{esc(f.label)}{marker}</label>{err}'
+            f'<div class="pcty-address"{_widget_attrs("address-autocomplete", settings)}>'
+            f'<input role="combobox" aria-autocomplete="list" aria-controls="{esc(dom)}-autocomplete-list" '
+            f'aria-expanded="false" autocomplete="off" maxlength="50"{" required" if f.required else ""} '
+            f'type="text" id="{esc(dom)}" name="{esc(f.name)}" value="{esc(typed)}">'
+            '<div role="status" aria-live="polite" class="visually-hidden"></div>'
+            '<div role="status" aria-live="assertive" class="visually-hidden"></div>'
+            f'<ul id="{esc(dom)}-autocomplete-list" role="listbox" class="pcty-address-list" hidden></ul></div></div>'
+        )
+
     if f.kind == "fab_select":
         # BambooHR markup (Fabric): the <label> names the hidden proxy <select>, which holds
         # only the chosen option's id; the menu button beside it repeats the label and what
@@ -4812,7 +5190,8 @@ def render_field(
 
     if f.kind in ("radio", "checkbox_group"):
         input_type = "radio" if f.kind == "radio" else "checkbox"
-        legend_marker = marker
+        # A question required only once another is answered shows no marker until then.
+        legend_marker = "" if f.required_after and not f.required else marker
         choices = []
         for i, o in enumerate(f.options):
             oid = f"{fid}-{i}"
@@ -4826,6 +5205,8 @@ def render_field(
         group_aria = f' aria-describedby="{" ".join(described)}"' if described else ""
         role = ' role="radiogroup"' if f.kind == "radio" else ""
         req = ' aria-required="true"' if f.required and f.kind == "radio" else ""
+        if f.required_after:
+            req += f' data-required-after="{esc(f.required_after)}"'
         group = (
             f'<fieldset class="field" id="{fid}"{role}{req}{group_aria}>'
             f"<legend>{esc(f.label)}{legend_marker}</legend>{hint}{err}"
@@ -5064,6 +5445,38 @@ def render_flash_closed(body_html: str) -> str:
         "notFound.replaceWith(template.content.cloneNode(true));"
         "template.remove();"
         "}, 800);</script>"
+    )
+
+
+ONETRUST_COOKIE = "OptanonAlertBoxClosed"
+ONETRUST_STYLE = """
+#onetrust-banner-sdk{position:fixed;left:0;right:0;bottom:0;z-index:2147483645;min-height:52vh;background:#fff;
+box-shadow:0 -2px 12px rgba(0,0,0,.25);padding:1.25rem 1.5rem;box-sizing:border-box;display:none}
+#onetrust-banner-sdk.ot-show{display:block}
+#onetrust-button-group{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem}
+#onetrust-button-group button{padding:.6rem 1rem}
+"""
+
+
+def render_onetrust_banner() -> str:
+    """OneTrust's consent banner as sites ship it: a fixed, non-modal region over the
+    bottom half of the page that appears shortly after the page loads (``?cookie_ms``,
+    600 ms) and takes the pointer there. "Reject All" and "Accept All Cookies" record the
+    choice (``window.__cookieChoice`` and the ``OptanonAlertBoxClosed`` cookie, so the next
+    page shows no banner) and hide it; "Cookies Settings" only records that it was opened."""
+    return (
+        '<div id="onetrust-consent-sdk"><div id="onetrust-banner-sdk" class="otFlat" tabindex="0" '
+        'role="region" aria-label="Cookie banner"><div id="onetrust-group-container">'
+        '<div id="onetrust-policy"><h2 id="onetrust-policy-title">We value your privacy</h2>'
+        '<p id="onetrust-policy-text">We use cookies to personalise content and ads, to provide social '
+        "media features and to analyse our traffic. You can accept all cookies or reject the ones that "
+        "are not necessary.</p></div></div>"
+        '<div id="onetrust-button-group-parent"><div id="onetrust-button-group">'
+        '<button id="onetrust-pc-btn-handler" type="button">Cookies Settings</button>'
+        '<button id="onetrust-reject-all-handler" type="button">Reject All</button>'
+        '<button id="onetrust-accept-btn-handler" type="button">Accept All Cookies</button>'
+        "</div></div></div></div>"
+        f"<script>{ONETRUST_JS}</script>"
     )
 
 
@@ -5628,7 +6041,7 @@ class Handler(BaseHTTPRequestHandler):
         widgets = any(f.scripted for f in fields)
         if widgets:
             form_html += f"<script>{WIDGETS_JS}</script>"
-        if any(f.reveals for f in fields):
+        if any(f.reveals or f.required_after for f in fields):
             form_html += f"<script>{REVEAL_JS}</script>"
         if job.formless:
             form_html += f"<script>{FORMLESS_JS}</script>"
@@ -5753,6 +6166,10 @@ class Handler(BaseHTTPRequestHandler):
         fields = revealed_fields(step.fields, values)
         has_file = any(f.kind == "file" for f in fields)
         enctype = "multipart/form-data" if has_file else "application/x-www-form-urlencoded"
+        submit_id = f' id="{esc(job.next_id)}"' if job.next_id else ""
+        # An input-select's input stays empty (its value lives in page state) while it is
+        # required: like Paylocity, the step validates in script, not natively.
+        novalidate = " novalidate" if any(f.kind == "pcty_select" for f in fields) else ""
         back = ""
         if n > 1 and draft is not None:
             back = f' <a href="/jobs/{job.slug}/apply/{draft["draft_id"]}/step/{n - 1}">Back</a>'
@@ -5760,19 +6177,27 @@ class Handler(BaseHTTPRequestHandler):
             _job_heading(job)
             + self._progress(job, n)
             + render_error_summary(_summary_entries(fields, errors))
-            + f'<form method="post" action="{action}" enctype="{enctype}" '
+            + f'<form method="post" action="{action}" enctype="{enctype}"{novalidate} '
             f'aria-labelledby="form-title"><h2 id="form-title">{esc(step.title)}</h2>'
             '<p class="hint">Fields marked with * are required.</p>'
             + "".join(
                 render_field(f, values, errors.get(f.name), retained.get(f.name))
                 for f in fields
             )
-            + f'<button type="submit">Continue</button>{back}</form>'
+            + f'<button type="submit"{submit_id}>Continue</button>{back}</form>'
         )
-        if any(f.reveals for f in fields):
+        widgets = any(f.scripted for f in fields)
+        if widgets:
+            body += f"<script>{WIDGETS_JS}</script>"
+        if any(f.reveals or f.required_after for f in fields):
             body += f"<script>{REVEAL_JS}</script>"
+        head = f"<style>{WIDGET_STYLE}</style>" if widgets else ""
+        after_main = ""
+        if job.onetrust:
+            head += f"<style>{ONETRUST_STYLE}</style>"
+            after_main = render_onetrust_banner()
         prefix = "Error: " if errors else ""
-        self._send_html(status, page(f"{prefix}{step.title}: {job.title}", body))
+        self._send_html(status, page(f"{prefix}{step.title}: {job.title}", body, head, after_main=after_main))
 
     def get_review(self, slug: str, draft_id: str) -> None:
         job = self._job(slug)
@@ -5808,7 +6233,10 @@ class Handler(BaseHTTPRequestHandler):
             'aria-labelledby="form-title"><button type="submit">Submit application</button> '
             f'<a href="/jobs/{slug}/apply/{draft_id}/step/{len(job.steps)}">Back</a></form>'
         )
-        self._send_html(HTTPStatus.OK, page(f"Review: {job.title}", body))
+        head, after_main = "", ""
+        if job.onetrust:
+            head, after_main = f"<style>{ONETRUST_STYLE}</style>", render_onetrust_banner()
+        self._send_html(HTTPStatus.OK, page(f"Review: {job.title}", body, head, after_main=after_main))
 
     def post_submit(self, slug: str, draft_id: str) -> None:
         job = self._job(slug)

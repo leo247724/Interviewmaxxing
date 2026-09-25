@@ -263,8 +263,53 @@ const comboDisplayNodes = (el) => {
     return ariaVisible(n) && r.top - 1 <= mid && mid <= r.bottom + 1;
   });
 };
-// "-- Select --", and BambooHR's "Select" between en dashes (any dash punctuation, \p{Pd}).
-const comboPlaceholderText = /^(?:(?:please\s+)?(?:select|choose|pick)(?:\s+(?:an?|one|your|the)\b.{0,40})?|search|(?:type|start typing)\b.{0,40}|\p{Pd}+\s*(?:select|choose)\b.{0,40})\s*(?:\.\.\.|…|:)?\s*\p{Pd}*$/iu;
+// "-- Select --", BambooHR's "Select" between en dashes (any dash punctuation, \p{Pd}),
+// and dashes alone (react-widgets' "--" while nothing is chosen).
+const comboPlaceholderText = /^(?:(?:please\s+)?(?:select|choose|pick)(?:\s+(?:an?|one|your|the)\b.{0,40})?|search|(?:type|start typing)\b.{0,40}|\p{Pd}+\s*(?:select|choose)\b.{0,40}|\p{Pd}+)\s*(?:\.\.\.|…|:)?\s*\p{Pd}*$/iu;
+// A react-select without ARIA roles (Paylocity's input-select): a text input with
+// aria-autocomplete="list" and no role, whose control shows its value (or a placeholder)
+// in an element that covers the input, classed *single-value* or *placeholder*. The
+// widget's own box is the highest ancestor holding no other form field; its menu, shown
+// while something is typed, lists the matches as elements classed *option*.
+const inputSelect = (el) => {
+  if (!el || el.tagName !== 'INPUT' || el.getAttribute('role')) return null;
+  if ((el.getAttribute('aria-autocomplete') || '').toLowerCase() !== 'list') return null;
+  // A lookup that announces its list (Rippling's role-less location input) is a menu control.
+  if ((el.getAttribute('aria-haspopup') || 'false').toLowerCase() !== 'false') return null;
+  if (!['', 'text', 'search'].includes((el.getAttribute('type') || '').toLowerCase())) return null;
+  const valueClass = /single-?value|placeholder/i;
+  const fields = 'input:not([type=hidden]),select,textarea';
+  let shown = null;
+  // The value element is looked for only in the input's own widget: boxes around it that
+  // hold no other field (never another select's placeholder elsewhere in the form).
+  for (let box = el.parentElement, depth = 0; box && box !== document.body && depth < 4 && !shown; box = box.parentElement, depth++) {
+    if ([...box.querySelectorAll(fields)].some((f) => f !== el)) break;
+    shown = [...box.querySelectorAll('[class]')].find((n) => n !== el && !n.contains(el)
+      && valueClass.test(n.getAttribute('class') || '') && !n.querySelector('input,select,textarea')) || null;
+  }
+  if (!shown) return null;
+  let root = shown.parentElement;
+  while (root && !root.contains(el)) root = root.parentElement;
+  while (root && root.parentElement && root.parentElement !== document.body
+         && [...root.parentElement.querySelectorAll(fields)].every((f) => f === el)) root = root.parentElement;
+  const text = ariaText(shown.textContent);
+  const placeholder = /placeholder/i.test(shown.getAttribute('class') || '') || !text || comboPlaceholderText.test(text);
+  const options = root ? [...root.querySelectorAll('[class]')].filter((n) => /(?:^|[\s_-])option(?:$|[\s_-])|__option\b/i.test(n.getAttribute('class') || '')
+    && !n.querySelector('[class*="option" i]') && ariaVisible(n) && ariaText(n.textContent)) : [];
+  return {root, shown, display: placeholder ? '' : text, placeholder, options};
+};
+// A CSS path to a node: from the nearest ancestor with a unique id, by element position.
+const ariaPath = (node) => {
+  const parts = [];
+  for (let n = node; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
+    if (n.id && ariaUniqueId(n.id)) { parts.unshift('#' + CSS.escape(n.id)); break; }
+    const p = n.parentElement;
+    if (!p) { parts.unshift(n.tagName.toLowerCase()); break; }
+    const same = [...p.children].filter((c) => c.tagName === n.tagName);
+    parts.unshift(n.tagName.toLowerCase() + (same.length > 1 ? ':nth-of-type(' + (same.indexOf(n) + 1) + ')' : ''));
+  }
+  return parts.join(' > ');
+};
 const comboDisplay = (el) => {
   if (pickerSearch(el)) {
     const text = pickerChosen(el).join(', ');
@@ -481,6 +526,19 @@ PHONE_STATE = "(selector) => {" + ARIA_HELPERS + """
     picker: picker ? {kind: picker.kind, text: phonePickerText(picker)} : null};
 }"""
 """Read-only value of a tel input and the text of its own country picker."""
+
+INPUT_SELECT_STATE = "(selector) => {" + ARIA_HELPERS + """
+  let found;
+  try { found = document.querySelectorAll(selector); } catch (e) { return {error: 'invalid selector'}; }
+  if (found.length !== 1) return {error: 'control is missing or ambiguous'};
+  const el = found[0], widget = inputSelect(el);
+  if (!widget) return {error: 'not an input-select'};
+  return {origin: String(performance.timeOrigin), url: location.href, input: el.value,
+    display: widget.display, placeholder: widget.placeholder,
+    options: widget.options.map((o) => ({label: ariaText(o.textContent), selector: ariaPath(o)}))};
+}"""
+"""Read-only state of an input-select (a react-select without ARIA roles): what its value
+element shows, whether that is a placeholder, and the options its menu lists now."""
 
 ENTER_SAFE = """(selector) => {
   let found;
@@ -1501,6 +1559,66 @@ async def fill_lookup(
                 and (typed == "" or _norm(typed) == _norm(chosen)))
     detail = "" if verified else f"shows {display!r} after choosing {chosen!r}"
     return LookupOutcome(chosen, verified=verified, suggestions=tuple(suggestions), detail=detail)
+
+
+# --- input-selects (react-select without ARIA roles) --------------------------------------------
+
+
+async def fill_input_select(driver: PageDriver, selector: str, text: str) -> LookupOutcome:
+    """Choose ``text`` in an input-select (Paylocity's Country and State: a react-select
+    without ARIA roles whose value element covers the input). A widget already showing
+    ``text`` is verified as it is. Otherwise the input is focused (never clicked: the
+    value element takes the pointer) and ``text`` typed; of the options its menu then
+    lists (plain elements classed *option*), the one whose text equals ``text`` is clicked
+    and the value element read back. With no such option, or several, Escape drops the
+    typed text and the listed options are returned as suggestions."""
+    from .driver import NotActionable
+
+    async def read() -> dict[str, Any]:
+        state = await driver.evaluate(INPUT_SELECT_STATE, selector)
+        if not isinstance(state, dict) or state.get("error"):
+            reason = state.get("error") if isinstance(state, dict) else "invalid response"
+            raise NotActionable(f"the input-select is not readable: {reason}")
+        return state
+
+    state = await read()
+    if not state.get("placeholder") and _norm(str(state.get("display") or "")) == _norm(text):
+        return LookupOutcome(str(state.get("display")), verified=True, detail="already shows this value")
+    await driver.focus(selector)
+    if state.get("input"):
+        await driver.clear_text(selector)
+    await driver.type_text(selector, text, delay_s=_TYPE_DELAY_S)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    last: tuple[str, ...] | None = None
+    stable_since = started
+    while True:
+        state = await read()
+        labels = tuple(str(o.get("label") or "") for o in state.get("options") or [])
+        now = loop.time()
+        if labels != last:
+            last, stable_since = labels, now
+        if (labels and now - stable_since >= _SUGGESTION_STABLE_S) or now - started >= _NO_SUGGESTION_GRACE_S:
+            break
+        await asyncio.sleep(_POLL_S)
+    options = [o for o in state.get("options") or [] if o.get("label")]
+    exact = [o for o in options if _norm(str(o["label"])) == _norm(text)]
+    suggestions = tuple(str(o["label"])[:200] for o in options[:_MAX_SUGGESTIONS])
+    if len(exact) != 1:
+        await driver.press(selector, "Escape")  # drops the typed text; nothing is chosen
+        detail = ("the site offered no option for the typed value" if not options
+                  else "no option equals the typed value" if not exact
+                  else f"{len(exact)} options equal the typed value")
+        return LookupOutcome(None, suggestions=suggestions, detail=detail)
+    chosen = str(exact[0]["label"])
+    await driver.click(str(exact[0]["selector"]))
+    after = await _poll(read, lambda s: not s.get("placeholder") and _norm(str(s.get("display") or "")) == _norm(chosen),
+                        _COMMIT_WAIT_S)
+    shown = "" if after.get("placeholder") else str(after.get("display") or "")
+    verified = _norm(shown) == _norm(chosen)
+    return LookupOutcome(chosen, verified=verified, suggestions=suggestions,
+                         detail="" if verified else f"shows {shown!r} after choosing {chosen!r}")
 
 
 # --- phone numbers with a country picker ------------------------------------------------------

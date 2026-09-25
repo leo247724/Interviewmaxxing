@@ -326,6 +326,86 @@ Mock scenarios `react-select`, `div-combobox`, `typeahead`, `phone-widget` and
 yes/no buttons, a lookup whose suggestions mount a portal), `bamboohr-like`,
 `teamtailor-like`, `jobvite-like`, `flash-closed` and `react-controlled-narrative`.
 
+## Round 12: Paylocity controls, cookie banners and four live fixes
+
+Paylocity's apply form (one page, `#btn-submit` as its next control) drew four shapes no
+earlier widget covered, and retry five of the batch pilot failed four fills on Lever,
+BambooHR and an embedded Greenhouse form. Mocks `paylocity-address` and
+`bamboohr-required` (`tests/browser/MOCK_ATS.md`); tests
+`tests/browser/test_paylocity_round12.py` and `tests/browser/test_round12_live_fixes.py`.
+
+- **react-widgets DropdownList.** A `div[role=combobox][aria-haspopup=true]` owning
+  `<id>__listbox`, showing `--` until chosen, is probed like any div menu (its
+  `li[role=option]` list mounts inside the widget while open) and becomes a `SELECT`
+  whose options are the shown texts; it is chosen by clicking the option and read back
+  from its display. Dashes alone are a placeholder. A `div` is not labelable, so its
+  question is the visible `<label for>` that points at it, else the `data-for` text when
+  the page shows that text; the widget is required when that label ends with an asterisk
+  (hidden from assistive technology or not). The SMS question with its SMS policy is
+  `CONSENT`; "Have you worked with us before?" stays `CUSTOM_SELECT`.
+- **Input-select.** A react-select without ARIA roles: a role-less text input
+  (`aria-autocomplete=list`, no `aria-haspopup`) under a value element classed
+  `*single-value`/`*placeholder` that covers it and takes the pointer, with options as
+  plain `div`s classed `*option` shown only for what is typed. The value element is
+  looked for only in the input's own widget (boxes around it holding no other field). The
+  label leaves out what the widget shows ("Country", not "Country United States"); the
+  field is a `TYPEAHEAD` whose value is that display. `fill` leaves a display already equal
+  to the answer as it is ("already shows this value": Country "United States"); otherwise
+  it focuses the input (never a click, the value element covers it), types the answer,
+  reads the options until they are stable, clicks the one option whose normalized text
+  equals the answer and reads the display back (3 s for the site's round trip). No equal
+  option: Escape, nothing chosen, `NEEDS_CHOICE` with the listed options as suggestions.
+  What the widget shows is its answer, never page structure, for the fill guard. The
+  browser-validity read before `advance`/`submit` skips an input-select that shows a
+  choice (its required input stays empty; the site validates it by script) and reports
+  one that shows its placeholder under its question ("State").
+- **Street address with suggestions.** An `ADDRESS` input with `role=combobox` and
+  `aria-autocomplete=list` (Address Line 1) is a `TEXT` field: the street is typed,
+  Escape closes the suggestions (a no-op for a session without key presses) and the input
+  is read back. A suggestion is never chosen.
+- **Cookie banners are declined, never accepted.** On a page that mentions cookies, a
+  button outside the application form (or a control of a visible cookie dialog) that
+  neither submits nor navigates and declines non-essential cookies is clicked: "Reject
+  All", "Decline", "Necessary cookies only", "Accept only necessary cookies", "I do not
+  accept", "Deny", "Continue without accepting". That happens when the page opens, before
+  `inspect` and `fill`, and during a fill when a banner slides in later (OneTrust, over the
+  bottom half of the page); the page is then read again and compared with the approved
+  one. Nothing else on a banner is clicked: never "Accept All Cookies", "I accept", "Allow
+  all" or "Agree", and not a notice's "Got it"/"OK", which is often the accept button
+  relabelled (OneTrust's `#onetrust-accept-btn-handler`). A banner without a decline stays
+  for the person. Each button is clicked at most once per document.
+- **A. The upload's own progress (Lever).** After attaching, busy markers count only in
+  the upload's own field (the largest box around the input that holds no other visible
+  field), and never a marker that already outlasted a whole bounded wait in the document
+  (Lever's "Apply with LinkedIn" helper that stays "Loading..." above the resume had
+  kept every Lever resume "still in progress when the wait ended"). While the uploader
+  shows its own progress, the wait lasts up to 60 s; an upload showing neither progress
+  nor the file is read for at most 20 s (and the settle timeout), and 2 s more after its
+  progress ended. Only a state still in progress at the bound is reported as such.
+- **B. A choice that makes a question required (BambooHR).** Answering work authorization
+  marks the sponsorship question required (its asterisk); nothing appears. Requiredness is
+  not part of a question's fingerprint but is part of the fill guard's structure, so the
+  round-11 path (which needed an added question) did not apply and the fill failed as a
+  changed page. Now, after a choice this fill made, questions that became required or
+  optional are treated like revealed ones: the fill stops with "… question(s) (…) became
+  required after the answer to '…'; inspect this step and resolve it again before
+  continuing", nothing is reported failed, and the runner resolves the step again. A
+  reworded or removed question, a changed action or context, or a change after a text
+  write still stop the fill; that failure now says what changed, by position and field id
+  with the kind of change ("changed: #5 customQuestionAnswers.yes_no_2102 (required); #6 …
+  (wording)", then "actions" or "employer context"), never the wording or a value.
+- **C. A fixed dialog over the checkboxes (embedded Greenhouse).** A checkbox or radio is
+  set by clicking the input, then its label; when something else takes the pointer where
+  they are (the error says an element "intercepts pointer events", or both clicks fail),
+  the click is dispatched to the enabled input itself, never to whatever covers it, and
+  `checked` is read back. A forced pointer click is never used: it would land on the
+  covering element, possibly a banner's "I accept".
+- **D. Phone numbers the site formats.** A `PHONE` field's readback compares digits only
+  (spaces, dashes, parentheses and "+" ignored, and a leading country code 1 on an
+  11-digit number): "+1 303 555 0142" read back as "(303) 555-0142" is `FILLED` with the
+  detail "the site formats it as '(303) 555-0142'". Other digits are still a mismatch.
+  The end-of-fill sweep compares the same way, so a formatted number is not typed again.
+
 ## Uploads, autofill overlays and readback
 
 Hosted forms upload through styled controls and react to the upload: Ashby and Lever parse
@@ -381,7 +461,8 @@ without site adapters:
   run reaches its final review in two resolutions. A reworded or removed existing question,
   a changed action or context, or questions appearing after a *text* write still stop the
   fill as before ("questions, bindings, actions, or employer context changed while filling";
-  the remaining answers are not attempted). Mock: `bamboohr-conditional`.
+  the remaining answers are not attempted). Mock: `bamboohr-conditional`. Round 12 sends
+  questions a choice makes required or optional down the same path (`bamboohr-required`).
 - **Question text of upload controls** leaves out the trigger ("ATTACH RESUME/CV"), file
   chips, sizes and upload/parse status, and a label that only says "Attach" yields to the
   group's question ("Resume/CV"), so an upload does not change the field's fingerprint and a

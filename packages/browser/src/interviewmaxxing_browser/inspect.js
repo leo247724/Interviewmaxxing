@@ -194,7 +194,11 @@
     const byLabelledby = byIds(el.getAttribute("aria-labelledby")).map((n) => textOf(n)).join(" ").trim();
     if (byLabelledby) return [byLabelledby, "aria-labelledby"];
     if (el.labels && el.labels.length) {
-      const t = Array.from(el.labels).map((l) => textOf(l)).join(" ").trim();
+      // A <label> that wraps a whole input-select also holds what it shows ("Country
+      // United States"): that is state, not the question.
+      const widget = inputSelect(el);
+      const shownState = widget ? new Set([widget.shown, ...widget.options]) : undefined;
+      const t = Array.from(el.labels).map((l) => textOf(l, shownState)).join(" ").trim();
       // A styled uploader's hidden file input is labelled with its button's verb
       // ("Attach"); the question is the name of the uploader's group ("Resume/CV").
       if (t && el.type === "file" && /^(?:attach|upload|browse|choose|select|add)(?:\s+(?:a\s+)?files?)?$/i.test(t)) {
@@ -212,6 +216,17 @@
     if (aria && !placeholderName) return [aria, "aria-label"];
     const title = (el.getAttribute("title") || "").trim();
     if (title) return [title, "title"];
+    if (!el.labels && el.id) {
+      // A widget that is not a labelable element (react-widgets' div combobox on Paylocity)
+      // is still named by the <label for> that points at it.
+      const pointing = Array.from(document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]')).filter(visible);
+      const t = pointing.map((l) => textOf(l)).join(" ").trim();
+      if (t) return [t, "label"];
+    }
+    const dataFor = squashText(el.getAttribute("data-for"));
+    // Paylocity repeats the question in data-for; it names the widget only when that text
+    // is shown on the page (a tooltip id is not).
+    if (dataFor && squashText(document.body.innerText).includes(dataFor)) return [dataFor, "data-for"];
     return ["", "none"];
   };
   const labelVisible = (el) => !!(el.labels && Array.from(el.labels).some(visible));
@@ -860,6 +875,10 @@
       upload_anchor: trigger ? triggerBoxOf(trigger) : "",
       dialog_index: dialogIndexOf(el),
       date_segments: date ? date.segments.map((s) => ({ kind: s.kind, selector: selectorFor(s.el) })) : [],
+      input_select: (() => {
+        const widget = inputSelect(el);
+        return widget ? { display: widget.display, placeholder: widget.placeholder } : null;
+      })(),
     };
   };
 
@@ -914,7 +933,12 @@
       required: el.getAttribute("aria-required") === "true" ||
         !!(proxy && (proxy.required || proxy.getAttribute("aria-required") === "true")) ||
         (!proxy && menuButton && (/\brequired\s*$/i.test(el.getAttribute("aria-label") || "") ||
-          Array.from(el.labels || []).some((l) => /[*\u2731\uff0a]\s*$/.test((l.textContent || "").trim())))),
+          Array.from(el.labels || []).some((l) => /[*\u2731\uff0a]\s*$/.test((l.textContent || "").trim())))) ||
+        // A div widget named by a <label for> that points at it (react-widgets on
+        // Paylocity) is required when that label shows the asterisk, hidden from
+        // assistive technology or not.
+        (!el.labels && !!el.id && Array.from(document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]'))
+          .some((l) => visible(l) && /[*\u2731\uff0a]\s*$/.test((l.textContent || "").trim()))),
       disabled: el.getAttribute("aria-disabled") === "true",
       visible: visible(el),
       label_visible: false,

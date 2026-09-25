@@ -86,10 +86,19 @@ from interviewmaxxing_core import (
 )
 
 from .annotations import FormAnnotator, SchemaHintLoader, observation_signature, semantic_only
-from .aria import LookupOutcome, MenuProbe, dial_code, fill_lookup, fill_phone
+from .aria import (
+    ARIA_HELPERS,
+    LookupOutcome,
+    MenuProbe,
+    dial_code,
+    fill_input_select,
+    fill_lookup,
+    fill_phone,
+)
 from .driver import (
     _FILE_DIGEST,
     DEEP_QUERY,
+    CapabilityUnsupported,
     DriverError,
     NotActionable,
     PageContextLost,
@@ -103,10 +112,12 @@ from .normalize import TEXT_INPUT_TYPES, FieldBinding, PageModel, build_page, de
 from .signals import (
     APPLY_LINK,
     CONFIRMATION_LINK,
+    LOADING_STATE,
     MANUAL_APPLY,
     NOT_SUBMITTED_STATUS,
     PENDING,
     STATUS_LINK,
+    THIRD_PARTY_ASSIST,
     UNCERTAIN,
     ButtonIntent,
     affirmative_acceptance,
@@ -138,16 +149,37 @@ class _Rebound(Exception):
 
 
 class _ConditionalReveal(PageContextLost):
-    """A choice this fill made revealed follow-up questions (conditional fields): the
-    approved questions, their bindings, the actions and the employer context all read as
-    before and only *additional* questions appeared. Nothing more is written; the step
-    is inspected and resolved again with the answered choice still in place."""
+    """A choice this fill made revealed follow-up questions or changed which questions are
+    required (conditional fields): the approved questions, their wording, options and
+    bindings, the actions and the employer context all read as before; only *additional*
+    questions appeared or questions became required or optional. Nothing more is
+    written; the step is inspected and resolved again with the answered choice still in
+    place."""
 
 
 def _short_label(label: str, limit: int = 60) -> str:
     """A question's wording as one line, cut for a page error."""
     text = " ".join(label.split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _phone_digits(text: str) -> str:
+    """A phone number's digits as a site's formatting keeps them: no spaces, dashes,
+    parentheses or "+", and no leading country code 1 on an 11-digit number."""
+    digits = re.sub(r"\D", "", text)
+    return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+
+
+def _reads_as_typed(app_field: ApplicationField, got: object, text: str) -> bool:
+    """A text readback equals what was typed. A phone number only needs the same digits:
+    sites format it as it is typed ("+1 303 555 0142" shows as "(303) 555-0142")."""
+    if not isinstance(got, str):
+        return False
+    want = text.replace("\r\n", "\n")
+    if got.replace("\r\n", "\n") == want:
+        return True
+    return (app_field.semantic_type is SemanticType.PHONE
+            and _phone_digits(got) != "" and _phone_digits(got) == _phone_digits(want))
 
 
 _CHOICE_CONTROLS = frozenset({
@@ -176,7 +208,7 @@ _READ_CHECKED = """(sels) => { """ + DEEP_QUERY + """
   });
 }"""
 
-_NATIVE_VALIDITY = """({form, button}) => {""" + DEEP_QUERY + """
+_NATIVE_VALIDITY = """({form, button}) => {""" + DEEP_QUERY + ARIA_HELPERS + """
   const f = form ? deepOne(form) : null;
   const b = button ? deepOne(button) : null;
   const isForm = !!f && f.tagName === 'FORM';
@@ -189,7 +221,12 @@ _NATIVE_VALIDITY = """({form, button}) => {""" + DEEP_QUERY + """
   for (const el of controls) {
     if (!el.willValidate || el.validity.valid) continue;  // read-only: no 'invalid' events
     if (CAPTCHA_TOKENS.includes(el.name)) continue;  // filled by the CAPTCHA widget, reported separately
-    const label = (el.labels && el.labels[0] ? el.labels[0].innerText : el.name || el.id || el.type);
+    // An input-select (Paylocity's Country and State) keeps its choice in its value element;
+    // its required input stays empty, and the site's own script validates the choice.
+    const widget = inputSelect(el);
+    if (widget && !widget.placeholder) continue;
+    let label = (el.labels && el.labels[0] ? el.labels[0].innerText : el.name || el.id || el.type);
+    if (widget) label = label.replace(widget.shown.innerText || '', '');  // "Select a state" is not the question
     const line = label.replace(/\\s+/g, ' ').replace(/[\\s*:]+$/, '').trim() + ': ' + el.validationMessage;
     if (!out.includes(line)) out.push(line);
   }
@@ -231,6 +268,12 @@ region) before acting on a page."""
 _UPLOAD_WAIT_S = 20.0
 """Upper bound on waiting for one attached file's upload and for the page to settle
 after it (a spinner, "Analyzing resume...", an autofill the upload triggers)."""
+_UPLOAD_PROGRESS_S = 60.0
+"""Upper bound on waiting while an uploader shows its own progress for the attached file
+(a spinner, "Uploading resume..." in the upload's own field): Lever's resume upload."""
+_UPLOAD_GRACE_S = 2.0
+"""How long an upload is read again after its progress ended before the readback
+decides (the file's name may show a moment later)."""
 _QUIET_POLL_S = 0.3
 """Interval between reads while waiting for the page to settle."""
 _RERENDER_WAIT_S = 3.0
@@ -249,18 +292,19 @@ after the fill does not write it again either."""
 
 _COOKIE_TEXT = re.compile(r"cookie", re.IGNORECASE)
 _COOKIE_DECLINE = re.compile(
-    r"^(?:decline(?: all)?(?: cookies)?|reject(?: all)?(?: cookies)?|only necessary|"
-    r"necessary(?: cookies)? only|essential only|use necessary cookies only)$",
+    r"^(?:(?:i )?decline(?: all| optional)?(?: cookies)?|reject(?: all| optional| non-essential)?(?: cookies)?|"
+    r"(?:i )?(?:do not|don['\u2019]t) accept(?: all)?(?: cookies)?|(?:refuse|deny)(?: all)?(?: cookies)?|"
+    r"continue without accepting|"
+    r"only (?:necessary|essential)(?: cookies)?|(?:necessary|essential)(?: cookies)? only|"
+    r"use necessary cookies only|accept (?:only )?(?:necessary|essential)(?: cookies)?(?: only)?)$",
     re.IGNORECASE,
 )
-_COOKIE_ACCEPT = re.compile(
-    r"^(?:accept(?: all)?(?: cookies)?|allow all(?: cookies)?|agree|i agree|got it|"
-    r"i understand|ok|okay)$",
-    re.IGNORECASE,
-)
-"""Consent-banner buttons. A decline-group button is preferred; an accept-group button
-is the fallback. Only a visible button that does not submit a form and is not inside
-the selected application form is ever clicked, at most once per ``open()``."""
+"""Consent-banner buttons that decline non-essential cookies (OneTrust's "Reject All",
+"Necessary cookies only", Upstart's "I do not accept"). Nothing else on a banner is ever
+clicked: marketing cookies are never accepted, and a notice's "Got it"/"OK" is often the
+accept button itself (OneTrust's ``#onetrust-accept-btn-handler``). A banner without a
+decline stays for the person. Only a visible button that does not submit a form, navigate
+or sit inside the selected application form is clicked, each at most once per document."""
 
 
 @dataclass(frozen=True)
@@ -403,7 +447,8 @@ def _button_identity(button: DomButton) -> str:
 
 
 def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
-                     skip_controls: Collection[str] = (), stable: bool = False) -> str:
+                     skip_controls: Collection[str] = (), stable: bool = False,
+                     ignore_required: bool = False) -> str:
     """``observation_signature`` as the fill guard compares it. Buttons and the submit and
     next actions count by identity (text, kind, form, request), not by a positional
     selector that shifts when sibling blocks are replaced, and not by whether they are
@@ -411,7 +456,8 @@ def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
     messages and what menus show are already left out. ``skip_*`` leave out the given
     buttons and controls (an uploader's own). New or removed questions, options, labels,
     bindings, actions and navigation still count. ``stable`` also leaves out selectors a
-    re-render may regenerate (see ``observation_signature``)."""
+    re-render may regenerate (see ``observation_signature``); ``ignore_required`` also
+    leaves out which controls are required (a requiredness another answer decides)."""
     identity = {b.selector: _button_identity(b) for b in model.snapshot.buttons}
     buttons = [b.model_copy(update={"disabled": False, "selector": identity[b.selector]})
                for b in model.snapshot.buttons if b.selector not in skip_buttons]
@@ -421,6 +467,11 @@ def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
     controls = [c.model_copy(update={"pressed_options": [o.model_copy(update={"pressed": False})
                                                          for o in c.pressed_options]})
                 if c.pressed_options else c for c in controls]
+    # What an input-select shows (its placeholder, then our choice) is its answer too.
+    controls = [c.model_copy(update={"input_select": {}}) if c.input_select is not None else c
+                for c in controls]
+    if ignore_required:
+        controls = [c.model_copy(update={"required": False}) if c.required else c for c in controls]
     if stable:
         # Element paths this inspector reports beyond the ones observation_signature
         # leaves out: an option group's box, toggle-button options, an uploader's box.
@@ -650,13 +701,15 @@ class GenericApplicationBrowser:
         observation, re-read after this runtime's own uploads and re-renders."""
         self._stable_fill_signature: str | None = None
         self._reveal_source: ApplicationField | None = None
-        """The choice control this fill wrote last (see ``_only_questions_added``)."""
+        """The choice control this fill wrote last (see ``_only_follow_ups_changed``)."""
         self._attach_needed: dict[tuple[str, str], str] = {}
         """(document, resume field id) -> the pinned file the person has to attach there,
         because none of the resumes the site offers can be used and this session cannot
         attach files."""
         self._apply_clicked: set[tuple[str, str]] = set()
         """(document, selector) of apply controls clicked: never clicked twice."""
+        self._consent_clicked: set[tuple[str, str]] = set()
+        """(document, selector) of the cookie-banner buttons clicked: each at most once."""
         self._followed: set[str] = set()
         """Apply links and embedded application pages already opened by ``open``."""
 
@@ -965,34 +1018,44 @@ class GenericApplicationBrowser:
         yet is readiness's to wait for). One read when there is nothing to do. Returns
         whether the page was waited for or touched."""
         model = await self._raw_model()
+        # A cookie banner that slid in after the page opened (OneTrust) covers controls:
+        # its non-essential cookies are declined first.
+        consent = await self._dismiss_cookie_banner(model)
+        if consent:
+            model = await self._raw_model()
         declined = await self._decline_autofill(model)
         if not declined and not (self._busy(model)
                                  and model.inspection.kind is PageKind.APPLICATION_FORM):
-            return False
+            return consent
         await self._await_quiet(min(self.settle_timeout_s, _OVERLAY_WAIT_S), values=False)
         return True
 
     async def _dismiss_cookie_banner(self, model: PageModel) -> bool:
-        """Click one consent button (decline preferred) that lies outside the
-        application form, then let the page settle. Returns whether a click happened.
-        Nothing about the page is logged."""
+        """Click one consent banner's decline button that lies outside the application
+        form, then let the page settle. Returns whether a click happened. Nothing about
+        the page is logged."""
         if not _COOKIE_TEXT.search(model.snapshot.body_text):
             return False
         candidates = [
-            b for b in model.snapshot.buttons
+            (b.text, b.selector) for b in model.snapshot.buttons
             if not b.submits_form and not b.disabled
             and (b.form_index == -1
                  or (model.form_index is not None and b.form_index != model.form_index))
         ]
-
-        def first(pattern: re.Pattern[str]) -> DomButton | None:
-            return next((b for b in candidates if pattern.match(b.text.strip())), None)
-
-        button = first(_COOKIE_DECLINE) or first(_COOKIE_ACCEPT)
+        # A consent dialog's own controls (a link styled as a button among them), when the
+        # dialog is about cookies and the control neither submits nor navigates.
+        candidates += [(b.text, b.selector) for prompt in model.snapshot.prompts
+                       if _COOKIE_TEXT.search(prompt.text)
+                       for b in prompt.buttons if not b.submits and not b.navigates]
+        button = next((selector for text, selector in candidates if _COOKIE_DECLINE.match(text.strip())), None)
         if button is None:
             return False
+        key = (model.snapshot.document, button)
+        if key in self._consent_clicked:
+            return False  # a banner still shown after its button was clicked is left alone
+        self._consent_clicked.add(key)
         try:
-            await self.driver.click(button.selector)
+            await self.driver.click(button)
         except DriverError:
             return False
         await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
@@ -1331,7 +1394,7 @@ class GenericApplicationBrowser:
                     # answered, and the step is inspected and resolved again.
                     halted = str(exc)
                     halt_label, halt_description = "questions-revealed", (
-                        "page after a choice revealed follow-up questions")
+                        "page after a choice changed its follow-up questions")
                 except PageContextLost as exc:
                     # The document or approved questions changed. Every remaining
                     # answer is reported without writing through stale bindings.
@@ -1350,14 +1413,13 @@ class GenericApplicationBrowser:
                 except _ConditionalReveal as exc:
                     halted = str(exc)
                     halt_label, halt_description = "questions-revealed", (
-                        "page after a choice revealed follow-up questions")
+                        "page after a choice changed its follow-up questions")
                 except PageContextLost as exc:
                     lost = exc
                     self._context_lost = True
                     self._inspected_after_loss = False
                     self.menus.reset()
             structure = self._active_fill_signature or _guard_signature(model)
-            stable_structure = self._stable_fill_signature
         finally:
             self._active_fill_signature = None
             self._stable_fill_signature = None
@@ -1404,19 +1466,19 @@ class GenericApplicationBrowser:
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
         if (after.form is None or after.form.fingerprint != accepted.fingerprint
                 or await self._changed_since_fill(after.form)):
-            revealed = self._only_questions_added(after, stable=stable_structure)
+            revealed = self._only_follow_ups_changed(after)
             ordered.extend(await self._contain_changed_questions(accepted, after, revealed=revealed))
             if revealed is not None:
-                # The last choice revealed follow-up questions: the step is inspected and
-                # resolved again with every answer, including that choice, in place.
+                # The last choice changed the follow-up questions: the step is inspected
+                # and resolved again with every answer, including that choice, in place.
                 self._filled = None
                 self._context_lost = True
                 self._inspected_after_loss = False
                 new_errors.append(f"{revealed}; inspect this step and resolve it again before continuing")
             else:
                 new_errors.append(
-                    "questions on this step changed while filling; re-inspect and resolve again "
-                    "before continuing"
+                    f"questions on this step changed while filling ({self._change_summary(after)}); "
+                    "re-inspect and resolve again before continuing"
                 )
         return FillResult(
             form_step=form.step,
@@ -1536,6 +1598,13 @@ class GenericApplicationBrowser:
         await self._assert_fill_context()
         if _guard_signature(fresh) == self._active_fill_signature:
             return False
+        if await self._dismiss_cookie_banner(fresh):
+            # A cookie banner slid in mid-fill (OneTrust, over the bottom of the page): its
+            # non-essential cookies are declined and the page read again.
+            fresh = await self._settled_model(self._active_fill_signature)
+            await self._assert_fill_context()
+            if _guard_signature(fresh) == self._active_fill_signature:
+                return False
         if await self._only_uploads_changed(fresh):
             # Our own upload re-rendered its uploader later (Greenhouse, seconds after
             # the attach): the page as it now is becomes the approved one.
@@ -1554,14 +1623,16 @@ class GenericApplicationBrowser:
             # Ashby mounts a lookup's suggestion list in a portal of its own while it is
             # operated: the page returns to the approved observation once it closes.
             return False
-        revealed = self._only_questions_added(fresh)
+        revealed = self._only_follow_ups_changed(fresh)
         if revealed is not None:
-            # BambooHR shows follow-up questions once a Yes/No is chosen: not a lost
-            # context but a step to inspect and resolve again, the choice kept.
+            # BambooHR shows follow-up questions, or marks one required, once a Yes/No is
+            # chosen: not a lost context but a step to inspect and resolve again, the
+            # choice kept.
             raise _ConditionalReveal(revealed)
         raise PageContextLost(
-            "questions, bindings, actions, or employer context changed while filling; "
-            "remaining answers were not attempted; re-inspect and resolve again"
+            "questions, bindings, actions, or employer context changed while filling "
+            f"({self._change_summary(fresh)}); remaining answers were not attempted; "
+            "re-inspect and resolve again"
         )
 
     async def _check_before_action(self, widget: str | None = None) -> None:
@@ -1706,27 +1777,31 @@ class GenericApplicationBrowser:
                                  skip_controls=uploaded | self._uploader_helpers)
                 == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded | helpers))
 
-    def _only_questions_added(self, fresh: PageModel, *, stable: str | None = None) -> str | None:
-        """Why ``fresh`` is the approved step plus follow-up questions a choice of this
-        fill revealed (conditional fields), or None when it is anything else. Every
-        approved question is still shown, in its order, with the same wording, options
-        and binding shape; the actions and the employer context read as approved
-        (``_guard_signature`` with the revealed questions' own controls left out); and
-        the control written last was a choice (``_CHOICE_CONTROLS``) that was filled. A
-        reworded or removed question, a changed action or a change after a text write
-        is never a reveal."""
+    def _only_follow_ups_changed(self, fresh: PageModel) -> str | None:
+        """Why ``fresh`` is the approved step as a choice of this fill changed its follow-up
+        questions (conditional fields), or None when it is anything else: additional
+        questions appeared (BambooHR's follow-ups) or questions became required or optional
+        (BambooHR marks the sponsorship question required once work authorization is
+        answered). Every approved question is still shown, in its order, with the same
+        wording, options and binding shape; the actions and the employer context read as
+        approved (``_guard_signature`` with the revealed questions' own controls left out,
+        requiredness aside); and the control written last was a choice
+        (``_CHOICE_CONTROLS``) that was filled. A reworded or removed question, a changed
+        action or a change after a text write is never a follow-up change."""
         approved, form, source = self._fill_model, self._fill_form, self._reveal_source
-        stable = stable if stable is not None else self._stable_fill_signature
-        if approved is None or form is None or source is None or stable is None or fresh.form is None:
+        if approved is None or form is None or source is None or fresh.form is None:
             return None
         if fresh.form.scope.key != form.scope.key:
             return None
-        known = {f.id: f.fingerprint for f in form.fields}
+        known = {f.id: f for f in form.fields}
         added = [f for f in fresh.form.fields if f.id not in known]
         kept = [f for f in fresh.form.fields if f.id in known]
-        if not added or [f.id for f in kept] != [f.id for f in form.fields]:
+        if [f.id for f in kept] != [f.id for f in form.fields]:
             return None
-        if any(known[f.id] != f.fingerprint for f in kept):
+        if any(known[f.id].fingerprint != f.fingerprint for f in kept):
+            return None
+        toggled = [f for f in kept if f.required != known[f.id].required]
+        if not added and not toggled:
             return None
         own: set[str] = set()
         for new in added:
@@ -1741,11 +1816,80 @@ class GenericApplicationBrowser:
                 "form": fresh.form.model_copy(update={"fields": kept})}),
             bindings={fid: b for fid, b in fresh.bindings.items() if fid in known},
         )
-        if _guard_signature(reduced, skip_controls=own, stable=True) != stable:
+        if (_guard_signature(reduced, skip_controls=own, stable=True, ignore_required=True)
+                != _guard_signature(approved, stable=True, ignore_required=True)):
             return None
-        labels = ", ".join(repr(_short_label(f.label)) for f in added)
-        return (f"{len(added)} follow-up question(s) ({labels}) appeared after the answer to "
-                f"{_short_label(source.label)!r}")
+        after = f"after the answer to {_short_label(source.label)!r}"
+        parts = []
+        if added:
+            labels = ", ".join(repr(_short_label(f.label)) for f in added)
+            parts.append(f"{len(added)} follow-up question(s) ({labels}) appeared")
+        if toggled:
+            now = [f for f in toggled if f.required]
+            labels = ", ".join(repr(_short_label(f.label)) for f in toggled)
+            parts.append(f"{len(toggled)} question(s) ({labels}) became "
+                         + ("required" if len(now) == len(toggled) else "optional" if not now
+                            else "required or optional"))
+        return " and ".join(parts) + " " + after
+
+    def _change_summary(self, fresh: PageModel) -> str:
+        """What differs between the approved step and ``fresh``, for a failure's detail:
+        questions by position and field id with the kind of change, then whether the
+        actions or the employer context changed. No wording and no value is included."""
+        approved, form = self._fill_model, self._fill_form
+        if approved is None or form is None:
+            return ""
+        if fresh.form is None:
+            return "no application form is shown"
+        before = {f.id: f for f in form.fields}
+        position = {f.id: n for n, f in enumerate(fresh.form.fields, start=1)}
+        old_position = {f.id: n for n, f in enumerate(form.fields, start=1)}
+        parts: list[str] = []
+
+        def shape(model: PageModel, field_id: str) -> Any:
+            binding = model.bindings.get(field_id)
+            return None if binding is None else _binding_shape({field_id: binding})
+
+        added = [f"#{position[f.id]} {f.id}" for f in fresh.form.fields if f.id not in before]
+        after_ids = {f.id for f in fresh.form.fields}
+        removed = [f"#{old_position[f.id]} {f.id}" for f in form.fields if f.id not in after_ids]
+        changed = []
+        for f in fresh.form.fields:
+            old = before.get(f.id)
+            if old is None:
+                continue
+            kinds = [kind for kind, differs in (
+                ("wording", normalize_text(old.label) != normalize_text(f.label)),
+                ("help text", normalize_text(old.help_text or "") != normalize_text(f.help_text or "")),
+                ("placeholder", normalize_text(old.placeholder or "") != normalize_text(f.placeholder or "")),
+                ("control", old.control_type is not f.control_type),
+                ("options", [(o.value, normalize_text(o.label)) for o in old.options or []]
+                            != [(o.value, normalize_text(o.label)) for o in f.options or []]),
+                ("required", old.required != f.required),
+                ("binding", shape(approved, f.id) != shape(fresh, f.id)),
+            ) if differs]
+            if kinds:
+                changed.append(f"#{position[f.id]} {f.id} ({', '.join(kinds)})")
+        if [f.id for f in fresh.form.fields if f.id in before] != [f.id for f in form.fields if f.id in after_ids]:
+            parts.append("question order")
+        for how, items in (("appeared", added), ("removed", removed), ("changed", changed)):
+            if items:
+                parts.append(f"{how}: " + "; ".join(items))
+
+        def actions(model: PageModel) -> list[str]:
+            return sorted(_button_identity(b) for b in model.snapshot.buttons
+                          if not (THIRD_PARTY_ASSIST.search(b.text) or LOADING_STATE.match(b.text)))
+
+        if actions(approved) != actions(fresh) or (
+                approved.form is not None and approved.form.is_final_step != fresh.form.is_final_step):
+            parts.append("actions")
+        context = [(m.snapshot.url, m.snapshot.title, [h.text for h in m.snapshot.headings],
+                    m.inspection.job_identity.model_dump(mode="json", exclude={"observed_at"})
+                    if m.inspection.job_identity else None) for m in (approved, fresh)]
+        if context[0] != context[1]:
+            parts.append("employer context")
+        summary = "; ".join(parts) or "controls outside the questions or their selectors"
+        return summary if len(summary) <= 400 else summary[:399] + "…"
 
     async def _write(self, operation: Callable[[], Awaitable[None]]) -> None:
         if await self._assert_fill_freshness(rebind=True):
@@ -1768,7 +1912,7 @@ class GenericApplicationBrowser:
     ) -> list[FieldFillResult]:
         """Questions that appeared or changed while filling were not authorized by the
         packet. Never leave a pre-checked consent/attestation among them checked.
-        ``revealed`` (see ``_only_questions_added``): they are follow-up questions a
+        ``revealed`` (see ``_only_follow_ups_changed``): they are follow-up questions a
         choice revealed, reported as not yet attempted (``SKIPPED``) rather than failed;
         the next resolution answers them."""
         if after.form is None:
@@ -1885,7 +2029,29 @@ class GenericApplicationBrowser:
             # Typed with real input events (a trusted insertText), never by assigning the
             # value, so a React-controlled input updates its state.
             await self._write(lambda: self.driver.fill(binding.selector, value.text))
+            if binding.suggests:
+                # A street address input lists suggestions for what was typed (Paylocity's
+                # Address Line 1): the typed text is the answer; the list is dismissed,
+                # never chosen from.
+                with contextlib.suppress(CapabilityUnsupported):
+                    await self.driver.press(binding.selector, "Escape")
             return await self._verify_text(app_field, binding.selector, value.text)
+        if isinstance(value, TextValue) and ctype is ControlType.TYPEAHEAD and binding.input_select:
+            chosen: list[LookupOutcome] = []
+
+            async def choose() -> None:
+                chosen.append(await fill_input_select(self.driver, binding.selector, value.text))
+
+            await self._write(choose)
+            picked = chosen[0]
+            if picked.chosen is None:
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.NEEDS_CHOICE,
+                                       detail=picked.detail, suggestions=list(picked.suggestions))
+            if picked.verified:
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
+                                       detail=picked.detail or None)
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
+                                   detail=picked.detail)
         if isinstance(value, TextValue) and ctype is ControlType.TYPEAHEAD and binding.aria is not None:
             outcomes: list[LookupOutcome] = []
 
@@ -1970,19 +2136,20 @@ class GenericApplicationBrowser:
         it); if the re-rendered control lost the value it is typed once more with real
         key events and read back again. Only then is it a mismatch."""
         fid = app_field.id
-        want = text.replace("\r\n", "\n")
 
         def same(got: object) -> bool:
-            return isinstance(got, str) and got.replace("\r\n", "\n") == want
+            return _reads_as_typed(app_field, got, text)
 
         got = (await self._read(selector)).get("value")
         if same(got):
-            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED)
+            return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
+                                   detail=self._formatted_detail(got, text))
         fresh = await self._reresolve(fid)
         if fresh is not None:
             got = (await self._read(fresh)).get("value")
             if same(got):
-                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED)
+                return FieldFillResult(field_id=fid, status=FieldFillStatus.FILLED,
+                                       detail=self._formatted_detail(got, text))
             multiline = app_field.control_type is ControlType.TEXTAREA
             await self._write(lambda: self._retype(fresh, text, multiline=multiline))
             got = (await self._read(fresh)).get("value")
@@ -1995,6 +2162,13 @@ class GenericApplicationBrowser:
                                        detail="typed again after the page re-rendered it")
         return FieldFillResult(field_id=fid, status=FieldFillStatus.VERIFICATION_MISMATCH,
                                detail=f"reads back {got!r}")
+
+    @staticmethod
+    def _formatted_detail(got: object, text: str) -> str | None:
+        """For a phone number the site formatted as it was typed: what it shows."""
+        if isinstance(got, str) and got.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+            return f"the site formats it as {got!r}"
+        return None
 
     async def _reresolve(self, field_id: str) -> str | None:
         """After a short settle, the current selector of this fill's question
@@ -2036,10 +2210,10 @@ class GenericApplicationBrowser:
         model = await self._raw_model()
         for fid, text in written.items():
             binding = model.bindings.get(fid)
-            if binding is not None and binding.value.replace("\r\n", "\n") == text.replace("\r\n", "\n"):
-                continue
             app_field = accepted.find(fid)
             if app_field is None:
+                continue
+            if binding is not None and _reads_as_typed(app_field, binding.value, text):
                 continue
             outcome = (await self._operate(app_field, TextValue(text=text)))[0]
             if outcome.status is FieldFillStatus.FILLED:
@@ -2053,9 +2227,13 @@ class GenericApplicationBrowser:
         """The upload's state (``anchor``: the uploader's own container, read when the
         input is gone); a driver that cannot run the upload read gets the file input's own
         files only (never a chip or notice)."""
+        model = self._fill_model
+        origin = model.snapshot.document.split(" ")[0] if model is not None else None
+        stuck = sorted(marker for where, marker in self._stuck if where == origin)
         try:
             return UploadState.from_raw(await self.driver.evaluate(
-                UPLOAD_STATE, {"selector": selector, "names": list(names), "anchor": anchor}))
+                UPLOAD_STATE, {"selector": selector, "names": list(names), "anchor": anchor,
+                               "stuck": stuck}))
         except PageContextLost:
             raise
         except DriverError:
@@ -2171,14 +2349,26 @@ class GenericApplicationBrowser:
 
     async def _await_upload(self, selector: str, name: str, size: int,
                             anchor: str | None) -> UploadState:
-        """Read the upload until it is confirmed and nothing is busy around it, or an
-        error shows (bounded by ``_UPLOAD_WAIT_S``)."""
+        """Read the upload until it is confirmed and nothing is busy in its own field, or
+        an error shows. While the uploader shows its own progress this waits up to
+        ``_UPLOAD_PROGRESS_S`` (Lever's "Uploading resume..."); an upload that shows
+        neither progress nor the file is read for at most ``_UPLOAD_WAIT_S`` (and the
+        settle timeout), and ``_UPLOAD_GRACE_S`` more after its progress ended. Only a
+        state still in progress at the bound is reported as such."""
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + min(self.settle_timeout_s, _UPLOAD_WAIT_S)
+        start = loop.time()
+        confirm_by = start + min(self.settle_timeout_s, _UPLOAD_WAIT_S)
+        progress_ended = start
         while True:
             state = await self._upload_state(selector, shown_names(name), anchor)
-            done = state.error is not None or (not state.busy and state.confirms(name, size))
-            if done or loop.time() >= deadline:
+            if state.error is not None or (not state.busy and state.confirms(name, size)):
+                return state
+            now = loop.time()
+            if state.busy:
+                progress_ended = now + _UPLOAD_GRACE_S
+                if now - start >= _UPLOAD_PROGRESS_S:
+                    return state
+            elif now >= max(confirm_by, progress_ended):
                 return state
             await asyncio.sleep(0.2)
 
