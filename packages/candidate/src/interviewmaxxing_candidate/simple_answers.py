@@ -14,6 +14,7 @@ from typing import Self
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from interviewmaxxing_core import (
+    DESIRED_SALARY_QUESTION,
     STATED_ANSWER_QUESTIONS,
     STATUS_CONTRADICTIONS,
     WORK_ARRANGEMENT_PREFERENCE_QUESTION,
@@ -74,7 +75,7 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "willing_to_relocate": (SemanticType.RELOCATION, "Are you willing to relocate?"),
     "open_to_other_positions": (None, "Would you like to be considered for other open positions?"),
     "willing_to_provide_references": (None, "Are you willing to provide references?"),
-    "desired_salary": (SemanticType.SALARY_EXPECTATION, "What is your desired salary?"),
+    "desired_salary": (SemanticType.SALARY_EXPECTATION, DESIRED_SALARY_QUESTION),
     "english_proficiency": (None, "What is your level of proficiency in English?"),
     "available_time_zones": (None, "Which time zones are you available to work in?"),
     "travel_willingness": (None, "How much are you willing to travel for work?"),
@@ -118,10 +119,22 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     # Round 10: the work-arrangement preference (remote, hybrid, on-site), untyped so a
     # single choice among work modes takes it whatever the site typed the field as.
     "work_arrangement_preference": (None, WORK_ARRANGEMENT_PREFERENCE_QUESTION),
+    # Round 11: recruiting text messages are their own consent (live Paylocity: "Do you give
+    # us permission to text you?", with carrier-rate and STOP/HELP help text), and the
+    # interview accommodations the person needs, in their words ("None needed").
+    "consent_sms_messages": (
+        SemanticType.CONSENT,
+        "The employer may send me recruiting text messages (SMS) about my application and "
+        "the hiring process; message and data rates may apply, and I can reply STOP to opt "
+        "out or HELP for help.",
+    ),
+    "interview_accommodations": (
+        None, "Are there any accommodations we can make throughout the interview process?",
+    ),
 }
 STATEMENT_KEYS = frozenset({
     "acknowledge_privacy_notice", "certify_information_true", "consent_to_contact",
-    "consent_reference_checks", "consent_background_check",
+    "consent_reference_checks", "consent_background_check", "consent_sms_messages",
 })
 """Consent and attestation statements: reused only when a site's statement is fully covered
 by exactly one of them (``DynamicPacketResolver._statement``), never by wording."""
@@ -258,6 +271,14 @@ _REUSABLE_PHRASES = {
         "Which work setting do you prefer?", "Remote, hybrid or on-site?",
         "What is your work location preference?",
     ],
+    "interview_accommodations": [
+        "Do you require any accommodations for the interview process?",
+        "Do you need any accommodations during the interview process?",
+        "Will you need any accommodations to participate in the interview process?",
+        "Do you need any reasonable accommodations for your interviews?",
+        "Please let us know if you need any accommodations during the interview process.",
+        "Interview accommodations",
+    ],
 }
 _MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",
@@ -358,6 +379,8 @@ class SimpleAnswers(BaseModel):
     consent_reference_checks: str | None = None
     consent_background_check: str | None = None
     work_arrangement_preference: str | None = None
+    consent_sms_messages: str | None = None
+    interview_accommodations: str | None = None
 
     @field_validator("*", mode="after")
     @classmethod
@@ -371,7 +394,7 @@ class SimpleAnswers(BaseModel):
         "open_to_other_positions", "willing_to_provide_references", "family_government_official",
         "non_compete_agreement", "uses_ai_tools", "acknowledge_privacy_notice",
         "certify_information_true", "consent_to_contact", "consent_reference_checks",
-        "consent_background_check", mode="after",
+        "consent_background_check", "consent_sms_messages", mode="after",
     )
     @classmethod
     def _yes_or_no(cls, value: str | None) -> str | None:

@@ -580,6 +580,7 @@ class ApplicationPacket(Contract):
                 and field.semantic_type not in PROFILE_IDENTITY_TYPES
                 and not (field.semantic_type in ADDRESS_DERIVED_TYPES
                          and isinstance(answer.value, ChoiceValue))
+                and not _profile_link(field, answer)
             ):
                 problems.append(f"{field.id!r} ({field.semantic_type}) is not an identity field")
             problems.extend(answer_problems(field, answer.value))
@@ -646,6 +647,13 @@ def provenance_problems(
                 and answer.value.artifact.sha256 == candidate.resume.sha256
             ):
                 problems.append(f"{fid!r} does not upload the supplied resume file")
+        elif src is AnswerSource.PROFILE_IDENTITY:
+            field = form.find(fid)
+            if field is not None and _profile_link(field, answer):
+                identity = candidate.identity
+                urls = {identity.linkedin_url, identity.website_url, identity.github_url} - {None}
+                if not isinstance(answer.value, TextValue) or answer.value.text not in urls:
+                    problems.append(f"{fid!r} copies a link that is not the applicant's own profile URL")
         elif src is AnswerSource.USER_INPUT:
             for ref in refs:
                 user = inputs.get(ref)
@@ -656,6 +664,21 @@ def provenance_problems(
                 elif user.value != answer.value:
                     problems.append(f"{fid!r} does not use the value the user gave")
     return problems
+
+
+PROFILE_LINK_TYPES = frozenset({SemanticType.UNKNOWN, SemanticType.CUSTOM_TEXT,
+                                SemanticType.CUSTOM_LONG_TEXT})
+"""Untyped text questions that may take the applicant's own profile URL from the verified
+identity (round 11: "Professional profile link (LinkedIn, portfolio, or personal site)"):
+the value must be one of the identity's own URLs (``provenance_problems``)."""
+
+
+def _profile_link(field: ApplicationField, answer: PacketAnswer) -> bool:
+    """A profile URL copied onto an untyped text question (see ``PROFILE_LINK_TYPES``)."""
+    return (field.semantic_type in PROFILE_LINK_TYPES
+            and field.control_type in (ControlType.TEXT, ControlType.TEXTAREA)
+            and isinstance(answer.value, TextValue)
+            and answer.value.text.startswith(("https://", "http://")))
 
 
 def is_multi_choice(field: ApplicationField) -> bool:

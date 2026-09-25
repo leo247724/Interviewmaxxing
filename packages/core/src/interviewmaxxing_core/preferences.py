@@ -14,6 +14,10 @@ from .forms import ApplicationField, ControlType, normalize_text
 WORK_ARRANGEMENT_PREFERENCE_QUESTION = "Which work arrangement do you prefer: remote, hybrid or on-site?"
 """The saved question of the work-arrangement preference (an untyped GLOBAL saved answer)."""
 
+DESIRED_SALARY_QUESTION = "What is your desired salary?"
+"""The saved question of the desired salary (simple answers ``desired_salary``), which the
+salary derivation reads first among the person's salary answers."""
+
 WORK_ARRANGEMENTS: tuple[str, ...] = ("remote", "hybrid", "on-site")
 """The closed vocabulary of ``work_arrangement_preference``."""
 

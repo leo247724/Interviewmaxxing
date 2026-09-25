@@ -843,8 +843,65 @@ def test_round10_the_blank_template_and_the_docs_list_every_key():
     example = json.loads((REPO / "examples/simple-answers.example.json").read_text())
     assert set(example) == set(SimpleAnswers.model_fields) == (
         _CONTACT_KEYS | set(_REUSABLE_QUESTIONS) | {"career_motivation"})
-    assert len(_REUSABLE_QUESTIONS) == 40
+    assert len(_REUSABLE_QUESTIONS) == 42  # round 11: SMS consent, interview accommodations
     docs = (REPO / "docs/simple-answers.md").read_text()
     for key in _REUSABLE_QUESTIONS:
         assert f"`{key}`" in docs, key
-    assert "forty explicit reusable answers" in docs
+    assert "forty-two explicit reusable answers" in docs
+
+
+# --- round 11: SMS consent, interview accommodations, Yes/No sentences ------------------------
+
+def test_sms_consent_is_a_reusable_consent_statement_answered_yes_or_no():
+    from datetime import UTC, datetime
+
+    from pydantic import ValidationError
+
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS, STATEMENT_KEYS
+    from interviewmaxxing_core import SemanticType
+
+    semantic, statement = _REUSABLE_QUESTIONS["consent_sms_messages"]
+    assert "consent_sms_messages" in STATEMENT_KEYS and semantic is SemanticType.CONSENT
+    assert all(word in statement for word in ("text messages", "rates may apply", "STOP", "HELP"))
+    with pytest.raises(ValidationError, match='Use "Yes", "No", or null'):
+        _round7_answers(consent_sms_messages="maybe")
+    updates = _round7_answers(consent_sms_messages="yes").saved_answer_updates(
+        confirmed_at=datetime(2026, 9, 25, tzinfo=UTC))
+    [saved] = [a for a in updates if a.question == statement]
+    assert (saved.value, saved.semantic_type, saved.scope) == ("Yes", SemanticType.CONSENT, "GLOBAL")
+
+
+def test_interview_accommodations_is_untyped_free_text_with_its_observed_wordings():
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS
+
+    semantic, question = _REUSABLE_QUESTIONS["interview_accommodations"]
+    assert semantic is None
+    assert question == "Are there any accommodations we can make throughout the interview process?"
+    updates = _round7_answers(interview_accommodations="  None needed  ").saved_answer_updates(
+        confirmed_at=datetime(2026, 9, 25, tzinfo=UTC))
+    [saved] = [a for a in updates if a.question == question]
+    assert (saved.value, saved.semantic_type) == ("None needed", None)
+    assert any("accommodations" in phrase for phrase in saved.match_phrases)
+
+
+def test_every_untyped_yes_no_key_has_its_sentences_in_core():
+    from pydantic import ValidationError
+
+    from interviewmaxxing_candidate.simple_answers import _REUSABLE_QUESTIONS, STATEMENT_KEYS
+    from interviewmaxxing_core import yes_no_sentence
+
+    yes_no = []
+    for key, (semantic, question) in _REUSABLE_QUESTIONS.items():
+        if semantic is not None or key in STATEMENT_KEYS:
+            continue
+        try:
+            _round7_answers(**{key: "maybe"})
+        except ValidationError as error:
+            if 'Use "Yes", "No", or null' in str(error):
+                yes_no.append((key, question))
+    assert {"non_compete_agreement", "family_government_official", "uses_ai_tools"} <= {
+        key for key, _ in yes_no}
+    for key, question in yes_no:
+        assert yes_no_sentence(question, True) and yes_no_sentence(question, False), key
