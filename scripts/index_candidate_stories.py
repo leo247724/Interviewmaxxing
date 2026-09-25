@@ -3,11 +3,15 @@
 and add the atomic facts they state, and the years of experience the resume timeline
 implies, to the candidate profile.
 
-The document is parsed with the standard library, split into stories at its headings and
-analysed. Each story is then linked to a resume role: by a distinctive company name the
-story mentions, or else by one Jev decision over the resume roles gated at confidence 0.90
-and probability 0.95. A linked story's chunks and facts carry the resume role's dates; an
-unlinked story's carry a year only when the story states one; never a default year. The
+The document is parsed with the standard library, split into stories at its headings (a
+Markdown file at its H1 and H2 headings) and analysed. Each story is then linked to a resume
+role: by the company name the story states distinctively (every distinctive word of it, or
+the full name; a common word such as "Growth" never links), or else by one Jev decision,
+gated at confidence 0.90 and probability 0.95, over the resume roles its own stated period
+overlaps. A story whose stated period (its heading's "Aug 2019 - May 2020", "Jun 2025 -
+Present") shares no month with the proposed role is not linked: it keeps its stated period
+and the review names the mismatch. A linked story's chunks and facts carry the resume role's
+dates; an unlinked story's carry the period or year it states; never a default year. The
 chunks (one summary plus sections of about 120-300 words, each headed by the story's
 title, employer, resume role, period and themes) are indexed under the ``story`` kind as
 the candidate's one current stories source; unchanged documents need no new embeddings.
@@ -40,22 +44,21 @@ from typing import Any
 
 from interviewmaxxing_browser.ai.knowledge_runtime import build_knowledge_store
 from interviewmaxxing_browser.ai.providers import BoundedDecisions
-from interviewmaxxing_browser.ai.stories import link_story_to_role
+from interviewmaxxing_browser.ai.stories import link_stories
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_candidate.files import write_json_private
 from interviewmaxxing_core import CandidateFact, CandidateProfile, LocalPaths, utc_now
 from interviewmaxxing_generation.knowledge.stories import (
     DEFAULT_STORY_SOURCE,
-    StoryRoleLink,
     build_story_index,
     confirmable_facts,
     facts_review,
     facts_review_markdown,
-    match_role_by_name,
     read_stories,
     resume_roles,
     story_index_receipt,
     story_source_of,
+    superseded_story_facts,
 )
 from interviewmaxxing_generation.knowledge.timeline import DERIVED_SOURCE, derive_experience_years
 from interviewmaxxing_selection.credentials import load_api_key
@@ -158,22 +161,17 @@ def main() -> int:
         if not args.dry_run and not args.no_links and roles:
             key = load_api_key(env_file=args.env_file)
             decisions = BoundedDecisions(JevClient(key, timeout_seconds=15, max_attempts=1))
-        links: dict[str, StoryRoleLink] = {}
-        link_traces: list[dict[str, Any]] = []
-        for story, analysis in zip(document.stories, document.analyses, strict=True):
-            link = match_role_by_name(story, analysis, roles)
-            if link is None and decisions is not None:
-                link, trace = link_story_to_role(story=story, analysis=analysis, roles=roles,
-                                                 decide=decisions.decide, model=decisions.model)
-                link_traces.append(trace)
-            elif link is not None:
-                link_traces.append({"stage": "story_role_link", "story_id": analysis.story_id,
-                                    "status": "LINKED", "method": "employer_name",
-                                    "resume_role_id": link.resume_role_id})
-            if link is not None:
-                links[analysis.story_id] = link
-        index = build_story_index(document, verified_at=now, links=links, source_id=args.source_id)
         today = datetime.now(UTC).date()
+        # Names first, then the gated decision over the roles a story's stated period
+        # overlaps; the index drops a link the story's own stated period contradicts.
+        links, link_traces = link_stories(document.stories, document.analyses, roles,
+                                          decide=decisions.decide if decisions is not None else None,
+                                          model=decisions.model if decisions is not None else "",
+                                          today=today)
+        index = build_story_index(document, verified_at=now, links=links, source_id=args.source_id)
+        # Facts the person confirmed before their story's link changed: marked superseded in
+        # the confirm file for removal (the index never removes a confirmed fact itself).
+        superseded = superseded_story_facts(profile, index) if profile is not None else []
         # Years of experience come from the resume timeline alone (titles and self-dated
         # bullets), so the preview equals what the real run derives after the merge.
         derived = derive_experience_years(profile, today=today, verified_at=now) if profile is not None else []
@@ -187,6 +185,7 @@ def main() -> int:
             **story_index_receipt(index),
             "story_facts_unverified": sum(1 for fact in index.facts if not fact.is_verified),
             "derived_years_facts": _derived_counts(derived),
+            "superseded_confirmed_fact_ids": [row["id"] for row in superseded],
         }
         if decisions is not None:
             receipt["provider"] = decisions.budget.metadata()
@@ -229,6 +228,7 @@ def main() -> int:
             write_json_private(args.receipt, receipt)
         if args.facts_review is not None and review_markdown is not None:
             review = facts_review(index, candidate_id=args.candidate, roles=roles)
+            review["superseded"] = superseded
             review["derived_years_facts"] = [fact.model_dump(mode="json") for fact in derived]
             args.facts_review.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             write_json_private(args.facts_review, review)
@@ -236,7 +236,7 @@ def main() -> int:
             # The facts offered for confirmation, in the import's format: delete the rows
             # you do not confirm, then `scripts/rag_answers.py import-facts --file <it>`.
             confirm_path = args.facts_review.with_suffix(".confirm.json")
-            write_json_private(confirm_path, confirmable_facts([*index.facts, *derived]))
+            write_json_private(confirm_path, [*confirmable_facts([*index.facts, *derived]), *superseded])
             receipt["confirm_file"] = str(confirm_path)
         print(json.dumps(receipt, sort_keys=True, default=str))
         return 0

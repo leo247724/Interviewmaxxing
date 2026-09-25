@@ -3,7 +3,10 @@
 
 No browser is opened and no application is submitted. JSON connection and output
 files are private. `import-facts` means the user supplied and confirmed that file;
-it is not an automatic resume extraction or verification command.
+it is not an automatic resume extraction or verification command. It lists and does not
+import a fact whose own evidence contradicts its period or employer, and skips rows the
+story index marked `superseded`; `remove-facts --ids a,b` removes facts from the profile by
+id (then run `index-profile`).
 """
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ from interviewmaxxing_core import (
     normalize_application_url,
     utc_now,
 )
+from interviewmaxxing_generation.knowledge.stories import fact_self_contradictions, resume_roles
 from interviewmaxxing_selection.credentials import load_api_key
 
 
@@ -99,7 +103,8 @@ async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("index-profile", "index-job", "index-voice",
-                                             "import-facts", "draft"))
+                                             "import-facts", "remove-facts", "draft"))
+    parser.add_argument("--ids", help="remove-facts: comma-separated fact ids to remove from the profile")
     parser.add_argument("--home", type=Path)
     parser.add_argument("--candidate-id", default=os.environ.get("IMX_CANDIDATE_ID", "default"))
     parser.add_argument("--env-file", type=Path)
@@ -119,15 +124,42 @@ def main() -> int:
             records = read_json(args.file)
             if not isinstance(records, list) or not 1 <= len(records) <= 100:
                 raise ValueError("Provide 1-100 confirmed facts as a JSON array")
-            facts = []
+            roles = resume_roles(candidate)
+            facts, rejected, superseded = [], [], []
             for record in records:
+                if isinstance(record, dict) and record.get("superseded") is True:
+                    # A confirmed fact the story index no longer stands behind: listed for
+                    # removal (remove-facts), never imported.
+                    if set(record) - {"id", "superseded", "reason"} or not isinstance(record.get("id"), str):
+                        raise ValueError("A superseded row supports id, superseded and reason only")
+                    superseded.append(record["id"])
+                    continue
                 if not isinstance(record, dict) or set(record) - {"id", "key", "value", "evidence"}:
                     raise ValueError("Each fact supports id, key, value and optional evidence only")
-                facts.append(CandidateFact(**record, source="user:confirmed fact import",
+                fact = CandidateFact(**record, source="user:confirmed fact import",
                     verification=FactVerification(status=VerificationStatus.VERIFIED,
-                        method=VerificationMethod.USER_STATED, verified_at=utc_now())))
-            store.upsert_facts(candidate.id, facts)
-            print(json.dumps({"imported_facts": len(facts), "index_refresh_required": True}))
+                        method=VerificationMethod.USER_STATED, verified_at=utc_now()))
+                # A fact whose own evidence dates or places it elsewhere came from a confirm
+                # file written before its story's link was corrected: listed, not imported.
+                if reasons := fact_self_contradictions(fact, roles):
+                    rejected.append({"id": fact.id, "reasons": reasons})
+                    continue
+                facts.append(fact)
+            if facts:
+                store.upsert_facts(candidate.id, facts)
+            print(json.dumps({"imported_facts": len(facts), "rejected": rejected,
+                              "superseded_not_imported": superseded,
+                              "index_refresh_required": bool(facts)}))
+            return 0
+        if args.command == "remove-facts":
+            ids = [value.strip() for value in (args.ids or "").split(",") if value.strip()]
+            if not 1 <= len(ids) <= 100:
+                raise ValueError("--ids needs 1-100 comma-separated fact ids")
+            known = {fact.id for fact in candidate.facts}
+            store.remove_facts(candidate.id, ids)
+            print(json.dumps({"removed_facts": sorted(set(ids) & known),
+                              "unknown_ids": sorted(set(ids) - known),
+                              "index_refresh_required": bool(set(ids) & known)}))
             return 0
         if args.env_file is None or args.connection_file is None:
             raise ValueError("--env-file and --connection-file are required for retrieval")

@@ -20,16 +20,57 @@ import json
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from .providers import AIHold, CallReceipt, NarrativeDraft, NarrativeWriter, _draft_schema
 
-HUMANIZE_PROMPT_VERSION = "no-ai-slop-v1"
+HUMANIZE_PROMPT_VERSION = "no-ai-slop-v2"
 MAX_REWRITES = 2
 """One rewrite after grounding, plus at most one more for a residual lint finding."""
 LENGTH_TOLERANCE = (0.6, 1.4)
+MAX_QUOTED_WORDS = 12
+"""The longest run of consecutive words a draft may share with the person's own
+``career_motivation`` statement: the statement is restated, never pasted (round 5)."""
+QUOTED_STATEMENT_FEEDBACK = (
+    "Restate the career_motivation statement in your own words for this application: keep its "
+    f"meaning and add no claim, but copy no run of more than {MAX_QUOTED_WORDS} consecutive words "
+    "from it, and do not begin two consecutive sentences with the same phrase.")
+_WORD = re.compile("[a-z0-9]+(?:['\u2019][a-z]+)?")
+_NOT = r"(?:have\s+not|haven't|have\s+never|'ve\s+never|'ve\s+not|do\s+not|don't|am\s+not|'m\s+not)"
+_FIT_HEDGE = re.compile(
+    # A concession about the applicant: "while I have not ...", "although my background is in ...".
+    rf"\b(?:while|although|though|even\s+though|even\s+if|despite\s+the\s+fact\s+that)\s+(?:I\s*{_NOT}|"
+    r"I\s+(?:did\s+not|didn't|may\s+not|might\s+not|cannot|can't|lack)|"
+    r"my\s+(?:background|experience|expertise|career)\s+(?:is|has\s+been|was|lies|comes))\b"
+    # A lack the applicant volunteers: "I have not yet had the chance", "I have limited experience with".
+    rf"|\bI\s*{_NOT}\s+(?:yet\s+)?(?:had\s+the\s+(?:chance|opportunity)|worked\s+directly|"
+    r"directly\s+(?:managed|worked|run|owned)|had\s+(?:direct|hands-on)|have\s+(?:direct|hands-on|any))"
+    r"|\bI\s+(?:lack|am\s+new\s+to)\b|\bI'm\s+new\s+to\b"
+    r"|\b(?:I\s+have|I've|I\s+had|my)\s+(?:only\s+)?(?:limited|little|no)\s+(?:direct\s+|hands-on\s+|"
+    r"formal\s+|prior\s+)?(?:experience|exposure)\b"
+    r"|\bwhich\s+I\s*(?:have\s+not|haven't|have\s+never|'ve\s+never)\b"
+    # A disclaimer turned into a contrast: "I'm not a DSP specialist, but ...", "I've never run TV, but ...".
+    rf"|\bI\s*{_NOT}\s+(?:yet\s+)?(?:a|an|worked|run|ran|managed|used|led|owned|built|had|been|done)\b"
+    r"[^.!?]{0,80}?,\s*but\b"
+    # Compensation for a gap: "a quick learner", "eager to learn", "I can get up to speed".
+    r"|\b(?:quick|fast)\s+learner\b|\b(?:eager|willing|keen)\s+to\s+learn\b"
+    r"|\bI\s+(?:can|will|would|could)\s+(?:quickly\s+)?(?:get\s+up\s+to\s+speed|ramp\s+up|learn)\b"
+    # A comment on fit rather than the case: "I would be a strong fit", "well suited to this role".
+    r"|\b(?:I\s+am|I'm|I\s+would\s+be|I'd\s+be|I\s+believe\s+I\s+(?:am|would\s+be)|makes?\s+me)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?:strong|good|great|perfect|ideal|natural|excellent|right)\s+"
+    r"(?:fit|match|candidate)\b"
+    r"|\bfit\s+for\s+(?:this|the|your)\s+(?:role|position|team|job)\b"
+    r"|\bwell[-\s]suited\s+(?:for|to)\s+(?:this|the|your)\b",
+    re.IGNORECASE)
+"""Hedges, disclaimers and fit comments: the applicant already decided the role fits, so the
+writer builds the case and leaves out what the evidence does not support (round 5)."""
+FIT_HEDGE_FEEDBACK = (
+    "The applicant already decided this role fits. Remove every hedge, disclaimer and comment "
+    "on fit ('while I have not...', 'although my background is in...', 'limited experience "
+    "with...', 'a quick learner', 'a strong fit'): state the matching experience affirmatively "
+    "and leave out any requirement the supplied facts do not support.")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _NUMBER = re.compile(r"\d[\d,.]*")
 _KICKERS = re.compile(
@@ -107,8 +148,42 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in _SENTENCE_SPLIT.split(text.replace("\n", " ")) if s.strip()]
 
 
-def lint(text: str) -> list[Finding]:
-    """The banned constructions present in a draft, by stable pattern name."""
+def quoted_run(text: str, source: str) -> list[str]:
+    """The longest run of consecutive words the text shares with the source, ignoring
+    case and punctuation (the words, for the rewriter's finding; traces keep counts)."""
+    words, original = _WORD.findall(text.casefold()), _WORD.findall(source.casefold())
+    best, end = 0, 0
+    previous = [0] * (len(original) + 1)
+    for i in range(1, len(words) + 1):
+        current = [0] * (len(original) + 1)
+        for j in range(1, len(original) + 1):
+            if words[i - 1] == original[j - 1]:
+                current[j] = previous[j - 1] + 1
+                if current[j] > best:
+                    best, end = current[j], i
+        previous = current
+    return words[end - best:end]
+
+
+def quotes_statement(text: str, statements: Sequence[str]) -> bool:
+    """Whether the text copies more than ``MAX_QUOTED_WORDS`` consecutive words of any
+    statement: the lexical check that rejects a pasted ``career_motivation``."""
+    return any(len(quoted_run(text, statement)) > MAX_QUOTED_WORDS for statement in statements)
+
+
+def fit_hedges(text: str) -> list[str]:
+    """The hedges, disclaimers and fit comments a draft contains (short excerpts)."""
+    return [match.group(0).strip()[:120] for match in _FIT_HEDGE.finditer(text)]
+
+
+def _openers(sentences: list[str]) -> list[str]:
+    return [" ".join(_WORD.findall(sentence.casefold())[:3]) for sentence in sentences]
+
+
+def lint(text: str, *, statements: Sequence[str] = ()) -> list[Finding]:
+    """The banned constructions present in a draft, by stable pattern name; with the
+    person's ``statements``, also a run of more than ``MAX_QUOTED_WORDS`` words copied from
+    one of them (``quoted_statement``)."""
     findings: list[Finding] = []
     for name, pattern in _PATTERNS:
         spans = [match.group(0).strip()[:120] for match in pattern.finditer(text)]
@@ -129,6 +204,21 @@ def lint(text: str) -> list[Finding]:
                 and not starts[index].startswith(("i ", "my "))):
             findings.append(Finding("robotic_rhythm", 1, tuple(sentences[index:index + 3])))
             break
+    # Two consecutive sentences opening with the same phrase ("In that same role, ...").
+    openers = _openers(sentences)
+    repeated = [index for index in range(len(openers) - 1)
+                if len(openers[index].split()) == 3 and openers[index] == openers[index + 1]
+                and openers[index].split()[0] not in ("i", "my")]
+    if repeated:
+        findings.append(Finding("repeated_opener", len(repeated), tuple(
+            sentences[index][:120] for index in repeated[:4])))
+    quoted = [" ".join(run) for run in (quoted_run(text, statement) for statement in statements)
+              if len(run) > MAX_QUOTED_WORDS]
+    if quoted:
+        findings.append(Finding("quoted_statement", len(quoted), tuple(run[:120] for run in quoted[:4])))
+    hedges = fit_hedges(text)
+    if hedges:
+        findings.append(Finding("fit_hedge", len(hedges), tuple(hedges[:4])))
     if sentences and _KICKERS.search(sentences[-1]):
         findings.append(Finding("fake_profundity", 1, (sentences[-1][:120],)))
     last_paragraph = text.strip().split("\n\n")[-1].strip()
@@ -155,13 +245,17 @@ def _citation_sets(draft: NarrativeDraft) -> set[tuple[frozenset[str], frozenset
 
 def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
                   purpose: Literal["answer", "cover_letter", "motivation"], supplied_ids: set[str],
-                  job_ids: set[str], max_length: int | None) -> str | None:
+                  job_ids: set[str], max_length: int | None,
+                  statements: Sequence[str] = ()) -> str | None:
     """Why a rewrite is unacceptable, or None: it must be READY, keep every cited id and
     cite nothing new, keep each draft sentence's exact citation set together on one
-    rewritten sentence, add no number, stay near the draft's length and within the
-    field's shape."""
+    rewritten sentence, add no number, copy no more than ``MAX_QUOTED_WORDS`` consecutive
+    words of the person's statements, stay near the draft's length and within the field's
+    shape."""
     if rewritten.status != "READY":
         return "not_ready"
+    if quotes_statement(rewritten.text, statements):
+        return "quoted_statement"
     original_facts, original_jobs = _cited(original)
     facts, jobs = _cited(rewritten)
     if facts - supplied_ids or jobs - job_ids:
@@ -199,7 +293,14 @@ _RULES = (
     "interpretive metadiscourse ('the key point is', 'as you can see', 'in other words'), "
     "fake-profound kicker lines and summary-recap endings ('In conclusion', 'Ultimately'); "
     "end on the last concrete point instead. Do not cycle synonyms: repeat the clear word. "
-    "Avoid robotic rhythm and identical sentence shapes; vary them only when it helps. Never "
+    "Avoid robotic rhythm and identical sentence shapes; vary them only when it helps. Vary "
+    "sentence openers: never begin two consecutive sentences with the same phrase (such as 'In "
+    "that same role'). A quoted_statement finding is the applicant's own statement of what they "
+    "look for, pasted verbatim: restate it in different words with the same meaning, copying no "
+    f"run of more than {MAX_QUOTED_WORDS} consecutive words, and keep its citation. The "
+    "applicant already decided the role fits: cut hedges, disclaimers and comments on fit "
+    "(fit_hedge findings such as 'while I have not...', 'a quick learner', 'a strong fit') and "
+    "keep the affirmative claims; never add a claim to replace one. Never "
     "use these words: delve, foster, leverage, utilize, facilitate, empower, streamline, robust, "
     "cutting-edge, paradigm shift, game changer, tapestry, realm, beacon, multifaceted, "
     "meticulous, intricate, paramount, transformative, elevate, embark, supercharge, harness, "
@@ -322,17 +423,21 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
                    job: dict[str, str], voice_samples: list[str], max_length: int | None,
                    supplied_ids: set[str], job_ids: set[str],
                    ground: Callable[[NarrativeDraft, dict[str, Any]], None],
-                   trace: Callable[[dict[str, Any]], dict[str, Any]]) -> NarrativeDraft:
+                   trace: Callable[[dict[str, Any]], dict[str, Any]],
+                   statements: Sequence[str] = ()) -> NarrativeDraft:
     """Rewrite a grounded draft under the no-slop rules, ground the rewrite again with
     ``ground`` (which raises a hold on failure), lint the result and allow one more
-    rewrite for a residual pattern. Whatever fails, the last draft that passed is kept."""
+    rewrite for a residual pattern. Whatever fails, the last draft that passed is kept.
+    ``statements`` are the person's own ``career_motivation`` words the evidence carries:
+    a draft copying more than ``MAX_QUOTED_WORDS`` consecutive words of one is a finding
+    to rewrite, and a rewrite that does is rejected (``REJECTED_QUOTED_STATEMENT``)."""
     record = trace({"stage": "humanize", "question": question, "purpose": purpose,
                     "prompt_version": HUMANIZE_PROMPT_VERSION,
-                    "lint_before": findings_summary(lint(draft.text)), "attempts": [],
-                    "status": "PENDING"})
+                    "lint_before": findings_summary(lint(draft.text, statements=statements)),
+                    "attempts": [], "status": "PENDING"})
     current = draft
     for attempt in range(1, MAX_REWRITES + 1):
-        findings = lint(current.text)
+        findings = lint(current.text, statements=statements)
         if attempt > 1 and not findings:
             break
         entry: dict[str, Any] = {"attempt": attempt, "findings": findings_summary(findings),
@@ -343,7 +448,7 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
                                       job=job, voice_samples=voice_samples, findings=findings,
                                       max_length=max_length, attempt=attempt)
             reason = check_rewrite(draft, candidate, purpose=purpose, supplied_ids=supplied_ids,
-                                   job_ids=job_ids, max_length=max_length)
+                                   job_ids=job_ids, max_length=max_length, statements=statements)
             if reason:
                 entry["status"] = "REJECTED_" + reason.upper()
                 break
@@ -356,13 +461,14 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
         current = candidate
         entry["status"] = "REWRITTEN"
         entry["word_count"] = len(current.text.split())
-        entry["lint_after"] = findings_summary(lint(current.text))
-    record["lint_after"] = findings_summary(lint(current.text))
+        entry["lint_after"] = findings_summary(lint(current.text, statements=statements))
+    record["lint_after"] = findings_summary(lint(current.text, statements=statements))
     record["status"] = "REWRITTEN" if current is not draft else "KEPT_ORIGINAL"
     return current
 
 
 __all__ = [
-    "HUMANIZE_PROMPT_VERSION", "MAX_REWRITES", "Finding", "check_rewrite", "findings_summary",
-    "humanize_draft", "lint", "rewrite_draft",
+    "FIT_HEDGE_FEEDBACK", "HUMANIZE_PROMPT_VERSION", "MAX_QUOTED_WORDS", "MAX_REWRITES",
+    "QUOTED_STATEMENT_FEEDBACK", "Finding", "check_rewrite", "findings_summary", "fit_hedges",
+    "humanize_draft", "lint", "quoted_run", "quotes_statement", "rewrite_draft",
 ]
