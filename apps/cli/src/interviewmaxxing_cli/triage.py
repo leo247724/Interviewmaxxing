@@ -75,6 +75,14 @@ ACT_REASONS = frozenset({MissingReason.USER_ACTION.value, MissingReason.UNSUPPOR
 ACT_CONTROLS = frozenset({"FILE", "UNSUPPORTED"})
 
 
+def needs_browser(item: MissingInput) -> bool:
+    """A recorded hold the person clears in a visible browser (``resume APP --act``) and
+    ``answer`` cannot: a sign-in, CAPTCHA or other browser action, a custom control or a
+    file (``HoldOccurrence.needs_browser`` for a recorded ``MissingInput``)."""
+    control = item.control_type.value if item.control_type is not None else ""
+    return item.reason.value in ACT_REASONS or control.upper() in ACT_CONTROLS
+
+
 def truncate(text: str, limit: int) -> str:
     """Whitespace collapsed, cut to ``limit`` characters with a trailing ellipsis."""
     text = " ".join(text.split())
@@ -677,6 +685,7 @@ __all__ = [
     "group_failures",
     "group_holds",
     "hold_key",
+    "needs_browser",
     "prepared_stop",
     "recorded_holds",
     "render_failure_groups",

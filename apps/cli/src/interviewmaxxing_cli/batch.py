@@ -88,7 +88,7 @@ from interviewmaxxing_core import (
 )
 
 from .dynamic import DynamicOptions
-from .runner import ALLOW_SUBMISSION_ENV, BUSY_MESSAGE, CLAIMED_MESSAGE
+from .runner import ALLOW_SUBMISSION_ENV, BUSY_MESSAGE, CLAIMED_MESSAGE, KEPT_DRAFT_MESSAGE
 from .triage import (
     HOLD_CATEGORIES,
     LEDGER_LABEL_LIMIT,
@@ -628,6 +628,11 @@ class BatchRunOptions(Contract):
     headless: bool = True
 
 
+BROWSER_ONLY_SKIP = "browser actions only"
+"""The retry skip reason of a held application whose open holds are all browser actions,
+which nothing can answer (``--user-actions`` runs them)."""
+
+
 class RetryStats(Contract):
     """What a ``prepare-batch --retry`` batch selected and what its runs cleared."""
 
@@ -639,15 +644,19 @@ class RetryStats(Contract):
     rerun_all: bool = False
     """``--all``: held applications ran again even with nothing answered since they
     stopped."""
+    user_actions: bool = False
+    """``--user-actions``: held applications whose open holds are all browser actions
+    (sign-in, CAPTCHA, custom controls, files) ran again with nothing answered."""
     considered: int = Field(default=0, ge=0)
     """Listings in that ledger (after ``--backends``)."""
     selected: int = Field(default=0, ge=0)
     """Listings chosen to run again (after ``--limit``)."""
     skipped: dict[str, int] = Field(default_factory=dict)
     """Why the others were not: ``prepared``, ``closed``, ``duplicate``, ``blocked``,
-    ``not selected (<outcome>)``, ``nothing answered since the stop``, ``explicit
-    answers only``, ``application not found``, ``same application as another listing``,
-    ``over --limit``."""
+    ``approved (left to submit-approved)``, ``not selected (<outcome>)``, ``nothing
+    answered since the stop``, ``browser actions only``, ``explicit answers only``,
+    ``application not found``, ``same application as another listing``, ``over
+    --limit``."""
     retried: int = Field(default=0, ge=0)
     """Listings of this batch with a finished retry line (each at its latest line)."""
     prepared: int = Field(default=0, ge=0)
@@ -889,8 +898,13 @@ def render_retry_markdown(retry: RetryStats) -> list[str]:
              f"- selected {retry.selected} of {retry.considered} listing(s) "
              f"(outcomes: {', '.join(retry.outcomes) or '-'}"
              + ("; every held one (--all)" if retry.rerun_all else "")
+             + ("; browser-action holds included (--user-actions)" if retry.user_actions else "")
              + ("; explicit-only holds included" if retry.include_explicit else "") + ")",
              f"- skipped: {skipped or 'none'}",
+             *(["- held only on browser actions (sign-in, CAPTCHA, custom controls, files): "
+                "clear each with `interviewmaxxing resume APP --act` (`holds` lists them), or "
+                "run them headless again with --user-actions"]
+               if retry.skipped.get(BROWSER_ONLY_SKIP) else []),
              f"- retried: {retry.retried}; now prepared: {retry.prepared}",
              f"- holds cleared: {retry.holds_cleared} of {retry.holds_before}; "
              f"open now: {retry.holds_open}"]
@@ -1494,8 +1508,10 @@ SubmissionOutcomeName = Literal["submitted", "uncertain", "blocked", "needs_inpu
 ``blocked``      nothing was done or can be: not approved or authorized any more, a
                  duplicate, withdrawn, or the job no longer accepts applications.
 ``needs_input``  NEEDS_INPUT: the form no longer matches the approval (withdrawn:
-                 prepare, review and approve again), or a sign-in, CAPTCHA or custom
-                 control needs the user.
+                 prepare, review and approve again), the site resumed a draft it kept at
+                 a later page (withdrawn: submit it in the browser; preparing it again
+                 reopens the same draft; ``SubmissionSummary.kept_drafts``), or a sign-in,
+                 CAPTCHA or custom control needs the user.
 ``error``        FAILED_RETRYABLE (e.g. a browser error before any submit; the approval
                  stands), or the subprocess printed no outcome or timed out.
 """
@@ -1557,32 +1573,42 @@ def read_submission_lines(path: Path, *, count_unparsed: bool = True
     """Every readable submission line of a ledger, in file order, and the number of
     lines that could not be read: lines marked ``kind: "submission"`` that do not
     validate (a hand edit, a newer version) and, with ``count_unparsed``, lines that are
-    not a JSON object at all (cut short by a crash; they may have been either kind).
-    Prepare lines are ``read_ledger_lines``'s and are neither. An unread submission line
-    matters: its application looks unsubmitted to a rerun (the store still refuses a
-    second submit)."""
+    not a JSON object at all (cut short by a crash) and may have been submission lines.
+    ``submit-approved --batch`` without ``--batch-id`` appends to the prepare batch's own
+    ledger, and before its first submission line that ledger held prepare lines only, so
+    a cut line there is a prepare line (``read_ledger_lines`` counts it) and not counted
+    here; one after it may have been either kind and is. In a ledger without prepare
+    lines every cut line counts. An unread submission line matters: its application
+    looks unsubmitted to a rerun (the store still refuses a second submit)."""
     if not path.exists():
         return [], 0
     entries: list[SubmissionEntry] = []
-    ignored = 0
+    marked = 0
+    cut: list[bool] = []  # per line that is not a JSON object: a submission line came before
+    prepare_lines = False
+    submission_seen = False
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
             entries.append(SubmissionEntry.model_validate_json(line))
+            submission_seen = True
             continue
         except ValidationError:
             pass
         try:
             data = json.loads(line)
         except ValueError:
-            ignored += count_unparsed
-            continue
+            data = None
         if not isinstance(data, dict):
-            ignored += count_unparsed
+            cut.append(submission_seen)
         elif data.get("kind") == "submission":
-            ignored += 1
-    return entries, ignored
+            marked += 1
+            submission_seen = True
+        else:
+            prepare_lines = True
+    unparsed = sum(1 for after in cut if after or not prepare_lines) if count_unparsed else 0
+    return entries, marked + unparsed
 
 
 def read_submissions(path: Path) -> list[SubmissionEntry]:
@@ -1592,9 +1618,15 @@ def read_submissions(path: Path) -> list[SubmissionEntry]:
 
 
 def _append_line(path: Path, data: dict[str, Any]) -> None:
+    """Append one submission line (owner-only, one ``write``). Like ``append_ledger``, a
+    last line cut short by a crash (in a ledger shared with prepare-batch, a prepare line)
+    is ended first, so this line does not join it and get lost with it."""
     line = json.dumps(data, sort_keys=True) + "\n"
     fd = _open_private_append(path)
     try:
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            line = "\n" + line
         os.write(fd, line.encode("utf-8"))
         os.fsync(fd)
     finally:
@@ -1779,6 +1811,10 @@ class SubmissionSummary(Contract):
     ledger_lines_ignored: int = Field(default=0, ge=0)
     """Unreadable lines of this ledger (``read_submission_lines``); their applications
     count as not submitted by this ledger."""
+    kept_drafts: list[str] = Field(default_factory=list)
+    """The ``needs_input`` applications whose site resumed a draft it kept at a later page
+    (``runner.KEPT_DRAFT_MESSAGE``): the approval is withdrawn, and preparing them again
+    reopens the same draft, so they are submitted in the browser by the person."""
 
 
 def latest_submissions(entries: Iterable[SubmissionEntry]) -> dict[str, SubmissionEntry]:
@@ -1809,6 +1845,8 @@ def summarize_submissions(batch_id: str, entries: Sequence[SubmissionEntry], *,
                                        company=e.company, title=e.title)
                   for e in latest.values() if e.outcome == "submitted"],
         ledger_path=str(ledger_path), ledger_lines_ignored=ledger_lines_ignored,
+        kept_drafts=[e.application_id for e in latest.values()
+                     if e.outcome == "needs_input" and e.message.startswith(KEPT_DRAFT_MESSAGE)],
     )
 
 
@@ -1915,12 +1953,17 @@ def render_submissions_markdown(summary: SubmissionSummary) -> str:
             f"{r.application_id} ({r.receipt_id}"
             + (f"; {r.confirmation_reference})" if r.confirmation_reference else ")")
             for r in summary.receipts)]
+    kept = set(summary.kept_drafts)
     for outcome, advice in (("uncertain", "never resubmitted; interviewmaxxing reconcile APP"),
                             ("needs_input", "interviewmaxxing status APP; prepare, review and "
                                             "approve again if the form changed")):
-        ids = summary.application_ids.get(outcome)
+        ids = [i for i in summary.application_ids.get(outcome, []) if i not in kept]
         if ids:
             lines += ["", f"{outcome} ({advice}): " + ", ".join(ids)]
+    if summary.kept_drafts:
+        lines += ["", "needs_input, the site resumed a draft it kept (submit it in the browser "
+                      "yourself; preparing it again reopens the same draft): "
+                  + ", ".join(summary.kept_drafts)]
     lines += ["", f"ledger: {summary.ledger_path}"]
     return "\n".join(lines) + "\n"
 
@@ -1999,6 +2042,9 @@ class SubmissionReport(Contract):
     lines_ignored: int = Field(default=0, ge=0)
     """Lines marked as submissions that could not be read; lines that are not JSON at all
     are in ``BatchReport.ledger_lines_ignored``."""
+    kept_drafts: list[str] = Field(default_factory=list)
+    """``needs_input`` applications whose site resumed a draft it kept at a later page
+    (``SubmissionSummary.kept_drafts``): submitted in the browser by the person."""
 
 
 class BatchReport(Contract):
@@ -2342,6 +2388,8 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
                                            company=e.company, title=e.title)
                       for e in submitted.values() if e.outcome == "submitted"],
             lines_ignored=sum(ignored for _, ignored in submission_reads),
+            kept_drafts=[e.application_id for e in submitted.values() if e.outcome == "needs_input"
+                         and e.message.startswith(KEPT_DRAFT_MESSAGE)],
         ) if submitted or any(ignored for _, ignored in submission_reads) else None,
         provider_cost_usd=total_cost,
         provider_calls=sum(e.provider_calls or 0 for e in costed),
@@ -2440,6 +2488,10 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
         uncertain = submissions.application_ids.get("uncertain")
         if uncertain:
             lines += ["", "uncertain (never resubmitted; reconcile each): " + ", ".join(uncertain)]
+        if submissions.kept_drafts:
+            lines += ["", "the site resumed a draft it kept (submit each in the browser yourself; "
+                          "preparing it again reopens the same draft): "
+                      + ", ".join(submissions.kept_drafts)]
     if report.by_backend:
         columns = [k for k in OUTCOMES if any(k in c for c in report.by_backend.values())]
         lines += ["", "## By backend", "", "| backend | " + " | ".join(columns) + " |",
@@ -2494,6 +2546,7 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
 
 
 __all__ = [
+    "BROWSER_ONLY_SKIP",
     "HOLD_CATEGORIES",
     "OUTCOMES",
     "PREPARED_PREFIX",

@@ -62,6 +62,9 @@ from .runner import (
     ALLOW_SUBMISSION_ENV,
     BUSY_MESSAGE,
     CLAIMED_MESSAGE,
+    KEPT_DRAFT_MESSAGE,
+    KEPT_DRAFT_REASON,
+    NEEDS_INPUT_EVENT,
     NOT_AUTHORIZED_MESSAGE,
     LocalApplicationRunner,
     NoninteractiveInteraction,
@@ -167,9 +170,17 @@ def _state_label(app: Application) -> str:
     return label
 
 
+KEPT_DRAFT_STEP = ("submit it in the browser yourself (the site keeps a draft of it; preparing "
+                   "it again reopens that draft)")
+"""The next step after a submission run stopped at a kept draft (``runner.KEPT_DRAFT_MESSAGE``);
+``resume`` would prepare it again into the same draft."""
+
+
 def _next_steps(outcome: ApplyOutcome) -> list[str]:
     app = outcome.application_id
     state = outcome.state
+    if state is S.NEEDS_INPUT and outcome.message.startswith(KEPT_DRAFT_MESSAGE):
+        return [KEPT_DRAFT_STEP]
     if state is S.NEEDS_INPUT:
         steps = []
         if any(m.field_id is not None for m in outcome.missing_inputs):
@@ -199,9 +210,13 @@ PREPARED_MESSAGE_PREFIX = "Prepared to the final review step"
 def _preparation_lines(state: ApplicationState, events: Sequence[Any],
                        waiting: Sequence[MissingInput]) -> list[str]:
     """Status lines for an application that reached its final review step and stopped
-    without submitting (state NEEDS_INPUT, nothing asked, a ``preparation.ready``
-    event). Empty for every other application."""
-    if state is not S.NEEDS_INPUT or waiting:
+    without submitting (state NEEDS_INPUT, nothing asked, and its ``preparation.ready``
+    right behind the current stop, ``triage.prepared_stop``: a later run's stop, such as
+    a submission run that found the form changed or a kept draft, is not a
+    preparation). Empty for every other application."""
+    from .triage import prepared_stop
+
+    if state is not S.NEEDS_INPUT or waiting or not prepared_stop(events):
         return []
     ready = [e for e in events if getattr(e, "event", None) == "preparation.ready"]
     if not ready:
@@ -214,6 +229,17 @@ def _preparation_lines(state: ApplicationState, events: Sequence[Any],
     if metadata.get("captcha_pending"):
         lines.append("captcha:      a CAPTCHA on this form must be solved in the browser before submission")
     return lines
+
+
+def _kept_draft_stop(state: ApplicationState, events: Sequence[Any]) -> bool:
+    """True when the application's current stop is a submission run that found the site's
+    kept draft at a later page and could not go back to the approved pages before it
+    (``runner.KEPT_DRAFT_REASON``)."""
+    if state is not S.NEEDS_INPUT:
+        return False
+    stop = next((e for e in reversed(events) if getattr(e, "event", None) == NEEDS_INPUT_EVENT),
+                None)
+    return stop is not None and (getattr(stop, "metadata", {}) or {}).get("reason") == KEPT_DRAFT_REASON
 
 
 def _review_steps(application_id: str, artifacts_dir: Path) -> list[str]:
@@ -495,7 +521,10 @@ def cmd_approve(args: argparse.Namespace) -> int:
             store.release(claim)
         packets = [store.get_packet(step.packet_id) for step in approval.steps]
     if args.json:
-        print(_dump(approval))
+        from .redaction import public_value
+
+        # The approved step's URL can carry a per-session draft token: page address only.
+        print(json.dumps(public_value(approval.model_dump(mode="json")), indent=2))
         return EXIT_OK
     answers = sum(len(p.answers) for p in packets)
     print(f"approved:    {approval.application_id}")
@@ -839,6 +868,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         prepared = _preparation_lines(app.state, events, waiting)
         for line in prepared:
             print(line)
+        kept_draft = _kept_draft_stop(app.state, events)
+        if kept_draft:
+            print("kept draft:   the site resumed a draft it kept at a later page, so the "
+                  "submission run could not check the approved pages before it; nothing was "
+                  "submitted and the approval was withdrawn")
         approval = store.submission_approval(app.id)
         if approval is not None and app.state not in (S.SUBMITTED, S.SUBMITTING,
                                                       S.SUBMISSION_UNKNOWN):
@@ -847,6 +881,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                   f"`{ALLOW_SUBMISSION_ENV}=1 {PROG} submit {app.id} --yes`")
         print(f"events:       {len(events)} ({PROG} events {app.id})")
         steps = (_review_steps(app.id, paths.artifacts_dir) if prepared
+                 else [KEPT_DRAFT_STEP] if kept_draft
                  else _next_steps(ApplyOutcome(application_id=app.id, state=app.state,
                                                missing_inputs=waiting)))
         for step in steps:
@@ -857,7 +892,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_events(args: argparse.Namespace) -> int:
     """The event history, with metadata as ``redaction.public_metadata`` prints it: form
     URLs as page addresses, and questions' prompts and candidates, lookup suggestions and
-    chosen labels, and routing traces only with ``--verbose``."""
+    chosen labels, the site's rejection messages and routing traces only with
+    ``--verbose``."""
     from .redaction import public_metadata
 
     store = _open_existing(_paths(args))
@@ -1000,8 +1036,8 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
     never submits."""
     if args.retry is not None:
         return _retry_batch(args)
-    if args.outcomes is not None or args.include_explicit or args.rerun_all:
-        print("error: --outcomes, --include-explicit and --all apply to --retry",
+    if args.outcomes is not None or args.include_explicit or args.rerun_all or args.user_actions:
+        print("error: --outcomes, --include-explicit, --all and --user-actions apply to --retry",
               file=sys.stderr)
         return EXIT_USAGE
     from pydantic import ValidationError
@@ -1056,7 +1092,8 @@ def _retry_batch(args: argparse.Namespace) -> int:
         plan = plan_retry(paths, args.retry, candidate_id=options.candidate_id,
                           outcomes=args.outcomes or RETRY_OUTCOMES,
                           include_explicit=args.include_explicit, rerun_all=args.rerun_all,
-                          backends=_csv(args.backends), limit=args.limit)
+                          user_actions=args.user_actions, backends=_csv(args.backends),
+                          limit=args.limit)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -1263,9 +1300,10 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "No card is created or moved to Applied. Summarize ledgers with `batch-report`. "
         "With --retry BATCH_ID instead of --inventory, the applications of that batch that "
         "failed, or are held with a question answered since they stopped (--all: every "
-        "held one), are continued with `resume` as a new batch, with the original batch's "
-        "worker count, timeout and runtime flags unless given again; prepared and closed "
-        "applications are never run again.",
+        "held one; --user-actions: also those held only on browser actions), are "
+        "continued with `resume` as a new batch, with the original batch's worker count, "
+        "timeout and runtime flags unless given again; prepared and closed applications are "
+        "never run again.",
     )
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--inventory", metavar="FILE",
@@ -1284,6 +1322,12 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
     p.add_argument("--include-explicit", action="store_true",
                    help="with --retry: also run applications whose open questions all need "
                         "your explicit answer (skipped by default)")
+    p.add_argument("--user-actions", action="store_true",
+                   help="with --retry: also run held applications whose open holds are all "
+                        "browser actions (sign-in, CAPTCHA, custom controls, files), which "
+                        "nothing can answer; skipped by default as 'browser actions only', "
+                        "because a headless retry usually meets them again (`resume APP "
+                        "--act` clears one in a visible browser)")
     p.add_argument("--backends", metavar="A,B,C", help="only these backends")
     p.add_argument("--statuses", metavar="A,B", default="resolved",
                    help="only these inventory statuses (default: resolved)")
@@ -1473,7 +1517,15 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
     p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_submit_approved)
 
-    p = sub.add_parser("status", help="list applications or show one in detail")
+    p = sub.add_parser(
+        "status", help="list applications or show one in detail",
+        description="List the applications, or show one in detail: its state, attempts, "
+        "the questions it waits for and what to run next. This is your own working view: "
+        "it prints what you need to answer each question (its prompt, answer candidates "
+        "and options, a lookup's suggestions), which `events` hides without --verbose. "
+        "With --json it adds the pending questions as recorded and the latest packet with "
+        "its answers; form URLs are reduced to page addresses and nothing else is hidden, "
+        "so do not keep or share that output (share `events` instead).")
     p.add_argument("application_id", nargs="?", metavar="APPLICATION_ID")
     p.add_argument("--candidate", metavar="ID", help="only this candidate's applications")
     p.add_argument("--json", action="store_true")
@@ -1483,12 +1535,14 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "events", help="show an application's event history",
         description="Print the application's events. Form URLs are shown as page addresses "
         "(scheme, host and path: sites put draft tokens in the rest). The prompts, answer "
-        "candidates and lookup suggestions of recorded questions, chosen lookup labels and "
-        "routing traces can quote your own values and are shown only with --verbose.")
+        "candidates and lookup suggestions of recorded questions, chosen lookup labels, the "
+        "site's rejection messages and routing traces can quote your own values and are "
+        "shown only with --verbose.")
     p.add_argument("application_id", metavar="APPLICATION_ID")
     p.add_argument("--json", action="store_true")
     p.add_argument("--verbose", action="store_true",
-                   help="also show prompts, candidates, suggestions, chosen labels and traces")
+                   help="also show prompts, candidates, suggestions, chosen labels, rejection "
+                        "messages and traces")
     p.set_defaults(func=cmd_events)
 
     p = sub.add_parser("receipt", help="show the submission receipt of a confirmed application")

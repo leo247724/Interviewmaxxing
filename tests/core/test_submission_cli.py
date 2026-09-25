@@ -219,6 +219,21 @@ def test_approve_records_and_lists_the_prepared_answers(capsys, isolated_imx_hom
     assert status["approval"]["packet_id"] == packet_id
 
 
+def test_approve_json_prints_the_page_address_not_the_draft_token(capsys, isolated_imx_home):
+    """Form step URLs carry per-session draft tokens: ``approve --json`` prints the page
+    address, as ``status --json`` and ``events`` do."""
+    token_url = "https://jobs.mock.example/mock-co/4012/apply?draft=dft_SECRET77#step-2"
+    app_id, packet_id = _prepare(isolated_imx_home, token_url)
+    code, out, _ = run(capsys, "approve", app_id, "--json")
+    assert code == EXIT_OK
+    data = json.loads(out)
+    assert (data["packet_id"], data["form_url"]) == (packet_id, "https://jobs.mock.example/mock-co/4012/apply")
+    assert "dft_SECRET77" not in out and "step-2" not in out
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        approval = store.submission_approval(app_id)
+    assert approval is not None and approval.form_url == token_url  # stored exactly
+
+
 def test_approve_refuses_what_is_not_the_prepared_packet(capsys, isolated_imx_home):
     app_id, _ = _prepare(isolated_imx_home)
     code, _, err = run(capsys, "approve", app_id, "--packet", "pkt_someone_else")

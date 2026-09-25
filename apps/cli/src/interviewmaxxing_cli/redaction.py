@@ -2,12 +2,22 @@
 event metadata without the values a person typed or chose unless they ask for them.
 
 Sites put draft and session tokens in the query or fragment of form URLs, and the store
-keeps those URLs exactly (a resume needs the exact step). ``events`` and ``status APP
---json`` print every such URL through ``page_address``: scheme, host and path only, the
-rule of the service's ``views.page_address`` (the CLI cannot import the service).
-Lookup prompts (they quote the typed value and the site's suggestions), answer
-candidates, lookup suggestions, chosen lookup labels and routing traces can carry the
-person's own values; ``events`` prints them only with ``--verbose``.
+keeps those URLs exactly (a resume needs the exact step). ``events``, ``status APP
+--json`` and ``approve --json`` print every such URL through ``page_address``: scheme,
+host and path only, the rule of the service's ``views.page_address`` (the CLI cannot
+import the service). Lookup prompts (they quote the typed value and the site's
+suggestions), answer candidates, lookup suggestions, chosen lookup labels, the site's
+rejection messages and routing traces can carry the person's own values; ``events``
+prints them only with ``--verbose``.
+
+``events`` is the history a person may paste into a report or hand to someone else, so
+it hides those values by default. ``status APP`` is not: it is the person's own working
+view of one application, and it prints what they need to answer it, as ``apply`` and
+``resume`` do: each recorded question's prompt, answer candidates and options (a
+lookup's suggestions). ``status APP --json`` adds the pending questions as recorded and
+the latest packet with its answers (the person's values), with URLs reduced to page
+addresses and nothing else hidden. Neither is meant to be kept or shared; ``events``
+(without ``--verbose``) is.
 """
 
 from __future__ import annotations
@@ -22,6 +32,10 @@ ROUTING_EVENT = "routing.trace"
 """The runner's route-decision and trace projection event (``runner.ROUTING_EVENT``)."""
 SUGGESTION_EVENT = "field.suggestion_chosen"
 """The runner's chosen-lookup-suggestion event (``runner.SUGGESTION_EVENT``)."""
+REJECTION_EVENT = "validation.rejected"
+"""The runner's site-rejection event (``runner.REJECTION_EVENT``). Its ``fields[].message``
+is the site's validation message, which can quote the typed value; the runner stores it
+redacted, but events recorded before that keep the site's text."""
 _URL = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
 _MISSING_PRIVATE = ("prompt", "candidates")
 """``MissingInput`` keys that can quote the person's values: the prompt (a lookup's typed
@@ -71,8 +85,9 @@ def public_metadata(event: str, metadata: dict[str, Any], *, verbose: bool = Fal
                     ) -> dict[str, Any]:
     """Event metadata as ``events`` prints it. URLs are always reduced to page addresses.
     Without ``verbose``, the prompts, answer candidates and lookup suggestions of recorded
-    questions, a chosen lookup label with its chooser's decision, and the routing
-    projection (route decisions and traces) are replaced by ``HIDDEN``."""
+    questions, a chosen lookup label with its chooser's decision, the site's messages of
+    a rejection (``fields[].message``) and the routing projection (route decisions and
+    traces) are replaced by ``HIDDEN``."""
     data: dict[str, Any] = public_value(metadata)
     if verbose:
         return data
@@ -83,6 +98,10 @@ def public_metadata(event: str, metadata: dict[str, Any], *, verbose: bool = Fal
         data |= {k: HIDDEN for k in ("fields", "traces") if data.get(k)}
     if event == SUGGESTION_EVENT:
         data |= {k: HIDDEN for k in ("chosen_label", "decision") if data.get(k)}
+    if event == REJECTION_EVENT and isinstance(data.get("fields"), list):
+        data["fields"] = [item | {"message": HIDDEN}
+                          if isinstance(item, dict) and item.get("message") else item
+                          for item in data["fields"]]
     return data
 
 

@@ -39,6 +39,7 @@ from interviewmaxxing_cli.batch import (
     run_submissions,
 )
 from interviewmaxxing_cli.main import EXIT_BLOCKED, EXIT_INCOMPLETE, EXIT_OK, EXIT_UNCERTAIN, main
+from interviewmaxxing_cli.runner import KEPT_DRAFT_MESSAGE
 from interviewmaxxing_core import (
     AnswerSource,
     ApplicationField,
@@ -106,6 +107,9 @@ FAKE_SUBMIT = textwrap.dedent('''\
     if kind == "changed":
         outcome("NEEDS_INPUT", "The form no longer matches the approved application: a new "
                 "required question appeared.", 3)
+    if kind == "kept_draft":
+        outcome("NEEDS_INPUT", "The site resumed a draft it kept at step 2, so the approved "
+                "answers of step 1 could not be checked or filled.", 3)
     if kind == "closed":
         outcome("FAILED_PERMANENT", "The job is no longer accepting applications.", 3)
     if kind == "retryable":
@@ -477,3 +481,68 @@ def test_unreadable_submission_lines_are_counted_and_shown(paths, fake, tmp_path
     assert report.submissions is not None and report.submissions.lines_ignored == 1
     assert report.ledger_lines_ignored == 1
     assert "- unreadable submission lines ignored: 1" in render_report_markdown(report)
+
+
+# --- review pass 5: a ledger shared with prepare-batch; kept drafts ---------------------------
+
+
+def test_a_shared_ledger_counts_only_submission_lines_that_cannot_be_read(paths, fake, tmp_path):
+    """``submit-approved --batch B`` appends to B's own ledger. A prepare line cut short by
+    a crash there is prepare-batch's unreadable line, not a submission line; the first
+    submission line is not joined to it; a cut line after a submission line may have been
+    either kind and counts."""
+    ids = _approved_batch(paths, ["one", "two"])
+    ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
+    with ledger.open("a") as fh:  # prepare-batch stopped mid-write: no newline
+        fh.write('{"application_id": "app_fictional_cut", "application_url": "https://jobs.fict')
+    _plan(tmp_path, {ids["one"]: "submitted", ids["two"]: "changed"})
+
+    summary = asyncio.run(run_submissions(_options(paths, fake), approved_targets(
+        paths, "default", source_batch="b1"), source_batch="b1"))
+
+    lines = read_submissions(ledger)
+    assert [e.application_id for e in lines] == [ids["one"], ids["two"]]  # nothing joined the cut line
+    assert read_submission_lines(ledger) == (lines, 0)
+    assert summary.ledger_lines_ignored == 0
+    assert "unreadable" not in render_submissions_markdown(summary)
+    assert read_ledger_lines(ledger)[1] == 1  # prepare-batch's reader counts its own cut line
+    report = build_report(paths, ["b1"])
+    assert report.ledger_lines_ignored == 1
+    assert report.submissions is not None and report.submissions.lines_ignored == 0
+
+    with ledger.open("a") as fh:  # submit-approved stopped mid-write, after a submission line
+        fh.write('{"application_id": "app_fictional_cut_2", "application_u\n')
+    assert read_submission_lines(ledger)[1] == 1
+    assert read_submission_lines(ledger, count_unparsed=False)[1] == 0
+
+    # A ledger of submission lines only (``--batch-id`` of its own): every cut line counts,
+    # the first one included.
+    own = paths.home / "batches" / "approved-own" / "ledger.jsonl"
+    own.parent.mkdir(parents=True)
+    own.write_text('{"application_id": "app_fictional_cut_3", "appl\n'
+                   + ledger.read_text().splitlines()[-2] + "\n")
+    assert [e.application_id for e in read_submission_lines(own)[0]] == [ids["two"]]
+    assert read_submission_lines(own)[1] == 1
+
+
+def test_a_kept_draft_is_listed_with_its_manual_remedy(paths, fake, tmp_path):
+    ids = _approved_batch(paths, ["done", "changed", "kept"])
+    _plan(tmp_path, {ids["done"]: "submitted", ids["changed"]: "changed", ids["kept"]: "kept_draft"})
+
+    summary = asyncio.run(run_submissions(_options(paths, fake), approved_targets(
+        paths, "default", source_batch="b1"), source_batch="b1"))
+
+    assert summary.totals == {"submitted": 1, "needs_input": 2}
+    assert summary.kept_drafts == [ids["kept"]]
+    [kept] = [e for e in read_submissions(paths.home / "batches" / "b1" / "ledger.jsonl")
+              if e.application_id == ids["kept"]]
+    assert kept.outcome == "needs_input" and kept.message.startswith(KEPT_DRAFT_MESSAGE)
+    text = render_submissions_markdown(summary)
+    assert (f"needs_input (interviewmaxxing status APP; prepare, review and approve again if the "
+            f"form changed): {ids['changed']}\n") in text
+    assert ("needs_input, the site resumed a draft it kept (submit it in the browser yourself; "
+            f"preparing it again reopens the same draft): {ids['kept']}\n") in text
+    report = build_report(paths, ["b1"])
+    assert report.submissions is not None and report.submissions.kept_drafts == [ids["kept"]]
+    assert (f"the site resumed a draft it kept (submit each in the browser yourself; preparing it "
+            f"again reopens the same draft): {ids['kept']}") in render_report_markdown(report)

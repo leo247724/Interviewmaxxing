@@ -16,12 +16,19 @@ from typing import Any
 
 import pytest
 
+from interviewmaxxing_browser import AmbiguousAction
+from interviewmaxxing_cli.main import EXIT_OK, KEPT_DRAFT_STEP, main
 from interviewmaxxing_cli.runner import (
+    KEPT_DRAFT_MESSAGE,
+    KEPT_DRAFT_REASON,
     MISMATCH_MESSAGE,
     NOT_AUTHORIZED_MESSAGE,
     LocalApplicationRunner,
     NoninteractiveInteraction,
     RunLimits,
+    StepBack,
+    _Run,
+    _Stop,
     create_submission_runner,
     field_record,
     redact_detail,
@@ -115,6 +122,13 @@ class Site:
     fill_detail: dict[str, str] = field(default_factory=dict)
     """Field id -> the detail a fill result reports for it."""
     options: list[BrowserOptions] = field(default_factory=list)
+    advance_to: dict[int, int] = field(default_factory=dict)
+    """Step -> the step Next leads to (the next one when absent): a site that skips a page."""
+    back_to: dict[int, int] = field(default_factory=dict)
+    """For a browser that can go back: step -> the step Back leads to (the previous one
+    when absent); a step mapped to itself stays where it is."""
+    back_fails: bool = False
+    """The Back control is ambiguous (``AmbiguousAction``)."""
 
     def form(self, step: int) -> ApplicationForm:
         count = len(self.steps)
@@ -166,7 +180,7 @@ class FakeBrowser:
 
     async def advance(self) -> NavigationResult:
         self.site.calls.append("advance")
-        self.step += 1
+        self.step = self.site.advance_to.get(self.step, self.step + 1)
         return NavigationResult(advanced=True, inspection=self._page())
 
     async def submit(self) -> SubmitActionResult:
@@ -189,15 +203,27 @@ class FakeBrowser:
         self.site.calls.append("close")
 
 
+class BackBrowser(FakeBrowser):
+    """A browser that can go back one page in the same draft (``StepBack``)."""
+
+    async def previous_step(self) -> PageInspection:
+        self.site.calls.append("previous_step")
+        if self.site.back_fails:
+            raise AmbiguousAction("two controls could mean Back")
+        self.step = self.site.back_to.get(self.step, self.step - 1)
+        return self._page()
+
+
 class FakeFactory:
-    def __init__(self, site: Site) -> None:
+    def __init__(self, site: Site, *, back: bool = False) -> None:
         self.site = site
+        self.back = back
         self.starts = 0
 
     async def start(self, options: BrowserOptions) -> FakeBrowser:
         self.starts += 1
         self.site.options.append(options)
-        return FakeBrowser(self.site)
+        return BackBrowser(self.site) if self.back else FakeBrowser(self.site)
 
 
 class Candidates:
@@ -229,10 +255,10 @@ class Answering(NoninteractiveInteraction):
 
 def _runner(paths, candidates: Candidates, site: Site, *, prepare_only: bool,
             interaction: NoninteractiveInteraction | None = None,
-            resolver: Any = None) -> LocalApplicationRunner:
+            resolver: Any = None, back: bool = False) -> LocalApplicationRunner:
     return LocalApplicationRunner(
         paths=paths, interaction=interaction or NoninteractiveInteraction(), headless=True,
-        browser_factory=FakeFactory(site), candidates=candidates,
+        browser_factory=FakeFactory(site, back=back), candidates=candidates,
         resolver=resolver if resolver is not None or prepare_only else NeverResolve(),
         limits=RunLimits(max_steps=8, max_same_form=2), prepare_only=prepare_only)
 
@@ -727,9 +753,25 @@ def test_pages_filled_before_a_question_stop_are_pinned_and_checked(
     result, _ = _submit(isolated_imx_home, candidates, site, app_id)
 
     if site_resumes:
-        assert result.state is S.NEEDS_INPUT and result.message.startswith(MISMATCH_MESSAGE)
-        assert "the site did not show step 1, so its approved answers could not be checked" in result.message
-        assert "submit" not in site.calls
+        # The site opened the kept draft at page 2 and this browser cannot go back: a
+        # stop of its own that names the manual remedy, not "prepare it again".
+        assert result.state is S.NEEDS_INPUT and result.message.startswith(KEPT_DRAFT_MESSAGE)
+        assert ("at step 2, so the approved answers of step 1 could not be checked or filled"
+                in result.message)
+        assert "submit this application in the browser yourself" in result.message
+        assert "Preparing it again reopens the same draft" in result.message
+        assert MISMATCH_MESSAGE not in result.message and "approve it before" not in result.message
+        assert "fill" not in site.calls and "submit" not in site.calls
+        events = _events(isolated_imx_home, app_id)
+        [withdrawn] = [e for e in events if e.event == "application.approval_invalidated"]
+        assert withdrawn.metadata["reason"] == KEPT_DRAFT_MESSAGE
+        assert withdrawn.metadata["details"] == [
+            "the site opened its kept draft at step 2; step 1 could not be checked or filled"]
+        stop = [e for e in events if e.to_state is S.NEEDS_INPUT][-1]
+        assert (stop.metadata["reason"], stop.metadata["missing_inputs"]) == (KEPT_DRAFT_REASON, [])
+        with ApplicationStore.open(isolated_imx_home.state_db) as store:
+            assert store.list_attempts(app_id) == [] and store.approved_packet(app_id) is None
+            assert store.is_preparation_only(app_id)
     else:
         assert result.state is S.SUBMITTED, result.message
         assert [(step, p.id) for step, p in site.fills] == [
@@ -755,3 +797,186 @@ def test_values_read_back_from_the_page_are_redacted(isolated_imx_home, candidat
     assert redact_detail("typed avery@example.test, +1 (555) 010-0199 on 2026-09-24") == (
         "typed …@…, … on …")
     assert redact_detail("option not found") == "option not found"
+
+
+# --- review pass 5: kept drafts, skipped pages, the unapproved path ---------------------------
+
+
+def _kept_draft_site() -> Site:
+    motivation = _text("motivation", "Why this role?", SemanticType.CUSTOM_TEXT)
+    return Site(steps=[_contact()[:3], [motivation], []])  # contact, a question, the review page
+
+
+def _prepared_in_a_kept_draft(paths, candidates: Candidates, site: Site) -> str:
+    """Page 1 filled by a run that stopped for the question on page 2; the next run carried
+    on in the site's draft at page 2 and prepared the application, which is approved."""
+    first = asyncio.run(_runner(paths, candidates, site, prepare_only=True)
+                        .apply(URL, candidate_id="c1"))
+    assert first.state is S.NEEDS_INPUT and first.missing_inputs
+    site.resume_at = 1
+    again = asyncio.run(_runner(paths, candidates, site, prepare_only=True,
+                                interaction=Answering("Forecasting is my field."))
+                        .resume(first.application_id))
+    assert again.message.startswith("Prepared to the final review step"), again.message
+    _approve(paths, first.application_id)
+    return first.application_id
+
+
+@pytest.mark.parametrize("opens_at", [1, 2])
+def test_a_kept_draft_is_walked_back_so_every_approved_page_is_checked(
+    isolated_imx_home, candidates, opens_at
+):
+    """A browser that can go back (``StepBack``) takes a kept draft back to its first
+    approved page; each page is then compared and filled from its approved packet."""
+    site = _kept_draft_site()
+    app_id = _prepared_in_a_kept_draft(isolated_imx_home, candidates, site)
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        approval = store.submission_approval(app_id)
+    assert approval is not None and [s.form_step for s in approval.steps] == [0, 1, 2]
+    site.resume_at = opens_at  # the draft opens at page 2, or at the review page
+    site.fills.clear()
+    site.calls.clear()
+
+    result, runner = _submit(isolated_imx_home, candidates, site, app_id, back=True)
+
+    assert result.state is S.SUBMITTED, result.message
+    assert site.calls.count("previous_step") == opens_at
+    assert site.calls.index("previous_step") < site.calls.index("fill")  # nothing filled going back
+    assert [(step, p.id) for step, p in site.fills] == [
+        (s.form_step, s.packet_id) for s in approval.steps]
+    assert site.calls.count("submit") == 1
+    assert any("going back to step 1" in m for m in runner.interaction.messages)  # type: ignore[attr-defined]
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        assert [a.packet_id for a in store.list_attempts(app_id)] == [approval.packet_id]
+
+
+@pytest.mark.parametrize("failure", ["ambiguous", "stays"])
+def test_a_kept_draft_that_cannot_be_walked_back_names_the_manual_remedy(
+    isolated_imx_home, candidates, failure
+):
+    site = _kept_draft_site()
+    app_id = _prepared_in_a_kept_draft(isolated_imx_home, candidates, site)
+    site.resume_at = 2
+    if failure == "ambiguous":
+        site.back_fails = True
+    else:
+        site.back_to = {2: 2}  # Back shows the same page again
+    site.calls.clear()
+
+    result, _ = _submit(isolated_imx_home, candidates, site, app_id, back=True)
+
+    assert result.state is S.NEEDS_INPUT and result.message.startswith(KEPT_DRAFT_MESSAGE)
+    assert ("at step 3, so the approved answers of steps 1 and 2 could not be checked or filled"
+            in result.message)
+    assert site.calls.count("previous_step") == 1
+    assert "fill" not in site.calls and "submit" not in site.calls
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        assert store.approved_packet(app_id) is None and store.list_attempts(app_id) == []
+
+
+def test_a_kept_draft_is_reported_with_the_manual_remedy_every_time(
+    isolated_imx_home, candidates, capsys
+):
+    """Preparing a kept draft again lands in the same draft and pins the same pages, so
+    every submission stops the same way; neither the message nor ``status`` ever says
+    to prepare it again."""
+    site = _kept_draft_site()
+    app_id = _prepared_in_a_kept_draft(isolated_imx_home, candidates, site)
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        pinned = store.submission_approval(app_id)
+    assert pinned is not None
+
+    first, _ = _submit(isolated_imx_home, candidates, site, app_id)  # the draft opens at page 2
+    assert first.message.startswith(KEPT_DRAFT_MESSAGE)
+    assert main(["status", app_id]) == EXIT_OK
+    status = capsys.readouterr().out
+    assert "kept draft:   the site resumed a draft it kept at a later page" in status
+    assert f"next:         {KEPT_DRAFT_STEP}" in status
+    assert f"resume {app_id}" not in status and f"approve {app_id}" not in status
+    assert "prepared:" not in status  # the preparation is no longer the current stop
+
+    filled = len(site.fills)
+    again = asyncio.run(_runner(isolated_imx_home, candidates, site, prepare_only=True)
+                        .resume(app_id))
+    assert again.message.startswith("Prepared to the final review step"), again.message
+    assert [step for step, _ in site.fills[filled:]] == [1, 2]  # the draft again: no page 1
+    _approve(isolated_imx_home, app_id)
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        repinned = store.submission_approval(app_id)
+    assert repinned is not None and repinned.steps[0] == pinned.steps[0]  # the same page 1
+
+    second, _ = _submit(isolated_imx_home, candidates, site, app_id)
+    assert second.message == first.message
+    assert "submit" not in site.calls
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        assert store.list_attempts(app_id) == []
+        assert [e.metadata["reason"] for e in store.list_events(app_id)
+                if e.event == "application.approval_invalidated"] == [KEPT_DRAFT_MESSAGE] * 2
+
+
+def test_a_site_that_skips_an_approved_page_is_a_changed_form(isolated_imx_home, candidates):
+    """Only the first page of a run can be a kept draft: a page the site skips after this
+    run filled one withdraws the approval as a change, even for a browser that can go
+    back."""
+    site = Site(steps=[_contact()[:3], [_heard(required=False)], []])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    _approve(isolated_imx_home, app_id)
+    site.advance_to = {0: 2}  # Next on page 1 now leads straight to the review page
+    site.calls.clear()
+
+    result, _ = _submit(isolated_imx_home, candidates, site, app_id, back=True)
+
+    assert result.state is S.NEEDS_INPUT and result.message.startswith(MISMATCH_MESSAGE)
+    assert "the site did not show step 2, so its approved answers could not be checked" in result.message
+    assert "previous_step" not in site.calls and "submit" not in site.calls
+    assert site.calls.count("fill") == 1
+
+
+def test_a_browser_that_can_go_back_is_a_step_back():
+    assert isinstance(BackBrowser(Site(steps=[[]])), StepBack)
+    assert not isinstance(FakeBrowser(Site(steps=[[]])), StepBack)
+
+
+def test_a_submitting_runner_only_prepares_an_application_that_was_never_restricted(
+    isolated_imx_home, candidates
+):
+    """``prepare_only=False`` submits only an authorized approval: ``apply`` of a new
+    application records the no-submit restriction and prepares it."""
+    site = Site(steps=[_contact()])
+    runner = _runner(isolated_imx_home, candidates, site, prepare_only=False, resolver=_factual())
+    assert runner.submit_unapproved is False
+
+    outcome = asyncio.run(runner.apply(URL, candidate_id="c1"))
+
+    assert outcome.state is S.NEEDS_INPUT, outcome.message
+    assert outcome.message.startswith("Prepared to the final review step")
+    assert "submit" not in site.calls and site.options[-1].allow_submission is False
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        assert store.is_preparation_only(outcome.application_id)
+        assert store.list_attempts(outcome.application_id) == []
+    submitting = create_submission_runner(isolated_imx_home, headless=True,
+                                          interaction=NoninteractiveInteraction())
+    assert submitting.submit_unapproved is False
+
+
+def test_the_last_guard_before_a_submit_refuses_without_an_approval(isolated_imx_home, candidates):
+    """``_run`` restricts every run without an authorized approval, so the guard in
+    ``_submit`` is not reached through it; called directly, it refuses."""
+    site = Site(steps=[_contact()])
+    runner = _runner(isolated_imx_home, candidates, site, prepare_only=False)
+    form = site.form(0)
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        app = store.record_request("c1", URL).application
+        claim = store.claim(app.id, "guard-test")
+        for state in (S.INSPECTING, S.PACKET_READY, S.FILLING):
+            store.transition(claim, state)
+        packet = ApplicationPacket(application_id=app.id, job_id=app.job_id,
+                                   candidate_id=app.candidate_id, form_url=form.url, form_step=0,
+                                   form_fingerprint=form.fingerprint, answers=[])
+        run = _Run(runner, store, claim, candidates.load("c1"), FakeBrowser(site), URL)
+        with pytest.raises(_Stop) as stopped:
+            asyncio.run(run._submit(packet))
+        assert stopped.value.outcome.message.startswith(NOT_AUTHORIZED_MESSAGE)
+        assert store.list_attempts(app.id) == []
+        assert store.get_application(app.id).state is S.FAILED_RETRYABLE
+    assert "submit" not in site.calls

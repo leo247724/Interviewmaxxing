@@ -227,14 +227,15 @@ class Answering(NoninteractiveInteraction):
 
 def _runner(paths, candidate, script, *, interaction=None, limits=None,
             clock=None, prepare_only=False) -> LocalApplicationRunner:
-    # These legacy tests exercise confirmed submission against a scripted browser.
+    # These legacy tests exercise confirmed submission against a scripted browser, so a
+    # submitting runner is built with the explicit synthetic-test flag (``submit_unapproved``).
     # Preparation tests below explicitly retain the production no-submit default.
     extra = {"clock": clock} if clock is not None else {}
     return LocalApplicationRunner(
         paths=paths, interaction=interaction or NoninteractiveInteraction(), headless=True,
         browser_factory=ScriptedFactory(script), candidates=Candidates(candidate),
         limits=limits or RunLimits(max_steps=6, max_same_form=2),
-        prepare_only=prepare_only, **extra,
+        prepare_only=prepare_only, submit_unapproved=not prepare_only, **extra,
     )
 
 
@@ -1162,7 +1163,8 @@ def test_a_browser_that_cannot_start_is_a_retryable_outcome_not_a_traceback(
 ):
     runner = LocalApplicationRunner(paths=isolated_imx_home, interaction=NoninteractiveInteraction(),
                                     headless=True, browser_factory=Boom(),
-                                    candidates=Candidates(fictional_candidate), prepare_only=False)
+                                    candidates=Candidates(fictional_candidate), prepare_only=False,
+                                    submit_unapproved=True)
     outcome = asyncio.run(runner.apply(URL, candidate_id="c1"))
     assert outcome.state is S.FAILED_RETRYABLE
     assert "Could not start the browser" in outcome.message and "playwright install" in outcome.message
@@ -1878,7 +1880,8 @@ def test_a_submitted_run_records_its_provider_cost_before_the_submission(
         paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
         browser_factory=ScriptedFactory(Script(pages=[_page(_residence_form())])),
         candidates=Candidates(fictional_candidate), resolver=prepared.resolver,
-        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=False)
+        limits=RunLimits(max_steps=6, max_same_form=2), prepare_only=False,
+        submit_unapproved=True)
     result = asyncio.run(runner.apply(URL, candidate_id="c1"))
     assert result.state is S.SUBMITTED
     [event] = _provider_events(isolated_imx_home, result.application_id)
@@ -2786,3 +2789,130 @@ def test_a_cancelled_run_still_records_the_cost_of_a_call_it_left_in_flight(
         assert app.claim_owner is None  # the claim was released after the cost was recorded
     assert sum(e.metadata["calls"] for e in events) == len(jev.requests) >= 2
     assert "residence_screener" in {p for e in events for p in e.metadata["by_purpose"]}
+
+
+# --- review pass 5: redacted rejections; one resolver across two runs -----------------------
+
+QUOTING = "'avery.quill@example' is not a valid e-mail; call +1 (303) 555-0142 instead"
+"""A site's validation message that quotes what was typed (fictional)."""
+QUOTING_REDACTED = "'…' is not a valid e-mail; call … instead"
+
+
+def _quoted_values(text: str) -> list[str]:
+    return [value for value in ("avery.quill@example", "555-0142", "0142") if value in text]
+
+
+def test_a_rejection_quoting_typed_values_is_stored_and_printed_redacted(
+    isolated_imx_home, fictional_candidate, capsys
+):
+    from interviewmaxxing_cli.main import EXIT_OK, main
+    from interviewmaxxing_cli.redaction import HIDDEN
+
+    form = _form()
+    again = _page(_shown_again(form, "first_name", QUOTING))
+    script = Script(pages=[_page(form)], confirm=[REJECTED], inspect_pages=[again])
+    first = asyncio.run(_runner(isolated_imx_home, fictional_candidate, script)
+                        .apply(URL, candidate_id="c1"))
+    assert first.state is S.NEEDS_INPUT
+    app_id = first.application_id
+    [question] = first.missing_inputs
+    assert question.prompt == ("The site rejected the answer for this question: "
+                               f"{QUOTING_REDACTED}. Please provide a corrected answer.")
+    with _store(isolated_imx_home) as store:
+        events = store.list_events(app_id)
+    [rejection] = [e for e in events if e.event == REJECTION_EVENT]
+    assert rejection.metadata["fields"] == [{"field_id": "first_name", "message": QUOTING_REDACTED,
+                                             "field_fingerprint": question.field_fingerprint}]
+    assert _quoted_values(json.dumps([e.metadata for e in events])) == []  # nothing stored raw
+
+    printed: dict[str, str] = {}
+    for extra in ((), ("--json",), ("--verbose",), ("--verbose", "--json")):
+        assert main(["events", app_id, *extra]) == EXIT_OK
+        printed["events " + " ".join(extra)] = capsys.readouterr().out
+    for extra in ((), ("--json",)):
+        assert main(["status", app_id, *extra]) == EXIT_OK
+        printed["status " + " ".join(extra)] = capsys.readouterr().out
+    for name, out in printed.items():
+        assert _quoted_values(out) == [], name
+    by_event = {e["event"]: e["metadata"] for e in json.loads(printed["events --json"])}
+    assert by_event[REJECTION_EVENT]["fields"][0]["message"] == HIDDEN
+    verbose = {e["event"]: e["metadata"] for e in json.loads(printed["events --verbose --json"])}
+    assert verbose[REJECTION_EVENT]["fields"][0]["message"] == QUOTING_REDACTED
+    assert QUOTING_REDACTED in printed["status "]  # the prompt shows the message's shape
+
+
+def test_a_rejection_recorded_before_redaction_is_hidden_and_asked_again_redacted(
+    isolated_imx_home, fictional_candidate, capsys
+):
+    """A ``validation.rejected`` event written by an earlier version keeps the site's raw
+    text: ``events`` hides it without --verbose, and a run that asks the question again
+    quotes the message redacted."""
+    from interviewmaxxing_cli.main import EXIT_OK, main
+    from interviewmaxxing_cli.redaction import HIDDEN
+
+    form = _form()
+    with _store(isolated_imx_home) as store:
+        app = store.record_request("c1", URL).application
+        claim = store.claim(app.id, "older-runner")
+        store.transition(claim, S.INSPECTING)
+        store.append_event(claim, REJECTION_EVENT, {"form_url": URL, "form_step": 0, "fields": [
+            {"field_id": "first_name", "field_fingerprint": form.field("first_name").fingerprint,
+             "message": QUOTING}]})
+        store.transition(claim, S.FAILED_RETRYABLE, failure_reason="Stopped (fictional).")
+        store.release(claim)
+    for extra in ((), ("--json",)):
+        assert main(["events", app.id, *extra]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert _quoted_values(out) == [] and HIDDEN in out
+
+    resumed = asyncio.run(_runner(isolated_imx_home, fictional_candidate,
+                                  Script(pages=[_page(form)])).resume(app.id))
+
+    assert resumed.state is S.NEEDS_INPUT
+    [question] = resumed.missing_inputs
+    assert QUOTING_REDACTED in question.prompt and _quoted_values(question.prompt) == []
+    with _store(isolated_imx_home) as store:
+        stop = [e for e in store.list_events(app.id) if e.event == "application.needs_input"][-1]
+        packet = store.latest_packet(app.id)
+    assert _quoted_values(json.dumps(stop.metadata)) == []
+    assert packet is not None and _quoted_values(packet.model_dump_json()) == []
+
+
+class TracingResolver:
+    """The factual resolver with the ``narrative_traces`` an AI resolver keeps for its whole
+    life: one trace per resolved step, naming the application it resolved for."""
+
+    def __init__(self) -> None:
+        self.inner = FactualPacketResolver()
+        self.narrative_traces: list[dict[str, Any]] = []
+
+    async def resolve(self, context: PacketContext) -> ApplicationPacket:
+        self.narrative_traces.append({"stage": "stub", "status": "ANSWERED",
+                                      "field_id": "first_name",
+                                      "application": context.application.id})
+        return await self.inner.resolve(context)
+
+
+def test_one_resolver_over_two_runs_records_each_application_s_own_traces(
+    isolated_imx_home, fictional_candidate
+):
+    """A runner and its resolver reused for another application, as a service or a batch
+    worker may: each application's ``routing.trace`` carries only the traces added while
+    it ran, never the previous application's (``_traces_since`` marks what it recorded)."""
+    resolver = TracingResolver()
+    runner = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptedFactory(Script(pages=[_page(_form(), identity=None)])),
+        candidates=Candidates(fictional_candidate), resolver=resolver,
+        limits=RunLimits(max_steps=6, max_same_form=2))
+
+    first = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    second = asyncio.run(runner.apply(URL + "?job=2", candidate_id="c1"))
+
+    assert first.application_id != second.application_id
+    for outcome in (first, second):
+        assert outcome.message.startswith(PREPARED), outcome.message
+        [event] = _routing_events(isolated_imx_home, outcome.application_id)
+        assert [t["application"] for t in event.metadata["traces"]] == [outcome.application_id]
+    assert [t["application"] for t in resolver.narrative_traces] == [
+        first.application_id, second.application_id]
