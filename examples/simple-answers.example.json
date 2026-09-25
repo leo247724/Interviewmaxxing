@@ -55,6 +55,7 @@
   "work_arrangement_preference": null,
   "consent_sms_messages": null,
   "interview_accommodations": null,
+  "metro_area": null,
   "answer_policies": {
     "claims_experience_asked": null,
     "meets_experience_thresholds": null,

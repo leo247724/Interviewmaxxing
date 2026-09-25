@@ -845,11 +845,11 @@ def test_round10_the_blank_template_and_the_docs_list_every_key():
     example = json.loads((REPO / "examples/simple-answers.example.json").read_text())
     assert set(example) == set(SimpleAnswers.model_fields) == (
         _CONTACT_KEYS | set(_REUSABLE_QUESTIONS) | {"career_motivation", "answer_policies"})
-    assert len(_REUSABLE_QUESTIONS) == 42  # round 11: SMS consent, interview accommodations
+    assert len(_REUSABLE_QUESTIONS) == 43  # round 11: SMS, accommodations; round 13: metro_area
     docs = (REPO / "docs/simple-answers.md").read_text()
     for key in _REUSABLE_QUESTIONS:
         assert f"`{key}`" in docs, key
-    assert "forty-two explicit reusable answers" in docs
+    assert "forty-three explicit reusable answers" in docs
 
 
 # --- round 11: SMS consent, interview accommodations, Yes/No sentences ------------------------

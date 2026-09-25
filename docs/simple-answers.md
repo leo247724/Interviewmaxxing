@@ -6,7 +6,7 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-forty-two explicit reusable answers, stored through the existing saved-answer system,
+forty-three explicit reusable answers, stored through the existing saved-answer system,
 and one statement key, `career_motivation`, stored as a verified fact (below).
 Each starts as `null`; nothing is filled in for you.
 
@@ -68,6 +68,7 @@ Each starts as `null`; nothing is filled in for you.
 | `work_arrangement_preference` | Location Preference / Preferred work arrangement (remote, hybrid or on-site) |
 | `consent_sms_messages` | The employer may send me recruiting text messages (SMS) … (a statement; Yes/No) |
 | `interview_accommodations` | Are there any accommodations we can make throughout the interview process? |
+| `metro_area` | Not a form question: the towns around your city where on-site or hybrid work is fine, comma-separated (round 13) |
 
 Full name is derived from first and last name. Location is derived from city,
 state and country, omitting unanswered components. The selected resume already
@@ -110,7 +111,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The forty-two additional reusable-answer keys and `career_motivation`
+contact value. The forty-three additional reusable-answer keys and `career_motivation`
 may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
@@ -122,7 +123,7 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the forty-two additional keys become explicitly
+Nonblank values for the forty-three additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
@@ -131,8 +132,8 @@ referral, age, work-authorization and Hispanic/Latino answers also accept `"Yes"
 employee, relocation, other positions and references. So do government official,
 non-compete, AI tools and the five statements. Desired salary, English
 proficiency, time zones, travel, earliest start date, race/ethnicity, disability status,
-pronouns, familiarity with the company, county and the work-arrangement preference are free
-text in your words.
+pronouns, familiarity with the company, county, the work-arrangement preference and the
+metro area are free text in your words.
 
 `work_authorization_status` takes exactly one of these codes:
 - `us_citizen`: I am a U.S. citizen.
@@ -182,6 +183,32 @@ or not willing to relocate, is No; with the key null, or the relocation answer n
 null, it is held. A question about your current or previous arrangement is not a preference
 and stays unanswered. Without the key a work-mode select is held for you; the verified
 address never answers it.
+
+`metro_area` (round 13) lists the towns around your own `city` where in-person or hybrid work
+is fine, comma-separated, for example "Round Rock, Cedar Park, Leander, Pflugerville,
+Georgetown, Hutto, Kyle, Buda, San Marcos, Lakeway, Bee Cave, Dripping Springs". A state
+written beside a town ("Round Rock, TX") is ignored. Your metro is your city plus these towns.
+With it set, the job's place decides the work arrangement instead of
+`work_arrangement_preference`:
+- **A job in your metro** (its location, or the place the question names, is one of these
+  towns and no other state is written after it; "Austin, MN" is not Austin):
+  - on-site or hybrid is fine, whatever the job requires;
+  - "This role requires working on-site five days per week at the Austin office" is Yes;
+  - a remote / hybrid / on-site select takes the arrangement the posting states ("Austin, TX
+    (Hybrid)"), else hybrid or on-site.
+- **A job anywhere else, or a remote job or one that states no location:**
+  - the answer is remote, and a remote / hybrid / on-site select takes Remote;
+  - "Are you able to work on-site in our San Francisco office?" is No, unless your
+    `willing_to_relocate` is Yes.
+- **An office list** ("Location Preference": Burlingame, CA / Columbus, OH / Austin, TX / New
+  York City, NY / Remote) takes the office in your metro when the list has one, else Remote.
+- **A relocation question that names your own city** ("If you are not currently based in
+  Austin, would you be willing to relocate?") takes the option that says you are already there
+  ("I'm based in Austin"), from your verified address.
+- **A job location nothing can be read from** ("Multiple Locations") leaves the decision to
+  `work_arrangement_preference`, as before. So does a null `metro_area`.
+
+`metro_area` never answers a question by its wording; it only feeds this decision.
 
 `desired_salary` (round 10) states one amount with its unit and, ideally, its currency:
 "USD 95,000 per year", "$45/hr", "95k annually". Every salary question is then derived from it

@@ -34,6 +34,7 @@ from interviewmaxxing_core import (
     normalize_work_arrangement,
 )
 from interviewmaxxing_core.answer_policies import ANSWER_POLICY_KEYS, ANSWER_POLICY_QUESTIONS
+from interviewmaxxing_core.preferences import METRO_AREA_QUESTION
 
 from .answers import question_key, value_key
 
@@ -132,6 +133,9 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "interview_accommodations": (
         None, "Are there any accommodations we can make throughout the interview process?",
     ),
+    # Round 13: the towns around the person's city where on-site or hybrid work is fine
+    # (comma-separated); only the work-arrangement derivation reads it.
+    "metro_area": (None, METRO_AREA_QUESTION),
 }
 STATEMENT_KEYS = frozenset({
     "acknowledge_privacy_notice", "certify_information_true", "consent_to_contact",
@@ -431,6 +435,9 @@ class SimpleAnswers(BaseModel):
     work_arrangement_preference: str | None = None
     consent_sms_messages: str | None = None
     interview_accommodations: str | None = None
+    metro_area: str | None = None
+    """The places around the person's city where on-site or hybrid work is fine, comma-separated
+    ("Round Rock, Cedar Park, Pflugerville"); round 13."""
     answer_policies: AnswerPolicies = Field(default_factory=AnswerPolicies)
     """Standing answers by class of question (round 12); a null section is no policy."""
 
