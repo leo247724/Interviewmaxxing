@@ -35,6 +35,7 @@ from interviewmaxxing_core import (
     SubmissionObservation,
     SubmissionOutcome,
     TextValue,
+    UserInput,
 )
 
 S = ApplicationState
@@ -238,9 +239,9 @@ def test_every_prepared_step_is_approved_with_its_packet(store):
     assert approval.form_step == 2
 
 
-def test_an_older_preparation_without_recorded_steps_uses_its_run_s_latest_packets(store):
+def test_an_older_preparation_without_recorded_steps_uses_its_attempt_s_latest_packets(store):
     """Preparations recorded before the runner listed its steps: the latest packet saved
-    per step after the previous stop (an earlier run's packets are not used)."""
+    per step in the attempt (a later run's packet replaces an earlier run's)."""
     app = _app(store)
     _prepare(store, app, steps=2, record_steps=False, owner="first-run")
     packet_id = _prepare(store, app, steps=2, record_steps=False, owner="second-run")
@@ -474,3 +475,91 @@ def test_list_approved_returns_valid_approvals_not_yet_submitted(store):
 
     assert [a.id for a in store.list_approved()] == [approved.id, other.id]
     assert [a.id for a in store.list_approved(candidate_id=CAND)] == [approved.id]
+
+
+# --- the whole attempt, and answers saved after a preparation -------------------------------
+
+
+def _attempt_run(store: ApplicationStore, app: Application, steps: list[tuple[int, bool]], *,
+                 end: str, record: bool = False, owner: str = "run") -> list[str]:
+    """One prepare-only run that saves a packet per ``(step, complete)`` (filling the
+    complete ones) and ends with a question stop, a preparation or a failure."""
+    claim = store.claim(app.id, owner)
+    store.require_preparation_only(claim)
+    store.transition(claim, S.INSPECTING)
+    saved: list[str] = []
+    for index, (step, complete) in enumerate(steps):
+        if index:
+            store.transition(claim, S.INSPECTING)
+        packet = _packet(app, _form(step, final=False), complete=complete)
+        store.save_packet(claim, packet)
+        saved.append(packet.id)
+        if complete:
+            store.transition(claim, S.PACKET_READY)
+            store.transition(claim, S.FILLING)
+    if end == "failed":
+        store.transition(claim, S.FAILED_RETRYABLE, failure_reason="Stopped by a browser error.")
+    else:
+        if end == "prepared":
+            metadata: dict[str, Any] = {"form_url": URL, "form_step": steps[-1][0],
+                                        "packet_id": saved[-1], "submitted": False}
+            if record:
+                metadata["steps"] = [{"form_step": step, "packet_id": pid, "fields": []}
+                                     for (step, _), pid in zip(steps, saved, strict=True)]
+            store.append_event(claim, "preparation.ready", metadata)
+        if store.get_application(app.id).state is not S.INSPECTING:
+            store.transition(claim, S.INSPECTING)
+        missing = [] if end == "prepared" else [{"field_id": None, "label": "Question",
+                                                 "reason": "NO_ANSWER", "prompt": "Answer it."}]
+        store.transition(claim, S.NEEDS_INPUT, metadata={"missing_inputs": missing, "reason": end})
+    store.release(claim)
+    return saved
+
+
+@pytest.mark.parametrize("record", [False, True])
+def test_every_step_of_the_attempt_is_pinned_across_a_question_stop(store, record):
+    """Page 1 was filled by a run that then stopped for a question on page 2; the next run
+    carried on in the site's draft at page 2. Both pages are pinned, whether or not the
+    preparation recorded its own steps."""
+    app = _app(store)
+    first = _attempt_run(store, app, [(0, True), (1, False)], end="questions")
+    second = _attempt_run(store, app, [(1, True), (2, True)], end="prepared", record=record)
+    approval = _approve(store, app.id, second[-1])
+    assert [(s.form_step, s.packet_id) for s in approval.steps] == [
+        (0, first[0]), (1, second[0]), (2, second[1])]
+
+
+def test_a_failure_starts_a_new_attempt(store):
+    app = _app(store)
+    _attempt_run(store, app, [(0, True)], end="failed")
+    later = _attempt_run(store, app, [(1, True), (2, True)], end="prepared")
+    approval = _approve(store, app.id, later[-1])
+    assert [(s.form_step, s.packet_id) for s in approval.steps] == [(1, later[0]), (2, later[1])]
+
+
+def test_answers_saved_after_the_preparation_need_a_fresh_one(store):
+    """An answer saved after the preparation is not in the prepared packet: approving
+    needs a new preparation, and an approval given before it lapses."""
+    def later() -> UserInput:
+        return UserInput.for_field(_form(0), "why_0", TextValue(text="A later answer."))
+
+    app = _app(store)
+    packet_id = _prepare(store, app)
+    claim = store.claim(app.id, "service")
+    store.save_user_inputs(claim, [later()])
+    with pytest.raises(SubmissionBlocked, match=r"answers were saved .* after it was prepared"):
+        store.approve_submission(claim, packet_id=packet_id, approver="cli:fixture")
+    store.release(claim)
+    assert "application.approved" not in _events(store, app.id)
+
+    approved = _app(store, OTHER_URL)
+    packet_id = _prepare(store, approved)
+    _approve(store, approved.id, packet_id)
+    claim = store.claim(approved.id, "service")
+    store.save_user_inputs(claim, [later()])
+    assert store.approved_packet(approved.id) is None
+    with pytest.raises(SubmissionBlocked, match="no valid approval"):
+        store.authorize_submission(claim)
+    store.release(claim)
+    _prepare(store, approved, owner="prepare-again")  # the answer is in the new preparation
+    assert _approve(store, approved.id, store.prepared_packet(approved.id) or "").packet_id

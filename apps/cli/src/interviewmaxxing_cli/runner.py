@@ -96,6 +96,7 @@ from interviewmaxxing_core import (
     AnswerSource,
     Application,
     ApplicationBrowser,
+    ApplicationEvent,
     ApplicationField,
     ApplicationForm,
     ApplicationPacket,
@@ -186,6 +187,9 @@ _TRACE_VALUE_KEYS = frozenset({
 """Trace keys that carry fact values, generated prose, review text or typed text."""
 _TRACE_TEXT_LIMIT = 300
 _QUOTED = re.compile(r"""(['"]).*?\1""")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_DIGITS = re.compile(r"\+?\d[\d\s().-]{2,}\d")
+"""Four or more characters of digits and phone punctuation (a number, a date, an id)."""
 
 
 def project_trace(trace: dict[str, Any]) -> dict[str, Any]:
@@ -208,10 +212,12 @@ def project_trace(trace: dict[str, Any]) -> dict[str, Any]:
 
 def redact_detail(detail: str | None) -> str | None:
     """A fill result's detail with every quoted value replaced by an ellipsis, so the
-    shape ("reads back ['…']") is kept and the value read from the page is not."""
+    shape ("reads back ['…']") is kept and the value read from the page is not. Unquoted
+    email addresses and runs of four or more digits (phone numbers, dates, ids) are
+    replaced too."""
     if not detail:
         return None
-    redacted = _QUOTED.sub("'…'", detail)
+    redacted = _DIGITS.sub("…", _EMAIL.sub("…@…", _QUOTED.sub("'…'", detail)))
     return redacted if len(redacted) <= _TRACE_TEXT_LIMIT else redacted[:_TRACE_TEXT_LIMIT] + "…"
 
 
@@ -238,6 +244,21 @@ RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
 LATE_COST_WAIT_S = 10.0
 """How long a cancelled run waits for resolver work still running before its final cost."""
 LABEL_LIMIT = 80
+ATTEMPT_STARTS: frozenset[ApplicationState] = frozenset(
+    {S.REQUESTED, S.FAILED_RETRYABLE, S.FAILED_PERMANENT, S.DUPLICATE})
+"""Transitions after which a form is filled from its first page again. A question stop
+(NEEDS_INPUT) is not one: the resumed run carries on in the draft the site kept, so the
+pages filled before it belong to the same attempt (as the review lane's
+``views.preparing_attempt``)."""
+
+
+def attempt_events(events: Sequence[ApplicationEvent]) -> list[ApplicationEvent]:
+    """The events of the current attempt: those after the last transition into one of
+    ``ATTEMPT_STARTS``."""
+    for index in range(len(events) - 1, -1, -1):
+        if events[index].to_state in ATTEMPT_STARTS:
+            return list(events[index + 1:])
+    return list(events)
 
 
 class SavedAnswerStore(CandidateLoader, Protocol):
@@ -437,6 +458,13 @@ def field_record(field: ApplicationField) -> dict[str, Any]:
     return {"id": field.id, "fingerprint": field.fingerprint, "required": field.required,
             "semantic_type": field.semantic_type.value, "control_type": field.control_type.value,
             "options": options_digest(field), "label": _short(field.question_text) or field.id}
+
+
+def _step_record(form: ApplicationForm, packet: ApplicationPacket) -> dict[str, Any]:
+    """One filled step as an approval pins it: its packet and the questions it answered."""
+    return {"form_step": form.step, "packet_id": packet.id, "form_url": form.url,
+            "form_fingerprint": form.fingerprint,
+            "fields": [field_record(f) for f in form.fields]}
 
 
 @dataclass(frozen=True)
@@ -869,6 +897,8 @@ class _Run:
         answers; ``preparation.ready`` records them."""
         self.awaited: set[tuple[int, str]] = set()
         """Custom controls ``(step, field id)`` this submission run already waited for."""
+        self.filled_steps: set[int] = set()
+        """Steps this submission run filled from their approved packets."""
         self.limits = runner.limits
         self.interaction = runner.interaction
         self.forms_seen: Counter[str] = Counter()
@@ -996,10 +1026,16 @@ class _Run:
             current = S.INSPECTING
         if state is S.NEEDS_INPUT:
             self._to(S.INSPECTING)
-            self.store.transition(self.claim, S.NEEDS_INPUT, metadata={
+            stop: dict[str, Any] = {
                 "missing_inputs": [m.model_dump(mode="json") for m in missing],
                 "reason": reason or message,
-            })
+            }
+            if missing and self.step_packets:
+                # The next run of this attempt may carry on in the site's draft: the pages
+                # filled here are pinned by a later preparation (``_prepared_steps``).
+                stop["steps"] = [_step_record(form, packet)
+                                 for _, (form, packet) in sorted(self.step_packets.items())]
+            self.store.transition(self.claim, S.NEEDS_INPUT, metadata=stop)
         elif state in (S.FAILED_RETRYABLE, S.FAILED_PERMANENT):
             if current is not state:
                 self.store.transition(self.claim, state, failure_reason=message,
@@ -1513,8 +1549,9 @@ class _Run:
         approved = self.approved
         assert approved is not None
         if acted and (form.page_errors or any(f.validation_error for f in form.fields)):
-            shown = [*form.page_errors, *(f"{_short(f.question_text) or f.id}: {f.validation_error}"
-                                          for f in form.fields if f.validation_error)]
+            shown = [*(redact_detail(e) or "" for e in form.page_errors),
+                     *(f"{_short(f.question_text) or f.id}: {redact_detail(f.validation_error)}"
+                       for f in form.fields if f.validation_error)]
             raise self._not_approved(["the site did not accept the approved answers ("
                                       + "; ".join(_short(m, 160) for m in shown[:3]) + ")"])
         step = approved.steps.get(form.step)
@@ -1527,7 +1564,8 @@ class _Run:
         if awaiting:
             return await self._approved_user_action(page, form, awaiting)
         packet = bound_packet(step.packet, form)
-        rejected = [p for answer in packet.answers if (field := form.find(answer.field_id))
+        rejected = [redact_detail(p) or p for answer in packet.answers
+                    if (field := form.find(answer.field_id))
                     for p in answer_problems(field, answer.value)]
         if rejected:  # e.g. the approved option is now disabled
             raise self._not_approved(rejected)
@@ -1536,7 +1574,8 @@ class _Run:
             # Same questions, read differently this time (a semantic type whose answer
             # must come from a saved answer or the user): not a change of the form.
             raise self._stop(S.FAILED_RETRYABLE, "The approved answers cannot be filled as the "
-                             "page is read this time (" + "; ".join(problems[:3]) + "). Nothing "
+                             "page is read this time ("
+                             + "; ".join(redact_detail(p) or p for p in problems[:3]) + "). Nothing "
                              "was submitted and the approval stands; submit again with the "
                              "runtime options the application was prepared with.")
         return await self._act_approved(form, packet)
@@ -1583,7 +1622,7 @@ class _Run:
                  if r.status is FieldFillStatus.VERIFICATION_MISMATCH else
                  f"the site no longer accepts the approved answer to "
                  f"{labels.get(r.field_id, r.field_id)!r}")
-                + (f" ({_short(r.detail, 120)})" if r.detail else "")
+                + (f" ({_short(redact_detail(r.detail) or '', 120)})" if r.detail else "")
                 for r in unmatched])
         if fill.page_errors:
             self._to(S.INSPECTING)
@@ -1599,7 +1638,18 @@ class _Run:
                                   "status": result.status.value,
                                   "detail": redact_detail(result.detail)}
                                  for result in fill.fields if result.field_id in failed]})
+        self.filled_steps.add(form.step)
         if form.is_final_step is True:
+            approved = self.approved
+            assert approved is not None
+            unseen = [step for step in sorted(approved.steps)
+                      if step < approved.final_step and step not in self.filled_steps]
+            if unseen:
+                # The site went straight to a later page (a kept draft): the approved
+                # answers of the earlier pages were not checked or filled by this run.
+                raise self._not_approved([f"the site did not show step {step + 1}, so its "
+                                          "approved answers could not be checked"
+                                          for step in unseen])
             return await self._submit(packet)
         await self._verify_expected_page()
         try:
@@ -1622,16 +1672,40 @@ class _Run:
 
     def _prepared_steps(self, packet: ApplicationPacket,
                         final: ApplicationForm) -> list[dict[str, Any]]:
-        """Every step this run filled, up to the final one, with its packet and the
-        questions that packet answered: what an approval of this preparation pins."""
-        steps = {step: pair for step, pair in self.step_packets.items() if step < packet.form_step}
+        """Every step of this attempt up to the final one, with the packet last saved for it
+        and, where recorded, the questions that packet answered: what an approval of this
+        preparation pins. Pages this run filled come from this run; pages an earlier run
+        of the attempt filled before a question stop (the site keeps them in its draft)
+        come from that stop's ``steps``, or from the packet alone when none was recorded."""
+        latest: dict[int, str] = {}
+        recorded: dict[tuple[int, str], dict[str, Any]] = {}
+        for event in attempt_events(self.store.list_events(self.app_id)):
+            meta = event.metadata
+            if event.event == "packet.saved":
+                if isinstance(meta.get("form_step"), int) and isinstance(meta.get("packet_id"), str):
+                    latest[meta["form_step"]] = meta["packet_id"]
+            elif event.to_state is S.NEEDS_INPUT:
+                for item in meta.get("steps") or []:
+                    if isinstance(item, dict) and isinstance(item.get("form_step"), int):
+                        recorded[(item["form_step"], str(item.get("packet_id")))] = item
+        records: dict[int, dict[str, Any]] = {}
+        for step, packet_id in latest.items():
+            if step >= packet.form_step:
+                continue
+            if step in self.step_packets and self.step_packets[step][1].id == packet_id:
+                records[step] = _step_record(*self.step_packets[step])
+            elif (step, packet_id) in recorded:
+                records[step] = dict(recorded[(step, packet_id)])
+            else:
+                earlier = self.store.get_packet(packet_id)
+                records[step] = {"form_step": step, "packet_id": packet_id,
+                                 "form_url": earlier.form_url,
+                                 "form_fingerprint": earlier.form_fingerprint}
         answered = self.step_packets.get(packet.form_step)
-        steps[packet.form_step] = (answered if answered is not None and answered[1].id == packet.id
-                                   else (final, packet))
-        return [{"form_step": step, "packet_id": pkt.id, "form_url": form.url,
-                 "form_fingerprint": form.fingerprint, "final": step == packet.form_step,
-                 "fields": [field_record(f) for f in form.fields]}
-                for step, (form, pkt) in sorted(steps.items())]
+        records[packet.form_step] = _step_record(
+            *(answered if answered is not None and answered[1].id == packet.id else (final, packet)))
+        return [{**record, "final": step == packet.form_step}
+                for step, record in sorted(records.items())]
 
     async def _submit(self, packet: ApplicationPacket) -> PageInspection:
         if self.store.is_preparation_only(self.app_id):
