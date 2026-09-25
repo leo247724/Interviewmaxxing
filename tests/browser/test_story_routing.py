@@ -439,7 +439,7 @@ def test_humanizer_rewrites_the_draft_keeps_citations_and_grounds_again(candidat
     assert transport.roles == ["write", "humanize", "review"]
     rewrite = transport.requests[1]
     assert rewrite["reasoning"] == {"max_tokens": 2560} and rewrite["response_format"]["json_schema"]["strict"]
-    assert rewrite["max_tokens"] == 2560 + 4000  # the humanize rewrite keeps a cover letter's room
+    assert rewrite["max_tokens"] == 2560 + 6000  # the humanize rewrite keeps a cover letter's room
     user = json.loads(rewrite["messages"][1]["content"])
     assert user["purpose"] == "answer" and user["voice_samples"] == ["I write short, plain sentences."]
     assert {f["pattern"] for f in user["findings"]} >= {"throat_clearing", "banned_word", "binary_contrast"}
@@ -1656,3 +1656,338 @@ def test_wrong_working_gets_one_corrective_rewrite_then_holds(candidate, mock_jo
                                     Retriever([candidate.facts[0]]), Writer(cited), Jev())
     assert held(packet, ctx)
     assert next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")["status"] == "CITATIONS_INVALID"
+
+
+# --- round 6: story passages, the owner's letter rubric, the genre lint ---------------------------
+
+LETTER = "Cover letter"
+
+
+def letter_context(candidate: CandidateProfile, job: JobRecord) -> PacketContext:
+    return context(candidate, job, question=LETTER, semantic=SemanticType.COVER_LETTER)
+
+
+@dataclass
+class LetterWriter:
+    """A writer double for cover letters: scripted drafts (the last repeats) and a review that
+    answers by purpose from scripted verdicts (SUPPORTED when a queue is empty)."""
+    drafts: list[list[dict[str, Any]]]
+    rubric: list[Any] = field(default_factory=list)
+    evidence: list[Any] = field(default_factory=list)
+    calls: list[dict[str, Any]] = field(default_factory=list)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+
+    def write(self, **kwargs: Any) -> NarrativeDraft:
+        self.calls.append(kwargs)
+        sentences = self.drafts.pop(0) if len(self.drafts) > 1 else self.drafts[0]
+        return NarrativeDraft.model_validate({"status": "READY", "sentences": sentences, "missing_information": []})
+
+    def review(self, **kwargs: Any) -> Any:
+        self.reviews.append(kwargs)
+        queue = {"letter_rubric": self.rubric, "evidence_consistency": self.evidence}.get(kwargs["purpose"], [])
+        verdict = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else "SUPPORTED"
+        if isinstance(verdict, Exception):
+            raise verdict
+        if isinstance(verdict, tuple):
+            verdict, issues, references = verdict
+        else:
+            issues, references = ([] if verdict == "SUPPORTED" else ["Rubric line 4: name one thing only true of "
+                                                                     "this employer."]), []
+        return SimpleNamespace(verdict=verdict, issues=issues, reference_ids=references)
+
+    def purposes(self) -> list[str]:
+        return [review["purpose"] for review in self.reviews]
+
+
+def test_uncertain_story_passages_get_one_review_and_stay_unless_it_finds_a_conflict(candidate, mock_job):
+    chunk = story_chunk()
+    money = fact(candidate, "Managed a $40,000 paid search budget for a florist in 2022.", fid="fact.florist")
+    profile = candidate.model_copy(update={"facts": [*candidate.facts, money]})
+    answer = [{"text": "I grew online orders by 35% for a regional bakery chain in 2024.",
+               "fact_ids": ["fact.bakery", chunk["id"]]}]
+    # Uncertain (0.05 < p < 0.95): one independent review; SUPPORTED keeps the passage.
+    writer = LetterWriter([answer])
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]),
+                                    writer, Jev(story=0.6))
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert any(item["id"] == chunk["id"] for item in writer.calls[0]["facts"])
+    [review] = [r for r in writer.reviews if r["purpose"] == "evidence_consistency"]
+    assert {f["id"] for f in review["facts"]} >= {chunk["id"], "fact.florist"}  # and what else it compares
+    assert "story passages" in review["question"]
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")
+    assert trace["status"] == "CONSISTENT" and trace["review"] == {"reviewed": ["c0"], "contradicted": [],
+                                                                   "status": "REVIEWED"}
+    assert "story evidence" in packet.answers[0].provenance.note
+    # The same passages and comparison facts are reviewed once per runtime.
+    ctx2 = replace(context(profile, mock_job), form=resolver.router.annotate(context(profile, mock_job).form,
+                                                                           document_id="synthetic-stories"))
+    assert asyncio.run(resolver.resolve(ctx2)).is_complete
+    assert writer.purposes().count("evidence_consistency") == 1
+    assert any(t["stage"] == "story_review_cache" and t["status"] == "CACHED" for t in resolver.narrative_traces)
+    # A CONFLICT naming the passage drops it; the answer writes from the rest.
+    rest = [{"text": "I grew online orders by 35% for a regional bakery chain in 2024.", "fact_ids": ["fact.bakery"]}]
+    writer = LetterWriter([rest], evidence=[("CONFLICT", ["The passage's budget contradicts fact.florist."],
+                                             [chunk["id"], "fact.florist"])])
+    packet, resolver, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]),
+                                  writer, Jev(story=0.6))
+    assert packet.is_complete and not any(item["key"] == "story" for item in writer.calls[0]["facts"])
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")
+    assert trace["status"] == "DROPPED" and trace["review"]["contradicted"] == ["c0"]
+    # A real contradiction (p <= 0.05) is dropped without any review.
+    writer = LetterWriter([rest])
+    packet, resolver, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]),
+                                  writer, Jev(story=0.05))
+    assert packet.is_complete and "evidence_consistency" not in writer.purposes()
+    assert "review" not in next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")
+    # Without a reviewer the uncertain passage is dropped, as before round 6.
+    packet, resolver, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]),
+                                  Writer(rest), Jev(story=0.6))
+    assert packet.is_complete
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")
+    assert trace["status"] == "DROPPED" and trace["review"]["status"] == "NOT_REVIEWED"
+
+
+def test_a_rubric_letter_is_written_first_time_with_the_profile_links(candidate, mock_job):
+    chunk = story_chunk()
+    letter = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    writer = LetterWriter([letter])
+    retriever = Retriever(list(candidate.facts), [chunk], job_evidence=[POSTING])
+    jev = Jev(semantic="COVER_LETTER")
+    packet, resolver, ctx = resolve(letter_context(candidate, mock_job), retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == [] and len(writer.calls) == 1
+    assert retriever.calls[0]["limit"] == 12  # a cover letter's facts come per requirement, up to 12
+    contact = next(item for item in writer.calls[0]["facts"] if item["id"] == "contact:links")
+    assert contact == {"id": "contact:links", "key": "contact_links",
+                       "value": "LinkedIn: https://www.linkedin.example/in/avery-example"}
+    answer = packet.answers[0]
+    assert answer.provenance.reference_ids == ["fact.bakery"]  # the links and the passage are not facts
+    assert "profile links from the applicant's identity" in answer.provenance.note
+    assert "story evidence" in answer.provenance.note
+    assert answer.value.text.startswith("Dear Hiring Manager,\n\nIn 2024 I grew online orders")
+    # The rubric review graded the grounded letter before anything else could change it.
+    assert writer.purposes() == ["letter_rubric"]
+    rubric = writer.reviews[0]
+    assert {f["id"] for f in rubric["facts"]} >= {"fact.bakery", chunk["id"], "contact:links"}
+    assert rubric["job_evidence"] == [POSTING] and rubric["sentences"]
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]["status"] == "PASSED"
+    # Jev's completeness is scoped to the letter's shape, and a first step is a plan, not a claim.
+    [grounding] = jev.grounding_requests()
+    assert "owner's shape" in grounding["questions"]["complete"]["instructions"]
+    assert "plan, not a claim of fact" in grounding["questions"]["q0"]["instructions"]
+    # Other narratives keep eight facts and get no contact entry.
+    retriever = Retriever(list(candidate.facts))
+    packet, _, _ = resolve(context(candidate, mock_job), retriever,
+                           Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}]), Jev())
+    assert packet.is_complete and retriever.calls[0]["limit"] == 8
+
+
+@pytest.mark.parametrize("rule", ["GREETING", "LETTER_LENGTH", "OPENING", "CLOSING", "STORY_MISSING",
+                                  "JOB_RESTATED", "EMPLOYER_NAME"])
+def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, mock_job, rule):
+    from interviewmaxxing_browser.ai.routing import (
+        JOB_RESTATED_FEEDBACK,
+        LETTER_CLOSING_FEEDBACK,
+        LETTER_GREETING_FEEDBACK,
+        LETTER_LENGTH_FEEDBACK,
+        LETTER_OPENING_FEEDBACK,
+        LETTER_STORY_FEEDBACK,
+    )
+
+    chunk = story_chunk()
+    good = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    bad = [dict(sentence) for sentence in good]
+    job = mock_job
+    posting = POSTING
+    if rule == "GREETING":
+        bad = [{**s, "paragraph": s["paragraph"] - 1} for s in bad[1:]]
+        bad[0]["text"] = "Dear team: " + bad[0]["text"]  # not a greeting line of its own
+    elif rule == "LETTER_LENGTH":
+        bad = [bad[0], bad[1], bad[3], bad[7], bad[10], bad[11], bad[12]]
+        bad = [{**s, "paragraph": index} for index, s in zip([0, 1, 2, 3, 3, 4, 4], bad, strict=True)]
+    elif rule == "OPENING":
+        bad[1] = {**bad[1], "text": "I am writing to apply for the paid search role at your company, which I "
+                                    "found through a friend and read closely twice.", "fact_ids": ["fact.bakery"]}
+    elif rule == "CLOSING":
+        bad[12] = {**bad[12], "text": "Thank you for considering my application."}
+    elif rule == "STORY_MISSING":
+        bad = [{**s, "fact_ids": [fid for fid in s["fact_ids"] if not fid.startswith("story:")]} for s in bad]
+    elif rule == "JOB_RESTATED":
+        bad[8] = {**bad[8], "text": "The role also calls for weekly reports to the sales team and to its managers.",
+                  "fact_ids": [], "job_evidence_ids": [POSTING["id"]]}
+        bad[9] = {**bad[9], "text": "The posting asks for hands-on Google Ads management with conversion "
+                                    "tracking across every account.", "fact_ids": [],
+                  "job_evidence_ids": [POSTING["id"]]}
+    else:  # EMPLOYER_NAME: the metadata carries a listing source's name, the description another
+        job = mock_job.model_copy(update={"company": "Coda Fictional"})
+        posting = {**POSTING, "text": "Superfictional Mail: " + POSTING["text"]}
+        bad[2] = {**bad[2], "text": "Your paid search program at Coda Fictional ties spend decisions to reported "
+                                    "results, and that rebuild is the work I would bring to it first."}
+    writer = LetterWriter([bad, good])
+    packet, resolver, ctx = resolve(letter_context(candidate, job), Retriever(list(candidate.facts), [chunk],
+                                    job_evidence=[posting]), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and ctx.problems(packet) == [] and len(writer.calls) == 2
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert rule in draft["rejected_for"]
+    feedback = {"GREETING": LETTER_GREETING_FEEDBACK, "LETTER_LENGTH": LETTER_LENGTH_FEEDBACK,
+                "OPENING": LETTER_OPENING_FEEDBACK, "CLOSING": LETTER_CLOSING_FEEDBACK,
+                "STORY_MISSING": LETTER_STORY_FEEDBACK, "JOB_RESTATED": JOB_RESTATED_FEEDBACK}.get(rule)
+    issues = writer.calls[1]["review_feedback"]
+    assert (feedback in issues) if feedback else any("Coda Fictional" in issue for issue in issues)
+    # A letter still failing a checked line on its last attempt is held, never shipped.
+    writer = LetterWriter([bad])
+    packet, _, ctx = resolve(letter_context(candidate, job), Retriever(list(candidate.facts), [chunk],
+                             job_evidence=[posting]), writer, Jev(semantic="COVER_LETTER"))
+    assert held(packet, ctx) and len(writer.calls) == 3
+
+
+def test_the_rubric_review_gets_corrective_rewrites_and_never_blocks_a_grounded_letter(candidate, mock_job):
+    chunk = story_chunk()
+    letter = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    retriever = lambda: Retriever(list(candidate.facts), [chunk], job_evidence=[POSTING])  # noqa: E731
+    issue = "Rubric line 4: name one thing only true of this employer."
+    # A HARD line the reviewer finds failed: its issues are the next draft's feedback.
+    writer = LetterWriter([letter], rubric=["UNSUPPORTED", "SUPPORTED"])
+    packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and len(writer.calls) == 2 and writer.calls[1]["review_feedback"] == [issue]
+    assert "rubric review" not in packet.answers[0].provenance.note
+    drafts = [t for t in resolver.narrative_traces if t["stage"] == "draft"]
+    assert [d["rubric"]["status"] for d in drafts] == ["REWRITE", "PASSED"]
+    assert issue not in json.dumps(ai_package_project(drafts[0]))
+    # Still failing on the last attempt: the letter is written and says so.
+    writer = LetterWriter([letter], rubric=["UNSUPPORTED"])
+    packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and len(writer.calls) == 3
+    assert "rubric review: 1 issue(s) remain" in packet.answers[0].provenance.note
+    assert [t for t in resolver.narrative_traces if t["stage"] == "draft"][-1]["rubric"]["status"] == "RESIDUAL"
+    # A failed rubric review never blocks the grounded letter.
+    writer = LetterWriter([letter], rubric=[AIHold("Review HTTP_500")])
+    packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and len(writer.calls) == 1
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"] == {"status": "REVIEW_HELD"}
+
+
+def ai_package_project(trace: dict[str, Any]) -> dict[str, Any]:
+    """The runner's trace projection: what the store keeps of a trace."""
+    from interviewmaxxing_cli.runner import project_trace
+
+    return project_trace(trace)
+
+
+SLOP_LETTER_EDIT = "I simply rebuilt the tracking so that only paid orders counted, which halved the reported " \
+    "conversions for two months and made the owner nervous about the spend for most of that spring."
+
+
+def test_a_cover_letter_is_humanized_and_a_discard_is_never_silent(candidate, mock_job):
+    """The rewrite of a grounded letter is kept (REWRITTEN), re-grounded and reviewed; a test
+    that fails if the no-slop rewrite is discarded without a word (round 6 addendum)."""
+    clean = rubric_letter("fact.bakery", POSTING["id"])
+    sloppy = [dict(sentence) for sentence in clean]
+    sloppy[4] = {**sloppy[4], "text": SLOP_LETTER_EDIT}
+    transport = Transport(write=[ready(sloppy)], humanize=[ready(clean)], review=[REVIEW_OK])
+    packet, resolver, ctx = resolve(letter_context(candidate, mock_job),
+                                    Retriever(list(candidate.facts), job_evidence=[POSTING]),
+                                    real_writer(transport, budget=CallBudget(max_usd=3.0)),
+                                    Jev(semantic="COVER_LETTER"), humanize=True)
+    assert packet.is_complete and ctx.problems(packet) == []
+    value = packet.answers[0].value
+    assert isinstance(value, TextValue) and value.text == NarrativeDraft.model_validate(ready(clean)).text
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "humanize")
+    assert trace["status"] == "REWRITTEN" and trace["discarded"] == []
+    assert {f["pattern"] for f in trace["lint_before"]} >= {"empty_adverb"} and trace["lint_after"] == []
+    assert trace["citations"] == [{"fact_ids": s["fact_ids"], "job_evidence_ids": s["job_evidence_ids"],
+                                   "paragraph": s["paragraph"]} for s in clean]
+    purposes = [json.loads(r["messages"][1]["content"])["purpose"]
+                for role, r in zip(transport.roles, transport.requests, strict=True) if role == "review"]
+    assert transport.roles == ["write", "review", "humanize", "review"]
+    assert purposes == ["letter_rubric", "draft_grounding"]
+    assert "rewrite discarded" not in packet.answers[0].provenance.note
+    system = transport.requests[0]["messages"][0]["content"]
+    assert "280-380 words" in system and "Dear Hiring Manager," in system and "contact_links" in system
+    assert "Thank you for considering my application." not in system.replace(
+        "never 'Thank you for considering my application'", "")
+    rubric = transport.requests[1]["messages"][0]["content"]
+    assert "Grade this cover letter against the owner's rubric" in rubric and "40-employer test" in rubric
+    rules = transport.requests[2]["messages"][0]["content"]
+    assert "never preserved as the applicant's voice" in rules and "job_restated" in rules
+
+
+def test_the_rewrite_may_delete_or_fold_a_job_only_sentence_but_never_move_a_fact_set() -> None:
+    from interviewmaxxing_browser.ai.humanize import check_rewrite
+
+    letter = rubric_letter("fact.bakery", POSTING["id"])
+    job_only = {"text": "The role also asks for weekly reports to the sales team.", "fact_ids": [],
+                "job_evidence_ids": [POSTING["id"]], "paragraph": 3}
+    original = NarrativeDraft.model_validate(ready([*letter[:8], job_only, *letter[8:]]))
+    ids = {"fact.bakery", "contact:links"}
+    deleted = NarrativeDraft.model_validate(ready(letter))
+    assert check_rewrite(original, deleted, purpose="cover_letter", supplied_ids=ids, job_ids={POSTING["id"]},
+                         max_length=None) is None
+    folded = [dict(s) for s in letter]
+    folded[8] = {**folded[8], "job_evidence_ids": [POSTING["id"]]}  # the job clause joins a fact sentence
+    assert check_rewrite(original, NarrativeDraft.model_validate(ready(folded)), purpose="cover_letter",
+                         supplied_ids=ids, job_ids={POSTING["id"]}, max_length=None) is None
+    added = NarrativeDraft.model_validate(ready([*letter[:8], job_only, dict(job_only), *letter[9:]]))
+    assert check_rewrite(original, added, purpose="cover_letter", supplied_ids=ids, job_ids={POSTING["id"]},
+                         max_length=None) == "added_job_sentence"
+    moved = [dict(s) for s in letter]
+    moved[11] = {**moved[11], "fact_ids": ["fact.bakery"]}  # the links' sentence now cites the bakery fact
+    assert check_rewrite(deleted, NarrativeDraft.model_validate(ready(moved)), purpose="cover_letter",
+                         supplied_ids=ids, job_ids={POSTING["id"]}, max_length=None) in ("moved_citation",
+                                                                                          "dropped_citation")
+    paired = [{"text": "At a bakery chain I rebuilt tracking for the search program the posting names.",
+               "fact_ids": ["fact.bakery"], "job_evidence_ids": [POSTING["id"]]},
+              {"text": "I wrote weekly reports for two store managers.", "fact_ids": ["fact.reports"]}]
+    unpaired = [{**paired[0], "job_evidence_ids": []}, paired[1]]  # the fact sentence lost its job pairing
+    assert check_rewrite(NarrativeDraft.model_validate(ready(paired)), NarrativeDraft.model_validate(ready(unpaired)),
+                         purpose="answer", supplied_ids={"fact.bakery", "fact.reports"}, job_ids={POSTING["id"]},
+                         max_length=None) == "dropped_citation"
+    no_greeting = [{**s, "paragraph": s["paragraph"] - 1} for s in letter[1:]]
+    no_greeting[0] = {**no_greeting[0], "text": "Dear Hiring Manager, " + no_greeting[0]["text"]}
+    assert check_rewrite(deleted, NarrativeDraft.model_validate(ready(no_greeting)), purpose="cover_letter",
+                         supplied_ids=ids, job_ids={POSTING["id"]}, max_length=None) == "letter_shape"
+
+
+@pytest.mark.parametrize(("pattern", "text"), [
+    ("job_restated", "The posting describes a growth team. I grew orders by 35% at a bakery chain in 2024."),
+    ("stock_opener", "I am writing to apply for the growth role. I grew orders by 35% at a bakery chain."),
+    ("stock_closer", "I grew orders by 35% at a bakery chain. Thank you for considering my application."),
+    ("fit_commentary", "My paid search work at a bakery chain relates directly to your acquisition goals."),
+    ("fit_commentary", "That tracking rebuild could apply to your funnel as well."),
+    ("connective_tic", "I ran search for a bakery chain. In that same role, I wrote weekly reports."),
+    ("connective_tic", "I ran search for a bakery chain. Separately, I wrote weekly reports."),
+    ("identical_paragraph_openings", "At the bakery chain I ran search.\n\nAt the bakery chain I wrote reports.\n\n"
+                                     "I can talk this week."),
+    ("portable_sentence", "I would bring my paid acquisition and team leadership experience to that work."),
+    ("fake_strong_verb", "The weekly report serves as a testing ground for new keywords."),
+    ("empty_adverb", "I simply rebuilt the conversion tracking for a bakery chain."),
+    ("self_answered_question", "The result? Online orders grew by 35% at a bakery chain."),
+    ("and_fragments", "I built the funnel. And the tracking behind it. And the weekly reporting that followed."),
+    ("colon_case", "One lesson stuck with me: The dashboard counted calls as orders."),
+    ("decorative_formatting", "I **cut cost per order 31%** by rebuilding the tracking."),
+    ("decorative_formatting", "What I did:\n- rebuilt tracking\n- moved budget"),
+    ("synonym_cycling", "The role needs search. The posting asks for tracking. The position wants reports."),
+    ("closing_recap", "I ran search at a bakery chain in 2024.\n\nI grew orders 35% there.\n\n"
+                      "My background in paid media and testing prepares me to drive growth for your team."),
+    ("empty_phrase", "Let's dive in: I ran paid search for a bakery chain."),
+])
+def test_the_genre_lint_names_each_pattern(pattern, text):
+    assert pattern in {finding.pattern for finding in lint(text, company="Fictional Co")}, text
+
+
+def test_the_genre_lint_leaves_a_plain_letter_alone() -> None:
+    from interviewmaxxing_browser.ai.humanize import portable, restates_job
+
+    letter = NarrativeDraft.model_validate(ready(rubric_letter("fact.bakery", POSTING["id"])))
+    assert lint(letter.text, company="Fictional Co") == []
+    for claim in ("I cut cost per order 31% for a regional bakery chain in 2024.",
+                  "I aligned the bakery chain's store managers on one weekly report in 2024.",
+                  "My report went to two store managers at Crumb & Co. every Monday.",
+                  "Fictional Co's retail media team runs search on three marketplaces, and I ran two of them at "
+                  "a bakery chain in 2024."):
+        assert not {f.pattern for f in lint(claim, company="Fictional Co")} & {
+            "fit_commentary", "portable_sentence", "job_restated", "stock_opener", "connective_tic"}, claim
+    assert restates_job("Fictional Co wants a growth lead for search.", "Fictional Co")
+    assert not restates_job("Fictional Co wants search growth, which I delivered at a bakery chain.", "Fictional Co")
+    assert not portable("I bring 7 years of search experience from Crumb & Co. to the role.")
+    assert lint("Dear Hiring Manager,\n\nI am writing to apply.") != [] and "stock_opener" in {
+        f.pattern for f in lint("Dear Hiring Manager,\n\nI am writing to apply for the role today.")}

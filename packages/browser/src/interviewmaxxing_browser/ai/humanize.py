@@ -128,8 +128,13 @@ _FIRST_PERSON = re.compile(r"\b(?:I|my|me|I've|I'm|I'd)\b")
 _POSTING_NAME = re.compile(
     r"\b(?:the|this|your)\s+(role|position|posting|job\s+description|job|opening|opportunity|listing|"
     r"qualifications|vacancy)\b", re.IGNORECASE)
-_GENERIC = re.compile(r"\b(?:experience|background|skills?|skill\s+set|bring|contribute|value|passion(?:ate)?|"
-                      r"opportunity|expertise|track\s+record|career)\b", re.IGNORECASE)
+_GENERIC_WORDS = frozenset({
+    "experience", "background", "skills", "skill", "bring", "brings", "contribute", "value", "passion",
+    "passionate", "opportunity", "expertise", "career", "team", "role", "position", "company", "work",
+    "growth", "success", "results", "impact", "marketing", "performance", "years", "drive", "deliver",
+    "excited", "eager", "track", "record", "proven", "strong", "ability", "knowledge", "help", "helping",
+    "consideration", "application", "organization", "mission", "journey"})
+"""Words that carry no detail of their own: a sentence made mostly of them could go to any employer."""
 _YEARS_COUNT = re.compile(rf"\b{_YEARS_WORD}\+?\s+years?\b", re.IGNORECASE)
 _CLOSING_RECAP = re.compile(
     r"\b(?:my|this|these|that|the)\s+(?:background|experience|skills|combination|mix|track\s+record|"
@@ -162,16 +167,20 @@ def restates_job(sentence: str, company: str = "") -> bool:
 
 def portable(sentence: str) -> bool:
     """A sentence that fails the portability test: it could be pasted into any application.
-    A first-person line built from generic words ("experience", "bring", "skills") with no
-    name, figure or other detail of its own; a count of years is not a detail."""
+    A first-person line with no name or figure of its own (a count of years is not a
+    detail) whose content words are at least 40% generic ("experience", "bring", "team",
+    "growth"): "I would bring my paid acquisition and team leadership experience to that
+    work." A line naming its own work ("that rebuild at the bakery chain") passes."""
     words = sentence.split()
-    if len(words) < 6 or _FIRST_PERSON.search(sentence) is None or not _GENERIC.search(sentence):
+    if len(words) < 6 or _FIRST_PERSON.search(sentence) is None:
         return False
     rest = _YEARS_COUNT.sub("", sentence)
     if re.search(r"\d", rest):
         return False
     names = [word for word in words[1:] if word[:1].isupper() and word.strip(".,;:!?") not in ("I", "I've", "I'm", "I'd")]
-    return not names
+    content = [word for word in _WORD.findall(sentence.casefold()) if len(word) >= 4]
+    generic = [word for word in content if word in _GENERIC_WORDS]
+    return not names and bool(content) and len(generic) / len(content) >= 0.4
 
 
 FIT_HEDGE_FEEDBACK = (

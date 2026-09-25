@@ -258,8 +258,8 @@ def test_cover_letter_renders_three_paragraphs_and_fits_default_call_budget() ->
     assert not draft.text.startswith("Dear")
     assert budget.calls == 1 and budget.reserved_usd < budget.max_usd
     assert budget.receipts[0].status == "OK"
-    assert provider.requests[0]["max_tokens"] == 1024 + 4000  # low-effort reasoning + the letter
-    assert provider.timeouts == [90.0]
+    assert provider.requests[0]["max_tokens"] == 1024 + 6000  # low-effort reasoning + the letter
+    assert provider.timeouts == [120.0]
     assert json.loads(provider.requests[0]["messages"][1]["content"])["purpose"] == "cover_letter"
 
 
@@ -408,7 +408,7 @@ def test_consistency_review_sends_all_canonical_facts_and_role_context() -> None
     assert schema["strict"] is True
     assert set(schema["schema"]["required"]) == {"verdict", "issues", "reference_ids"}
     assert schema["schema"]["additionalProperties"] is False
-    assert provider.timeouts == [90.0]
+    assert provider.timeouts == [120.0]
     assert budget.receipts[0].purpose == "opus_evidence_consistency"
     assert budget.receipts[0].status == "SUPPORTED"
     assert budget.receipts[0].requested_reasoning_effort == "low"
@@ -594,7 +594,7 @@ def test_writer_and_review_send_and_record_explicit_reasoning_without_changing_c
     assert [request["reasoning"] for request in provider.requests] == [{"max_tokens": budget_tokens}, {"effort": effort}]
     assert [request["max_tokens"] for request in provider.requests] == [budget_tokens + 2000, 1200]
     assert [request["model"] for request in provider.requests] == [MODEL, MODEL]
-    assert provider.timeouts == [90.0, 90.0]
+    assert provider.timeouts == [120.0, 120.0]
     assert [receipt.requested_reasoning_effort for receipt in budget.receipts] == [effort, effort]
     assert all(receipt["requested_reasoning_effort"] == effort for receipt in budget.metadata())
 
@@ -1169,7 +1169,7 @@ ALIGNED = ready(
      "fact_ids": ["fact:campaigns"], "job_evidence_ids": ["job:description"]})
 
 
-@pytest.mark.parametrize("purpose,answer_tokens", [("answer", 2000), ("cover_letter", 4000),
+@pytest.mark.parametrize("purpose,answer_tokens", [("answer", 2000), ("cover_letter", 6000),
                                                    ("motivation", 2000)])
 def test_narrative_calls_send_a_reasoning_budget_and_keep_the_answers_room(
         purpose: str, answer_tokens: int) -> None:

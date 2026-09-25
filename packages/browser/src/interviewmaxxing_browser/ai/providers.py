@@ -79,15 +79,17 @@ REASONING_BUDGET_TOKENS: dict[str, int] = {
 ``max_tokens`` is this budget plus the answer allowance, so the answer keeps its whole room
 after reasoning; with ``effort: high`` OpenRouter reserved about 80% of ``max_tokens`` for
 reasoning and cut answers. ``high`` is at least what that mapping gave at the old limit."""
-ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analysis": 2000, "cover_letter": 4000,
-                                 "humanize": 4000}
+ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analysis": 2000, "cover_letter": 6000,
+                                 "humanize": 6000}
 """Answer allowance by narrative purpose (bounded by the writer's ``max_tokens``): eight
-cited sentences fit in 2000 tokens, a 400-word cover letter with citations in 4000."""
+cited sentences fit in 2000 tokens; a 400-word cover letter needs 6000, since its twenty
+sentences each cite story and job ids of some 45 tokens apiece (round 6: 4000 cut the live
+corrective rewrite at its limit)."""
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
 FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
-FORM_LETTER_CALLS, FORM_LETTER_USD = 24, 1.75
+FORM_LETTER_CALLS, FORM_LETTER_USD = 24, 2.50
 """What a cover letter reserves on top of a writer field's allowance (WP12 round 6 addendum):
 the rubric review and up to two corrective rewrites, the story passages' review, and up to
 three no-slop rewrites, each independently reviewed. Reservations are upper bounds (the
@@ -217,7 +219,7 @@ class CallBudget:
         """Limits for one more form, when the budget scales with the form: what it used so
         far plus 24 calls / USD 0.30, 24 calls / USD 0.75 per WRITER-routed field (its
         retrieval, consistency checks, writing, grounding, review and the no-slop rewrite
-        with its second grounding) and 24 calls / USD 1.75 more per cover letter among them
+        with its second grounding) and 24 calls / USD 2.50 more per cover letter among them
         (``FORM_LETTER_USD``), capped at 120 calls / USD 2.00 in total, a cap each cover letter
         raises by its own allowance so a form without one keeps the same limits."""
         if not self.scales_with_form:
@@ -442,8 +444,9 @@ class NarrativeWriter:
     model: str
     budget: CallBudget
     transport: Transport = urllib_transport
-    timeout_seconds: float = 90.0
-    max_tokens: int = 4000
+    timeout_seconds: float = 120.0
+    """A cover letter's call writes some 8500 tokens at about 95 a second (round 6)."""
+    max_tokens: int = 6000
     """The largest answer allowance (a 400-word cover letter with citations, round 6)."""
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     """Effort for reviews and, when ``narrative_effort`` is unset, for narratives."""
@@ -464,7 +467,7 @@ class NarrativeWriter:
         if (isinstance(self.timeout_seconds, bool)
                 or not isinstance(self.timeout_seconds, (int, float))
                 or not 0 < self.timeout_seconds <= 120 or isinstance(self.max_tokens, bool)
-                or not isinstance(self.max_tokens, int) or not 1 <= self.max_tokens <= 4000):
+                or not isinstance(self.max_tokens, int) or not 1 <= self.max_tokens <= 8000):
             raise ValueError("Writer timeout or output limit exceeds policy")
 
     def effort_for(self, purpose: str) -> Literal["low", "medium", "high", "xhigh", "max"]:
