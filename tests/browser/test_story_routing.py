@@ -716,3 +716,11 @@ def test_the_evidence_review_gets_the_selected_and_most_competing_facts_never_th
     assert len(scope["fact_ids"]) == len(selected) + REVIEW_EVIDENCE_LIMIT
     assert scope["competing_total"] == 97 and scope["limit"] == REVIEW_EVIDENCE_LIMIT
     assert len([f for f in writer.calls[0]["facts"]]) == len(selected)  # the writer never sees the store
+    # The Jev consistency check compares a ranked top-k of competing facts in one request.
+    from interviewmaxxing_browser.ai.routing import CONSISTENCY_COMPARISON_LIMIT
+
+    checks = [t for t in resolver.narrative_traces if t["stage"] == "consistency"]
+    assert len(checks) == 1 and checks[0]["competing_total"] == 97
+    assert checks[0]["compared"] == CONSISTENCY_COMPARISON_LIMIT == len(checks[0]["canonical_alternative_ids"])
+    consistency_requests = [r for r in jev.requests if "canonical_alternatives" in r["state"]]
+    assert len(consistency_requests) == 1 and len(consistency_requests[0]["state"]["canonical_alternatives"]) == CONSISTENCY_COMPARISON_LIMIT

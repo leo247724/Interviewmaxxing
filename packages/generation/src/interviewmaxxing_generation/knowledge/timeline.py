@@ -30,6 +30,10 @@ from .stories import StoryRoleLink, find_skills, find_tools, resume_roles
 DERIVED_SOURCE = "derived:experience_timeline"
 TOTAL_KEY = "years_experience"
 AREA_PREFIX = "years_experience."
+MIN_STORY_AREA_YEARS = 2
+"""An area only a linked story names (never a resume role's title or bullets) needs this
+many whole years to become a fact; a single tool a story mentions for one year adds
+noise without helping a screener. Resume-named areas need one full year."""
 _DATE = re.compile(r"^(\d{4})(?:-(\d{2}))?$")
 AREA_FAMILIES: dict[str, frozenset[str]] = {
     # A role that names a member area is a role in the family; questions ask for the
@@ -72,6 +76,8 @@ class RoleSpan:
     end: int
     """Months since year 0 of the last month (inclusive)."""
     areas: frozenset[str]
+    resume_areas: frozenset[str] = frozenset()
+    """The areas the resume role's own title and bullets name (with their families)."""
 
     @property
     def months(self) -> int:
@@ -133,9 +139,10 @@ def role_spans(profile: CandidateProfile, *, today: date,
         if start is None or end is None or end < start:
             continue
         text = " ".join([role.title, *role.bullets])
-        areas = set(find_skills(text)) | set(find_tools(text)) | linked.get(role.id, set())
+        resume_areas = with_families(set(find_skills(text)) | set(find_tools(text)))
+        areas = with_families(resume_areas | linked.get(role.id, set()))
         spans.append(RoleSpan(role.id, role.company, start, min(end, now),
-                              frozenset(with_families(areas))))
+                              frozenset(areas), frozenset(resume_areas)))
     return spans
 
 
@@ -151,7 +158,8 @@ def derive_experience_years(profile: CandidateProfile, *, today: date, verified_
                             story_areas: Mapping[str, Sequence[str]] | None = None,
                             ) -> list[CandidateFact]:
     """Whole years of experience in total and per area, rounded down; nothing under a
-    full year, nothing above the timeline."""
+    full year, nothing above the timeline, and an area only a story names needs
+    ``MIN_STORY_AREA_YEARS``."""
     spans = role_spans(profile, today=today, story_links=story_links, story_areas=story_areas)
     if not spans:
         return []
@@ -172,7 +180,8 @@ def derive_experience_years(profile: CandidateProfile, *, today: date, verified_
         named = [span for span in spans if area in span.areas]
         months = merged_months([(span.start, span.end) for span in named])
         years = min(months // 12, total_years)
-        if years < 1:
+        resume_named = any(area in span.resume_areas for span in named)
+        if years < 1 or (not resume_named and years < MIN_STORY_AREA_YEARS):
             continue
         slug = area_slug(area)
         if not slug:
@@ -186,5 +195,6 @@ def derive_experience_years(profile: CandidateProfile, *, today: date, verified_
     return facts
 
 
-__all__ = ["AREA_FAMILIES", "AREA_PREFIX", "DERIVED_SOURCE", "TOTAL_KEY", "RoleSpan", "area_slug",
-           "derive_experience_years", "merged_months", "role_spans", "with_families"]
+__all__ = ["AREA_FAMILIES", "AREA_PREFIX", "DERIVED_SOURCE", "MIN_STORY_AREA_YEARS", "TOTAL_KEY",
+           "RoleSpan", "area_slug", "derive_experience_years", "merged_months", "role_spans",
+           "with_families"]
