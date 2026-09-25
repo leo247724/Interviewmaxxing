@@ -56,6 +56,14 @@ from interviewmaxxing_core import (
     work_mode_of,
     yes_no_sentence,
 )
+from interviewmaxxing_core.answer_policies import (
+    ANSWER_POLICY_KEYS,
+    ANSWER_POLICY_SOURCE,
+    answer_policy_key,
+    policy_contradictions,
+    policy_value,
+    stated_answer_policies,
+)
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
 from interviewmaxxing_generation.questions import (
     QuestionText,
@@ -85,6 +93,36 @@ from interviewmaxxing_selection.jev import (
     NoulQuestion,
 )
 
+from .answer_policies import (
+    CERTIFIES,
+    CLAIMS,
+    CUSTOM_POLICY_TYPES,
+    DETAILS_IF_NO,
+    DETAILS_IF_YES,
+    NO_OPTION_INSTRUCTIONS,
+    NOT_EMPLOYEE,
+    POLARITY_CRITERIA,
+    POLARITY_INSTRUCTIONS,
+    POLICY_CALLS_PER_FIELD,
+    POLICY_CRITERIA,
+    POLICY_INSTRUCTIONS,
+    POLICY_PROMPT_VERSION,
+    POLICY_USD_PER_FIELD,
+    SANCTIONS,
+    THRESHOLDS,
+    TYPED_POLICY_CLASSES,
+    UNKNOWN_EXPLICIT_LIMIT,
+    YES_OPTION_INSTRUCTIONS,
+    is_policy_control,
+    legal_wording,
+    names_other_consent,
+    names_sanctioned_place,
+    names_truth,
+    offered,
+    stated_years,
+    text_answer,
+    years_reading,
+)
 from .case_analysis import (
     case_analysis_question,
     case_trace,
@@ -1224,6 +1262,18 @@ def _raise_unexpected(result: object) -> None:
         raise result
 
 
+_FACT_CONFLICTS = (_SCREENER_CONFLICT, "Verified facts disagree", "Relevant verified facts conflict")
+"""How the fact paths' holds begin when verified facts point both ways: the screener
+conflict, a same-key or canonical conflict, and the consistency check's conflict with
+evidence outside retrieval (or the writer's)."""
+
+
+def _fact_conflict(result: object) -> bool:
+    """A field the fact paths held because the person's verified facts disagree: a standing
+    answer policy never settles it (the facts need fixing first)."""
+    return isinstance(result, AIHold) and str(result).startswith(_FACT_CONFLICTS)
+
+
 @dataclass
 class DynamicPacketResolver:
     decisions: BoundedDecisions
@@ -1246,6 +1296,8 @@ class DynamicPacketResolver:
     _allowed_steps: set[str] = dataclass_field(default_factory=set, init=False, repr=False)
     """Steps (application id + form fingerprint) whose form allowance this resolver
     granted: a re-resolve of the same step grants nothing more (WP12 round 4, L11)."""
+    _policy_steps: set[str] = dataclass_field(default_factory=set, init=False, repr=False)
+    """Steps whose answer-policy allowance this resolver granted, once per step (round 12)."""
     humanize: bool = False
     """Rewrite a grounded narrative under the no-AI-slop rules and ground it again; a
     failed rewrite keeps the draft that passed (``ai.humanize``). Off for a bare resolver;
@@ -1446,6 +1498,9 @@ class DynamicPacketResolver:
                 continue
             answers.append(outcome)
             missing = [m for m in missing if m.field_id != field.id]
+        answers, missing = await self._apply_answer_policies(
+            context, report, answers, missing,
+            held | {f.id for f, outcome in zip(open_fields, routed, strict=True) if _fact_conflict(outcome)})
         result = ApplicationPacket.model_validate(packet.model_dump() | {
             "answers": answers, "missing_inputs": missing})
         problems = context.problems(result)
@@ -2138,7 +2193,9 @@ class DynamicPacketResolver:
         applicable = [answer for answer in sorted(context.candidate.saved_answers,
                                                   key=lambda a: a.confirmed_at, reverse=True)
                       if answer.scope is AnswerScope.GLOBAL and answer.applies_to(context.job)
-                      and not _is_status_question(answer)]
+                      and not _is_status_question(answer)
+                      # Round 12: a standing answer policy is a rule, never a reworded question.
+                      and answer_policy_key(answer) is None]
         same_type = [a for a in applicable if typed and a.semantic_type is field.semantic_type]
         # An untyped answer to a question that now also has a typed answer (an import that
         # added the key's type) is superseded by the typed one.
@@ -2956,6 +3013,293 @@ class DynamicPacketResolver:
         self._trace(trace | {"status": "ANSWERED", "reference_ids": [saved.id]})
         return mapped.model_copy(update={"confidence": min(
             mapped.confidence, answer.confidence, answer.probabilities[answer.choice])})
+
+    # --- the person's standing answer policies (round 12) ---------------------------------
+
+    async def _apply_answer_policies(self, context: PacketContext, report: FormRouteReport,
+                                     answers: list[PacketAnswer], missing: list[MissingInput],
+                                     settled: set[str]) -> tuple[list[PacketAnswer], list[MissingInput]]:
+        """The fourth pass: the person's standing answer policies for the required yes/no
+        screeners no saved answer and no fact settled (``_answer_policy``), decided
+        concurrently. ``settled`` holds the fields a saved answer or the facts keep: a
+        reworded saved answer that does not fit, or verified facts that disagree."""
+        policies = stated_answer_policies(context.candidate.applicable_saved_answers(context.job))
+        if not policies:
+            return answers, missing
+        answered = {answer.field_id for answer in answers}
+        candidates = [field for field in context.form.fields
+                      if field.id not in answered and field.id not in settled
+                      and self._policy_candidate(context, report.field(field.id), field, missing,
+                                                 policies)]
+        if not candidates:
+            return answers, missing
+        step = f"{context.application.id}:{context.form.fingerprint}"
+        if step not in self._policy_steps:  # once per step, whatever re-resolves it
+            self._policy_steps.add(step)
+            self.decisions.budget.allow_calls(POLICY_CALLS_PER_FIELD * len(candidates),
+                                              POLICY_USD_PER_FIELD * len(candidates))
+        decided = await self._each(candidates, lambda field: self._answer_policy(
+            context, field, report.field(field.id), policies))
+        answers, missing = list(answers), list(missing)
+        for field, outcome in zip(candidates, decided, strict=True):
+            _raise_unexpected(outcome)
+            if outcome is None:
+                continue  # no class applies: the field keeps the hold it had
+            prior = next((m for m in missing if m.field_id == field.id), None)
+            missing = [m for m in missing if m.field_id != field.id]
+            if isinstance(outcome, BaseException):
+                # A class applies but its answer cannot be given here: the prompt says why.
+                missing.append(MissingInput.for_field(context.form, field,
+                    reason=prior.reason if prior is not None else MissingReason.NO_ANSWER,
+                    prompt=str(outcome)))
+            else:
+                answers.append(outcome)
+        return answers, missing
+
+    def _policy_candidate(self, context: PacketContext, gate: FieldRouteDecision,
+                          field: ApplicationField, missing: Sequence[MissingInput],
+                          policies: dict[str, SavedAnswer]) -> bool:
+        """A required field a standing policy may answer: no input of the person's own and no
+        saved answer for exactly its wording (their own answer comes first, even one that
+        does not fit), not held as ambiguous or unsupported, and one class it may take has a
+        stated policy."""
+        if (not field.required or gate.route is FieldRoute.UNSUPPORTED
+                or any(u.field_id == field.id for u in context.user_inputs)):
+            return False
+        question = QuestionText.of(field)
+        if any(saved_answer_matches(a, question)
+               for a in context.candidate.applicable_saved_answers(context.job)):
+            return False
+        prior = next((m for m in missing if m.field_id == field.id), None)
+        if prior is not None and prior.reason in (MissingReason.AMBIGUOUS,
+                MissingReason.UNSUPPORTED_CONTROL, MissingReason.USER_ACTION):
+            return False
+        return offered(self._policy_classes(field, gate), policies)
+
+    @staticmethod
+    def _policy_classes(field: ApplicationField, gate: FieldRouteDecision) -> frozenset[str]:
+        """The policy classes a field may take; empty when no policy may answer it.
+
+        A custom yes/no question may take any class (an UNKNOWN one only when Jev's semantic
+        reading puts at most 0.05 on the explicit-answer types). An attestation takes
+        ``certifies_truth`` or states a status ("I confirm I am not located in …", "I have never
+        worked for …"), a consent only ``certifies_truth``, a yes/no years threshold typed as a
+        years count only the threshold class, and a yes/no question typed as a residence only
+        the sanctions class (``TYPED_POLICY_CLASSES``). Work authorization, sponsorship, salary,
+        EEO and the other explicit types take none, and neither does legal wording (a compound
+        question included), another person's question, or a control the answer cannot fill."""
+        semantic = field.semantic_type
+        if (not is_policy_control(field.control_type, field.input_type)
+                or gate.source_scope is SourceScope.OTHER_PERSON_OR_ENTITY
+                or legal_wording(field.question_text)):
+            return frozenset()
+        classes: frozenset[str]
+        if semantic in CUSTOM_POLICY_TYPES:
+            classes = frozenset(ANSWER_POLICY_KEYS)
+        elif semantic is SemanticType.UNKNOWN:
+            explicit = sum(gate.semantic_probabilities.get(t.value, 0.0) for t in EXPLICIT_ANSWER_REQUIRED)
+            if not gate.semantic_probabilities or explicit > UNKNOWN_EXPLICIT_LIMIT:
+                return frozenset()
+            classes = frozenset(ANSWER_POLICY_KEYS)
+        else:
+            classes = TYPED_POLICY_CLASSES.get(semantic, frozenset())
+        if not classes or field.control_type is ControlType.CHECKBOX:
+            return classes
+        yes_no_label = _YES_NO_QUESTION.match(wording_key(field.label)) is not None
+        if field.control_type in (ControlType.SELECT, ControlType.RADIO):
+            if not 2 <= len(usable_options(field)) <= 250:
+                return frozenset()
+            if semantic in STATEMENT_TYPES:
+                return classes  # "I certify …" over "I certify" / "I do not certify"
+            words = [question_key(option.label) for option in usable_options(field)]
+            pair = _yes_no_pair(field) or (words.count("true") == 1 and words.count("false") == 1)
+            if semantic in TYPED_POLICY_CLASSES:
+                return classes if pair else frozenset()
+            return classes if (pair or yes_no_label) else frozenset()
+        # A text box takes a policy only for a yes/no question, never for a typed statement,
+        # a years count or an address.
+        return classes if yes_no_label and semantic not in TYPED_POLICY_CLASSES else frozenset()
+
+    def _answer_policy(self, context: PacketContext, field: ApplicationField,
+                       gate: FieldRouteDecision, policies: dict[str, SavedAnswer]) -> PacketAnswer | None:
+        """The person's standing answer for one open yes/no screener (round 12).
+
+        One Jev decision (purpose ``answer_policy``) classifies the question into exactly one
+        policy class or NONE (gate 0.95 / 0.90) and, in the same request, reads its polarity
+        (a yes states the class's yes, or its no), the option that says a plain or mildest
+        yes and a plain no when no option says "Yes" / "No" exactly, and, for a text box,
+        whether a yes or a no needs details. The class's saved answer is then placed:
+        - a question that sets a minimum number of years follows the threshold policy, Yes
+          when the minimum is within the stated years (the stated total or a larger area
+          fact the question names), No above them, whichever experience class Jev read;
+        - a certification, an employee or sanctions question, a statement (consent or
+          attestation) and a checkbox hold when their wording adds an obligation
+          (``_ADDED_OBLIGATIONS``) or asks for another consent or permission (SMS, marketing
+          messages, an authorization); a certification also holds when its own wording does
+          not say what it certifies (true, accurate, complete …);
+        - the employee policy holds when the person saved a Yes to having been employed or
+          interviewed by "this company", and the sanctions policy holds unless the question
+          names a sanctioned place, or when the verified address is in one.
+        The answer cites the policy as ``SAVED_ANSWER``; the trace (stage ``answer_policy``)
+        records the class, the scores and the ids. None when no class applies (the hold
+        stays as it was); ``AIHold`` with a prompt naming the policy when one applies but its
+        answer cannot be given here (unreadable years, no plain option, details asked)."""
+        classes = self._policy_classes(field, gate)
+        keys = (_option_keys(field) if field.control_type in (ControlType.SELECT, ControlType.RADIO)
+                else {})
+        exact = {word: match_options(field, word == "yes") for word in ("yes", "no")} if keys else {}
+        questions: dict[str, ChoiceQuestion | NoulQuestion] = {
+            "policy": ChoiceQuestion(instructions=POLICY_INSTRUCTIONS, criteria=POLICY_CRITERIA),
+            "polarity": ChoiceQuestion(instructions=POLARITY_INSTRUCTIONS, criteria=POLARITY_CRITERIA),
+        }
+        for word, instructions in (("yes", YES_OPTION_INSTRUCTIONS), ("no", NO_OPTION_INSTRUCTIONS)):
+            if keys and len(exact[word]) != 1:
+                questions[f"{word}_option"] = ChoiceQuestion(instructions=instructions, criteria={
+                    **{key: f"options.{key} is that option." for key in keys},
+                    "NONE": "No option is that option."})
+        if field.control_type in (ControlType.TEXT, ControlType.TEXTAREA):
+            questions["details_if_yes"] = NoulQuestion(instructions=DETAILS_IF_YES)
+            questions["details_if_no"] = NoulQuestion(instructions=DETAILS_IF_NO)
+        trace: dict[str, Any] = {"stage": "answer_policy", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "classes": sorted(classes), "status": "HELD"}
+        try:
+            response = self.decisions.decide(DecisionRequest(model=self.decisions.model, state={
+                "prompt_version": POLICY_PROMPT_VERSION, "employer": context.job.company,
+                "question": {"label": field.label, "help_text": field.help_text,
+                             "placeholder": field.placeholder,
+                             "section_context": list(field.section_context),
+                             "control": field.control_type.value},
+                "options": {key: option.label for key, option in keys.items()}},
+                questions=questions), purpose="answer_policy")
+            answer = response.choice("policy")
+        except AIHold as exc:
+            self._trace(trace | {"reason": str(exc)})
+            return None
+        trace.update(policy=answer.choice, confidence=answer.confidence,
+                     probability=answer.probabilities.get(answer.choice))
+        if answer.choice == "NONE" or not _passes(answer):
+            self._trace(trace | {"status": "NONE" if answer.choice == "NONE" else "BELOW_GATE"})
+            return None
+        if answer.choice not in classes:
+            self._trace(trace | {"status": "NOT_ALLOWED"})
+            return None
+        reading = years_reading(field.question_text) if answer.choice in (CLAIMS, THRESHOLDS) else None
+        # A minimum number of years follows the threshold policy whichever experience class
+        # Jev read: a claimed Yes never exceeds the stated years.
+        rule = (THRESHOLDS if answer.choice == THRESHOLDS or (reading is not None and reading.mentioned)
+                else answer.choice)
+        trace["policy_applied"] = rule
+        saved = policies.get(rule)
+        if saved is None:
+            self._trace(trace | {"status": "NO_POLICY"})
+            return None
+        stated = policy_value(saved) == "Yes"
+        scores = [answer.confidence, answer.probabilities[answer.choice]]
+        evidence: list[str] = []
+        site = " ".join([field.question_text, *(o.label for o in usable_options(field))])
+        if (rule in (CERTIFIES, NOT_EMPLOYEE, SANCTIONS) or field.semantic_type in STATEMENT_TYPES
+                or field.control_type is ControlType.CHECKBOX):
+            # Answering a statement, a checkbox or a status question agrees to all of its
+            # wording: one that adds an obligation or asks for another consent never takes a
+            # policy. (An experience question's topic may name AI tools or a background.)
+            added = [name for name, pattern in _ADDED_OBLIGATIONS.items() if pattern.search(site)]
+            if added:
+                self._trace(trace | {"status": "ADDED_OBLIGATION", "obligations": added})
+                return None
+            if names_other_consent(field.question_text):
+                self._trace(trace | {"status": "OTHER_CONSENT"})
+                return None
+        if rule == THRESHOLDS and stated:
+            threshold = reading.threshold if reading is not None else None
+            if threshold is None:
+                self._trace(trace | {"status": "YEARS_UNREADABLE"})
+                raise AIHold(f"Your answer policy {THRESHOLDS} applies to {field.label!r}, but the "
+                             "minimum years it asks for cannot be read (a range, an upper bound or two "
+                             "different numbers). Answer it yourself.")
+            years = stated_years(field.question_text, context.candidate.verified_facts())
+            evidence = [fact.id for fact in years.facts]
+            trace["years_rule"] = {"years": threshold.years, "strict": threshold.strict,
+                                   "fact_ids": evidence}
+            if years.conflict:
+                self._trace(trace | {"status": "YEARS_CONFLICT"})
+                raise AIHold(f"Your answer policy {THRESHOLDS} needs your stated years of experience "
+                             f"to answer {field.label!r}, but they disagree ({', '.join(evidence)}). "
+                             "Fix the facts, or answer it yourself.")
+            if years.years is None:
+                self._trace(trace | {"status": "NO_STATED_YEARS"})
+                raise AIHold(f"Your answer policy {THRESHOLDS} needs your stated years of experience "
+                             f"(years_experience) to answer {field.label!r}. Add them, or answer it "
+                             "yourself.")
+            stated = threshold.met_by(years.years)
+        elif rule == CERTIFIES and not names_truth(field.question_text):
+            # What the statement itself says, never an option label such as "True".
+            self._trace(trace | {"status": "NO_TRUTH_WORDING"})
+            return None
+        elif rule == NOT_EMPLOYEE:
+            contradicting = policy_contradictions(
+                NOT_EMPLOYEE, context.candidate.applicable_saved_answers(context.job))
+            if contradicting:
+                self._trace(trace | {"status": "CONTRADICTS_SAVED",
+                                     "reference_ids": [a.id for a in contradicting]})
+                return None
+        elif rule == SANCTIONS:
+            address = context.candidate.identity.address
+            if not names_sanctioned_place(site):
+                self._trace(trace | {"status": "NO_SANCTIONED_PLACE"})
+                return None
+            if names_sanctioned_place(" ".join(part for part in (address.city, address.region,
+                                                                  address.country) if part)):
+                self._trace(trace | {"status": "CONTRADICTS_ADDRESS"})
+                return None
+        polarity = response.choice("polarity")
+        if polarity.choice not in POLARITY_CRITERIA or not _passes(polarity):
+            self._trace(trace | {"status": "POLARITY_UNSETTLED", "polarity": polarity.choice})
+            raise AIHold(f"Your answer policy {rule} applies to {field.label!r}, but whether a yes "
+                         "here states its answer is unclear. Answer it yourself.")
+        scores += [polarity.confidence, polarity.probabilities[polarity.choice]]
+        yes = stated if polarity.choice == "SAME" else not stated
+        word, decision = ("yes", "YES") if yes else ("no", "NO")
+        trace.update(polarity=polarity.choice, decision=decision)
+        value: AnswerValue | None = None
+        if keys:
+            options = exact[word]
+            option = options[0] if len(options) == 1 else None
+            if option is None:
+                pick = response.choice(f"{word}_option")
+                if pick.choice in keys and _passes(pick) and _polarity(keys[pick.choice].label) in (None, word):
+                    option = keys[pick.choice]
+                    scores += [pick.confidence, pick.probabilities[pick.choice]]
+            if option is None:
+                self._trace(trace | {"status": "NO_OPTION"})
+                raise AIHold(f"Your answer policy {rule} answers {word.title()} to {field.label!r}, "
+                             "but no option says that plainly. Choose one yourself.")
+            value = _choice_value(field, [option])
+        elif field.control_type is ControlType.CHECKBOX:
+            checked = translate(field, yes)
+            value = checked.value if isinstance(checked, Mapped) else None
+        else:
+            details = response.answers.get(f"details_if_{word}")
+            asked = details.noul if isinstance(details, NoulAnswer) else 1.0
+            if asked > 1 - MIN_PROBABILITY:
+                self._trace(trace | {"status": "NEEDS_DETAIL", "details": asked})
+                raise AIHold(f"Your answer policy {rule} answers {word.title()} to {field.label!r}, but "
+                             "the question also asks for details your facts do not give. Answer it "
+                             "yourself.")
+            scores.append(1.0 - asked)
+            typed = translate(field, text_answer(yes))
+            value = typed.value if isinstance(typed, Mapped) else None
+        if value is None or answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            raise AIHold(f"Your answer policy {rule} answers {word.title()} to {field.label!r}, but "
+                         "this field cannot take that answer. Answer it yourself.")
+        self._trace(trace | {"status": "ANSWERED", "reference_ids": [saved.id],
+                             **({"evidence_ids": evidence} if evidence else {})})
+        note = f"standing answer policy {rule} ({ANSWER_POLICY_SOURCE}); Jev classified the question"
+        if evidence:
+            note += "; minimum years compared with the stated years facts " + ", ".join(evidence)
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[saved.id], note=note),
+            confidence=min(scores))
 
     # --- relocation questions that name a place -------------------------------------------
 

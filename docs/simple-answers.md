@@ -304,6 +304,78 @@ is verified once. The answer sheet of a batch
 long tail a batch surfaces, the personal or one-off questions no key covers; when a
 question keeps coming back, add its key here rather than answering it sheet after sheet.
 
+## `answer_policies`: standing answers by class of question
+
+Some screener questions come back on almost every form in endless wordings: "Do you have
+experience with …?", "Do you have 5+ years of …?", "Are you a former employee of …?". Instead
+of answering them one by one, state one standing answer per class of question in the map's
+`answer_policies` section (round 12):
+
+```json
+"answer_policies": {
+  "claims_experience_asked": "Yes",
+  "meets_experience_thresholds": "Yes",
+  "certifies_truth": "Yes",
+  "not_current_or_former_employee": "No",
+  "sanctioned_locations": "No"
+}
+```
+
+Each value is `"Yes"`, `"No"` or `null`. With `null` there is no policy, and those questions
+wait for you. The section may be left out. The classes:
+- `claims_experience_asked` covers "Do you have / Have you done, led, worked with or managed
+  …?" questions about experience, skills, platforms or work, yes/no or with graded yes
+  options. With Yes, a graded scale gets its mildest yes ("Yes, some experience", "Yes, as part
+  of a team"), never an option that states years or amounts. A select-all question ("None of
+  the above") stays with your facts.
+- `meets_experience_thresholds` covers "N+ years", "at least N years" and "N or more years" of
+  marketing experience. With Yes, the answer is Yes when N is within your stated years and No
+  above them. Your stated years are the `years_experience` total, or the area's own
+  `years_experience.<area>` fact when that is larger. A range ("3-5 years"), an upper bound or
+  two different numbers ("5+ years, including 2 in paid social") wait for you. With No, every
+  such question is answered No.
+- `certifies_truth` covers "I certify the information I provided is true, accurate and
+  complete". The answer is the affirmative option ("Yes", "True", "I agree", or the box
+  checked). A statement that adds an obligation is never answered this way: drug tests,
+  background checks, arbitration, a non-compete, no AI tools in interviews, and the others
+  listed under the five statements above. Neither is one that also asks for a consent (SMS,
+  marketing messages, a permission or authorization), nor one whose wording does not say
+  what it certifies.
+- `not_current_or_former_employee` covers "Are you a current or former employee of …?", "Have
+  you previously worked at or with … or its affiliates?" and "Have you interviewed with … in
+  the past N years?". The answer is No ("No." in a text box). If you saved Yes for
+  `previously_employed_here` or `previously_interviewed_here`, or answered Yes to either for
+  this job, the policy is not applied. An attestation such as "I confirm I have never worked
+  for …" takes it too.
+- `sanctioned_locations` covers "Are you located in or a national of Cuba, Iran, North Korea,
+  Syria, Crimea …?". The answer is No, and an attestation "I confirm I am not located in …"
+  is confirmed. Only a question that names a sanctioned place, or sanctions, takes it, and
+  never when your verified address is in such a place.
+
+Import stores each non-null policy as a user-confirmed **GLOBAL** saved answer. It is untyped,
+its question is the policy's own statement, and its id names the policy
+(`answer_policy_<key>_…`). Every answer it gives cites that id and names
+`user:simple-answers` in its note. A null adds nothing and never erases an earlier policy.
+Export writes the policies back, and the command output lists them as
+`answer_policies.<key>` without their values.
+
+Your own answers always come first:
+- a saved answer for the question's exact wording (even one that does not fit), a reworded
+  saved answer Jev matches, the stated status, your statements, salary and start date;
+- a verified fact that settles the question, whether it states the experience or its absence.
+
+Only a required question none of these settles goes to one Jev decision. It classifies the
+question into exactly one class or none, and then the class's answer is placed.
+
+Work authorization, sponsorship, visa and clearance questions, EEO self-identification,
+salary and consents never take a policy. Neither does a certification, an employee or
+sanctions question, a statement or a checkbox whose wording also adds an obligation or asks
+for another consent ("… and would like to receive promotional offers", "By answering you
+agree to binding arbitration"): answering it would agree to all of it. A free-text
+"If yes, describe" follow-up after a policy Yes waits for you unless your facts support the
+detail. [dynamic-application-routing.md](dynamic-application-routing.md), "Round 12",
+describes the decision.
+
 ## `career_motivation`: what you look for in a role
 
 `career_motivation` is the one key that is not an answer to a form question. Write two or

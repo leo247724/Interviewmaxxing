@@ -286,6 +286,53 @@ A prepare-only retry on 2026-09-25, after the person saved every reusable key, l
   - A value that still does not parse holds with a prompt naming the saved key, and the trace records `UNPARSED` with `saved_key` (never the value).
 - **Monthly salary wording.** The question's own period wins over its help, placeholder or section text, so "What is your monthly salary expectation … (in $USD)?" is monthly. The saved unit parses in more spellings: "per yr", "a yr", "p/a", "/annum", "130k yr", "per hr" and "per mo".
 
+## Round 12: the person's standing answer policies
+
+The person does not answer screeners one by one: at retry five (2026-09-25) they declined 84 open questions and stated standing rules instead. The simple answers' `answer_policies` section ([simple-answers.md](simple-answers.md)) holds one Yes or No per class of question, and each new question takes its class's answer by meaning, never by wording. A policy imports as an untyped GLOBAL saved answer whose question is the policy's own statement (`ANSWER_POLICY_QUESTIONS`, core `answer_policies.py`). An answer therefore cites it as `SAVED_ANSWER`, and a policy can back a field of any type. A policy never takes part in wording equivalence: `_wording_candidates` leaves it out.
+
+- **When a policy is asked (`_apply_answer_policies`, a fourth pass).** It runs after the stored answers, the route gates and generative routing. A required field that is still open takes a policy decision only when all of these hold:
+  - There is no input of the person's own and no saved answer for exactly its wording, even one that does not fit. The field is not held by a reworded saved answer that does not fit, by verified facts that disagree (a screener conflict, a same-key or canonical conflict, or the consistency check), or as ambiguous or unsupported.
+  - Its type and control allow a class (`_policy_classes`):
+    - A custom yes/no question may take any class: CUSTOM_BOOLEAN, CUSTOM_SELECT, CUSTOM_LONG_TEXT or CUSTOM_TEXT, and UNKNOWN only when Jev's semantic reading puts at most 0.05 on the explicit-answer types.
+    - A statement typed ATTESTATION takes `certifies_truth`, `not_current_or_former_employee` or `sanctioned_locations` (the heuristics type "I confirm I am not located in … Cuba …" as an attestation). One typed CONSENT takes only `certifies_truth`.
+    - A yes/no years threshold the heuristics typed YEARS_EXPERIENCE takes only `meets_experience_thresholds`. A yes/no question typed as a residence takes only `sanctioned_locations`.
+    - A choice needs a Yes/No or True/False pair, or a label that is a yes/no question (graded yes options such as "Yes, some experience"). A text box needs a yes/no-question label. A checkbox always qualifies. Select-all questions never do.
+  - The wording names no work authorization, sponsorship, visa or clearance (`legal_wording`), a compound legal question included, and the question is not about another person.
+  - A class the field may take has a stated policy. Without any stated policy nothing is asked.
+
+  Work authorization, sponsorship, salary, EEO, pronouns, relocation, start date and referral questions never take a policy: they keep their own paths.
+- **One decision (purpose `answer_policy`, prompt `answer-policy-v1`).** One Jev request per field holds:
+  - the Choice `policy` over the five classes plus NONE, at the gate 0.95 / 0.90. All five classes are always offered, so mass never moves into a class because another class has no policy;
+  - the Choice `polarity`: SAME when a yes states the class's yes, REVERSED for "I confirm I am not located in …" or "I have never worked for …";
+  - on a choice without an exact Yes or No option, the Choices `yes_option` and `no_option`. `yes_option` is the mildest affirmative: a plain yes, or "Yes, some experience", "Yes, as part of a team", never an option that states years or amounts;
+  - on a text box, the nouls `details_if_yes` and `details_if_no`.
+
+  The state carries the question, its options and the employer. The saved policies are never sent.
+- **Applying the class.**
+  - **The whole wording is agreed to.** A certification, an employee or sanctions question, any statement (CONSENT or ATTESTATION) and any checkbox hold, whatever the class, when their wording adds an obligation or asks for another consent: answering them agrees to all of it.
+    - `ADDED_OBLIGATION` uses the round-9 `_ADDED_OBLIGATIONS` list over the question and its options: drug tests, previous employers, non-competes, arbitration and waivers, AI tools, at-will employment, and background, credit, driving or ongoing checks. An example is "Have you worked for Mock Co before? By answering you agree to binding arbitration."
+    - `OTHER_CONSENT` reads the question's own wording: consent, permission, authorization, opt-in, SMS or text messages, marketing messages, newsletters, promotional offers. An example is "I confirm I have never worked for Mock Co and would like to receive promotional offers."
+    - An experience question on another control is not checked, because its topic may name AI tools or a background without adding an obligation.
+  - `claims_experience_asked`: the saved answer.
+  - `meets_experience_thresholds` applies to any experience question that sets a minimum number of years, whichever experience class Jev read, so a claimed Yes never exceeds the stated years. With Yes, the answer is Yes when the minimum is within the stated years and No above them.
+    - Minimums read: "5+", "at least eight (8)", "5 or more", "a minimum of 4", "more than 7" (strict) and a bare "3 years". A timeframe ("in the past 2 years", "2 years ago") is not a minimum.
+    - The stated years are the larger of the `years_experience` total and a `years_experience.<area>` fact whose area the question names. A stated (`user:`) fact replaces a derived one for the same key.
+    - These hold with a prompt naming the policy: a range, an upper bound, an age, two different minimums or a second number standing on its own ("5+ years, including 2 in paid social") (`YEARS_UNREADABLE`), two stated values for one key (`YEARS_CONFLICT`), or no stated years (`NO_STATED_YEARS`). A number inside a word (B2B, GA4) or an amount ($1M, 50%) does not count.
+    - With No, the answer is No.
+  - `certifies_truth`: the affirmative option ("Yes", "True", "I agree", or the box checked). A statement whose own wording does not say what it certifies holds (`NO_TRUTH_WORDING`: true, accurate, complete …). Option labels such as "True" do not count, so a talent-community sign-up offered as True / False is never a certification.
+  - `not_current_or_former_employee`: the saved answer (No; "No." in a text box). The person's Yes to `previously_employed_here` or `previously_interviewed_here`, the newest GLOBAL one or one saved for this job, contradicts it (`CONTRADICTS_SAVED`, core `POLICY_CONTRADICTIONS`), and the field holds.
+  - `sanctioned_locations`: the saved answer (No). It applies only to a question that names a sanctioned place or sanctions (`NO_SANCTIONED_PLACE` otherwise), and never when the verified address is in one (`CONTRADICTS_ADDRESS`).
+  - Placing the answer:
+    - A choice takes the exact Yes or No option without a call, else the `yes_option` or `no_option` pick at the gate whose label does not say the opposite. Otherwise it holds (`NO_OPTION`).
+    - A checkbox is checked or left unchecked. A required box the answer leaves unchecked holds (`INVALID`).
+    - A text box takes "Yes." or "No.", unless the question also asks for details for that answer (`NEEDS_DETAIL`, above 0.05).
+    - A free-text "If yes, describe" follow-up after a policy Yes is never a policy question, because its label is not a yes/no question. It holds unless the writer answers it from facts.
+- **Provenance and trace.**
+  - The answer is `SAVED_ANSWER` citing the policy's saved answer, whose id names the policy (`answer_policy_<key>_…`). Its note names the policy and `user:simple-answers`, and for a threshold the years fact ids. The confidence is the lowest of the class, polarity, option and detail scores.
+  - The trace (`answer_policy`) records the classes the field may take, the class and its scores, the policy applied, the polarity, the decision and the reference ids. For a threshold it also records `years_rule`: the minimum, its strictness and the fact ids, never a fact value.
+  - A class that applies but cannot be placed replaces the field's prompt with one naming the policy. NONE, BELOW_GATE, NOT_ALLOWED, NO_POLICY and the guards leave the hold as it was.
+- **Budget.** The pass adds two calls and USD 0.01 per candidate field to the form's allowance, once per step (`CallBudget.allow_calls`).
+
 ## Narrative escalation
 
 Jev classifies and selects facts; it never authors prose. `COPY_KNOWN` describes responsibility, not ready-to-fill status. Readiness requires an actual verified source and canonical validation. `EXPLICIT_ANSWER`, unclear or low-confidence source applicability blocks both copy and writing unless an exact scoped user/saved answer already resolves the question. Demographic answers require an explicit verified saved answer; identity never implies them.

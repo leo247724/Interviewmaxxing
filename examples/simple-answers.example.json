@@ -54,5 +54,12 @@
   "career_motivation": null,
   "work_arrangement_preference": null,
   "consent_sms_messages": null,
-  "interview_accommodations": null
+  "interview_accommodations": null,
+  "answer_policies": {
+    "claims_experience_asked": null,
+    "meets_experience_thresholds": null,
+    "certifies_truth": null,
+    "not_current_or_former_employee": null,
+    "sanctioned_locations": null
+  }
 }

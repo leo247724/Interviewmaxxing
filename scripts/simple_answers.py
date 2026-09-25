@@ -44,6 +44,9 @@ def main() -> int:
         else:
             answers = SimpleAnswers.model_validate(read_json(path))
         values = answers.model_dump()
+        # The answer policies are listed one by one, like the other keys.
+        values |= {f"answer_policies.{key}": value
+                   for key, value in values.pop("answer_policies").items()}
         result: dict[str, object] = {
             "command": args.command,
             "file": str(path),

@@ -115,7 +115,9 @@ def test_blank_example_is_a_valid_draft_but_cannot_be_imported(tmp_path):
 
     example = REPO / "examples/simple-answers.example.json"
     parsed = SimpleAnswers.model_validate(json.loads(example.read_text()))
-    assert set(parsed.model_dump().values()) == {None}
+    values = parsed.model_dump()
+    policies = values.pop("answer_policies")  # round 12: a section of its own, all null
+    assert set(values.values()) == {None} and set(policies.values()) == {None}
     result = run("validate", example)
     assert result.returncode == 1
     assert "first_name, last_name, email" in result.stderr
@@ -842,7 +844,7 @@ def test_round10_the_blank_template_and_the_docs_list_every_key():
 
     example = json.loads((REPO / "examples/simple-answers.example.json").read_text())
     assert set(example) == set(SimpleAnswers.model_fields) == (
-        _CONTACT_KEYS | set(_REUSABLE_QUESTIONS) | {"career_motivation"})
+        _CONTACT_KEYS | set(_REUSABLE_QUESTIONS) | {"career_motivation", "answer_policies"})
     assert len(_REUSABLE_QUESTIONS) == 42  # round 11: SMS consent, interview accommodations
     docs = (REPO / "docs/simple-answers.md").read_text()
     for key in _REUSABLE_QUESTIONS:
