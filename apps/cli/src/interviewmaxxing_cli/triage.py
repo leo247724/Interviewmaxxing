@@ -432,7 +432,7 @@ _COST_SUFFIX = re.compile(r"\s*Provider cost: USD .*$")
 _URL = re.compile(r"\bhttps?://\S+")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _QUOTED = re.compile("(?<!\\w)'[^']*'(?!\\w)|\"[^\"]*\"|\u201c[^\u201d]*\u201d|\u2018[^\u2019]*\u2019")
-_LONG_NUMBER = re.compile(r"\d{4,}")
+_DIGIT_GROUP = re.compile(r"\d{3,}")
 
 
 def without_cost_note(text: str) -> str:
@@ -442,15 +442,16 @@ def without_cost_note(text: str) -> str:
 
 def failure_text(text: str | None) -> str:
     """A failure detail as reports show and group it: whitespace collapsed, the
-    runner's provider cost note dropped, URLs, e-mail addresses, quoted values and
-    numbers of four or more digits masked (so the same failure on different values,
-    pages or timeouts groups together and typed values never show), cut to
-    ``DETAIL_LIMIT`` characters."""
+    runner's provider cost note dropped, URLs, e-mail addresses, quoted values and every
+    group of three or more digits masked (so the same failure on different values,
+    pages or timeouts groups together, and an unquoted phone number such as
+    "+1 512-555-0142" or any other typed value never shows), cut to ``DETAIL_LIMIT``
+    characters."""
     value = without_cost_note(" ".join((text or "").split()))
     value = _URL.sub("<url>", value)
     value = _EMAIL.sub("<email>", value)
     value = _QUOTED.sub("'…'", value)
-    value = _LONG_NUMBER.sub("#", value)
+    value = _DIGIT_GROUP.sub("#", value)
     return truncate(value, DETAIL_LIMIT) or "(no detail)"
 
 
@@ -578,7 +579,6 @@ class HoldsReport(Contract):
     applications, grouped by question wording."""
 
     candidate_id: str
-    state_db: str
     held: int = Field(default=0, ge=0)
     """Applications with at least one open hold."""
     answered: int = Field(default=0, ge=0)
@@ -599,7 +599,7 @@ def build_holds(paths: LocalPaths, candidate_id: str, *,
                 cli: Sequence[str] = (PROG,)) -> HoldsReport:
     """Group the open holds of every NEEDS_INPUT application of ``candidate_id`` by their
     complete question wording. Creates nothing (no state database: an empty report)."""
-    report: dict[str, Any] = {"candidate_id": candidate_id, "state_db": str(paths.state_db)}
+    report: dict[str, Any] = {"candidate_id": candidate_id}
     if not paths.state_db.is_file():
         return HoldsReport(**report)
     saved = candidate_saved_answers(paths, candidate_id)

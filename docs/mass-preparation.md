@@ -328,7 +328,7 @@ A job stopped by the timeout leaves its application with a lapsing claim; the ne
 
 ```sh
 interviewmaxxing [--home DIR] prepare-batch --retry BATCH_ID \
-  [--outcomes needs_input,failed_retryable,unknown,error] [--include-explicit] \
+  [--outcomes needs_input,failed_retryable,unknown,error] [--all] [--include-explicit] \
   [--backends A,B] [--limit N] [--max-prepared N] [--batch-id ID] [--json]
 ```
 
@@ -343,14 +343,19 @@ the state database (a listing without an application id is looked up by its URL)
 | `prepared` | NEEDS_INPUT at the final review step | never |
 | `closed` | FAILED_PERMANENT | never |
 | `duplicate`, `blocked` | DUPLICATE, a submission state | never |
-| `needs_input` | NEEDS_INPUT for questions, sign-in, CAPTCHA or a custom control | with `--outcomes` (default) |
+| `needs_input` | NEEDS_INPUT for questions, sign-in, CAPTCHA or a custom control | with `--outcomes` (default), once one of its holds was answered since it stopped; every one with `--all` |
 | `failed_retryable` | FAILED_RETRYABLE | with `--outcomes` (default) |
 | `unknown` | REQUESTED, INSPECTING, PACKET_READY or FILLING: a run started and recorded no outcome (it timed out or crashed) | with `--outcomes` (default) |
 | `error` | the job never recorded an application (for example the CLI could not start) | with `--outcomes` (default); it runs `apply URL` |
 
 A listing whose ledger line says `prepared`, `closed`, `duplicate` or `blocked` is
-never retried either, whatever the store says now. A `needs_input` application whose
-open holds are all `EXPLICIT_ANSWER_REQUIRED` is skipped unless `--include-explicit`:
+never retried either, whatever the store says now. A `needs_input` application runs
+again only when something changed for it: at least one of its holds was answered since
+it stopped. Running it with nothing answered would stop it at the same questions, so
+by default it is skipped (`nothing answered since the stop`); after a runtime fix that
+may clear holds, `--all` runs every held one. `failed_retryable`, `unknown` and `error`
+applications always run again. A `needs_input` application whose open holds are all
+`EXPLICIT_ANSWER_REQUIRED` is skipped unless `--include-explicit` (also with `--all`):
 only the person can answer those. A hold is no longer open once, after the
 application stopped, the person answered exactly that question for it
 (`interviewmaxxing answer APP`), or saved an answer whose question is the same wording
@@ -378,9 +383,10 @@ whose summary predates `run_options` uses the flags given (a note says so).
 The retry's ledger lines carry `retry_of`, `previous_outcome`, `holds_before` and
 `holds_cleared`, and its `summary.json` a `retry` object: `retry_of`, the `outcomes`
 selected, `include_explicit`, `considered` (listings after `--backends`),
-`selected`, `skipped` (counted by reason: `prepared`, `closed`, `duplicate`,
-`blocked`, `not selected (<outcome>)`, `explicit answers only`, `application not
-found`, `same application as another listing`, `over --limit`), `retried`,
+`rerun_all` (`--all`), `selected`, `skipped` (counted by reason: `prepared`, `closed`,
+`duplicate`, `blocked`, `approved (left to submit-approved)`, `not selected
+(<outcome>)`, `nothing answered since the stop`, `explicit answers only`, `application
+not found`, `same application as another listing`, `over --limit`), `retried`,
 `prepared` (now prepared), `holds_before`, `holds_cleared`, `holds_open` (holding the
 retried applications now, new ones included), `transitions` (previous outcome ->
 outcome -> count) and `ledger_lines_ignored` (of the retried ledger). The Markdown
@@ -425,8 +431,8 @@ prepared for final review (`prepared`) and those stopped without a recorded ques
 listed. The groups are ordered by holds, then applications, then first seen. It is
 read-only, creates nothing (without a state database it prints an empty report), and
 never prints a stored answer value: saved answers are read only for their question,
-scope, type and date. `--json` prints the same report (`HoldsReport`). Lines include
-`--home DIR` when it was given.
+scope, type and date. `--json` prints the same report (`HoldsReport`; it names no
+database path). Lines include `--home DIR` when it was given.
 
 ## Batch report
 
@@ -484,7 +490,8 @@ retries shows where each listing stands now. The report shows:
   stopped`, `timed out; the job did not exit after SIGTERM and SIGKILL`, `could not
   start the CLI`, `the CLI printed no readable outcome`); their CLI output is never
   shown. Details are masked before grouping and display: URLs become `<url>`, e-mail
-  addresses `<email>`, quoted values `'…'`, numbers of four or more digits `#`, the
+  addresses `<email>`, quoted values `'…'`, every group of three or more digits `#` (an
+  unquoted phone number such as `+1 512-555-0142 (+1)` shows as `+1 #-#-# (+1)`), the
   runner's provider cost note is dropped, and the text is cut to 120 characters.
   Groups show the number of failures and applications, the backends and a sample
   application; the Markdown shows the first `--top N`, the JSON all.
@@ -492,7 +499,10 @@ retries shows where each listing stands now. The report shows:
   linked, moved to Closed, not moved, and the reasons counted as in `summary.json`.
   For each listing, its latest entry with a link result counts as linked or not
   linked, and its latest entry with a Closed-move result counts as moved or not.
-- The number of unreadable ledger lines, when there are any (`ledger_lines_ignored`).
+- The number of unreadable ledger lines, when there are any (`ledger_lines_ignored`:
+  lines that are not JSON objects, or prepare lines that do not validate), and of
+  unreadable submission lines (`submissions.lines_ignored`: lines marked
+  `kind: "submission"` that do not validate). Each unreadable line counts once.
 
 `--json` prints the same report as JSON (`BatchReport`: `batches`, `batches_dir`,
 `since`, `ledger_lines_ignored`, `rows`, `totals`, `by_backend`, `durations`,
@@ -539,9 +549,20 @@ interviewmaxxing status app_example                    # a sample's questions an
 interviewmaxxing status                # every application and its state
 interviewmaxxing status APP            # recorded questions, events, next steps
 interviewmaxxing events APP            # includes preparation.ready with the review step
+interviewmaxxing events APP --verbose  # also the prompts, candidates and traces
 interviewmaxxing answer APP --set FIELD=VALUE ...   # then: interviewmaxxing resume APP
 interviewmaxxing resume APP --act      # visible window for sign-in, CAPTCHA, custom controls
 ```
+
+`events` prints every form URL as a page address (scheme, host and path: sites put
+per-session draft tokens in the query and fragment, which the store keeps exactly).
+Recorded questions' prompts (a lookup's prompt quotes the typed value and the site's
+suggestions), ambiguous answers' candidates, a lookup's suggestions, a chosen lookup
+label and routing traces can carry your own values; they show as
+`(hidden; --verbose shows it)` unless `--verbose` is given. `status APP --json` prints
+the form URLs of its packet, approval, attempts and recorded questions the same way (the
+job's and requests' application URLs are yours and stay as given), and `status` never
+prints the state database's path (`interviewmaxxing paths` does).
 
 The runner records these events for each application:
 
@@ -566,16 +587,19 @@ Verification: `tests/core/test_batch.py` runs the harness offline against a fake
 failures, backend readiness, several batches and `--since`, the JSON schema);
 `tests/core/test_batch_retry.py` covers `--retry` against a store-backed fake of
 `apply` and `resume`; `tests/core/test_batch_holds.py` covers `holds`, including
-running one generated `answer` line; `tests/core/test_batch_hardening.py` covers the
+running one generated `answer` line; `tests/core/test_batch_privacy.py` covers the
+masked failure details, what `events`, `status --json` and `holds --json` print, and the
+unreadable submission lines; `tests/core/test_batch_hardening.py` covers the
 directory modes, the single state connection, rows sharing a URL, runs stopped
 mid-fill, unreadable ledger lines, Closed moves only for closed jobs, lookups outside
 the workers' lock, timeout escalation and escaped table cells;
 `tests/service/test_application_links_batch.py` checks that the service accepts the
 links a batch writes and shows its Closed moves; `e2e/test_batch_e2e.py` runs the
 harness with three workers, real headless Chromium and the fictional candidate
-against the localhost mock ATS, then the loop (`holds`, a retry that skips explicit-only
-holds, one `answer` line per shared question, a retry that prepares them, a combined
-report), and checks that the server received no submission.
+against the localhost mock ATS, then the loop (`holds`, a default retry that runs nothing
+before any answer, an `--all` retry that skips explicit-only holds, one `answer` line per
+shared question, a retry that prepares them, a combined report), and checks that the
+server received no submission.
 
 ## Submitting what you approved
 
@@ -594,4 +618,8 @@ launches an application that line records as submitted or uncertain again. A for
 that changed since you approved it is not submitted and comes back as `needs_input`.
 `prepare-batch --retry` leaves an approved application alone (skipped as
 `approved (left to submit-approved)`): preparing it again would withdraw the
-approval. The rules, events and exit codes are in [submission.md](submission.md).
+approval. A submission line that cannot be read (cut short by a crash, edited) is
+counted as `ledger_lines_ignored` in `submission-summary.json` and its Markdown, and in
+`batch-report` (`submissions.lines_ignored`): its application counts as not submitted by
+that ledger, and the store still refuses a second submit. The rules, events and exit
+codes are in [submission.md](submission.md).
