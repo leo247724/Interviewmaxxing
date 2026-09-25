@@ -387,6 +387,20 @@ def lint(text: str, *, statements: Sequence[str] = (), job_only: Sequence[str] =
     portables = [sentence for sentence in sentences if portable(sentence)]
     if portables:
         findings.append(Finding("portable_sentence", len(portables), tuple(s[:120] for s in portables[:4])))
+    if company.strip():
+        clauses = re.findall(rf"\b(?:that|which|what|as)\s+{re.escape(company.strip())}\s+(?:asks|wants|names|"
+                             r"expects|needs|holds|puts|describes|calls|requires|lists)\b|"
+                             rf"\b{re.escape(company.strip())}\s+(?:asks|wants|names|expects|needs|requires)\b",
+                             text, re.IGNORECASE)
+        clauses += re.findall(r"\bas\s+the\s+(?:role|posting|position|job)\s+(?:asks|requires|describes|wants)\b|"
+                              r"\bthe\s+kind\s+of\s+\w+(?:\s+\w+){0,4}\s+that\b", text, re.IGNORECASE)
+        if len(clauses) > 2:
+            findings.append(Finding("posting_clause", len(clauses), tuple(clauses[:4])))
+    dates = re.findall(r"\b(?:since|from|in)\s+(?:(?:january|february|march|april|may|june|july|august|september|"
+                       r"october|november|december)\s+)?(?:19|20)\d{2}\b", text, re.IGNORECASE)
+    restated_dates = [date for date in dict.fromkeys(d.casefold() for d in dates) if dates_count(dates, date) > 2]
+    if restated_dates:
+        findings.append(Finding("repeated_dates", len(restated_dates), tuple(restated_dates[:4])))
     names = {" ".join(match.group(1).casefold().split()) for match in _POSTING_NAME.finditer(text)}
     if company.strip() and re.search(rf"\b{re.escape(company.strip())}(?:'s\s+\w+)?\s+(?:wants|needs|is\s+hiring|"
                                      r"is\s+looking|seeks|asks|expects)\b", text, re.IGNORECASE):
@@ -394,6 +408,10 @@ def lint(text: str, *, statements: Sequence[str] = (), job_only: Sequence[str] =
     if len(names) >= 3:
         findings.append(Finding("synonym_cycling", len(names), tuple(sorted(names))[:4]))
     return findings
+
+
+def dates_count(dates: list[str], date: str) -> int:
+    return sum(1 for item in dates if item.casefold() == date)
 
 
 def findings_summary(findings: list[Finding]) -> list[dict[str, Any]]:
@@ -415,6 +433,18 @@ def _fact_sets(draft: NarrativeDraft) -> dict[frozenset[str], tuple[int, set[str
             count, jobs = sets.get(frozenset(sentence.fact_ids), (0, set()))
             sets[frozenset(sentence.fact_ids)] = (count + 1, jobs | set(sentence.job_evidence_ids))
     return sets
+
+
+_TALK = re.compile(r"\b(?:talk|call|walk\s+you\s+through|conversation|chat|meet|show\s+you)\b", re.IGNORECASE)
+
+
+def _close(draft: NarrativeDraft) -> tuple[int, bool]:
+    """A letter's close: how many sentences its last paragraph has and whether it still
+    offers to talk. The rewrite keeps both (round 6: one live rewrite cut the offer)."""
+    if not draft.sentences:
+        return 0, False
+    close = [s for s in draft.sentences if s.paragraph == draft.sentences[-1].paragraph]
+    return len(close), any(_TALK.search(s.text) for s in close)
 
 
 def _job_only(draft: NarrativeDraft) -> list[str]:
@@ -463,7 +493,8 @@ def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
         salutation = bool(original.sentences) and greeting(original.sentences[0].text)
         if (not LETTER_WORDS[0] <= words <= LETTER_WORDS[1]
                 or not LETTER_PARAGRAPHS[0] <= paragraphs <= LETTER_PARAGRAPHS[1]
-                or (salutation and (not rewritten.sentences or not greeting(rewritten.sentences[0].text)))):
+                or (salutation and (not rewritten.sentences or not greeting(rewritten.sentences[0].text)))
+                or _close(rewritten) != _close(original)):
             return "letter_shape"
     elif len(rewritten.sentences) > 8:
         return "sentence_limit"
@@ -484,7 +515,8 @@ REJECTION_FEEDBACK = {
     "length_drift": "Stay within about a quarter of the draft's word count.",
     "field_length": "Keep the text below max_length.",
     "letter_shape": f"A cover letter stays {LETTER_WORDS[0]}-{LETTER_WORDS[1]} words in {LETTER_PARAGRAPHS[0]}-"
-                    f"{LETTER_PARAGRAPHS[1]} paragraphs, counting the greeting line.",
+                    f"{LETTER_PARAGRAPHS[1]} paragraphs, counting the greeting line, keeps the greeting line and "
+                    "keeps its closing paragraph's sentences: the profile link and the offer to talk.",
     "sentence_limit": "An answer stays within 8 sentences.",
 }
 """What a rejected rewrite is told on the next attempt (reason codes; traces keep codes)."""
@@ -525,7 +557,11 @@ _RULES = (
     "self-answered questions ('The result? CPA fell.'), closing recap paragraphs, 'And' "
     "fragments, capitals after a colon that neither grammar, a proper noun, a title nor code "
     "requires, decorative bold and bullets, and synonym cycling of the posting's name (pick one "
-    "name for the role and keep it). A greeting line ('Dear Hiring Manager,') stays as it is. "
+    "name for the role and keep it). posting_clause findings ('the kind of X that <employer> "
+    "names', 'which <employer> expects', 'as the role asks') are fit commentary: cut the clause "
+    "and keep the work. repeated_dates: give an employer's dates once, where it first appears. "
+    "A greeting line ('Dear Hiring Manager,') stays as it is, and a cover letter's closing "
+    "paragraph keeps both its sentences: the profile link and the offer to talk. "
     "When rejected_rewrite is supplied, your previous rewrite broke that constraint: fix it. Never "
     "use these words: delve, foster, leverage, utilize, facilitate, empower, streamline, robust, "
     "cutting-edge, paradigm shift, game changer, tapestry, realm, beacon, multifaceted, "

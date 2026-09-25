@@ -1770,6 +1770,7 @@ def test_a_rubric_letter_is_written_first_time_with_the_profile_links(candidate,
     assert {f["id"] for f in rubric["facts"]} >= {"fact.bakery", chunk["id"], "contact:links"}
     assert rubric["job_evidence"] == [POSTING] and rubric["sentences"]
     assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]["status"] == "PASSED"
+    assert "rubric review passed" in answer.provenance.note
     # Jev's completeness is scoped to the letter's shape, and a first step is a plan, not a claim.
     [grounding] = jev.grounding_requests()
     assert "owner's shape" in grounding["questions"]["complete"]["instructions"]
@@ -1840,30 +1841,53 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
     assert held(packet, ctx) and len(writer.calls) == 3
 
 
-def test_the_rubric_review_gets_corrective_rewrites_and_never_blocks_a_grounded_letter(candidate, mock_job):
+def test_the_rubric_review_improves_a_grounded_letter_and_never_costs_it(candidate, mock_job):
     chunk = story_chunk()
     letter = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    improved = [dict(sentence) for sentence in letter]
+    improved[2] = {**improved[2], "text": "The weekly report tied every search dollar to a paid order, and that "
+                                          "rebuild at the bakery chain is the work I would bring first."}
     retriever = lambda: Retriever(list(candidate.facts), [chunk], job_evidence=[POSTING])  # noqa: E731
     issue = "Rubric line 4: name one thing only true of this employer."
-    # A HARD line the reviewer finds failed: its issues are the next draft's feedback.
-    writer = LetterWriter([letter], rubric=["UNSUPPORTED", "SUPPORTED"])
+    text = lambda sentences: NarrativeDraft.model_validate(ready(sentences)).text  # noqa: E731
+    # A HARD line the reviewer finds failed: its issues are the improvement draft's feedback,
+    # which is checked and grounded like the first, then graded again.
+    writer = LetterWriter([letter, improved], rubric=["UNSUPPORTED", "SUPPORTED"])
     packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
     assert packet.is_complete and len(writer.calls) == 2 and writer.calls[1]["review_feedback"] == [issue]
-    assert "rubric review" not in packet.answers[0].provenance.note
-    drafts = [t for t in resolver.narrative_traces if t["stage"] == "draft"]
-    assert [d["rubric"]["status"] for d in drafts] == ["REWRITE", "PASSED"]
-    assert issue not in json.dumps(ai_package_project(drafts[0]))
-    # Still failing on the last attempt: the letter is written and says so.
+    assert packet.answers[0].value.text == text(improved)
+    assert "rubric review passed" in packet.answers[0].provenance.note
+    [draft] = [t for t in resolver.narrative_traces if t["stage"] == "draft"]
+    rubric = draft["rubric"]
+    assert rubric["status"] == "PASSED" and [p.get("improvement") for p in rubric["passes"]] == ["ACCEPTED", None]
+    assert rubric["passes"][0]["grounding"]["independent_review"] == "SUPPORTED"
+    assert issue not in json.dumps(ai_package_project(draft))  # review text never reaches the store
+    # Still failing after both improvements: the letter is written and says so.
     writer = LetterWriter([letter], rubric=["UNSUPPORTED"])
     packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
     assert packet.is_complete and len(writer.calls) == 3
     assert "rubric review: 1 issue(s) remain" in packet.answers[0].provenance.note
-    assert [t for t in resolver.narrative_traces if t["stage"] == "draft"][-1]["rubric"]["status"] == "RESIDUAL"
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]["status"] == "RESIDUAL"
+    # An improvement that fails a checked line or its grounding is dropped: the grounded
+    # letter stands, never held.
+    broken = [{**s, "paragraph": s["paragraph"] - 1} for s in improved[1:]]
+    writer = LetterWriter([letter, broken], rubric=["UNSUPPORTED"])
+    packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and packet.answers[0].value.text == text(letter)
+    rubric = next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]
+    assert rubric["status"] == "RESIDUAL" and rubric["passes"][0]["improvement"] == "DROPPED"
+    assert "GREETING" in rubric["passes"][0]["failed"]
+    ungrounded = Jev(semantic="COVER_LETTER", support=lambda index, text, requests: 0.01 if requests >= 2 else 1.0)
+    writer = LetterWriter([letter, improved], rubric=["UNSUPPORTED"])
+    packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, ungrounded)
+    assert packet.is_complete and packet.answers[0].value.text == text(letter)
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]["passes"][0][
+        "improvement"] == "DROPPED"
     # A failed rubric review never blocks the grounded letter.
     writer = LetterWriter([letter], rubric=[AIHold("Review HTTP_500")])
     packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
     assert packet.is_complete and len(writer.calls) == 1
-    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"] == {"status": "REVIEW_HELD"}
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rubric"]["status"] == "REVIEW_HELD"
 
 
 def ai_package_project(trace: dict[str, Any]) -> dict[str, Any]:
@@ -1941,6 +1965,11 @@ def test_the_rewrite_may_delete_or_fold_a_job_only_sentence_but_never_move_a_fac
     assert check_rewrite(NarrativeDraft.model_validate(ready(paired)), NarrativeDraft.model_validate(ready(unpaired)),
                          purpose="answer", supplied_ids={"fact.bakery", "fact.reports"}, job_ids={POSTING["id"]},
                          max_length=None) == "dropped_citation"
+    # The close keeps both its sentences: the profile link and the offer to talk (a live
+    # rewrite cut the offer).
+    no_offer = [*letter[:12], {**letter[12], "text": "My order data from the bakery chain is ready for review."}]
+    assert check_rewrite(deleted, NarrativeDraft.model_validate(ready(no_offer)), purpose="cover_letter",
+                         supplied_ids=ids, job_ids={POSTING["id"]}, max_length=None) == "letter_shape"
     no_greeting = [{**s, "paragraph": s["paragraph"] - 1} for s in letter[1:]]
     no_greeting[0] = {**no_greeting[0], "text": "Dear Hiring Manager, " + no_greeting[0]["text"]}
     assert check_rewrite(deleted, NarrativeDraft.model_validate(ready(no_greeting)), purpose="cover_letter",
@@ -1969,6 +1998,9 @@ def test_the_rewrite_may_delete_or_fold_a_job_only_sentence_but_never_move_a_fac
     ("closing_recap", "I ran search at a bakery chain in 2024.\n\nI grew orders 35% there.\n\n"
                       "My background in paid media and testing prepares me to drive growth for your team."),
     ("empty_phrase", "Let's dive in: I ran paid search for a bakery chain."),
+    ("posting_clause", "I ran search, the kind of channel work that Fictional Co names. I wrote reports, which "
+                       "Fictional Co expects. I led tests as the role asks."),
+    ("repeated_dates", "Since June 2025 I ran search. Since June 2025 I wrote reports. Since June 2025 I led tests."),
 ])
 def test_the_genre_lint_names_each_pattern(pattern, text):
     assert pattern in {finding.pattern for finding in lint(text, company="Fictional Co")}, text

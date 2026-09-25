@@ -563,12 +563,17 @@ LETTER_LENGTH_FEEDBACK = (
 LETTER_STORY_FEEDBACK = (
     "Draw the proof from a story passage (an entry keyed story) and cite it: one campaign told as "
     "constraint, what the applicant changed and the result, naming the tradeoff it states.")
+_TALK = re.compile(r"\b(?:talk|call|walk\s+you\s+through|conversation|chat|meet|show\s+you)\b", re.IGNORECASE)
+"""A close's offer to talk (the rubric's second closing sentence)."""
 CONTACT_ID = "contact:links"
 """The cover letter's close cites the applicant's profile links (LinkedIn, website) under
 this id: a transient stand-in from the identity, never a fact in packet provenance."""
 LETTER_ATTEMPTS = 3
-"""A cover letter gets two corrective rewrites (its deterministic rubric lines, then the rubric
-review's findings); every other narrative gets one."""
+"""A cover letter gets two corrective rewrites for its deterministic rubric lines and its
+grounding; every other narrative gets one."""
+RUBRIC_PASSES = 2
+"""Improvement drafts for the rubric review's findings on a grounded cover letter; an
+improvement that fails a check is dropped and the grounded letter stands."""
 ENUMERATION_GUIDANCE = (
     "The question asks to enumerate or count. Write from the supplied facts: each team, "
     "report, client, campaign or tool the facts state, with its size, employer and dates, each "
@@ -3934,7 +3939,7 @@ class DynamicPacketResolver:
                     writer_facts=writer_facts, job_evidence=job_evidence, voice_samples=voice_samples,
                     consistency_confidence=consistency_confidence, relevance_scores=relevance_scores,
                     review_feedback=feedback, rewrite_attempt=attempt, story_chunks=story_chunks,
-                    contact=contact, final_attempt=attempt == attempts - 1)
+                    contact=contact)
             except _CorrectableDraftRejection as exc:
                 if attempt == attempts - 1:
                     raise
@@ -4136,7 +4141,7 @@ class DynamicPacketResolver:
                          relevance_scores: list[float], review_feedback: list[str] | None,
                          rewrite_attempt: int,
                          story_chunks: list[dict[str, Any]] | None = None,
-                         contact: CandidateFact | None = None, final_attempt: bool = True) -> PacketAnswer:
+                         contact: CandidateFact | None = None) -> PacketAnswer:
         assert self.writer is not None
         story_chunks = story_chunks or []
         stories = transient_story_facts(story_chunks)
@@ -4169,23 +4174,27 @@ class DynamicPacketResolver:
         # The person's own statement of what they look for is restated, never pasted.
         statements = [fact.value for fact in relevant
                       if fact.key == "career_motivation" and isinstance(fact.value, str) and fact.value.strip()]
-        rejections: list[tuple[str, str]] = []
-        if fit_hedges(draft.text):
-            # Fit is given: the draft builds the case and never hedges or judges it; an
-            # unsupported requirement is left out, not disclaimed (round 5, addendum 2).
-            rejections.append(("FIT_HEDGED", FIT_HEDGE_FEEDBACK))
-        if quotes_statement(draft.text, statements):
-            # The humanizer's lexical check on the writer's own draft: pasted verbatim into
-            # every "why us" answer, the statement reads as boilerplate (round 5).
-            rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
-        rejections.extend(self._letter_findings(context, draft, purpose=purpose, job_evidence=job_evidence,
-                                                stories=bool(stories), contact=contact is not None))
-        if enumeration and _TOTALITY_WORDS.search(draft.text) and not any(
-                re.search(r"\btotal\b", str(fact.value), re.IGNORECASE) for fact in relevant):
-            # A total the facts do not state: one corrective rewrite, like a review finding.
-            rejections.append(("TOTALITY_REJECTED",
-                "Remove totality words (all, every, only, in total, total across roles, altogether): "
-                "the supplied facts state no total; present the items they state."))
+        def findings_of(candidate: NarrativeDraft) -> list[tuple[str, str]]:
+            rejections: list[tuple[str, str]] = []
+            if fit_hedges(candidate.text):
+                # Fit is given: the draft builds the case and never hedges or judges it; an
+                # unsupported requirement is left out, not disclaimed (round 5, addendum 2).
+                rejections.append(("FIT_HEDGED", FIT_HEDGE_FEEDBACK))
+            if quotes_statement(candidate.text, statements):
+                # The humanizer's lexical check on the writer's own draft: pasted verbatim into
+                # every "why us" answer, the statement reads as boilerplate (round 5).
+                rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
+            rejections.extend(self._letter_findings(context, candidate, purpose=purpose, job_evidence=job_evidence,
+                                                    stories=bool(stories), contact=contact is not None))
+            if enumeration and _TOTALITY_WORDS.search(candidate.text) and not any(
+                    re.search(r"\btotal\b", str(fact.value), re.IGNORECASE) for fact in relevant):
+                # A total the facts do not state: one corrective rewrite, like a review finding.
+                rejections.append(("TOTALITY_REJECTED",
+                    "Remove totality words (all, every, only, in total, total across roles, altogether): "
+                    "the supplied facts state no total; present the items they state."))
+            return rejections
+
+        rejections = findings_of(draft)
         if rejections:
             # Every deterministic finding in one corrective rewrite, so fixing one cannot
             # leave another for the second draft to fail on.
@@ -4196,8 +4205,28 @@ class DynamicPacketResolver:
             supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=trace,
             rewrite_attempt=rewrite_attempt)
         if purpose == "cover_letter":
-            self._letter_rubric(context, draft, evidence=evidence, job_evidence=job_evidence, trace=trace,
-                                final=final_attempt)
+            def improve(issues: list[str]) -> tuple[NarrativeDraft, dict[str, Any]]:
+                """The writer's draft for the rubric's issues, held to every check the first
+                draft passed; any failure raises and the grounded draft stands."""
+                assert self.writer is not None
+                improved = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
+                    max_length=field.max_length, job_evidence=job_evidence, voice_samples=voice_samples,
+                    purpose=purpose, review_feedback=issues, guidance=[], on_attempt=attempts.append)
+                if improved.status != "READY":
+                    raise AIHold("The rubric rewrite needs input")
+                failed = findings_of(improved)
+                if failed:
+                    raise AIHold("The rubric rewrite fails " + ", ".join(code for code, _ in failed))
+                grounding: dict[str, Any] = {}
+                improved_scores = self._ground_draft(context, field, improved, purpose=purpose, supplied=supplied,
+                    supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=grounding,
+                    rewrite_attempt=1)
+                return improved, improved_scores | {"trace": {key: grounding.get(key) for key in
+                                                               ("status", "grounding", "independent_review")}}
+
+            draft, scores = self._letter_rubric(context, draft, scores, evidence=evidence,
+                                                job_evidence=job_evidence, trace=trace, improve=improve)
+            trace["sentences"] = [sentence.model_dump(mode="json") for sentence in draft.sentences]
         humanized: list[dict[str, Any]] = []
         if self.humanize and isinstance(self.writer, NarrativeWriter):
             def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
@@ -4249,6 +4278,8 @@ class DynamicPacketResolver:
         rubric = trace.get("rubric")
         if isinstance(rubric, dict) and rubric.get("status") == "RESIDUAL":
             note += f"; rubric review: {rubric.get('issue_count', 0)} issue(s) remain"
+        elif isinstance(rubric, dict) and rubric.get("status") == "PASSED":
+            note += "; rubric review passed"
         trace["status"] = "READY"
         return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
             value=value, confidence=min([consistency_confidence, *scores["grounding"], *relevance_scores]),
@@ -4297,39 +4328,60 @@ class DynamicPacketResolver:
                 if stock_opener(first.text) or not first.fact_ids or not named:
                     findings.append(("OPENING", LETTER_OPENING_FEEDBACK))
                 close = [s for s in body if s.paragraph == body[-1].paragraph]
-                if (stock_closer(close[-1].text) or len(close) > 2
+                if (stock_closer(close[-1].text) or len(close) != 2 or not _TALK.search(close[-1].text)
                         or (contact and not any(CONTACT_ID in s.fact_ids for s in close))):
                     findings.append(("CLOSING", LETTER_CLOSING_FEEDBACK))
             if stories and not any(fid.startswith("story:") for s in draft.sentences for fid in s.fact_ids):
                 findings.append(("STORY_MISSING", LETTER_STORY_FEEDBACK))
         return findings
 
-    def _letter_rubric(self, context: PacketContext, draft: NarrativeDraft, *, evidence: list[CandidateFact],
-                       job_evidence: list[dict[str, str]], trace: dict[str, Any], final: bool) -> None:
+    def _letter_rubric(self, context: PacketContext, draft: NarrativeDraft, scores: dict[str, Any], *,
+                       evidence: list[CandidateFact], job_evidence: list[dict[str, str]], trace: dict[str, Any],
+                       improve: Callable[[list[str]], tuple[NarrativeDraft, dict[str, Any]]],
+                       ) -> tuple[NarrativeDraft, dict[str, Any]]:
         """The owner's rubric, graded by the independent reviewer on a grounded cover letter
-        before the no-slop pass (round 6 addendum). A HARD line it finds failed is a
-        corrective rewrite while one remains; on the last attempt the issues stay in the
-        trace and the answer's note (``RESIDUAL``). A missing or failed reviewer never
-        blocks a grounded letter."""
+        before the no-slop pass (round 6 addendum). A failed HARD line gets up to
+        ``RUBRIC_PASSES`` improvement drafts (``improve``: the writer with the issues, then
+        every draft check and the grounding); an improvement that fails any of them is
+        dropped and the grounded letter stands, so the rubric never costs a letter. Issues
+        still open after the last pass stay in the trace and the note (``RESIDUAL``); a
+        missing or failed reviewer never blocks a grounded letter."""
         review = getattr(self.writer, "review", None)
         if not callable(review):
-            trace["rubric"] = {"status": "NOT_REVIEWED"}
-            return
-        try:
-            result = review(question="Grade this cover letter against the rubric.",
-                facts=[_fact_evidence(fact) for fact in evidence], job_evidence=job_evidence,
-                job={"title": context.job.title or "", "company": context.job.company or ""},
-                sentences=draft.sentences, purpose="letter_rubric")
-        except AIHold:
-            trace["rubric"] = {"status": "REVIEW_HELD"}
-            return
-        issues = [issue[:1000] for issue in result.issues if isinstance(issue, str) and issue.strip()][:8]
-        passed = result.verdict == "SUPPORTED" or not issues
-        trace["rubric"] = {"verdict": result.verdict, "issue_count": len(issues), "review_issues": issues,
-                           "reference_ids": result.reference_ids,
-                           "status": "PASSED" if passed else "RESIDUAL" if final else "REWRITE"}
-        if not passed and not final:
-            raise _CorrectableDraftRejection("UNSUPPORTED", issues)
+            trace["rubric"] = {"status": "NOT_REVIEWED", "passes": []}
+            return draft, scores
+        passes: list[dict[str, Any]] = []
+        trace["rubric"] = {"status": "REVIEWING", "passes": passes}
+        for number in range(RUBRIC_PASSES + 1):
+            try:
+                result = review(question="Grade this cover letter against the rubric.",
+                    facts=[_fact_evidence(fact) for fact in evidence], job_evidence=job_evidence,
+                    job={"title": context.job.title or "", "company": context.job.company or ""},
+                    sentences=draft.sentences, purpose="letter_rubric")
+            except AIHold:
+                passes.append({"status": "REVIEW_HELD"})
+                trace["rubric"].update(status="REVIEW_HELD" if number == 0 else "RESIDUAL",
+                                       issue_count=trace["rubric"].get("issue_count", 0))
+                return draft, scores
+            issues = [issue[:1000] for issue in result.issues if isinstance(issue, str) and issue.strip()][:8]
+            passed = result.verdict == "SUPPORTED" or not issues
+            passes.append({"verdict": result.verdict, "issue_count": len(issues), "review_issues": issues,
+                           "reference_ids": result.reference_ids})
+            trace["rubric"].update(verdict=result.verdict, issue_count=len(issues), review_issues=issues)
+            if passed:
+                trace["rubric"]["status"] = "PASSED"
+                return draft, scores
+            if number == RUBRIC_PASSES:
+                break
+            try:
+                draft, scores = improve(issues)
+            except AIHold as exc:
+                passes[-1].update(improvement="DROPPED", reason=type(exc).__name__,
+                                  failed=str(exc)[:200] if str(exc).startswith("The rubric rewrite") else None)
+                break
+            passes[-1].update(improvement="ACCEPTED", grounding=scores.pop("trace", None))
+        trace["rubric"]["status"] = "RESIDUAL"
+        return draft, scores
 
     def _ground_draft(self, context: PacketContext, field: ApplicationField, draft: NarrativeDraft, *,
                       purpose: Literal["answer", "cover_letter", "motivation"], supplied: dict[str, CandidateFact],
