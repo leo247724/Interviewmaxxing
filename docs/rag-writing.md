@@ -616,6 +616,146 @@ the chunk ids.
 Chunk ids change for a story whose heading states a period and whose link is rejected (its
 header carries its own period), and for a title containing `|`.
 
+## Round 6: the cover letter the owner wants
+
+Three live letters (2026-09-25) graded C / B- / D against the owner's rule and C-range on
+no-AI-slop. They read the posting back to its authors, opened and closed with stock lines,
+argued from years counts and resume/story twins while the best results never reached the
+writer, dropped every story passage, and one named the listing source's company. The owner's
+rubric (`.imx/rag-writing/cover-letters/RUBRIC.md`, HARD and SOFT lines) and the
+open-career-skills cover-letter rules (MIT) are now the specification.
+
+**The target employer.** `rag_answers.py draft --application-id` (or `--job-id`) takes the job
+record from the application store, as the runner does; a listing's `company` comes from its
+source (Getro named "Coda" for Superhuman). The writer names the employer as `job_evidence`
+names it, the review rejects a draft that names it otherwise, and a letter naming the metadata
+company where the description names another gets a corrective rewrite (`EMPLOYER_NAME`).
+
+**Retrieval per key requirement** (cover letters and motivation answers). Each requirement
+line of the description (`_requirement_lines`: sentences with a requirement cue, each once) is
+an input of the same embedding request and its own hybrid query. `select_requirement_facts`
+gives each requirement its best fact before any gets a second (at most two), preferring a
+fact that states a figure within windows of three hits, leaves out a fact stating the same
+claim as one already chosen (`same_claim`: a shared figure and 40% of the shorter claim's
+content words, or 60% without figures: a resume bullet and the story fact retelling it), keeps
+at most one years-of-experience fact and none below the posting's ask for the same thing
+(`10+ years of growth marketing` against `7 years of growth marketing`), then fills from the
+whole description's ranking. A cover letter takes up to 12 facts (`max_cover_letter_facts`),
+other narratives 8. The receipt's `fact_selection` records the ids per requirement and the ids
+left out by reason, never text.
+
+**Job passages.** A cover letter or motivation answer gets the whole description when it has
+at most five chunks, else the five with the most requirement-like sentences, in the
+description's order; a generic question no longer picks the salary and EEO chunk by its own
+words. Specific questions keep their question-ranked chunks.
+
+**Story passages are the spine.** A passage is dropped only at a "free of contradiction"
+score of at most 0.05; the uncertain band goes to one independent Opus review for all such
+passages with their comparison facts (`STORY_REVIEW_QUESTION`, cached per runtime), which keeps
+those it does not find contradicted; without a reviewer or when the review fails, they are
+dropped as before. Retrieval ranks first the two passages that best match the posting's first
+priority (`story_priority_ids`), and the writer draws the proof from them.
+
+**The writer** (`COVER_LETTER_RULES`, RUBRIC.md line by line): 280-380 words (ceiling 400) in
+a greeting line ("Dear Hiring Manager," unless the posting names a person), a two-to-three
+sentence hook whose first sentence carries a digit or a named problem, one proof told from a
+story passage as constraint, change and result with its tradeoff (never two headline metrics
+from different campaigns), three to five sentences on one thing only true of this employer
+from the description with a first step, and a two-sentence close with the profile link (the
+transient `contact:links` entry from the identity's LinkedIn and website, never packet
+provenance) and a confident offer to talk; no gratitude, no application line, no fit
+commentary, no tool inventories, at most one sentence restating the posting, the banned words.
+`NEEDS_INPUT` only without a description, without any related fact, or when nothing specific
+to the employer can be named.
+
+**What the code checks** (`_letter_findings`, corrective rewrites; a letter still failing on
+its third draft holds): the greeting line (`GREETING`), 280-400 words in 4-6 paragraphs
+(`LETTER_LENGTH`), a hook whose first sentence cites the applicant's work and carries a digit
+or a story's problem (`OPENING`), a close of exactly two sentences, the profile link (cited)
+and an offer to talk, with no stock courtesy (`CLOSING`), a cited story passage when one was
+supplied (`STORY_MISSING`), at most one job-only sentence (`JOB_RESTATED`), the employer's name
+(`EMPLOYER_NAME`). A review that rejects sentences asks the next draft to drop them rather than
+rephrase them (`DROP_REJECTED_FEEDBACK`), and the writer never borrows the posting's wording into
+a first-person claim, never assesses the applicant and states a tradeoff only as a source does.
+
+**One review per draft.** Each cover-letter draft gets one independent review
+(`letter_review`, `LetterReview`): its grounding verdict, as the draft review, and its grade
+against the rubric's HARD lines (`LETTER_RUBRIC_LINES`) together. A grounding failure is a
+corrective rewrite; a failed rubric line gets one improvement draft (`RUBRIC_PASSES`), held to
+every draft check and its own graded review, and dropped when it fails any of them, so the
+grounded letter stands and the rubric never costs a letter. Issues still open after the pass
+(or after the no-slop rewrite's own review) stay in the trace and the note ("rubric review: N
+issue(s) remain"; "rubric review passed" otherwise). Jev's completeness question is scoped to
+the letter's shape, and a letter's first step is a plan, not a claim of fact, supported by
+cited work and a cited priority.
+
+**The humanizer** (`no-ai-slop-v3`). A draft whose lint is clean is kept as it is (`CLEAN`,
+which the rubric accepts); otherwise it is rewritten, at most twice. A sentence citing only job
+evidence may be deleted or folded into a fact sentence (its job ids join that sentence's),
+never added; fact sets keep M9; the greeting line and the close's two sentences stay. The lint
+gives the rewrite the genre's targets: `job_restated`, `stock_opener`, `stock_closer`,
+`fit_commentary`, `posting_clause` ("the kind of X that <employer> names", "which <employer>
+expects", "as the role asks", more than twice), `connective_tic`, `repeated_dates` (the same
+date phrase three times), `identical_paragraph_openings`, and the upstream rules the first
+version missed (`portable_sentence`: a first-person line with no name or figure whose content
+words are at least 40% generic; `fake_strong_verb`; `empty_adverb` for the eleven often-empty
+adverbs; `self_answered_question`; `closing_recap`; `and_fragments`; `colon_case`;
+`decorative_formatting`; `synonym_cycling`; "in this article" / "let's dive in"); a greeting line
+is not the first sentence. The prompt carries the owner's rule: hedges and fit commentary are
+cut, never kept as voice. A rejected rewrite is tried again with its reason
+(`rejected_rewrite`), a rewrite whose review fails a rubric line the draft passed is rejected
+(`REJECTED_RUBRIC`), the trace names every discarded attempt (`discarded`) and the answer's note
+says "no-AI-slop rewrite discarded: …", so a kept original is never silent. The trace keeps each
+accepted rewrite's and the final draft's citation ids (`citations`, ids and paragraphs only).
+
+**The judge's batch-1 fixes** (JUDGE.md, D / D / D). A job priority is only ever the object of
+what the applicant did: clauses attributing a requirement to the employer or comparing the
+employer to his work ("Maximus asks its growth lead to…", "that Base holds this role accountable
+for", "as the role asks", "the kind of X that <employer> names", "where I've done my best work")
+get a corrective rewrite (`ATTRIBUTION`) and are linted (`attribution_clause`) with the names the
+posting uses (`employer_names`: "Base", "Maximus", not the record's legal name). The company fact
+and both closing sentences are structure: `job_restated` is found by a sentence's words, never by
+what it cites, and a rewrite that deletes the company fact is rejected (`dropped_structure`). The
+company fact passes a rarity test and is stated in the posting's words; an employer's dates come
+once, with no month-to-month ranges (`repeated_dates`); a tradeoff or a result comes from a cited
+passage, and the proof's result is the result of its change; one headline metric in the hook;
+one proof, other employers only as clauses; money figures keep their unit. Grade what ships: the
+shipped text's own review must pass the rubric (a rewrite that fails a line the draft passed is
+retried with the issues and otherwise discarded, `REJECTED_RUBRIC`), and a letter without a
+passing grade holds (`RUBRIC_HELD`), asking the owner the reviewer's one question
+(`owner_question`) when a missing element is the reason. Repeat reviews agree: sentences an
+earlier review supported are sent as `settled_sentences`, and Jev's per-sentence grounding
+verdicts are cached by sentence text and citations. A review cut at its output limit is retried
+once with twice the allowance. Retrieval lists the long-form candidate stories
+(`candidate-stories`) ahead of LinkedIn and site bullets for the proof.
+
+**After batch 2.** The company paragraph ties the fact to the proof's own work and brings in
+no other employer (batch 2 first held all three letters on "one proof"); the proof is a passage
+that states a result, built back from that result; a date range of any kind is a corrective
+finding (`DATE_RANGE`), and so is a letter citing only passages and links (`FACTS_UNCITED`); the
+writer adds no bridging or interpreting sentence and names the role as the posting does. A
+second rubric improvement runs only when the first cut the open issues, and a letter that will
+hold skips the no-slop pass. The local draft tool reserves up to 80 calls / USD 5.00.
+
+**The owner's voice** (addendum 3). Three posts he wrote in 2017 are indexed as voice samples
+(`index-voice`, style only); a letter gets the two most relevant passages (`voice_samples`), for
+the writer and the no-slop rewrite alike, never as evidence (they reach neither Jev nor the
+review). Case-study answers get them too, to show the working the way his technical explainer
+does (the formula, each step with its numbers, what the result means). Both prompts carry `VOICE_RULE`: adopt his register (plain first person, direct
+address, short declarative sentences, concrete numbers, a homely analogy now and then, a blunt
+aside, confidence without puffery, "the bottom line" once) but never the posts' content or their
+blog tics (bucket brigades, "awesome", "insanely", "skyrocket", "explosive", "It's no secret
+that...", "You might be wondering:"), which the lint names `blog_tic`.
+
+**Cost and bounds.** When both the field's fact consistency and its story passages need the independent evidence review, one call asks both ("Two checks in one review"): a contradiction pinned on a passage drops the passage, one among the facts holds as before. Citation ids travel as short aliases on the writer's and the rewriter's
+wire (`F1`, `S1`, `J1`, `L1`; a hashed id costs some 45 output tokens per citation) and are
+mapped back before any check; Jev grounding carries each cited fact, passage and job chunk once
+per request, and grounding and consistency requests are split under 85% of the request bound
+(`_decide_batched`). A letter's answer allowance is 6000 tokens, the writer policy allows 8000
+and waits 120 s, and a cover letter adds 24 calls / USD 2.50 of reservations to a writer field's
+allowance, raising the form's cap by the same (`FORM_LETTER_*`); `rag_answers.py draft` reserves
+up to 64 calls / USD 3.00. The lead's target is at most 15 calls and USD 0.60 per letter.
+
 ## Verification
 
 Mocked tests cover isolated retrieval, changed and revoked facts, source separation,

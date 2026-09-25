@@ -441,6 +441,21 @@ is answered under the purpose `case_analysis` from that data alone, working chec
 provenance `GENERATED_FROM_QUESTION`, or held with "The table referenced is not in the recorded
 question" when the recording carries no data.
 
+**Round 6 (WP12).** Cover letters follow the owner's rubric ([rag-writing.md](rag-writing.md),
+Round 6): the employer from the job record; facts retrieved per key requirement (at most two
+each, figures first, no twin claims, one years fact at most and none below the posting's ask,
+up to 12 for a letter); the whole description up to five chunks; story passages dropped only
+at p <= 0.05 with the uncertain band reviewed once, and the passage that best matches the
+first priority listed first; a rubric-shaped writer prompt whose code-checkable lines
+(`GREETING`, `LETTER_LENGTH`, `OPENING`, `CLOSING`, `STORY_MISSING`, `JOB_RESTATED`,
+`EMPLOYER_NAME`) get corrective rewrites; one independent review per draft for its grounding
+and the rubric's HARD lines together (`letter_review`), with one improvement pass that never
+costs a grounded letter; a humanizer that skips a clean draft, may delete or fold job-only
+sentences, lints the genre and retries a rejected rewrite with its reason, never discarding
+one silently. Citation ids travel as short aliases on the writer's wire, Jev grounding and
+consistency requests are batched under the request bound, and a cover letter has its own call
+allowance (`FORM_LETTER_*`).
+
 ## Bounds and observations
 
 Production budgets scale with the form (round 6). Each resolved form gets 24 calls and USD 0.30, plus 24 calls and USD 0.75 per `WRITER`-routed field (8 calls and USD 0.15 at first, 12 and USD 0.30 for WP12's story consistency check, no-slop rewrite and second grounding, then 24 and USD 0.75 after a live narrative exhausted 12 calls), on top of what the runtime already used, capped at 200 calls and USD 4.00 in total (`CallBudget(scales_with_form=True)`, set by `build_ai_runtime`). The runner's `provider.budget` event records the limits used. A budget without that flag keeps fixed limits, and its defaults share one per-runtime budget: 48 provider calls (raised from 32 when option-equivalence and lookup-suggestion decisions were added; each is one cheap Jev call), USD 0.50 of conservative reservations and 60,000 request bytes. Jev uses a 15-second timeout; the writer uses a 90-second timeout and at most 3,000 output tokens. Strong review allows at most 1,200 output tokens. Runtime embedding requests reserve and record costs in the same budget before HTTP. Each provider call has one attempt. The router batches the whole form (default 16, configurable 8/16/32 in the historical benchmark), recursively splits oversized requests without dropping context, and handles at most 100 fields, fact routing at most 40 verified facts per bounded comparison, and the writer at most eight relevant facts. Exceeding a bound holds; it never silently truncates candidate evidence or retries indefinitely.

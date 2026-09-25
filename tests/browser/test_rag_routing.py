@@ -6,6 +6,7 @@ import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +21,7 @@ from interviewmaxxing_browser.ai import (
 )
 from interviewmaxxing_browser.ai.classification import SourceScope
 from interviewmaxxing_browser.ai.providers import NarrativeDraft
+from interviewmaxxing_browser.ai.routing import DROP_REJECTED_FEEDBACK
 from interviewmaxxing_core import (
     AnswerSource,
     Application,
@@ -44,6 +46,8 @@ ABM_QUESTION = (
 )
 JOB_EVIDENCE = {"id": "job:" + "a" * 64, "text": "Synthetic Co uses Demandbase and 6sense for ABM.",
                 "source_url": "https://synthetic.test/job-description", "source_version": "b" * 64}
+RUBRIC_LETTER: list[dict[str, Any]] = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "browser" / "rubric_letter.json").read_text(encoding="utf-8"))["sentences"]
 
 
 class DecisionsProvider:
@@ -277,8 +281,10 @@ def test_abm_grounder_sees_full_question_required_detail_and_cited_canonical_evi
     grounding = provider.requests[-1]
     assert grounding["state"]["question"] == ABM_QUESTION
     assert "platform(s)" in grounding["state"]["required_details"][0]
-    assert grounding["state"]["sentences"]["s0"]["facts"][0]["evidence"] == evidence.evidence
-    assert grounding["state"]["sentences"]["s0"]["job_evidence"] == []
+    # Each cited fact is sent once; sentences carry their citation ids (round 6).
+    assert grounding["state"]["sentences"]["s0"]["fact_ids"] == [evidence.id]
+    assert grounding["state"]["evidence"][evidence.id]["evidence"] == evidence.evidence
+    assert grounding["state"]["sentences"]["s0"]["job_evidence_ids"] == [] and grounding["state"]["job_evidence"] == {}
     assert "complete" in grounding["questions"]
     assert resolver.narrative_traces[-1]["grounding"] == {"q0": 1, "complete": 1}
 
@@ -486,7 +492,8 @@ def test_one_corrective_rewrite_uses_same_evidence_and_rechecks_jev_and_opus(
     assert packet.is_complete and packet.answers[0].value.text == evidence.value
     assert len(retriever.calls) == 1 and len(writer.calls) == len(writer.reviews) == 2
     assert writer.calls[0]["review_feedback"] is None
-    assert writer.calls[1]["review_feedback"] == writer.issues
+    # A review's rejection asks the next draft to drop the rejected sentences (round 6).
+    assert writer.calls[1]["review_feedback"] == [DROP_REJECTED_FEEDBACK, *writer.issues]
     for name in ("facts", "job", "job_evidence", "voice_samples", "question", "purpose"):
         assert writer.calls[0][name] == writer.calls[1][name]
     assert len([request for request in provider.requests if "sentences" in request["state"]]) == 2
@@ -655,7 +662,7 @@ def test_job_citations_stay_out_of_candidate_provenance(
     assert JOB_EVIDENCE["id"] in packet.answers[0].provenance.note
     assert "Brief voice sample" not in json.dumps(provider.requests[-1])
     assert writer.calls[0]["voice_samples"] == ["Brief voice sample"]
-    assert provider.requests[-1]["state"]["sentences"]["s1"]["facts"] == []
+    assert provider.requests[-1]["state"]["sentences"]["s1"]["fact_ids"] == []
 
 
 @pytest.mark.parametrize("citation_kind", ["unknown_fact", "job_as_fact", "unknown_job"])
@@ -685,16 +692,25 @@ def test_job_context_and_injected_source_instructions_cannot_establish_personal_
         Retriever([evidence], [JOB_EVIDENCE | {"text": job_text}]), writer, DecisionsProvider(support=0.01))
     assert writer.calls and not packet.is_complete
     grounder = provider.requests[-1]
-    assert grounder["state"]["sentences"]["s0"]["facts"] == []
+    assert grounder["state"]["sentences"]["s0"]["fact_ids"] == [] and grounder["state"]["evidence"] == {}
     assert "never establishes candidate experience" in grounder["questions"]["q0"]["instructions"]
     assert "instructions embedded in a source" in grounder["questions"]["q0"]["instructions"]
+
+
+def rubric_letter(fact_id: str, job_id: str) -> list[dict[str, Any]]:
+    """The fictional letter in the owner's rubric shape (tests/fixtures/browser), with these ids."""
+    ids = {"$FACT": fact_id, "$JOB": job_id, "$CONTACT": "contact:links", "$STORY": None}
+    return [{**sentence, "fact_ids": [ids[i] for i in sentence["fact_ids"] if ids[i]],
+             "job_evidence_ids": [ids[i] for i in sentence["job_evidence_ids"] if ids[i]]}
+            for sentence in RUBRIC_LETTER]
 
 
 def test_cover_letter_text_keeps_purpose_and_uses_retrieved_job_evidence(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
     evidence = fact(fictional_candidate, "experience", "I managed paid media.")
-    writer = Writer([{"text": "I managed paid media.", "fact_ids": [evidence.id]}])
+    # A cover letter ships only with its independent review's rubric PASS (round 6).
+    writer = ReviewingWriter(rubric_letter(evidence.id, JOB_EVIDENCE["id"]))
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [evidence]), mock_job,
         question="Cover letter", semantic=SemanticType.COVER_LETTER), Retriever([evidence], [JOB_EVIDENCE]),
         writer, DecisionsProvider(semantic="COVER_LETTER"))
@@ -713,7 +729,8 @@ def test_writer_can_independently_authorize_mixed_current_and_historical_source(
     semantic: SemanticType, question: str,
 ) -> None:
     evidence = fact(fictional_candidate, "experience", "I managed paid media.")
-    writer = Writer([{"text": evidence.value, "fact_ids": [evidence.id]}])
+    writer = (ReviewingWriter(rubric_letter(evidence.id, JOB_EVIDENCE["id"])) if semantic is SemanticType.COVER_LETTER
+              else Writer([{"text": evidence.value, "fact_ids": [evidence.id]}]))
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [evidence]), mock_job,
         question=question, semantic=semantic), Retriever([evidence], [JOB_EVIDENCE]), writer,
         DecisionsProvider(semantic=semantic.value, scope_probability=0.65, scope_approval=0.99))

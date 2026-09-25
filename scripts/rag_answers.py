@@ -29,6 +29,7 @@ from interviewmaxxing_core import (
     ApplicationField,
     ApplicationForm,
     ApplicationState,
+    ApplicationStore,
     CandidateFact,
     CandidateProfile,
     ControlType,
@@ -48,6 +49,23 @@ from interviewmaxxing_generation.knowledge.stories import fact_self_contradictio
 from interviewmaxxing_selection.credentials import load_api_key
 
 
+def job_from_store(paths: LocalPaths, *, application_id: str | None, job_id: str | None) -> JobRecord:
+    """The job record the application store holds (the target employer as the application
+    knows it, the same record the runner gives the writer), for an application or a job id.
+    A listing's company comes from its source (a board aggregator may name another
+    company); the application's job record is the target."""
+    if not paths.state_db.is_file():
+        raise ValueError("No application store at this home; --application-id and --job-id need one")
+    with ApplicationStore.open(paths.state_db) as applications:
+        if application_id:
+            application = applications.get_application(application_id)
+            if job_id and application.job_id != job_id:
+                raise ValueError("--job-id is not the application's job")
+            job_id = application.job_id
+        assert job_id is not None
+        return applications.get_job(job_id)
+
+
 def job_from_listing(listing: JobListing) -> JobRecord:
     url = listing.application_url or listing.posting_url
     if not url:
@@ -61,9 +79,12 @@ def job_from_listing(listing: JobListing) -> JobRecord:
 
 async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question: str,
                         purpose: Literal["answer", "cover_letter"], env_file: Path,
-                        connection_file: Path, max_usd: float = 1.0) -> dict[str, Any]:
-    """A synthetic, local question for drafting, never a browser-ready inspection."""
-    budget = CallBudget(max_calls=24, max_usd=max_usd)
+                        connection_file: Path, max_usd: float = 5.0) -> dict[str, Any]:
+    """A synthetic, local question for drafting, never a browser-ready inspection. The fixed
+    budget covers a cover letter's whole round-6 flow: its rubric review and corrective
+    rewrites, the story passages' review and up to three reviewed no-slop rewrites (limits on
+    reservations, which are upper bounds; the receipt records the actual cost)."""
+    budget = CallBudget(max_calls=80, max_usd=max_usd)
     router, resolver = build_ai_runtime(env_file=env_file,
         writer_model="anthropic/claude-opus-5.5", budget=budget,
         rag_connection_file=connection_file)
@@ -111,6 +132,9 @@ def main() -> int:
     parser.add_argument("--connection-file", type=Path)
     parser.add_argument("--file", type=Path, help="Confirmed fact JSON or a style-only text sample")
     parser.add_argument("--listing-file", type=Path, help="Stored JobListing JSON with source provenance")
+    parser.add_argument("--application-id", help="draft: take the target job record (employer, title, URL) "
+                                                 "from this application, as the runner does")
+    parser.add_argument("--job-id", help="draft: take the target job record from the application store")
     parser.add_argument("--question")
     parser.add_argument("--cover-letter", action="store_true")
     parser.add_argument("--output", type=Path, help="New private draft receipt JSON; text saved beside it")
@@ -174,11 +198,16 @@ def main() -> int:
             result = knowledge.index_voice(candidate.id, text,
                 "voice:" + hashlib.sha256(text.encode()).hexdigest())
         else:
-            if not args.listing_file:
-                raise ValueError("--listing-file is required")
-            listing = JobListing.model_validate(read_json(args.listing_file))
-            job = job_from_listing(listing)
+            from_store = args.command == "draft" and bool(args.application_id or args.job_id)
+            if not args.listing_file and not from_store:
+                raise ValueError("--listing-file is required" + ("" if args.command != "draft"
+                                 else " (or --application-id / --job-id)"))
+            listing = JobListing.model_validate(read_json(args.listing_file)) if args.listing_file else None
+            job = (job_from_store(LocalPaths.from_env(home=args.home), application_id=args.application_id,
+                                  job_id=args.job_id)
+                   if from_store else job_from_listing(listing))  # type: ignore[arg-type]
             if args.command == "index-job":
+                assert listing is not None
                 if not listing.description or listing.description_completeness.value != "FULL":
                     raise ValueError("Index a full observed job description before drafting")
                 result = knowledge.index_job(candidate.id, job, listing.description, listing.source_url)
@@ -193,6 +222,7 @@ def main() -> int:
                 result = asyncio.run(prepare_draft(candidate=candidate, job=job, question=question,
                     purpose="cover_letter" if args.cover_letter else "answer",
                     env_file=args.env_file, connection_file=args.connection_file))
+                result["job_source"] = "application_store" if from_store else "listing"
                 args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 write_json_private(args.output, result)
                 if result["text"]:
