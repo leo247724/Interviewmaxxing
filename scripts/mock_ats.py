@@ -202,6 +202,21 @@ class Field:
     radio group is answered: the page then marks it required (an asterisk after its
     question, ``required`` and ``aria-required``) the moment an option there is chosen,
     and the server requires it only when that group was posted (``revealed_fields``)."""
+    fabric_id: int | None = None
+    """A BambooHR (Fabric UI) text field: its DOM id, and its label's ``for``, is the
+    generated ``FabricTextField-<n>``, and FABRIC_JS mounts every such field again under the
+    next free numbers, value kept, whenever a Yes/No of the form is answered (a React
+    re-render with new keys)."""
+    unnamed: bool = False
+    """Rendered without a ``name`` (BambooHR's "Date Available"): nothing is posted, so the
+    server neither requires nor records it, and a runtime knows the question by its
+    generated DOM id."""
+    reveal_hint: str | None = None
+    """Help text this question's own block shows once its follow-up questions are revealed
+    (Greenhouse's Hispanic/Latino question once the race question shows)."""
+    lazy: bool = False
+    """Rendered by page script only once its block scrolls into view (Teamtailor renders its
+    custom questions late): until then the form holds an empty placeholder there."""
     placeholder: str | None = None
     """What a pcty_select shows while it holds no value ("Select a state")."""
     suggestions: tuple[str, ...] = ()
@@ -237,6 +252,9 @@ class Field:
             "reveals": [r.describe() for r in self.reveals],
             "reveals_on": self.reveals_on,
             "required_after": self.required_after,
+            "fabric_id": self.fabric_id,
+            "unnamed": self.unnamed,
+            "lazy": self.lazy,
         }
 
 
@@ -688,6 +706,52 @@ BH_ONSITE = Field(
     "radio",
     options=_options(("Yes", "Yes"), ("No", "No")),
 )
+BH_STREET = Field("streetAddress.value", "Address", "text", True, fabric_id=48)
+BH_CITY = Field("city.value", "City", "text", True, fabric_id=49)
+BH_ZIP = Field("zip.value", "ZIP", "text", True, fabric_id=50)
+BH_DATE_AVAILABLE = Field("date_available", "Date Available", "text", fabric_id=51, unnamed=True,
+                          placeholder="mm/dd/yyyy")
+"""BambooHR's "Date Available": a Fabric text field without a name (known by its generated id)."""
+BH_SPONSORSHIP_ASKED = Field(
+    "customQuestionAnswers.yes_no_2102",
+    "Will you now or will you in the future require employment visa sponsorship?",
+    "radio",
+    True,
+    _options(("Yes", "Yes"), ("No", "No")),
+)
+GH_EEO_AUTHORIZED = Field(
+    "question_7001", "Are you legally authorized to work in the United States?", "select", True,
+    _options(("1", "Yes"), ("0", "No")),
+)
+GH_EEO_GENDER = Field(
+    "gender", "Gender", "select",
+    options=_options(("1", "Male"), ("2", "Female"), ("3", "Decline To Self Identify")),
+)
+GH_EEO_RACE = Field(
+    "race", "Please identify your race", "select",
+    options=_options(
+        ("1", "American Indian or Alaskan Native"), ("2", "Asian"), ("3", "Black or African American"),
+        ("4", "White"), ("5", "Native Hawaiian or Other Pacific Islander"), ("6", "Two or More Races"),
+        ("7", "Decline To Self Identify"),
+    ),
+)
+GH_EEO_HISPANIC = Field(
+    "hispanic_ethnicity", "Are you Hispanic/Latino?", "select",
+    options=_options(("Yes", "Yes"), ("No", "No"), ("Decline To Self Identify", "Decline To Self Identify")),
+    reveals=(GH_EEO_RACE,),
+    reveals_on="No",
+    reveal_hint="Race and ethnicity categories are those the U.S. Equal Employment Opportunity "
+                "Commission defines.",
+)
+"""Greenhouse: "No" shows the race question right after it and a definitions hint in its block."""
+GH_EEO_VETERAN = Field(
+    "veteran_status", "Veteran Status", "select",
+    options=_options(("1", "I am not a protected veteran"),
+                     ("2", "I identify as one or more of the classifications of a protected veteran"),
+                     ("3", "I don't wish to answer")),
+)
+TT_LINKEDIN = Field("candidate[answers_attributes][0][text]", "Linkedin profile", "text", True, lazy=True)
+"""Teamtailor: a custom question rendered only once it scrolls into view."""
 BH_STATE = Field("state.value", "State", "fab_select", True,
                  _options(*((str(i + 1), name) for i, name in enumerate(US_STATE_NAMES))),
                  dom_id="fab-select341", clearable=True, display="ids")
@@ -887,6 +951,9 @@ class Job:
     Next control, then the final review); every step uses the step flow."""
     next_id: str | None = None
     """Element id of the step form's Next control (Paylocity's ``btn-submit``)."""
+    description_px: int = 0
+    """Height of a job description shown above the application form on its page, so the
+    form starts below the fold (Teamtailor's apply page)."""
     formless: bool = False
     """The questions are not in a <form>: page script posts them (a Rippling-style SPA)."""
     autofill: bool = False
@@ -1307,6 +1374,48 @@ JOBS: dict[str, Job] = {
             "answer was posted. No question appears or disappears.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, BH_AUTHORIZED, BH_SPONSORSHIP_ONCE, BH_IN_AUSTIN,
                     BH_ONSITE),
+        ),
+        Job(
+            "bamboohr-churn",
+            "BWA-BH-184",
+            "Paid Media Manager",
+            "Marketing",
+            "Austin, TX (Hybrid)",
+            "A BambooHR-style form whose Fabric text fields (Address, City, ZIP and the unnamed "
+            "\"Date Available\") carry generated ids FabricTextField-<n>: answering either Yes/No "
+            "mounts them all again under new ids, values kept, as a React re-render with new keys "
+            "does. \"Date Available\" comes after the two Yes/No questions and has no name, so a "
+            "runtime knows it only by its generated id; nothing posts it.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, BH_STREET, BH_CITY, BH_ZIP, BH_AUTHORIZED,
+                    BH_SPONSORSHIP_ASKED, BH_DATE_AVAILABLE),
+        ),
+        Job(
+            "greenhouse-eeo",
+            "BWA-GH-130",
+            "Marketing Operations Manager",
+            "Marketing",
+            "Remote (United States)",
+            "A Greenhouse-style form whose voluntary self-identification block follows the custom "
+            "question: Gender, \"Are you Hispanic/Latino?\" and Veteran Status (native selects). "
+            "Choosing \"No\" for Hispanic/Latino mounts \"Please identify your race\" right after it "
+            "and adds a definitions hint to the Hispanic/Latino question's own block (its help text); "
+            "the server records the race answer only when \"No\" was posted.",
+            _single(FIRST_NAME, LAST_NAME, EMAIL, GH_EEO_AUTHORIZED, GH_EEO_GENDER, GH_EEO_HISPANIC,
+                    GH_EEO_VETERAN),
+        ),
+        Job(
+            "teamtailor-late",
+            "BWA-TT-172",
+            "Demand Generation Director",
+            "Marketing",
+            "New York, NY (Hybrid)",
+            "A Teamtailor-style apply page: a tall job description, then the form, whose first "
+            "question, the required custom question \"Linkedin profile\" "
+            "(candidate[answers_attributes][0][text]), is an empty placeholder until it scrolls into "
+            "view; then LAZY_JS renders it. A runtime that only reads the page never sees it; filling "
+            "the first fields brings it into view.",
+            _single(TT_LINKEDIN, FIRST_NAME, LAST_NAME, EMAIL, PHONE),
+            description_px=2400,
         ),
         Job(
             "paylocity-address",
@@ -1970,8 +2079,8 @@ def validate(
     files: dict[str, Upload | dict[str, Any]] = {}
     errors: dict[str, str] = {}
     for f in fields:
-        if f.disabled:
-            continue  # browsers never submit disabled controls
+        if f.disabled or f.unnamed:
+            continue  # browsers never submit disabled or unnamed controls
         if f.kind in FILE_KINDS:
             attached = [u for u in uploads.get(f.name, []) if u.filename]
             if attached:
@@ -3661,18 +3770,32 @@ REVEAL_JS = r"""(function () {
     var on = template.getAttribute("data-reveals-on") || "";
     var first = template.content.querySelector("[id]");
     var mounted = [];
+    // data-reveal-hint: help text the trigger's own block (right before the template)
+    // shows while the follow-ups are shown (Greenhouse's Hispanic/Latino question).
+    var hintText = template.getAttribute("data-reveal-hint") || "";
+    var block = template.previousElementSibling;
+    var hint = null;
     function shown() { return !!(first && document.getElementById(first.id)); }
     function mount() {
       if (shown()) return;
       var fragment = template.content.cloneNode(true);
       mounted = Array.prototype.slice.call(fragment.childNodes);
       template.parentNode.insertBefore(fragment, template.nextSibling);
+      if (hintText && block && !hint) {
+        hint = document.createElement("p");
+        hint.className = "hint";
+        hint.setAttribute("data-revealed-hint", "");
+        hint.textContent = hintText;
+        block.appendChild(hint);
+      }
       mock.reveals++;
       mock.log.push({t: Math.round(performance.now()), event: "reveal", detail: name});
     }
     function unmount() {
       mounted.forEach(function (node) { if (node.parentNode) node.parentNode.removeChild(node); });
       mounted = [];
+      if (hint && hint.parentNode) hint.parentNode.removeChild(hint);
+      hint = null;
     }
     function triggers(value) { return on === "" || value === on; }
     Array.prototype.forEach.call(document.querySelectorAll('input[name="' + CSS.escape(name) + '"]'), function (radio) {
@@ -3682,6 +3805,14 @@ REVEAL_JS = r"""(function () {
         else unmount();
       });
       if (radio.checked && triggers(radio.value)) mount();
+    });
+    // A select triggers them too (Greenhouse: "No" to Hispanic/Latino shows the race question).
+    Array.prototype.forEach.call(document.querySelectorAll('select[name="' + CSS.escape(name) + '"]'), function (select) {
+      select.addEventListener("change", function () {
+        if (select.value && triggers(select.value)) { if (delay) setTimeout(mount, delay); else mount(); }
+        else unmount();
+      });
+      if (select.value && triggers(select.value)) mount();
     });
   });
   // BambooHR-style conditional requiredness: a question [data-required-after=<group>]
@@ -3709,6 +3840,61 @@ REVEAL_JS = r"""(function () {
       radio.addEventListener("change", function () { if (radio.checked) mark(); });
       if (radio.checked) mark();
     });
+  });
+})();"""
+
+
+FABRIC_JS = r"""(function () {
+  "use strict";
+  // BambooHR (Fabric UI): text fields carry generated ids (FabricTextField-<n>, one
+  // page-wide counter) that a React re-render with new keys hands out afresh. Answering a
+  // Yes/No mounts every such field again under the next free numbers, value kept, its
+  // label's for following it. window.__mock.rerenders counts the re-renders.
+  var mock = window.__mock = window.__mock || {log: []};
+  mock.rerenders = 0;
+  var next = 0;
+  Array.prototype.forEach.call(document.querySelectorAll("input[data-fabric]"), function (input) {
+    next = Math.max(next, parseInt(input.id.split("-").pop(), 10) + 1);
+  });
+  function remount() {
+    Array.prototype.forEach.call(document.querySelectorAll("input[data-fabric]"), function (old) {
+      var label = document.querySelector('label[for="' + CSS.escape(old.id) + '"]');
+      var fresh = old.cloneNode(false);
+      fresh.id = "FabricTextField-" + (next++);
+      fresh.value = old.value;
+      if (label) label.htmlFor = fresh.id;
+      old.replaceWith(fresh);
+    });
+    mock.rerenders++;
+    mock.log.push({t: Math.round(performance.now()), event: "rerender"});
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[type="radio"]'), function (radio) {
+    radio.addEventListener("change", function () { if (radio.checked) remount(); });
+  });
+})();"""
+
+LAZY_JS = r"""(function () {
+  "use strict";
+  // Teamtailor renders its custom questions late: a question's block is an empty
+  // placeholder until it scrolls into view, then its template is mounted in place.
+  // window.__mock.lazyMounts counts the mounts.
+  var mock = window.__mock = window.__mock || {log: []};
+  mock.lazyMounts = 0;
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      var block = entry.target;
+      var template = block.querySelector("template[data-lazy-question]");
+      observer.unobserve(block);
+      if (!template) return;
+      block.replaceChildren(template.content.cloneNode(true));
+      block.removeAttribute("style");
+      mock.lazyMounts++;
+      mock.log.push({t: Math.round(performance.now()), event: "lazy-mount"});
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-lazy-block]"), function (block) {
+    observer.observe(block);
   });
 })();"""
 
@@ -4742,6 +4928,19 @@ def _job_heading(job: Job) -> str:
     )
 
 
+def _job_description(job: Job) -> str:
+    """A job description tall enough (``Job.description_px``) that the form below it
+    starts below the fold."""
+    return (
+        f'<section class="job-description" style="min-height:{job.description_px}px">'
+        "<h2>About the role</h2><p>Brambleway Analytics is looking for someone to own pipeline "
+        "generation across paid, organic and partner channels. You will build the demand "
+        "engine with sales and product marketing and report on what it brings in.</p>"
+        "<h2>Hiring process</h2><ol><li>Conversation with the hiring manager</li>"
+        "<li>Case study</li><li>Reference check and offer</li></ol></section>"
+    )
+
+
 def _json_island(element_id: str, payload: Any) -> str:
     """Page-script configuration in an inert ``application/json`` script element. Markup
     characters are escaped, so embedded route content never reads as tags in the raw HTML."""
@@ -5119,12 +5318,32 @@ def _field_layout(job: Job, blocks: list[tuple[Field, str]]) -> str:
     return joined
 
 
+def _reveals_template(f: Field, fid: str, values: dict[str, list[str]]) -> str:
+    """A radio group's or select's follow-up questions, inert until REVEAL_JS mounts them
+    after its block (with ``reveal_hint`` added to the block itself)."""
+    if not f.reveals:
+        return ""
+    on = f' data-reveals-on="{esc(f.reveals_on)}"' if f.reveals_on else ""
+    hint = f' data-reveal-hint="{esc(f.reveal_hint)}"' if f.reveal_hint else ""
+    return (
+        f'<template id="{fid}-reveals" data-reveals-for="{esc(f.name)}"{on}{hint}>'
+        + "".join(render_field(r, values, None) for r in f.reveals)
+        + "</template>"
+    )
+
+
 def render_field(
     f: Field,
     values: dict[str, list[str]],
     error: str | None,
     retained: dict[str, Any] | None = None,
 ) -> str:
+    if f.lazy:
+        # Teamtailor renders the question late: LAZY_JS mounts it once its (empty)
+        # placeholder scrolls into view.
+        inner = render_field(replace(f, lazy=False), values, error, retained)
+        return (f'<div class="lazy-block" data-lazy-block style="min-height:3rem">'
+                f"<template data-lazy-question>{inner}</template></div>")
     if f.widget:
         return render_widget(f, values, error)
     if f.kind in UPLOADER_KINDS:
@@ -5161,6 +5380,16 @@ def render_field(
 
     if f.kind in ("text", "email", "tel", "url"):
         auto = f' autocomplete="{f.autocomplete}"' if f.autocomplete else ""
+        if f.fabric_id is not None:
+            # BambooHR's Fabric text field: a generated id FABRIC_JS hands out afresh.
+            dom = f"FabricTextField-{f.fabric_id}"
+            name = "" if f.unnamed else f' name="{f.name}"'
+            placeholder = f' placeholder="{esc(f.placeholder)}"' if f.placeholder else ""
+            return (
+                f'<div class="field fab-TextField"><label for="{dom}">{esc(f.label)}{marker}</label>'
+                f'{hint}{err}<input type="{f.kind}" id="{dom}"{name} data-fabric value="{esc(current)}"'
+                f"{placeholder}{auto}{required}{aria}></div>"
+            )
         control = (
             f'<input type="{f.kind}" id="{fid}" name="{f.name}" value="{esc(current)}"'
             f"{auto}{required}{aria}>"
@@ -5186,7 +5415,8 @@ def render_field(
             + "".join(opts)
             + "</select>"
         )
-        return f'<div class="field">{label}{hint}{err}{control}</div>'
+        block = f'<div class="field">{label}{hint}{err}{control}</div>'
+        return block + _reveals_template(f, fid, values)
 
     if f.kind in ("radio", "checkbox_group"):
         input_type = "radio" if f.kind == "radio" else "checkbox"
@@ -5213,15 +5443,7 @@ def render_field(
             + "".join(choices)
             + "</fieldset>"
         )
-        if f.reveals:
-            # The follow-up questions, inert until REVEAL_JS mounts them after this block.
-            on = f' data-reveals-on="{esc(f.reveals_on)}"' if f.reveals_on else ""
-            group += (
-                f'<template id="{fid}-reveals" data-reveals-for="{esc(f.name)}"{on}>'
-                + "".join(render_field(r, values, None) for r in f.reveals)
-                + "</template>"
-            )
-        return group
+        return group + _reveals_template(f, fid, values)
 
     if f.kind == "checkbox":
         checked = " checked" if current == "yes" else ""
@@ -6043,6 +6265,10 @@ class Handler(BaseHTTPRequestHandler):
             form_html += f"<script>{WIDGETS_JS}</script>"
         if any(f.reveals or f.required_after for f in fields):
             form_html += f"<script>{REVEAL_JS}</script>"
+        if any(f.fabric_id is not None for f in fields):
+            form_html += f"<script>{FABRIC_JS}</script>"
+        if any(f.lazy for f in fields):
+            form_html += f"<script>{LAZY_JS}</script>"
         if job.formless:
             form_html += f"<script>{FORMLESS_JS}</script>"
         if job.validity:
@@ -6059,6 +6285,8 @@ class Handler(BaseHTTPRequestHandler):
             form_html = render_delayed(form_html)
         # Jobvite's apply page names the job by its title only (no job id on the page).
         heading = f"<h2>{esc(job.title)}</h2>" if job.data_consent else _job_heading(job)
+        if job.description_px:
+            heading += _job_description(job)
         body = heading + render_error_summary(entries) + form_html
         if job.flash_closed and status == HTTPStatus.OK:
             body = render_flash_closed(body)

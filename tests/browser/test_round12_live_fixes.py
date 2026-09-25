@@ -176,7 +176,7 @@ def test_a_choice_that_makes_a_question_required_is_inspected_again_not_failed(
             result = await browser.fill(form, kit.build(form, YES_NO).packet)
             assert result.failed_field_ids() == [], result.fields
             [error] = result.page_errors
-            assert "1 question(s) ('Will you now or will you in the future require" in error, error
+            assert "1 question(s) (Will you now or will you in the future require" in error, error
             assert "became required after the answer to 'Are you legally authorized" in error, error
             assert "inspect this step and resolve it again" in error
             assert "changed while filling" not in error

@@ -406,6 +406,59 @@ BambooHR and an embedded Greenhouse form. Mocks `paylocity-address` and
   detail "the site formats it as '(303) 555-0142'". Other digits are still a mismatch.
   The end-of-fill sweep compares the same way, so a formatted number is not typed again.
 
+## Round 13: forms that re-render while being filled
+
+Retry six failed four fills on pages that re-render after a value is set; the fill guard
+read each as a changed form. Round 12's failure details named what changed, and each shape
+is now a mock (`bamboohr-churn`, `greenhouse-eeo`, `teamtailor-late`; tests
+`tests/browser/test_round13_rerenders.py`, including a preparation-only run of the runner
+on each that ends at the final review step).
+
+- **Generated ids that churn (BambooHR, Zinda 881 and 891).** Once a Yes/No is answered,
+  BambooHR mounts its Fabric text fields again under new generated ids: "Date Available"
+  (no name, so its field id is its DOM id) went from `FabricTextField-68` to `-355`, and
+  Address, City and ZIP kept their names with new selectors. A question matched by id on
+  neither side is the same question when it is the same occurrence of the same wording,
+  placeholder, control and options after the same question matched by id
+  (`_renamed_questions`). The fill guard always reads the page with such questions under
+  the ids the fill knows them by, so the re-render is a re-render: the next write goes
+  through the re-resolved control ("Date Available" is typed into its new element), and a
+  step whose ids churned after the fill is not "changed since the fill" for `advance`,
+  `submit` or `prepare_review` (only selectors or generated ids differ). The runner still
+  resolves the step once more when the packet's form fingerprint no longer matches the ids
+  on the page.
+- **Follow-up changes do not stop the fill.** When the only differences from the structure
+  the fill writes against are follow-up changes, that structure takes them in and the fill
+  goes on with the approved answers (round 11 stopped at once):
+  - unanswered questions that appeared anywhere, after a choice (Greenhouse shows "Please
+    identify your race" right after "Are you Hispanic/Latino?" once "No" is chosen) or
+    whatever was written last (Teamtailor renders its "Linkedin profile" question only once
+    it scrolls into view, while the first answers are typed);
+  - right after a choice this fill made, and only then: questions that became required or
+    optional, and a question whose help text changed (Greenhouse's Hispanic/Latino
+    question gains a definitions hint with the race question).
+  The readback of the step then reports the new questions `SKIPPED` ("appeared while
+  filling (Please identify your race); answered once this step is resolved again") and
+  asks for a fresh inspection ("1 question(s) appeared (Please identify your race) and 1
+  question(s) (Are you Hispanic/Latino?) changed their help text after the answer to 'Are
+  you Hispanic/Latino?'; inspect this step and resolve it again before continuing"); the
+  runner resolves the step again, and the second fill answers them. When a choice changes
+  the requiredness or help text of a question not written yet (round 12's sponsorship
+  question), the fill stops there for that inspection instead: that answer is not written.
+- **Still a changed page, never written through:** a question that appears already
+  answered (a pre-checked attestation), a reworded, removed or moved question, a changed
+  option, length limit or type, requiredness or help text that changes after a typed
+  answer (the page must not re-word a later question between our writes), and changed
+  actions or employer context. The comparison leaves out the text before each control
+  (`DomControl.preceding`: a question inserted before it replaces it; a label drawn from it
+  is compared as the question's wording), requiredness and the changed questions' own
+  controls. The failure names what changed, and a question that appeared by its wording:
+  "changed while filling (appeared: #1 candidate[answers_attributes][0][text] (Linkedin
+  profile); changed: #4 email (wording))"; the question itself is reported "appeared or
+  changed while filling (Linkedin profile); not answered by this packet".
+- **Uploads.** An uploader's later re-render (Greenhouse) is compared with the structure the
+  fill writes against now, follow-up questions it took in included.
+
 ## Uploads, autofill overlays and readback
 
 Hosted forms upload through styled controls and react to the upload: Ashby and Lever parse
@@ -463,6 +516,8 @@ without site adapters:
   fill as before ("questions, bindings, actions, or employer context changed while filling";
   the remaining answers are not attempted). Mock: `bamboohr-conditional`. Round 12 sends
   questions a choice makes required or optional down the same path (`bamboohr-required`).
+  Round 13 lets the fill go on past a reveal with the approved answers and treats
+  unanswered questions that appear after a typed answer alike (see "Round 13").
 - **Question text of upload controls** leaves out the trigger ("ATTACH RESUME/CV"), file
   chips, sizes and upload/parse status, and a label that only says "Attach" yields to the
   group's question ("Resume/CV"), so an upload does not change the field's fingerprint and a

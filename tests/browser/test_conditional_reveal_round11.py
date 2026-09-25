@@ -8,6 +8,12 @@ approved), the fill stops with a re-inspect page error, nothing is reported fail
 answered choice stays answered, and the runner inspects and resolves the step again.
 Everything else still stops as before.
 
+Round 13: the fill no longer stops at the reveal. The approved questions are all still
+there, so their answers are written (the Austin question too); the follow-ups are then
+reported as not yet attempted and the step is inspected and resolved again. Questions that
+appear after a typed answer are treated the same (Teamtailor renders one late), unless
+they arrive already answered.
+
 Real headless Chromium against the local mock ATS (``bamboohr-conditional``); nothing
 is submitted."""
 
@@ -86,25 +92,26 @@ def test_a_choice_that_reveals_follow_up_questions_halts_for_re_inspection_and_k
             assert [f.id for f in form.fields] == INITIAL
             first = await browser.fill(form, kit.build(form, FIRST).packet)
 
-            # Nothing is reported failed. A synchronous reveal halts the fill right after
-            # the choice: the next question is not attempted and the step asks to be
-            # re-inspected. One that lands a moment later is met by the next write's
-            # freshness check or by the readback of the step (the follow-ups reported as
-            # not yet attempted), or only by the inspection that follows; never a failure.
+            # Nothing is reported failed and every approved answer is written. A synchronous
+            # reveal is met by the next write's freshness check; the follow-ups are reported
+            # as not yet attempted and the step asks to be re-inspected. One that lands a
+            # moment later is met there, by the readback of the step, or only by the
+            # inspection that follows; never a failure.
             assert first.failed_field_ids() == [], first.fields
             statuses = _statuses(first)
-            assert statuses["sponsorship"] is FieldFillStatus.FILLED
-            assert all(statuses[f] is FieldFillStatus.FILLED for f in INITIAL[:-1])
+            assert all(statuses[f] is FieldFillStatus.FILLED for f in INITIAL), statuses
             assert all(statuses[f] is FieldFillStatus.SKIPPED for f in FOLLOW_UPS if f in statuses)
             for error in first.page_errors:
-                assert "2 follow-up question(s)" in error and "appeared after the answer to" in error
+                assert "2 question(s) appeared" in error and "after the answer to" in error
                 assert "inspect this step and resolve it again" in error
                 assert "changed while filling" not in error
             if not query:
-                assert statuses == dict.fromkeys(INITIAL[:-1], FieldFillStatus.FILLED)
-                assert len(first.page_errors) == 1
+                assert statuses == {**dict.fromkeys(INITIAL, FieldFillStatus.FILLED),
+                                    **dict.fromkeys(FOLLOW_UPS, FieldFillStatus.SKIPPED)}
+                [error] = first.page_errors
+                assert "after the answer to 'Will you now or will you in the future require employment" in error
                 assert (await browser.page.evaluate(PAGE_STATE)) == {
-                    "sponsorship": "no", "located": None, "basis": None, "proof": None, "reveals": 1}
+                    "sponsorship": "no", "located": "yes", "basis": None, "proof": None, "reveals": 1}
                 assert browser._active_fill_signature is None
                 with pytest.raises(ValueError, match="inspect it again first"):
                     await browser.fill(form, kit.build(form, FIRST).packet)
@@ -144,7 +151,7 @@ def test_a_reveal_after_the_last_written_choice_is_reported_for_re_inspection_no
             assert statuses["authorization_basis"] is FieldFillStatus.SKIPPED
             assert statuses["authorization_proof"] is FieldFillStatus.SKIPPED
             [error] = result.page_errors
-            assert "2 follow-up question(s)" in error and "inspect this step and resolve it again" in error
+            assert "2 question(s) appeared" in error and "inspect this step and resolve it again" in error
             with pytest.raises(ValueError, match="inspect it again first"):
                 await browser.fill(form, packet)
             revealed = (await browser.inspect()).form
@@ -182,11 +189,13 @@ def test_a_reveal_that_also_rewords_a_question_or_changes_an_action_still_stops(
     kit.run(scenario())
 
 
-def test_a_reveal_after_a_text_write_is_not_tolerated(
+def test_questions_that_appear_after_a_typed_answer_are_inspected_again_too(
     kit: SimpleNamespace, server: Any, options: BrowserOptions
 ) -> None:
-    """Only a choice may reveal follow-ups: questions appearing after a typed value are
-    still a changed page."""
+    """Round 13 (Teamtailor renders a question late, whatever was written last): unanswered
+    questions that appear after a typed value are follow-ups as well. A question that
+    arrives already answered, or a changed existing question, still stops the fill
+    (``test_between_fill_mutations.py``, ``test_review_c4r.py``)."""
     async def scenario() -> None:
         browser = await _open(options, server.url(APPLY))
         try:
@@ -196,9 +205,13 @@ def test_a_reveal_after_a_text_write_is_not_tolerated(
               t.parentNode.insertBefore(t.content.cloneNode(true), t.nextSibling);
             }, {once: true})""")
             result = await browser.fill(form, kit.build(form, FIRST).packet)
-            assert result.failed_field_ids() == ["sponsorship", "located_austin"], result.fields
-            assert any("changed while filling" in e for e in result.page_errors)
-            assert not any("follow-up" in e for e in result.page_errors)
+            assert result.failed_field_ids() == [], result.fields
+            statuses = _statuses(result)
+            assert all(statuses[f] is FieldFillStatus.FILLED for f in INITIAL), statuses
+            assert all(statuses[f] is FieldFillStatus.SKIPPED for f in FOLLOW_UPS), statuses
+            [error] = result.page_errors
+            assert error.startswith("2 question(s) appeared (What is the basis of your current"), error
+            assert "while filling; inspect this step and resolve it again" in error, error
         finally:
             await browser.close()
 

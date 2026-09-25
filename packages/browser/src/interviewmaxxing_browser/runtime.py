@@ -44,6 +44,7 @@ import asyncio
 import contextlib
 import json
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -149,18 +150,146 @@ class _Rebound(Exception):
 
 
 class _ConditionalReveal(PageContextLost):
-    """A choice this fill made revealed follow-up questions or changed which questions are
-    required (conditional fields): the approved questions, their wording, options and
-    bindings, the actions and the employer context all read as before; only *additional*
-    questions appeared or questions became required or optional. Nothing more is
-    written; the step is inspected and resolved again with the answered choice still in
-    place."""
+    """A choice this fill made changed a question it has not written yet: that question
+    became required or optional, or its help text changed (BambooHR marks the sponsorship
+    question required once work authorization is answered). Its approved answer is not
+    written; the fill stops and the step is inspected and resolved again with every answer
+    written so far, the choice included, in place."""
 
 
 def _short_label(label: str, limit: int = 60) -> str:
     """A question's wording as one line, cut for a page error."""
     text = " ".join(label.split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _question_shape(question: ApplicationField) -> tuple[Any, ...]:
+    """What a question is apart from its id, help text and requiredness: its wording,
+    placeholder, control and options (value and label)."""
+    return (normalize_text(question.label), normalize_text(question.placeholder or ""),
+            question.control_type.value,
+            tuple((o.value, normalize_text(o.label)) for o in question.options or []))
+
+
+def _renamed_questions(approved: Sequence[ApplicationField],
+                       fresh: Sequence[ApplicationField]) -> dict[str, str]:
+    """Fresh id -> approved id for the questions a re-render gave another id (a generated
+    DOM id: BambooHR's "Date Available" is ``FabricTextField-68``, then ``-355`` once a
+    Yes/No is answered). Such a question is matched by id on neither side and is the same
+    occurrence of the same shape (``_question_shape``) after the same question matched by
+    id (or from the start): the same place, wording, control and options."""
+    old_ids = {q.id for q in approved}
+    new_ids = {q.id for q in fresh}
+
+    def places(questions: Sequence[ApplicationField], others: set[str]) -> dict[tuple[Any, ...], str]:
+        out: dict[tuple[Any, ...], str] = {}
+        anchor: str | None = None
+        seen: Counter[tuple[Any, ...]] = Counter()
+        for question in questions:
+            if question.id in others:
+                anchor, seen = question.id, Counter()
+                continue
+            shape = _question_shape(question)
+            seen[shape] += 1
+            out[(anchor, shape, seen[shape])] = question.id
+        return out
+
+    old = places(approved, new_ids)
+    return {new_id: old[key] for key, new_id in places(fresh, old_ids).items() if key in old}
+
+
+def _rekeyed_form(form: ApplicationForm, renames: Mapping[str, str]) -> ApplicationForm:
+    if not renames:
+        return form
+    return form.model_copy(update={"fields": [
+        q.model_copy(update={"id": renames.get(q.id, q.id)}) for q in form.fields]})
+
+
+def _rekeyed(model: PageModel, renames: Mapping[str, str]) -> PageModel:
+    """``model`` with renamed questions under the ids the fill knows them by."""
+    if not renames or model.form is None:
+        return model
+    return replace(
+        model,
+        inspection=model.inspection.model_copy(update={"form": _rekeyed_form(model.form, renames)}),
+        bindings={renames.get(k, k): b for k, b in model.bindings.items()},
+        unsupported_pending=[renames.get(k, k) for k in model.unsupported_pending],
+        candidate_fields=[q.model_copy(update={"id": renames.get(q.id, q.id)}) for q in model.candidate_fields],
+    )
+
+
+def _only_questions(model: PageModel, ids: Collection[str]) -> PageModel:
+    """``model`` reduced to the questions ``ids`` (fields and bindings)."""
+    if model.form is None:
+        return model
+    return replace(
+        model,
+        inspection=model.inspection.model_copy(update={"form": model.form.model_copy(update={
+            "fields": [q for q in model.form.fields if q.id in ids]})}),
+        bindings={k: b for k, b in model.bindings.items() if k in ids},
+    )
+
+
+def _own_selectors(binding: FieldBinding) -> set[str]:
+    """Every control a question's binding operates."""
+    return {binding.selector, *binding.option_selectors.values(),
+            *(selector for _, selector in binding.date_segments)}
+
+
+@dataclass(frozen=True)
+class _QuestionDelta:
+    """How the questions of a form step differ from another reading of it, question by
+    question (ids already matched, renamed questions under their known ids)."""
+
+    added: tuple[ApplicationField, ...] = ()
+    removed: tuple[ApplicationField, ...] = ()
+    reworded: tuple[ApplicationField, ...] = ()
+    """Another wording, placeholder, control or option set: another question."""
+    toggled: tuple[ApplicationField, ...] = ()
+    """Became required or optional."""
+    helped: tuple[ApplicationField, ...] = ()
+    """Only its help text changed."""
+    moved: bool = False
+
+    @property
+    def follow_ups(self) -> bool:
+        """Only changes the step can be inspected and resolved again for: questions
+        appeared, became required or optional, or changed their help text."""
+        return (not (self.removed or self.reworded or self.moved)
+                and bool(self.added or self.toggled or self.helped))
+
+    def describe(self) -> str:
+        """The follow-up changes, the questions named by their wording (page text, never
+        an answer)."""
+        def named(questions: Sequence[ApplicationField]) -> str:
+            return "; ".join(_short_label(q.label) or q.id for q in questions)
+
+        parts = []
+        if self.added:
+            parts.append(f"{len(self.added)} question(s) appeared ({named(self.added)})")
+        if self.toggled:
+            now = [q for q in self.toggled if q.required]
+            parts.append(f"{len(self.toggled)} question(s) ({named(self.toggled)}) became "
+                         + ("required" if len(now) == len(self.toggled) else "optional" if not now
+                            else "required or optional"))
+        if self.helped:
+            parts.append(f"{len(self.helped)} question(s) ({named(self.helped)}) changed their help text")
+        return " and ".join(parts)
+
+
+def _question_delta(before: ApplicationForm, after: ApplicationForm) -> _QuestionDelta:
+    known = {q.id: q for q in before.fields}
+    now_ids = {q.id for q in after.fields}
+    kept = [q for q in after.fields if q.id in known]
+    return _QuestionDelta(
+        added=tuple(q for q in after.fields if q.id not in known),
+        removed=tuple(q for q in before.fields if q.id not in now_ids),
+        reworded=tuple(q for q in kept if _question_shape(q) != _question_shape(known[q.id])),
+        toggled=tuple(q for q in kept if q.required != known[q.id].required),
+        helped=tuple(q for q in kept if _question_shape(q) == _question_shape(known[q.id])
+                     and normalize_text(q.help_text or "") != normalize_text(known[q.id].help_text or "")),
+        moved=[q.id for q in kept] != [q.id for q in before.fields if q.id in now_ids],
+    )
 
 
 def _phone_digits(text: str) -> str:
@@ -448,7 +577,7 @@ def _button_identity(button: DomButton) -> str:
 
 def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
                      skip_controls: Collection[str] = (), stable: bool = False,
-                     ignore_required: bool = False) -> str:
+                     ignore_required: bool = False, ignore_preceding: bool = False) -> str:
     """``observation_signature`` as the fill guard compares it. Buttons and the submit and
     next actions count by identity (text, kind, form, request), not by a positional
     selector that shifts when sibling blocks are replaced, and not by whether they are
@@ -457,7 +586,10 @@ def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
     buttons and controls (an uploader's own). New or removed questions, options, labels,
     bindings, actions and navigation still count. ``stable`` also leaves out selectors a
     re-render may regenerate (see ``observation_signature``); ``ignore_required`` also
-    leaves out which controls are required (a requiredness another answer decides)."""
+    leaves out which controls are required (a requiredness another answer decides), and
+    ``ignore_preceding`` the text before each control (``DomControl.preceding``, which a
+    question inserted before it replaces; a label drawn from it is compared as the
+    question's wording instead)."""
     identity = {b.selector: _button_identity(b) for b in model.snapshot.buttons}
     buttons = [b.model_copy(update={"disabled": False, "selector": identity[b.selector]})
                for b in model.snapshot.buttons if b.selector not in skip_buttons]
@@ -472,6 +604,8 @@ def _guard_signature(model: PageModel, *, skip_buttons: Collection[str] = (),
                 for c in controls]
     if ignore_required:
         controls = [c.model_copy(update={"required": False}) if c.required else c for c in controls]
+    if ignore_preceding:
+        controls = [c.model_copy(update={"preceding": ""}) if c.preceding else c for c in controls]
     if stable:
         # Element paths this inspector reports beyond the ones observation_signature
         # leaves out: an option group's box, toggle-button options, an uploader's box.
@@ -668,6 +802,9 @@ class GenericApplicationBrowser:
         self.annotation_document_id: str | None = None
         self._observations: list[tuple[ApplicationForm, str, str]] = []
         self._filled_structure: str | None = None
+        self._filled_stable: str | None = None
+        """``_guard_signature(stable=True)`` of the step as the last fill left it: a later
+        re-render that regenerated only selectors or generated ids is not a change."""
         self._active_fill_signature: str | None = None
         self._steps_advanced = 0
         self._last: PageModel | None = None
@@ -701,7 +838,12 @@ class GenericApplicationBrowser:
         observation, re-read after this runtime's own uploads and re-renders."""
         self._stable_fill_signature: str | None = None
         self._reveal_source: ApplicationField | None = None
-        """The choice control this fill wrote last (see ``_only_follow_ups_changed``)."""
+        """The choice control this fill wrote last (see ``_follow_ups``)."""
+        self._follow_up_after: list[str] = []
+        """Questions whose answers were followed by follow-up changes this fill took in
+        (see ``_follow_ups``), for the page error that asks for a fresh inspection."""
+        self._written_ids: set[str] = set()
+        """Questions this fill has written its answer to (see ``_follow_ups``)."""
         self._attach_needed: dict[tuple[str, str], str] = {}
         """(document, resume field id) -> the pinned file the person has to attach there,
         because none of the resumes the site offers can be used and this session cannot
@@ -1356,6 +1498,8 @@ class GenericApplicationBrowser:
         accepted = current
         await self._set_fill_model(model, form)
         self._reveal_source = None
+        self._follow_up_after = []
+        self._written_ids = set()
         try:
             for app_field in self._fill_order(form, packet):
                 answer = packet.answer_for(app_field.id)
@@ -1376,8 +1520,10 @@ class GenericApplicationBrowser:
                         value = self._national_number(form, packet, app_field.id, value)
                     result, touched = await self._operate(app_field, value)
                     results[app_field.id] = result
-                    # A choice just written may reveal follow-up questions; a later write
-                    # that finds only additional questions halts for a fresh inspection.
+                    if answer is not None:
+                        self._written_ids.add(app_field.id)
+                    # A choice just written may reveal follow-up questions (named in the page
+                    # error that asks for a fresh inspection once the approved answers are in).
                     self._reveal_source = (
                         app_field if answer is not None and app_field.control_type in _CHOICE_CONTROLS
                         and result.status is FieldFillStatus.FILLED else None)
@@ -1389,12 +1535,12 @@ class GenericApplicationBrowser:
                         written[app_field.id] = value.text
                     await self._assert_fill_context()
                 except _ConditionalReveal as exc:
-                    # A choice revealed follow-up questions (nothing else changed). The
-                    # field about to be written is not attempted; the choice stays
-                    # answered, and the step is inspected and resolved again.
+                    # A choice changed a question not written yet (it became required, or
+                    # its help text changed): that answer waits for a fresh inspection; the
+                    # answers written so far, the choice included, stay in place.
                     halted = str(exc)
-                    halt_label, halt_description = "questions-revealed", (
-                        "page after a choice changed its follow-up questions")
+                    halt_label, halt_description = "questions-changed", (
+                        "page after a choice changed a later question")
                 except PageContextLost as exc:
                     # The document or approved questions changed. Every remaining
                     # answer is reported without writing through stale bindings.
@@ -1412,14 +1558,15 @@ class GenericApplicationBrowser:
                     await self._sweep(accepted, written, results)
                 except _ConditionalReveal as exc:
                     halted = str(exc)
-                    halt_label, halt_description = "questions-revealed", (
-                        "page after a choice changed its follow-up questions")
+                    halt_label, halt_description = "questions-changed", (
+                        "page after a choice changed a later question")
                 except PageContextLost as exc:
                     lost = exc
                     self._context_lost = True
                     self._inspected_after_loss = False
                     self.menus.reset()
             structure = self._active_fill_signature or _guard_signature(model)
+            stable_structure = self._stable_fill_signature or _guard_signature(model, stable=True)
         finally:
             self._active_fill_signature = None
             self._stable_fill_signature = None
@@ -1437,10 +1584,10 @@ class GenericApplicationBrowser:
                 page_errors=[f"{lost}; the step must be inspected and resolved again"],
             )
         if halted is not None:
-            # Our own upload changed the step (new questions, other constraints), or a
-            # choice revealed follow-up questions. The file stays attached (it is not
-            # attached again) and the choice stays answered; the rest waits for a fresh
-            # inspection and packet.
+            # Our own upload changed the step (new questions, other constraints), or a choice
+            # changed a question not written yet. The file stays attached (it is not attached
+            # again) and the choice stays answered; the rest waits for a fresh inspection and
+            # packet.
             self._filled = None
             self._context_lost = True
             self._inspected_after_loss = False
@@ -1458,23 +1605,36 @@ class GenericApplicationBrowser:
         # (an attached control's own description may have changed with its file chip).
         self._filled = (form.scope.key, accepted.fingerprint)
         self._filled_structure = structure
+        self._filled_stable = stable_structure
         # Let a passing state from the last write settle before the page is read again.
         await self._settled_model(self._filled_structure)
         label = f"filled-step-{form.step}" if only is None else f"filled-step-{form.step}-again"
-        after = await self._model(evidence=label)
+        after = self._as_fill_ids(await self._model(evidence=label))
         await self._assert_fill_context()
         new_errors = [e for e in (after.form.page_errors if after.form else []) if e not in errors_before]
         if (after.form is None or after.form.fingerprint != accepted.fingerprint
                 or await self._changed_since_fill(after.form)):
-            revealed = self._only_follow_ups_changed(after)
-            ordered.extend(await self._contain_changed_questions(accepted, after, revealed=revealed))
-            if revealed is not None:
-                # The last choice changed the follow-up questions: the step is inspected
-                # and resolved again with every answer, including that choice, in place.
+            base = self._fill_model
+            delta = _question_delta(accepted, after.form) if after.form is not None else None
+            as_base = base is not None and (
+                _guard_signature(after, stable=True) == _guard_signature(base, stable=True)
+                or await self._only_uploads_changed(after))
+            since = None if as_base or base is None else self._follow_ups(after, base)
+            follow_ups = delta is not None and delta.follow_ups and (as_base or since is not None)
+            ordered.extend(await self._contain_changed_questions(accepted, after, follow_ups=follow_ups))
+            if follow_ups and delta is not None:
+                # Follow-up questions appeared, became required or changed their help text
+                # (after a choice, or rendered late): the approved answers are written; the
+                # step is inspected and resolved again with every answer in place.
                 self._filled = None
                 self._context_lost = True
                 self._inspected_after_loss = False
-                new_errors.append(f"{revealed}; inspect this step and resolve it again before continuing")
+                if since is not None and self._reveal_source is not None:
+                    self._follow_up_after.append(self._reveal_source.label)
+                when = (f"after the answer to {_short_label(self._follow_up_after[0])!r}"
+                        if self._follow_up_after else "while filling")
+                new_errors.append(f"{delta.describe()} {when}; inspect this step and resolve it again "
+                                  "before continuing")
             else:
                 new_errors.append(
                     f"questions on this step changed while filling ({self._change_summary(after)}); "
@@ -1589,6 +1749,13 @@ class GenericApplicationBrowser:
         difference confined to the popup the widget owns (its menu or suggestion list and
         that list's own container) is tolerated. Selectors that the mounted popup shifts
         are tolerated as well; the approved observation stays as it is.
+
+        A question a re-render gave another generated id is the same question (see
+        ``_renamed_questions``; the page is always read with it under its known id). Follow-up
+        changes (``_follow_ups``: questions that appeared anywhere, questions that became
+        required or optional, a question's changed help text) become the structure the fill
+        writes against, and the fill goes on with the approved answers; the readback of the
+        step then asks for it to be inspected and resolved again.
         Anything else aborts the fill.
         """
         await self._assert_fill_context()
@@ -1623,17 +1790,36 @@ class GenericApplicationBrowser:
             # Ashby mounts a lookup's suggestion list in a portal of its own while it is
             # operated: the page returns to the approved observation once it closes.
             return False
-        revealed = self._only_follow_ups_changed(fresh)
-        if revealed is not None:
-            # BambooHR shows follow-up questions, or marks one required, once a Yes/No is
-            # chosen: not a lost context but a step to inspect and resolve again, the
-            # choice kept.
-            raise _ConditionalReveal(revealed)
+        base = self._fill_model
+        follow_ups = self._follow_ups(fresh, base) if base is not None else None
+        if follow_ups is not None and base is not None:
+            changed_later = [q for q in (*follow_ups.toggled, *follow_ups.helped) if q.id not in self._written_ids]
+            if changed_later and self._reveal_source is not None:
+                # BambooHR marks the sponsorship question required once work authorization is
+                # answered: its answer waits for a fresh inspection of the step.
+                raise _ConditionalReveal(
+                    f"{follow_ups.describe()} after the answer to {_short_label(self._reveal_source.label)!r}")
+            if widget is None or self._still_bound(widget, base, fresh):
+                # BambooHR and Greenhouse show follow-up questions once a Yes/No is chosen,
+                # and Teamtailor renders a question late: the approved questions are all still
+                # there, so their answers are written; the step is inspected and resolved
+                # again once they are.
+                if self._reveal_source is not None:
+                    self._follow_up_after.append(self._reveal_source.label)
+                await self._set_fill_model(fresh)
+                return rebind
         raise PageContextLost(
             "questions, bindings, actions, or employer context changed while filling "
             f"({self._change_summary(fresh)}); remaining answers were not attempted; "
             "re-inspect and resolve again"
         )
+
+    @staticmethod
+    def _still_bound(widget: str, base: PageModel, fresh: PageModel) -> bool:
+        """The control being operated is still bound where it was, to the same question."""
+        field_id = next((k for k, b in base.bindings.items() if b.selector == widget), None)
+        binding = fresh.bindings.get(field_id) if field_id is not None else None
+        return binding is not None and binding.selector == widget
 
     async def _check_before_action(self, widget: str | None = None) -> None:
         """The freshness check between the steps of one widget operation (opening a
@@ -1684,19 +1870,24 @@ class GenericApplicationBrowser:
                 return fresh
             await asyncio.sleep(0.15)
             await self._assert_fill_context()
-            try:
-                fresh = await self._raw_model()
-            except DriverError as exc:
-                raise PageContextLost(
-                    "cannot re-observe field constraints before writing; re-inspect before continuing"
-                ) from exc
+            fresh = await self._fresh_model()
             if _guard_signature(fresh) == self._active_fill_signature:
                 return fresh
 
+    def _as_fill_ids(self, model: PageModel) -> PageModel:
+        """``model`` with the questions a re-render gave another generated id under the
+        ids the fill (then the last fill) knows them by (``_renamed_questions``)."""
+        base = self._fill_model
+        if (base is None or base.form is None or model.form is None
+                or model.form.scope.key != base.form.scope.key):
+            return model
+        return _rekeyed(model, _renamed_questions(base.form.fields, model.form.fields))
+
     async def _fresh_model(self) -> PageModel:
-        """The page as the fill guard sees it now (probed menus and own uploads kept)."""
+        """The page as the fill guard sees it now (probed menus and own uploads kept,
+        renamed questions under their known ids)."""
         try:
-            return await self._raw_model()
+            return self._as_fill_ids(await self._raw_model())
         except DriverError as exc:
             raise PageContextLost(
                 "cannot re-observe field constraints before writing; re-inspect before continuing"
@@ -1762,12 +1953,14 @@ class GenericApplicationBrowser:
         containers of this runtime's uploads (their Attach and cloud buttons replaced by
         the file's name and a Remove button, the file input gone) and in where page
         actions sit, while every question, option set and control binding is as
-        approved. An upload's widget may re-render seconds after the attach."""
-        approved, form = self._fill_model, self._fill_form
+        approved. An upload's widget may re-render seconds after the attach. The questions
+        are those the fill writes against now (follow-up questions it took in included)."""
+        approved = self._fill_model
         anchors = self._upload_anchors(fresh)
-        if approved is None or form is None or not anchors or fresh.form is None:
+        if approved is None or approved.form is None or not anchors or fresh.form is None:
             return False
-        if not _same_questions(form, fresh.form) or _binding_shape(fresh.bindings) != self._fill_bindings:
+        if (not _same_questions(approved.form, fresh.form)
+                or _binding_shape(fresh.bindings) != self._fill_bindings):
             return False
         uploaded = {u.binding.selector for u in self._uploads.values()
                     if u.document == fresh.snapshot.document}
@@ -1777,70 +1970,68 @@ class GenericApplicationBrowser:
                                  skip_controls=uploaded | self._uploader_helpers)
                 == _guard_signature(fresh, skip_buttons=inside, skip_controls=uploaded | helpers))
 
-    def _only_follow_ups_changed(self, fresh: PageModel) -> str | None:
-        """Why ``fresh`` is the approved step as a choice of this fill changed its follow-up
-        questions (conditional fields), or None when it is anything else: additional
-        questions appeared (BambooHR's follow-ups) or questions became required or optional
-        (BambooHR marks the sponsorship question required once work authorization is
-        answered). Every approved question is still shown, in its order, with the same
-        wording, options and binding shape; the actions and the employer context read as
-        approved (``_guard_signature`` with the revealed questions' own controls left out,
-        requiredness aside); and the control written last was a choice
-        (``_CHOICE_CONTROLS``) that was filled. A reworded or removed question, a changed
-        action or a change after a text write is never a follow-up change."""
-        approved, form, source = self._fill_model, self._fill_form, self._reveal_source
-        if approved is None or form is None or source is None or fresh.form is None:
+    def _follow_ups(self, fresh: PageModel, base: PageModel) -> _QuestionDelta | None:
+        """How ``fresh`` (renamed questions under their known ids) differs from ``base``
+        when it is only follow-up changes (``_QuestionDelta.follow_ups``), or None:
+
+        - questions appeared anywhere, unanswered (BambooHR's and Greenhouse's conditional
+          follow-ups; Teamtailor's question rendered late); one that appeared with a box
+          already checked (a pre-checked attestation) is a changed page;
+        - right after a choice this fill made (``_reveal_source``) and only then, questions
+          became required or optional or a question's help text changed (Greenhouse's
+          Hispanic/Latino question once the race question shows); after a typed answer that
+          is a changed question.
+
+        Every question of ``base`` is still shown, in its order, with the same wording,
+        placeholder, control and options, and the actions, the employer context and every
+        other control read as in ``base`` once the changed questions' own controls are left
+        out (requiredness aside). A reworded, removed or moved question, changed actions or
+        context are never follow-up changes."""
+        if fresh.form is None or base.form is None or fresh.form.scope.key != base.form.scope.key:
             return None
-        if fresh.form.scope.key != form.scope.key:
+        delta = _question_delta(base.form, fresh.form)
+        if not delta.follow_ups:
             return None
-        known = {f.id: f for f in form.fields}
-        added = [f for f in fresh.form.fields if f.id not in known]
-        kept = [f for f in fresh.form.fields if f.id in known]
-        if [f.id for f in kept] != [f.id for f in form.fields]:
+        if any((b := fresh.bindings.get(q.id)) is None or b.checked_values for q in delta.added):
+            # A question that appeared with a box already checked (a pre-checked attestation)
+            # was answered by the page, not by the person: a changed page.
             return None
-        if any(known[f.id].fingerprint != f.fingerprint for f in kept):
+        if (delta.toggled or delta.helped) and self._reveal_source is None:
+            # Requiredness and help text change only in answer to a choice this fill made;
+            # after a typed answer they are a changed question.
             return None
-        toggled = [f for f in kept if f.required != known[f.id].required]
-        if not added and not toggled:
-            return None
-        own: set[str] = set()
-        for new in added:
-            binding = fresh.bindings.get(new.id)
+        own_fresh: set[str] = set()
+        for question in (*delta.added, *delta.helped):
+            binding = fresh.bindings.get(question.id)
             if binding is None:
                 return None
-            own.add(binding.selector)
-            own.update(binding.option_selectors.values())
-        reduced = replace(
-            fresh,
-            inspection=fresh.inspection.model_copy(update={
-                "form": fresh.form.model_copy(update={"fields": kept})}),
-            bindings={fid: b for fid, b in fresh.bindings.items() if fid in known},
-        )
-        if (_guard_signature(reduced, skip_controls=own, stable=True, ignore_required=True)
-                != _guard_signature(approved, stable=True, ignore_required=True)):
+            own_fresh |= _own_selectors(binding)
+        own_base: set[str] = set()
+        for question in delta.helped:
+            binding = base.bindings.get(question.id)
+            if binding is not None:
+                own_base |= _own_selectors(binding)
+        keep = {q.id for q in base.form.fields} - {q.id for q in delta.helped}
+        if (_guard_signature(_only_questions(fresh, keep), skip_controls=own_fresh, stable=True,
+                             ignore_required=True, ignore_preceding=True)
+                != _guard_signature(_only_questions(base, keep), skip_controls=own_base, stable=True,
+                                    ignore_required=True, ignore_preceding=True)):
             return None
-        after = f"after the answer to {_short_label(source.label)!r}"
-        parts = []
-        if added:
-            labels = ", ".join(repr(_short_label(f.label)) for f in added)
-            parts.append(f"{len(added)} follow-up question(s) ({labels}) appeared")
-        if toggled:
-            now = [f for f in toggled if f.required]
-            labels = ", ".join(repr(_short_label(f.label)) for f in toggled)
-            parts.append(f"{len(toggled)} question(s) ({labels}) became "
-                         + ("required" if len(now) == len(toggled) else "optional" if not now
-                            else "required or optional"))
-        return " and ".join(parts) + " " + after
+        return delta
 
     def _change_summary(self, fresh: PageModel) -> str:
-        """What differs between the approved step and ``fresh``, for a failure's detail:
-        questions by position and field id with the kind of change, then whether the
-        actions or the employer context changed. No wording and no value is included."""
-        approved, form = self._fill_model, self._fill_form
-        if approved is None or form is None:
+        """What differs between the step as the fill writes against it and ``fresh``, for a
+        failure's detail: questions by position and field id with the kind of change (an
+        appeared question also by its wording), then whether the actions or the employer
+        context changed. No answer or value is included."""
+        approved = self._fill_model
+        if approved is None or approved.form is None:
             return ""
         if fresh.form is None:
             return "no application form is shown"
+        fresh = self._as_fill_ids(fresh)
+        assert fresh.form is not None
+        form = approved.form
         before = {f.id: f for f in form.fields}
         position = {f.id: n for n, f in enumerate(fresh.form.fields, start=1)}
         old_position = {f.id: n for n, f in enumerate(form.fields, start=1)}
@@ -1850,7 +2041,8 @@ class GenericApplicationBrowser:
             binding = model.bindings.get(field_id)
             return None if binding is None else _binding_shape({field_id: binding})
 
-        added = [f"#{position[f.id]} {f.id}" for f in fresh.form.fields if f.id not in before]
+        added = [f"#{position[f.id]} {f.id} ({_short_label(f.label)})" if f.label.strip() else f"#{position[f.id]} {f.id}"
+                 for f in fresh.form.fields if f.id not in before]
         after_ids = {f.id for f in fresh.form.fields}
         removed = [f"#{old_position[f.id]} {f.id}" for f in form.fields if f.id not in after_ids]
         changed = []
@@ -1908,23 +2100,28 @@ class GenericApplicationBrowser:
         await self._assert_fill_context()
 
     async def _contain_changed_questions(
-        self, approved: ApplicationForm, after: PageModel, *, revealed: str | None = None
+        self, approved: ApplicationForm, after: PageModel, *, follow_ups: bool = False
     ) -> list[FieldFillResult]:
         """Questions that appeared or changed while filling were not authorized by the
-        packet. Never leave a pre-checked consent/attestation among them checked.
-        ``revealed`` (see ``_only_follow_ups_changed``): they are follow-up questions a
-        choice revealed, reported as not yet attempted (``SKIPPED``) rather than failed;
-        the next resolution answers them."""
+        packet. Never leave a pre-checked consent/attestation among them checked. With
+        ``follow_ups`` (see ``_follow_ups``) only the questions that appeared are reported,
+        as not yet attempted (``SKIPPED``) rather than failed: the next resolution answers
+        them. Each is named by its wording (page text), so a failure says which question
+        appeared (Teamtailor's "Linkedin profile" has no label in the packet's form)."""
         if after.form is None:
             return []
         known = {f.id: f.fingerprint for f in approved.fields}
         results = []
         for new in after.form.fields:
-            if known.get(new.id) == new.fingerprint:
+            if known.get(new.id) == new.fingerprint or (follow_ups and new.id in known):
                 continue
-            status = FieldFillStatus.FAILED if revealed is None else FieldFillStatus.SKIPPED
-            detail = ("appeared or changed while filling; not answered by this packet" if revealed is None
-                      else "appeared after a choice; answered once this step is resolved again")
+            question = _short_label(new.label) or new.id
+            if follow_ups:
+                status = FieldFillStatus.SKIPPED
+                detail = f"appeared while filling ({question}); answered once this step is resolved again"
+            else:
+                status = FieldFillStatus.FAILED
+                detail = f"appeared or changed while filling ({question}); not answered by this packet"
             binding = after.bindings[new.id]
             if (
                 new.control_type is ControlType.CHECKBOX
@@ -2445,13 +2642,23 @@ class GenericApplicationBrowser:
                                detail=f"checked options read back as {sorted(got)}")
 
     async def _changed_since_fill(self, form: ApplicationForm) -> bool:
+        """Whether the step changed since the last fill of it. A question a re-render gave
+        another generated id counts under its known id, and a re-render that regenerated
+        only selectors (the same questions, constraints, actions and context) is no change
+        (BambooHR re-mounts its text fields with new ids once a Yes/No is answered)."""
         if self._filled is None or self._filled[0] != form.scope.key:
             return False
-        if self._filled[1] != form.fingerprint:
+        base = self._fill_model
+        renames = (_renamed_questions(base.form.fields, form.fields)
+                   if base is not None and base.form is not None else {})
+        if self._filled[1] != _rekeyed_form(form, renames).fingerprint:
             return True
         if self._filled_structure is None or self._last is None:
             return False
         if self._filled_structure == _guard_signature(self._last):
+            return False
+        if (self._filled_stable is not None
+                and self._filled_stable == _guard_signature(self._as_fill_ids(self._last), stable=True)):
             return False
         if await self._only_uploads_changed(self._last):
             # An upload of this fill re-rendered its uploader after the fill.
