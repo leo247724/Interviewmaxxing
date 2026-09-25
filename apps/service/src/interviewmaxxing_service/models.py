@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 from pydantic.alias_generators import to_camel
 
 ApplicationStateName = Literal[
@@ -287,9 +287,188 @@ class ApplicationListView(View):
     applications: list[ApplicationSummaryView]
 
 
-# --- request bodies for application actions --------------------------------------------
+# --- the review lane: prepared queue, review page, approve and submit -------------------
 
 ReuseChoice = Literal["application", "job", "global"]
+ReviewStage = Literal["prepared", "browser_action", "other"]
+"""Where an application stands for the review lane: ``prepared`` (stopped at the final
+review step, nothing submitted), ``browser_action`` (held only by a sign-in, a CAPTCHA
+or another step the person does in the browser) or ``other`` (anything else)."""
+HoldKind = Literal[
+    "ready", "approved", "edited", "questions", "sign_in", "captcha", "browser_action"
+]
+ProvenanceKind = Literal[
+    "identity",
+    "resume",
+    "saved_answer",
+    "saved_policy",
+    "derived",
+    "fact_screener",
+    "narrative",
+    "user",
+    "blank",
+]
+
+
+class ProviderCostView(View):
+    """AI provider usage recorded for an application (every ``provider.budget`` event)."""
+
+    known_usd: float
+    calls: int
+    unknown_cost_calls: int
+    """Calls whose cost the provider did not report (not in ``known_usd``)."""
+
+
+class HoldView(View):
+    kind: HoldKind
+    summary: str
+    """One plain line: what the application waits for."""
+
+
+class ReviewQueueItemView(View):
+    """One application in the Prepared queue (``GET /review``)."""
+
+    id: str
+    state: ApplicationStateName
+    stage: ReviewStage
+    application_url: str
+    job: JobIdentityView
+    prepared_at: str | None
+    """When the preparation behind a ``prepared`` stop was recorded."""
+    stopped_at: str
+    """When the current stop was recorded (the queue's order, newest first)."""
+    captcha_pending: bool
+    provider_cost: ProviderCostView | None
+    hold: HoldView
+    approved: bool
+    """A valid approval of this preparation exists (``submission_approval``)."""
+
+
+class ReviewQueueView(View):
+    applications: list[ReviewQueueItemView]
+
+
+class ReviewProvenanceView(View):
+    kind: ProvenanceKind
+    label: str
+    detail: str | None
+    """The resolver's own note (what it derived the answer from), when it recorded one."""
+
+
+class ReviewCitationsView(View):
+    facts: list[str]
+    """Candidate fact ids the answer cites."""
+    passages: list[str]
+    """Story passage (chunk) ids a narrative cites."""
+    job_evidence: list[str]
+    """Job-description evidence ids a narrative cites (context, not candidate facts)."""
+
+
+class ReviewEditView(View):
+    """How the answer can be changed through ``POST /applications/{id}/answers``: the
+    answer goes under ``question_id`` (in ``attestations`` when ``attestation``), with
+    one of ``reuse`` as its ``reuse`` scope; then ``resume`` prepares it again."""
+
+    control: QuestionControl
+    options: list[QuestionOption] | None
+    lookup: bool
+    attestation: bool
+    required: bool
+    value: str | list[str] | bool | None
+    """The current answer in the form's own terms (option values, a boolean, text)."""
+    reuse: list[ReuseChoice]
+    note: str | None
+
+
+class ReviewRowView(View):
+    """One question of the prepared form, in form order: its answer, or a blank."""
+
+    question_id: str | None
+    """The question's id for an edit; None when it can't be edited here."""
+    question: str
+    wording_recorded: bool
+    page: int
+    control: ReviewControl
+    value: str | list[str] | None
+    """What the form holds: text, option label(s), "Yes"/"No" or a file name; None when
+    the field was left blank."""
+    required: bool | None
+    provenance: ReviewProvenanceView
+    citations: ReviewCitationsView | None
+    confidence: float | None
+    edit: ReviewEditView | None
+    no_edit_reason: str | None
+    """Why the answer can't be changed here, when ``edit`` is None."""
+
+
+class ApprovalView(View):
+    packet_id: str
+    approved_at: str
+    approver: str
+    pages: int
+    """Form pages the approval pins (one packet each)."""
+
+
+class SubmitReadinessView(View):
+    allowed: bool
+    """Everything but the person's confirmation is in place."""
+    problems: list[str]
+    """What is missing, in plain words; empty when ``allowed``."""
+    enabled: bool
+    """The service was started with ``IMX_ALLOW_SUBMISSION=1``."""
+    opens_browser: bool
+    """The submission run opens a visible browser window (the person can act in it)."""
+    command: str
+    """The command-line equivalent."""
+
+
+class BrowserActionView(View):
+    available: bool
+    """``POST /applications/{id}/resume`` opens a visible browser window for this
+    application now (the ``resume --act`` equivalent)."""
+    reason: str | None
+    command: str
+    """``interviewmaxxing resume APP --act``, to run in a terminal instead."""
+
+
+class ApplicationReviewView(View):
+    """``GET /applications/{id}/review``: the desk's view plus what the review lane needs."""
+
+    application: ApplicationView
+    stage: ReviewStage
+    prepared_packet_id: str | None
+    """The packet an approval pins now; None unless stopped at a completed preparation."""
+    approval: ApprovalView | None
+    changed_since_preparation: bool
+    """Answers were saved after this preparation: prepare it again before approving."""
+    provider_cost: ProviderCostView | None
+    answers: list[ReviewRowView]
+    edit_note: str | None
+    """Why answers can't be edited at all (for example an older preparation), or None."""
+    submit: SubmitReadinessView
+    browser: BrowserActionView
+
+
+class ApproveInput(Body):
+    packet_id: StrictStr
+    """The packet the person reviewed (``preparedPacketId``); anything else is refused."""
+
+
+class SubmitInput(Body):
+    packet_id: StrictStr
+    """The approved packet the person confirmed (``approval.packetId``)."""
+    confirm: StrictBool
+    """The person's explicit confirmation in the dashboard: exactly JSON ``true``."""
+
+    @field_validator("confirm")
+    @classmethod
+    def _confirmed(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("the person must confirm the submission")
+        return value
+
+
+# --- request bodies for application actions --------------------------------------------
 
 
 class AnswerInput(Body):

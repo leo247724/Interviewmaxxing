@@ -12,10 +12,15 @@ a real store claim. ``RunContext`` offers the runner's store recipes
 * ``ask``: a step with questions only the user can answer (``_stop(NEEDS_INPUT)``).
 * ``sign_in``: a sign-in page the user did not act on (a fieldless ``USER_ACTION``).
 * ``fail``: a browser error before submit, after a screenshot (FAILED_RETRYABLE).
+* ``budget``: the run's provider usage (``provider.budget``).
+* ``submit_approved``: the approved submission run's store operations
+  (``begin_submission`` with the approved packet, then the site's confirmation).
 
 Every run of a ``prepare_only`` scenario first records the user's no-submit boundary
-(``require_preparation_only``), as the runner does for prepare-only runs. All data is
-fictional; nothing opens a browser or a network connection.
+(``require_preparation_only``), as the runner does for prepare-only runs; a ``submit``
+run (the submission runner) never does, and does nothing unless the application's
+submission was authorized. All data is fictional; nothing opens a browser or a network
+connection.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from interviewmaxxing_cli.runner import field_record
 from interviewmaxxing_core import (
     AnswerSource,
     AnswerValue,
@@ -52,6 +58,8 @@ from interviewmaxxing_core import (
     PacketAnswer,
     Provenance,
     SemanticType,
+    SubmissionObservation,
+    SubmissionOutcome,
     UserInput,
 )
 from interviewmaxxing_service import ServiceConfig, ServiceInteraction
@@ -247,12 +255,15 @@ class RunContext:
         *,
         captcha_pending: bool = False,
         remaining: Sequence[MissingInput] = (),
+        steps: Sequence[tuple[ApplicationForm, ApplicationPacket]] | None = None,
     ) -> EvidenceRef:
-        """The runner's preparation branch on the filled final step."""
+        """The runner's preparation branch on the filled final step. With ``steps`` (each
+        page's form and packet, the final one included) it records them as the runner's
+        ``preparation.ready`` does: every page's packet and questions (``field_record``)."""
         shot = self.screenshot(
             f"review-{self.index}.png", f"prepared-review at {form.url} (screenshot)"
         )
-        self.store.append_event(self.claim, "preparation.ready", {
+        metadata: dict[str, Any] = {
             "form_url": form.url,
             "form_step": form.step,
             "form_fingerprint": form.fingerprint,
@@ -260,9 +271,34 @@ class RunContext:
             "submitted": False,
             "browser_location": None,
             "captcha_pending": captcha_pending,
-        })
+        }
+        if steps is not None:
+            metadata["steps"] = [step_record(f, p, final=f.step == form.step) for f, p in steps]
+        self.store.append_event(self.claim, "preparation.ready", metadata)
         self.stop(remaining, reason=PREPARED_REASON)
         return shot
+
+    def budget(self, *, calls: int, known_cost_usd: float, unknown_cost_calls: int = 0) -> None:
+        """The run's provider usage, as the runner records it (``provider.budget``)."""
+        self.store.append_event(self.claim, "provider.budget", {
+            "calls": calls, "known_cost_usd": known_cost_usd,
+            "unknown_cost_calls": unknown_cost_calls,
+        })
+
+    def submit_approved(
+        self, packet: ApplicationPacket, *, reference: str = "FIC-000321"
+    ) -> None:
+        """The approved submission run's store operations on the final step: fill it
+        (INSPECTING, PACKET_READY, FILLING), ``begin_submission`` with the approved packet,
+        then the site's confirmation tied to the job."""
+        self.to(S.INSPECTING)
+        self.to(S.PACKET_READY)
+        self.to(S.FILLING)
+        attempt = self.store.begin_submission(self.claim, packet_id=packet.id)
+        self.store.record_submission_outcome(self.claim, attempt.id, SubmissionObservation(
+            outcome=SubmissionOutcome.ACCEPTED, signals=["heading 'Application received'"],
+            confirmation_reference=reference,
+        ))
 
     def ask(
         self,
@@ -292,6 +328,15 @@ class RunContext:
         return shot
 
 
+def step_record(
+    form: ApplicationForm, packet: ApplicationPacket, *, final: bool
+) -> dict[str, Any]:
+    """One filled page as ``preparation.ready`` records it (``runner._step_record``)."""
+    return {"form_step": form.step, "packet_id": packet.id, "form_url": form.url,
+            "form_fingerprint": form.fingerprint,
+            "fields": [field_record(f) for f in form.fields], "final": final}
+
+
 RunBody = Callable[[RunContext], object]
 
 
@@ -306,6 +351,8 @@ class Scenario:
         self.contexts: list[RunContext] = []
         self.errors: list[BaseException] = []
         """Exceptions raised by run bodies (the service would record them as a failed run)."""
+        self.submissions: list[str] = []
+        """Applications a submission run was dispatched for, authorized or not."""
 
     def then(self, *runs: RunBody) -> None:
         self.pending.extend(runs)
@@ -316,7 +363,7 @@ class Scenario:
         assert self.errors == [], f"a fictional run raised: {self.errors!r}"
 
     def factory(self, config: ServiceConfig) -> Callable[[ServiceInteraction], ScenarioRunner]:
-        """``executor_factory`` for ``conftest.serve``."""
+        """``executor_factory`` (and ``submission_factory``) for ``conftest.serve``."""
 
         def make(interaction: ServiceInteraction) -> ScenarioRunner:
             self.interactions.append(interaction)
@@ -352,12 +399,20 @@ class ScenarioRunner:
         with ApplicationStore.open(self.scenario.paths.state_db) as store:
             return self._outcome(store, application_id)
 
-    def _work(self, store: ApplicationStore, app_id: str) -> ApplyOutcome:
+    async def submit(self, application_id: str) -> ApplyOutcome:
+        """The submission runner: nothing unless the submission was authorized."""
+        with ApplicationStore.open(self.scenario.paths.state_db) as store:
+            self.scenario.submissions.append(application_id)
+            if store.submission_authorization(application_id) is None:
+                return self._outcome(store, application_id)
+            return self._work(store, application_id, submission=True)
+
+    def _work(self, store: ApplicationStore, app_id: str, *, submission: bool = False) -> ApplyOutcome:
         assert self.scenario.pending, "the scenario has no run left for this dispatch"
         body = self.scenario.pending.popleft()
         claim = store.claim(app_id, RUNNER_OWNER)
         try:
-            if self.scenario.prepare_only:
+            if self.scenario.prepare_only and not submission:
                 store.require_preparation_only(claim)
             context = RunContext(
                 store=store, claim=claim, paths=self.scenario.paths,

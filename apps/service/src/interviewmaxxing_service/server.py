@@ -39,10 +39,12 @@ from .discovery_models import (
 )
 from .models import (
     AnswerInput,
+    ApproveInput,
     EmptyBody,
     RecheckInput,
     ReconcileInput,
     StartApplicationInput,
+    SubmitInput,
     UserConfirmedNotReceivedInput,
     UserFoundConfirmationInput,
 )
@@ -73,6 +75,10 @@ ROUTES: list[Route] = [
     ("POST", re.compile(rf"^/applications/{_APP}/answers$"), "answers"),
     ("POST", re.compile(rf"^/applications/{_APP}/resume$"), "resume"),
     ("POST", re.compile(rf"^/applications/{_APP}/reconcile$"), "reconcile"),
+    ("GET", re.compile(r"^/review$"), "queue"),
+    ("GET", re.compile(rf"^/applications/{_APP}/review$"), "review"),
+    ("POST", re.compile(rf"^/applications/{_APP}/approve$"), "approve"),
+    ("POST", re.compile(rf"^/applications/{_APP}/submit$"), "submit"),
     ("GET", re.compile(rf"^/applications/{_APP}/evidence/(?P<evidence>[^/]+)$"), "evidence"),
     ("GET", re.compile(r"^/pipeline$"), "board"),
     ("POST", re.compile(r"^/pipeline/entries$"), "entry_create"),
@@ -99,6 +105,10 @@ _TEMPLATES = {
     "answers": "/applications/{id}/answers",
     "resume": "/applications/{id}/resume",
     "reconcile": "/applications/{id}/reconcile",
+    "queue": "/review",
+    "review": "/applications/{id}/review",
+    "approve": "/applications/{id}/approve",
+    "submit": "/applications/{id}/submit",
     "evidence": "/applications/{id}/evidence/{id}",
     "board": "/pipeline",
     "entry_create": "/pipeline/entries",
@@ -366,6 +376,20 @@ class ServiceHandler(BaseHTTPRequestHandler):
     def _r_reconcile(self, app: str) -> None:
         body = self._json(_RECONCILE)
         self._send_json(200, self.service.reconcile(app, body).dump())
+
+    def _r_queue(self) -> None:
+        self._send_json(200, self.service.review_queue().dump())
+
+    def _r_review(self, app: str) -> None:
+        self._send_json(200, self.service.review(app).dump())
+
+    def _r_approve(self, app: str) -> None:
+        body = self._json(ApproveInput)
+        self._send_json(200, self.service.approve(app, body).dump())
+
+    def _r_submit(self, app: str) -> None:
+        body = self._json(SubmitInput)
+        self._send_json(200, self.service.submit(app, body).dump())
 
     def _r_evidence(self, app: str, evidence: str) -> None:
         item = self.service.evidence(app, evidence)
