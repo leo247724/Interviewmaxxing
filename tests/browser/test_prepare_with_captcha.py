@@ -188,7 +188,8 @@ def _write_profile(paths: LocalPaths, form: ApplicationForm, job_url: str) -> No
 
 def _runner(paths: LocalPaths, *, prepare_only: bool) -> LocalApplicationRunner:
     return LocalApplicationRunner(paths=paths, interaction=NoninteractiveInteraction(),
-                                  headless=True, prepare_only=prepare_only)
+                                  headless=True, prepare_only=prepare_only,
+                                  submit_unapproved=not prepare_only)
 
 
 def test_runner_prepares_the_widget_form_and_notes_the_pending_captcha(
