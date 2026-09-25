@@ -413,6 +413,20 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Retry five (13:05, after the answer sheet).** The person declined to answer 84 open questions
+one by one and stated standing rules instead: any "do you have / have you" experience question is
+Yes (he vets every application before it enters the batch), every experience threshold up to his
+stated years is Yes, every certification of truth is affirmative, every current-or-former-employee
+question is No. The lead applied them semantically over the sheet (70 answers, 19 applications,
+saved globally) and left 14 for the person. Result: 26 run, 3 more prepared (14 of 40), 16 held,
+7 failed, holds 95 → 30. What remains: 7 salary fields (the derivation cannot parse the saved
+figure's format; WP2 round 11 addendum), Paylocity's controls and work-history block (WP1 round
+12), 4 narratives, and 7 fill failures: Lever's resume uploader still uploading when the wait ends
+(3), conditional reveals the round-11 path did not catch on a Greenhouse form and two BambooHR
+forms (3), a Greenhouse checkbox-group click timeout and a phone read-back formatting mismatch
+(WP1 round 12 addendum). WP2 round 12 turns the standing rules into `answer_policies` that Jev
+applies to each new question.
+
 **Second retry on the merged head (22:29, `prepare-batch --retry pilot7-20260924 --all --batch-id
 pilot7-retry2`, j-workspace 9ca484b = WP2 round 9 + WP12 rounds 3–4 + WP7 + WP1 round 10).** 29 of the
 40 applications were run again (9 prepared, 2 need only explicit answers): 0 more prepared, 27 held,
