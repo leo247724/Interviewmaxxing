@@ -359,8 +359,8 @@ def test_prepare_only_walk_fills_each_dialog_step_and_stops_at_the_review(
 
 @pytest.mark.parametrize(("variant", "detail", "chosen", "uploaded"), [
     ("one", f"chose the only resume on the site, {SAVED!r}", SAVED, False),
-    ("nomatch", CHOSE_PINNED, PINNED, True),
-    ("none", CHOSE_PINNED, PINNED, True),
+    ("nomatch", "already attached; not attached again", PINNED, True),
+    ("none", "already attached; not attached again", PINNED, True),
 ], ids=["only-card", "no-card-named-like-it", "no-cards"])
 def test_resume_step_uses_the_only_card_or_uploads_the_pinned_file(
     kit: SimpleNamespace, server: Any, options: BrowserOptions,
@@ -377,8 +377,9 @@ def test_resume_step_uses_the_only_card_or_uploads_the_pinned_file(
             assert (state["writes"]["resume"] > 0) is uploaded  # the only card was selected already
             if uploaded:
                 # The upload adds the file's own card, whose Download button lies outside the
-                # uploader's container: WP5's guard stops the fill for a fresh inspection, and
-                # the second fill keeps the (selected) card of the pinned file.
+                # uploader's container: WP5's guard stops the fill for a fresh inspection. The
+                # re-inspected field keeps its approved binding (this runtime's upload), and the
+                # second fill finds the pinned file still attached (digest-checked).
                 assert outcome(result) == [(field.id, FILLED, None)]
                 assert result.page_errors == [AFTER_UPLOAD_STOP]
                 form = (await browser.inspect()).form
