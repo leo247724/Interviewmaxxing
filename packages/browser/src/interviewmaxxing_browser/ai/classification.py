@@ -6,7 +6,7 @@ import json
 import math
 import re
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -22,7 +22,12 @@ from interviewmaxxing_core import (
 )
 from interviewmaxxing_generation.questions import question_key
 from interviewmaxxing_generation.values import us_state_code, usable_options
-from interviewmaxxing_selection.jev import ChoiceAnswer, ChoiceQuestion, DecisionRequest
+from interviewmaxxing_selection.jev import (
+    ChoiceAnswer,
+    ChoiceQuestion,
+    DecisionRequest,
+    ProviderFailureKind,
+)
 
 from .providers import AIHold, BoundedDecisions
 
@@ -39,6 +44,11 @@ _CONTEXT_OPTION_LIMITS = (MAX_FIELD_OPTIONS, 10, 0)
 """Options per field when the whole form would take more than half of a request (many long
 menus): the shared context lists fewer, keeping every field's count and shape."""
 _POOL_TOLERANCE = 1e-9
+ROUTES_TIMEOUT_SECONDS = 60.0
+"""Per-call timeout of a full-form request, at least: a packed request carries several
+fields' questions (up to 85% of the byte bound) and takes Jev longer than one decision."""
+_TIMEOUT_HOLD = f"Jev {ProviderFailureKind.TIMEOUT.value}"
+"""The hold ``BoundedDecisions`` raises for a call that timed out."""
 
 
 class FieldRoute(StrEnum):
@@ -138,6 +148,9 @@ class FormRouteReport(BaseModel):
     """Requests the fields were split into; each carried the same whole-form state."""
     options_per_field: int = MAX_FIELD_OPTIONS
     """Options each field listed in that state before its count, note and shape."""
+    retries: int = 0
+    """Requests that timed out and were sent once more as two halves (``batches`` and
+    ``provider_calls`` count both the timed-out call and its halves)."""
 
     def field(self, field_id: str) -> FieldRouteDecision:
         return next(f for f in self.fields if f.field_id == field_id)
@@ -350,11 +363,12 @@ class AIFormRouter:
             return report.model_copy(update={"provider_calls": 0, "latency_seconds": 0.0,
                                              "cost_usd": 0.0, "known_cost_usd": 0.0, "unknown_cost_calls": 0})
         start = len(self.decisions.budget.receipts)
-        batches, options_per_field = 0, MAX_FIELD_OPTIONS
+        batches, retries, options_per_field = 0, 0, MAX_FIELD_OPTIONS
         if len(form.fields) > self.max_fields:
             output = [self._hold(f, "Full form exceeds the field-count bound") for f in form.fields]
         else:
-            output, batches, options_per_field = self._classify_fields(form, context, schema_hints or {})
+            output, batches, retries, options_per_field = self._classify_fields(
+                form, context, schema_hints or {})
         receipts = self.decisions.budget.receipts[start:]
         report = FormRouteReport(document_id_hash=_digest(document_id), binding_hash=bound,
             context_hash=context, form_fingerprint=form.fingerprint, model=self.decisions.model,
@@ -365,7 +379,7 @@ class AIFormRouter:
             unknown_cost_calls=sum(r.cost_usd is None for r in receipts),
             cost_usd=sum(r.cost_usd for r in receipts if r.cost_usd is not None)
                      if all(r.cost_usd is not None for r in receipts) else None,
-            batches=batches, options_per_field=options_per_field)
+            batches=batches, retries=retries, options_per_field=options_per_field)
         if len(self._reports) >= self.max_reports:
             self._reports.pop(next(iter(self._reports)))
         self._reports[context] = report
@@ -373,13 +387,15 @@ class AIFormRouter:
         return report
 
     def _classify_fields(self, form: ApplicationForm, context: str, hints: dict[str, Any],
-                         ) -> tuple[list[FieldRouteDecision], int, int]:
+                         ) -> tuple[list[FieldRouteDecision], int, int, int]:
         """Decide every field in as few requests as the byte bound allows. Every request
         carries the same state (prompt version, observation, schema prior and the whole
         form); fields are packed in form order to 85% of the bound and at most
         ``batch_size`` per request. A request that still exceeds the bound is halved, down
-        to single fields. Returns the decisions in form order, the request count and the
-        options per field the state listed."""
+        to single fields; one that times out is sent once more as two halves before its
+        fields are held. Returns the decisions in form order, the request and retry counts
+        and the options per field the state listed."""
+        decisions = self._route_decisions()
         fields = form.fields
         questions = [self._questions(i, fld) for i, fld in enumerate(fields)]
         sizes = [_json_bytes({key: q.model_dump(mode="json") for key, q in asked.items()})
@@ -396,21 +412,30 @@ class AIFormRouter:
             header = _json_bytes({"model": self.decisions.model, "questions": {}, "state": state})
             if 2 * header <= target:
                 break
-        pending = self._pack(sizes, header, target)
+        # Each pending request: its fields, and whether it is already a timeout's retry.
+        pending = [(batch, False) for batch in self._pack(sizes, header, target)]
         decided: dict[int, FieldRouteDecision] = {}
-        batches = 0
+        batches = retries = 0
         while pending:
-            batch = pending.pop(0)
+            batch, retried = pending.pop(0)
             request = DecisionRequest(model=self.decisions.model, state=state,
                 questions={key: q for i in batch for key, q in questions[i].items()})
             if len(request.body()) > bound and len(batch) > 1:
                 middle = len(batch) // 2
-                pending[0:0] = [batch[:middle], batch[middle:]]
+                pending[0:0] = [(batch[:middle], retried), (batch[middle:], retried)]
                 continue
             batches += 1
             try:
-                response = self.decisions.decide(request, purpose="full_form_routes")
+                response = decisions.decide(request, purpose="full_form_routes")
             except AIHold as exc:
+                if str(exc) == _TIMEOUT_HOLD and not retried:
+                    # Pilot Pomelo lost six fields, First Name and Email among them, to one
+                    # timed-out request: send it once more as two halves (a single field as
+                    # itself), each a budgeted call, before any of its fields is held.
+                    retries += 1
+                    middle = len(batch) // 2
+                    pending[0:0] = [(half, True) for half in (batch[:middle], batch[middle:]) if half]
+                    continue
                 decided.update((i, self._hold(fields[i], str(exc))) for i in batch)
                 continue
             for i in batch:
@@ -418,7 +443,18 @@ class AIFormRouter:
                     response.choice(f"n{i}"), response.choice(f"u{i}"),
                     response.choice(f"s{i}") if f"s{i}" in questions[i] else None,
                     response.choice(f"d{i}") if f"d{i}" in questions[i] else None)
-        return [decided[i] for i in range(len(fields))], batches, limit
+        return [decided[i] for i in range(len(fields))], batches, retries, limit
+
+    def _route_decisions(self) -> BoundedDecisions:
+        """The runtime's decisions for full-form requests, with a per-call timeout of at
+        least ``ROUTES_TIMEOUT_SECONDS``: the same budget, transport and model, so every
+        call, a retried one included, is reserved and recorded in the shared budget."""
+        client = self.decisions.client
+        if client.timeout_seconds >= ROUTES_TIMEOUT_SECONDS:
+            return self.decisions
+        return BoundedDecisions(client=replace(client, timeout_seconds=ROUTES_TIMEOUT_SECONDS),
+                                budget=self.decisions.budget, model=self.decisions.model,
+                                max_cache_entries=self.decisions.max_cache_entries)
 
     def _pack(self, sizes: list[int], header: int, target: int) -> list[list[int]]:
         """Consecutive fields per request: at most ``batch_size``, and the shared state plus
