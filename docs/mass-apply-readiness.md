@@ -318,6 +318,56 @@ First Name (Jev's source-scope hedge, WP2 round 6); the Rippling state-list ques
 but routed AMBIGUOUS (WP2 round 6); the other Rippling form needs the person's answers (work
 authorization "Permanent / Temporary", desired salary, travel level).
 
+## Evening (September 24): what landed after pilot 7 and what the reruns show
+
+Committed on j-workspace through d1a4f26: WP2 rounds 6–7 (bare contact fields copied without
+the source-scope hedge; residence, relocation and experience screeners keyed on route mass; saved
+answers matched by semantic type with a type-anchored gate at 0.90/0.85 under a truthful-answer
+criterion; reusable consent statements; city lookups type the bare city and retype "City, Region"
+only when the site offers nothing; new one-time keys), WP9 batch tooling (`prepare-batch --retry`,
+`holds`, grouped `batch-report`), WP10 classifier rounds 1–2 (`full-form-routing-v13`: pooled gates
+on pooled mass, option caps and batched requests under the 60 KB bound, required resume approved on
+a sure route, Yes/No and address-box pooling, consent demotion), WP11 dashboard fixes, three
+independent review passes (all findings fixed or assigned; the typed-newline submission hole and the
+trace-content leak are closed).
+
+Prepare-only reruns of the held applications from a clean checkout, after each round:
+
+| form | before | after |
+| --- | --- | --- |
+| Rippling GoFish (state-list residence) | held: "'TX' is not one of the options" | final review |
+| Greenhouse Reunion | held: First Name, Email; then Country readback; then city lookup | final review |
+| Greenhouse FirmPilot | fill failed on Country (+ 1 dial code) | final review |
+| Ashby Bestow (required resume) | held: purpose not a verified attachment | final review |
+| Greenhouse Appspace | 13 holds, whole form lost to the request bound | 6 holds (salary, budget range, agency-experience typed CONSENT, two narratives, platforms multi-select) |
+| Greenhouse Vercel | countries question held | answered; work authorization options, privacy consent, attestation remain |
+| Rippling (other) | 4 holds | 2 holds: work authorization "Permanent / Temporary", travel level |
+| Greenhouse Pomelo | 3 holds | 2 holds: work authorization, sponsorship (see below) |
+
+What the traces say about the remaining holds:
+- **Work authorization and sponsorship** hold on most forms even after type-anchored matching, and
+  Jev is right to refuse: the saved question "Are you currently authorized to work in the US?" is
+  narrower than "authorized to work in the United States for any employer" or "Permanent /
+  Temporary". WP2 round 8 replaces wording equivalence for these two types with derivation from one
+  stated status key (`work_authorization_status`, closed vocabulary) through a truthful-option
+  decision plus a deterministic table.
+- **One-time answers** the person still owes: race/ethnicity (a new key), salary period label,
+  "how familiar were you with the company", "have you used AI tools", the Ashby free-text work
+  authorization wording. `interviewmaxxing holds` lists them with the `answer --reuse global` lines.
+- **Browser side** (WP1 round 7, in progress): placeholders and ids as labels (Ashby "Type here…",
+  Breezy `section_…_question_N`, radio groups labelled by an option), BambooHR pre-filled
+  comboboxes, Teamtailor hidden import input, Jobvite apply, the Ashby location typeahead whose
+  suggestion portal trips the fill guard, and the retype regression for multi-line text areas.
+- **Provider timeouts**: one Greenhouse form lost six fields to a timed-out routing batch; WP10
+  round 3 retries a timed-out batch once, halved.
+
+Pending merges: WP6 (dialog wizards, embedded iframes, JazzHR/Dayforce) integrating WP8 (approve →
+authorize → submit exactly the approved packet, mock only); WP7 (Workday up to Review; Playwright
+now blocks LinkedIn hosts because Workday embeds an "Apply with LinkedIn" gadget); WP12 (the
+person's professional stories chunked into a `story` kind in pgvector, retrieval for cover letters
+and narrative answers, Opus 5.5 at high effort, a no-AI-slop rewrite that must re-pass grounding).
+LinkedIn Easy Apply is out of scope for good.
+
 ## Bottlenecks to debug next (ordered by jobs affected)
 
 1. **Sign-in-gated backends need the user's Chrome.** LinkedIn Easy Apply (78),
