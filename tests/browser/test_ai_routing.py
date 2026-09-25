@@ -2502,21 +2502,21 @@ def text_field(label: str, semantic: SemanticType) -> ApplicationField:
 
 
 @pytest.mark.parametrize("label", [
-    "What salary are you looking for in this role?",
-    "How much would you like to earn in this position (base and/or OTE, if applicable)?",
+    "What is your current salary in this role?",
+    "What is the maximum you would accept (base and/or OTE, if applicable)?",
 ])
 def test_a_typed_salary_question_is_offered_only_the_saved_salary_answer(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
 ) -> None:
-    # Round 10 moved base, annual, expected and target wordings to a deterministic rule
-    # (the round-10 section below); these wordings still take the wording decision.
+    # Round 10 derives a salary field from the desired salary (the round-10 section below);
+    # a wording the desired salary does not answer still takes the wording decision.
     salary = global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
                            semantic=SemanticType.SALARY_EXPECTATION)
     provider = WordingPick("desired salary")
     candidate = with_saved(fictional_candidate, salary, *UNTYPED_NOISE)
     packet, _, resolver = resolve_choice(provider, candidate, mock_job,
                                          text_field(label, SemanticType.SALARY_EXPECTATION))
-    assert not stage_traces(resolver, "salary_wording")
+    assert stage_traces(resolver, "salary_derivation")[0]["status"] == "NOT_DERIVED"
     [wording] = provider.asked("wording")
     assert list(wording["state"]["saved_questions"]) == ["q0"]  # the untyped answers stay out
     assert wording["state"]["prompt_version"] == CHOICE_PROMPT_VERSION
@@ -2536,26 +2536,29 @@ START_OPTIONS = ("ASAP", "One week after offer acceptance", "Two weeks after off
 def test_a_saved_start_date_maps_onto_the_live_start_date_select(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
+    # Round 10 follow-up: bucketed deterministically (start_date_bucket), no wording decision.
+    # The fixture's own job-scoped start date for Mock Co is left out here.
     start = global_answer("sa.start", "What is your earliest start date?",
                           "Two weeks after an offer is accepted", semantic=SemanticType.START_DATE)
     provider = WordingPick("earliest start date", {"equivalent_0": ("o2", 0.98)})
     field = choice_field("Earliest Start Date?", SemanticType.START_DATE, *START_OPTIONS,
                          control=ControlType.SELECT)
-    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, start, *UNTYPED_NOISE),
-                                  mock_job, field)
-    [wording] = provider.asked("wording")
-    assert list(wording["state"]["saved_questions"]) == ["q0"]
+    candidate = fictional_candidate.model_copy(update={"saved_answers": [
+        a for a in fictional_candidate.saved_answers if a.semantic_type is not SemanticType.START_DATE]})
+    packet, _, resolver = resolve_choice(provider, with_saved(candidate, start, *UNTYPED_NOISE),
+                                         mock_job, field)
+    assert not provider.asked("wording") and not provider.asked("equivalent_0")
     [answer] = packet.answers
     assert answer.value.label == "Two weeks after offer acceptance"
     assert answer.provenance.reference_ids == ["sa.start"]
+    assert stage_traces(resolver, "start_date_bucket")[0]["status"] == "ANSWERED"
 
 
 def test_a_typed_field_without_a_same_type_answer_is_offered_the_untyped_ones(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
     provider = ChoiceProvider({"wording": ("NONE", 0.99)})
-    field = choice_field("Earliest Start Date?", SemanticType.START_DATE, *START_OPTIONS,
-                         control=ControlType.SELECT)
+    field = text_field("Which university did you attend?", SemanticType.UNIVERSITY)
     resolve_choice(provider, with_saved(fictional_candidate, *UNTYPED_NOISE), mock_job, field)
     [wording] = provider.asked("wording")
     offered = {item["question"] for item in wording["state"]["saved_questions"].values()}
@@ -3240,7 +3243,7 @@ STANDARD_GATE = {  # field, its one same-type saved answer (the fixture's own fo
     # Round 10: EEO answers map by type (no wording decision) and base, annual, expected
     # and target salary wordings are deterministic; the wordings here stay on the decision.
     "sponsorship": (status_field(REWORDED_SPONSORSHIP, SemanticType.SPONSORSHIP), None, "No"),
-    "salary": (text_field("What salary are you looking for?", SemanticType.SALARY_EXPECTATION),
+    "salary": (text_field("What is your current salary?", SemanticType.SALARY_EXPECTATION),
                global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
                              semantic=SemanticType.SALARY_EXPECTATION), "USD 95,000 per year"),
     "relocation": (status_field("Would you consider relocating for this role?", SemanticType.RELOCATION),
@@ -3903,12 +3906,13 @@ from interviewmaxxing_browser.ai.routing import (  # noqa: E402
     UNTYPED_PROBABILITY,
 )
 from interviewmaxxing_browser.ai.salary import (  # noqa: E402
+    convert_amount,
     parse_salary,
     range_options,
     salary_range,
     salary_wording,
 )
-from interviewmaxxing_core import WORK_LOCATION_PREFERENCE_QUESTION  # noqa: E402
+from interviewmaxxing_core import WORK_ARRANGEMENT_PREFERENCE_QUESTION  # noqa: E402
 
 DESIRED_SALARY = "What is your desired salary?"
 SALARY_BANDS = ("Under $20,000",
@@ -3940,12 +3944,13 @@ def test_the_live_range_select_takes_the_one_band_containing_the_saved_salary(
 ) -> None:
     # Lovevery: question equivalence MAPPED (0.96), then option equivalence o0 at 0.58 held the
     # 119-option select. Now the band is chosen by its bounds and the saved unit (annual, read
-    # from the bounds' magnitude); Jev is not asked about the options.
+    # from the bounds' magnitude); Jev is asked nothing about it.
     provider = WordingPick("desired salary", {"equivalent_0": ("o0", 0.58)})
     field = range_select("What salary range are you targeting?")
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(),
                                                               *UNTYPED_NOISE), mock_job, field)
-    assert not provider.asked("equivalent_0") and not stage_traces(resolver, "option_equivalence")
+    assert len(provider.requests) == 1  # the classification only
+    assert not stage_traces(resolver, "option_equivalence") and not stage_traces(resolver, "question_equivalence")
     [answer] = packet.answers
     assert answer.value.label == "$90,000 - $99,999"
     assert (answer.provenance.source, answer.provenance.reference_ids) == (
@@ -3954,9 +3959,10 @@ def test_the_live_range_select_takes_the_one_band_containing_the_saved_salary(
         "; the one range containing the saved amount (no model call)")
     [trace] = stage_traces(resolver, "salary_range")
     assert (trace["status"], trace["unit_source"], trace["range_count"]) == ("MAPPED", "magnitude", 119)
-    assert trace["choice"] == "o8" and "95" not in json.dumps(trace)  # never the amount
-    [wording] = stage_traces(resolver, "question_equivalence")
-    assert wording["status"] == "MAPPED"
+    assert (trace["period"], trace.get("conversion")) == ("year", None)
+    assert trace["choice"] == "o8" and "95,000" not in json.dumps(trace)  # never the amount
+    [derivation] = stage_traces(resolver, "salary_derivation")
+    assert (derivation["wording"], derivation["status"]) == ("MINIMUM", "ANSWERED")
 
 
 def test_a_range_select_with_the_exact_desired_salary_wording_needs_no_call_at_all(
@@ -3964,53 +3970,58 @@ def test_a_range_select_with_the_exact_desired_salary_wording_needs_no_call_at_a
 ) -> None:
     provider = ChoiceProvider({"equivalent_0": ("o0", 0.58)})
     field = range_select("Desired salary")  # a listed wording of the saved question
-    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary()),
-                                         mock_job, field)
-    assert [r for r in provider.requests if "equivalent_0" in r["questions"]] == []
-    assert not provider.asked("wording")
+    saved = saved_salary().model_copy(update={"match_phrases": ["Desired salary"]})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved), mock_job, field)
+    assert len(provider.requests) == 1
     [answer] = packet.answers
     assert answer.value.label == "$90,000 - $99,999"
     assert stage_traces(resolver, "salary_range")[0]["status"] == "MAPPED"
+    assert not stage_traces(resolver, "salary_derivation")  # the exact wording: no derivation
 
 
-@pytest.mark.parametrize("value,options,label,status,unit_source", [
-    ("$45/hr", SALARY_BANDS, "Salary range", "UNIT_MISMATCH", "magnitude"),  # hourly vs annual
-    ("95,000", SALARY_BANDS, "Salary range", "NO_UNIT", None),  # the saved value states no unit
+@pytest.mark.parametrize("value,options,label,status,unit_source,conversion,expected", [
+    ("$45/hr", SALARY_BANDS, "Salary range", "MAPPED", "magnitude", "hour->year", "$90,000 - $99,999"),
+    ("95,000", SALARY_BANDS, "Salary range", "NO_UNIT", None, None, None),  # no saved unit
     ("USD 70,000 per year", ("$60,000 - $70,000", "$70,000 - $80,000"), "Salary range",
-     "AMBIGUOUS", "magnitude"),  # a shared boundary
-    ("USD 5,000,000 per year", SALARY_BANDS[:-1], "Salary range", "NOT_CONTAINED", "magnitude"),
+     "AMBIGUOUS", "magnitude", None, None),  # a shared boundary
+    ("USD 5,000,000 per year", SALARY_BANDS[:-1], "Salary range", "NOT_CONTAINED", "magnitude", None, None),
     ("USD 95,000 per year", ("$40 - $45 per hour", "$45 - $50 per hour"), "Pay range",
-     "UNIT_MISMATCH", "options"),  # the options state their unit
+     "MAPPED", "options", "year->hour", "$45 - $50 per hour"),  # 95,000 / 2080 = 46
     ("USD 95,000 per year", ("$5,000 - $7,999", "$8,000 - $9,999"), "Salary range",
-     "UNIT_UNSTATED", None),  # monthly-looking bounds: nothing states the unit
+     "UNIT_UNSTATED", None, None, None),  # monthly-looking bounds: nothing states the unit
     ("USD 95,000 per year", ("€80,000 - €89,999", "€90,000 - €99,999"), "Salary range",
-     "CURRENCY_MISMATCH", "magnitude"),
+     "CURRENCY_MISMATCH", "magnitude", None, None),
+    # A monthly wording: the derivation converts first (year->month in its own trace), so the
+    # range rule sees a monthly figure already.
     ("USD 95,000 per year", ("$8,000 - $9,999", "$10,000 - $11,999"), "Monthly pay range",
-     "UNIT_MISMATCH", "wording"),  # the field's wording states the unit
+     "NOT_CONTAINED", "wording", None, None),  # 7,900 a month is under every band
+    ("USD 95,000 per year", ("$6,000 - $7,999", "$8,000 - $9,999"), "Monthly pay range",
+     "MAPPED", "wording", None, "$6,000 - $7,999"),
     ("$8,500 per month", ("$8,000 - $9,999", "$10,000 - $11,999"), "Monthly pay range",
-     "MAPPED", "wording"),
-    ("$45/hr", ("$40 - $45", "$46 - $50"), "Hourly pay range", "MAPPED", "wording"),
-    ("$45/hr", ("Under $30", "$30 - $50", "$50+"), "Rate", "MAPPED", "magnitude"),
+     "MAPPED", "wording", None, "$8,000 - $9,999"),
+    ("$45/hr", ("$40 - $45", "$46 - $50"), "Hourly pay range", "MAPPED", "wording", None, "$40 - $45"),
+    ("$45/hr", ("Under $30", "$30 - $50", "$50+"), "Rate", "MAPPED", "magnitude", None, "$30 - $50"),
 ])
-def test_a_range_select_holds_without_a_containing_band_in_the_saved_unit(
+def test_a_range_select_converts_the_saved_salary_to_the_bands_period(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
     options: tuple[str, ...], label: str, status: str, unit_source: str | None,
+    conversion: str | None, expected: str | None,
 ) -> None:
     provider = WordingPick("desired salary", {"equivalent_0": ("o0", 0.99)})
     field = range_select(label, *options)
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
                                          mock_job, field)
-    assert not provider.asked("equivalent_0")  # settled either way: never a Jev option pick
+    assert len(provider.requests) == 1  # settled either way: never a Jev option pick or wording
+    if status == "NO_UNIT":
+        assert stage_traces(resolver, "salary_derivation")[0]["status"] == "NO_UNIT"
+        assert not stage_traces(resolver, "salary_range") and packet.answers == []
+        return
     [trace] = stage_traces(resolver, "salary_range")
-    assert (trace["status"], trace.get("unit_source")) == (status, unit_source)
-    if status == "MAPPED":
-        [answer] = packet.answers
-        chosen, saved = salary_range(answer.value.label), parse_salary(value)
-        assert chosen is not None and saved is not None and chosen.contains(saved.amount)
-    else:
-        assert packet.answers == []
+    assert (trace["status"], trace.get("unit_source"), trace.get("conversion")) == (status, unit_source, conversion)
+    assert [a.value.label for a in packet.answers] == ([expected] if expected else [])
+    if expected is None:
         [missing] = packet.missing_inputs
-        assert missing.field_id == "range" and "95,000" not in json.dumps(trace)
+        assert missing.field_id == "range" and value not in json.dumps(trace)
 
 
 def test_a_custom_typed_years_select_is_not_read_as_a_salary_range(
@@ -4073,6 +4084,20 @@ def test_parse_salary_reads_one_exact_amount_with_its_unit(
         assert (parsed.amount, parsed.period, parsed.currency, parsed.base) == expected
 
 
+@pytest.mark.parametrize("amount,source,target,expected", [
+    (95_000.0, "year", "month", 7_900.0),  # 7,916.67 to the nearest 100
+    (95_000.0, "year", "hour", 46.0),  # 45.67 to the nearest 1
+    (45.0, "hour", "year", 93_600.0),
+    (45.0, "hour", "month", 7_800.0),
+    (8_000.0, "month", "year", 96_000.0),
+    (95_000.0, "year", "year", 95_000.0),
+])
+def test_convert_amount_uses_twelve_months_and_2080_hours(
+    amount: float, source: str, target: str, expected: float,
+) -> None:
+    assert convert_amount(amount, source, target) == expected
+
+
 def test_range_options_allow_non_answers_beside_the_bands() -> None:
     options = [FieldOption(value=f"v{i}", label=label)
                for i, label in enumerate(("Under $20,000", "$20,000 - $29,999", "Prefer not to say"))]
@@ -4114,100 +4139,137 @@ def test_a_period_select_with_an_unrelated_label_is_still_the_pay_period(
     assert stage_traces(resolver, "salary_period")[0]["status"] == "ANSWERED"
 
 
-# 2. Base, annual, expected and target salary wordings from the desired salary.
+# 2. Salary derivation (round 10 follow-up): the desired salary answers every salary wording.
 
-@pytest.mark.parametrize("label,help_text,value,expected", [
-    ("What is your desired base salary?", None, "USD 95,000 per year", "USD 95,000 per year"),
-    ("Expected annual salary (USD)", None, "USD 95,000 per year", "USD 95,000 per year"),
-    ("Target base salary", "Please enter a single figure.", "$95,000/yr", "$95,000/yr"),
-    ("Base salary expectations", None, "95k annually", "95k annually"),
-    ("What are your salary expectations?", None, "USD 95,000 per year", "USD 95,000 per year"),
-    ("What is your desired salary?\nCompensation", None, "95,000", "95,000"),  # no unit named: as saved
-    ("Desired monthly salary", None, "$8,000 per month", "$8,000 per month"),
-    ("Expected hourly pay", None, "$45/hr", "$45/hr"),
-])
-def test_a_base_salary_wording_is_answered_from_the_desired_salary_without_a_call(
-    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
-    help_text: str | None, value: str, expected: str,
+def salary_text(label: str, *, help_text: str | None = None, control: ControlType = ControlType.TEXT,
+                field_id: str = "answer", input_type: str | None = None) -> ApplicationField:
+    return ApplicationField(id=field_id, selector=f"#{field_id}", label=label, help_text=help_text,
+                            semantic_type=SemanticType.SALARY_EXPECTATION, control_type=control,
+                            required=True, input_type=input_type)
+
+
+LIVE_SALARY_WORDINGS = [  # the eight live wordings that held, with the derived answer
+    (salary_text("Desired base salary?"), "PLAIN", "year", None, "USD 95,000 per year"),
+    (salary_text("What is your target salary for this role?"), "PLAIN", "year", None, "USD 95,000 per year"),
+    (salary_text("What is your monthly salary expectation for your next role (in $USD)?"),
+     "PLAIN", "month", "year->month", "$7,900 per month"),
+    (salary_text("What is your desired hourly compensation?",
+                 help_text="Please list in United States Dollars"),
+     "PLAIN", "hour", "year->hour", "$46 per hour"),
+    (salary_text("What is your desired annual compensation?",
+                 help_text="Please list in United States Dollars"),
+     "PLAIN", "year", None, "USD 95,000 per year"),
+    (salary_text("What is your desired total compensation?", control=ControlType.TEXTAREA),
+     "COMPENSATION_CLAUSE", "year", None, "My desired base salary is $95,000 per year."),
+    (salary_text("What is your desired compensation?", control=ControlType.TEXTAREA,
+                 help_text="Please be as specific as possible (for example, a figure and its basis)."),
+     "PLAIN", "year", None, "My desired base salary is $95,000 per year."),
+    (salary_text("Salary Range", field_id="info.minimumDesiredSalary"), "MINIMUM", "year", None,
+     "USD 95,000 per year"),
+]
+
+
+@pytest.mark.parametrize("field,kind,period,conversion,expected", LIVE_SALARY_WORDINGS,
+                         ids=[f.label[:40] for f, *_ in LIVE_SALARY_WORDINGS])
+def test_the_live_salary_wordings_are_derived_from_the_desired_salary(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, field: ApplicationField,
+    kind: str, period: str, conversion: str | None, expected: str,
 ) -> None:
-    # Lovevery: "What is your desired base salary?" was NONE (0.96) against the saved "What is
-    # your desired salary?". A plain desired salary states a base figure.
-    provider = ChoiceProvider({"wording": ("NONE", 0.96)})
-    field = text_field(label, SemanticType.SALARY_EXPECTATION).model_copy(update={"help_text": help_text})
-    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value),
+    # Eight applications held on these wordings (question_equivalence BELOW_GATE 0.59-0.67,
+    # NONE 0.76-0.98, AMBIGUOUS 0.39): a salary field is derived, not matched by wording.
+    provider = ChoiceProvider({"wording": ("NONE", 0.97)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(),
                                                               *UNTYPED_NOISE), mock_job, field)
-    assert not provider.asked("wording") and not stage_traces(resolver, "question_equivalence")
+    assert len(provider.requests) == 1  # no wording decision, no option pick
+    assert not stage_traces(resolver, "question_equivalence")
     [answer] = packet.answers
     assert answer.value.text == expected
     assert (answer.provenance.source, answer.provenance.reference_ids) == (
         AnswerSource.SAVED_ANSWER, ["sa.salary"])
-    assert "a plain desired salary states the base figure" in (answer.provenance.note or "")
-    [trace] = stage_traces(resolver, "salary_wording")
-    assert (trace["wording"], trace["status"]) == ("PLAIN", "MAPPED")
-    assert value not in json.dumps(trace)
+    assert (answer.provenance.note or "").startswith("derived from the saved desired salary")
+    [trace] = stage_traces(resolver, "salary_derivation")
+    assert (trace["wording"], trace["period"], trace.get("conversion"), trace["status"]) == (
+        kind, period, conversion, "ANSWERED")
+    assert "95" not in json.dumps({k: v for k, v in trace.items() if k != "field_fingerprint"})
+
+
+@pytest.mark.parametrize("label,value,expected,conversion", [
+    ("Expected annual salary", "$45/hr", "$93,600 per year", "hour->year"),
+    ("Desired monthly salary", "$45/hr", "$7,800 per month", "hour->month"),
+    ("Expected hourly rate", "$8,000 per month", "$46 per hour", "month->hour"),
+    ("Target base salary", "95k annually", "95k annually", None),  # the person's own words
+    ("Expected weekly pay", "USD 95,000 per year", "$1,800 per week", "year->week"),
+    ("Desired base salary and bonus", "USD 95,000 per year", "$95,000 per year base", None),
+    ("Desired salary (EUR)", "€90,000 per year", "€90,000 per year", None),
+])
+def test_the_saved_unit_is_converted_to_the_unit_the_wording_names(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, value: str,
+    expected: str, conversion: str | None,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, salary_text(label))
+    assert not provider.asked("wording")
+    [answer] = packet.answers
+    assert answer.value.text == expected
+    assert stage_traces(resolver, "salary_derivation")[0].get("conversion") == conversion
 
 
 @pytest.mark.parametrize("label,value,status", [
-    ("What are your target compensation expectations (base and/or OTE, if applicable)?",
-     "USD 95,000 per year", "COMPENSATION_CLAUSE"),
-    ("Total compensation expectations", "USD 95,000 per year", "COMPENSATION_CLAUSE"),
-    ("Desired base salary and bonus", "USD 95,000 per year", "COMPENSATION_CLAUSE"),
-    ("What is your desired base salary?", "$150,000 OTE", "SAVED_NOT_BASE"),
-    ("Desired monthly salary", "USD 95,000 per year", "UNIT_MISMATCH"),
-    ("Expected hourly rate", "USD 95,000 per year", "UNIT_MISMATCH"),
-    ("Expected annual salary", "$45/hr", "UNIT_MISMATCH"),
-    ("Expected annual salary", "95,000", "UNIT_MISMATCH"),  # the saved value states no unit
+    ("What is your desired base salary?", "95,000", "NO_UNIT"),  # a saved salary without a unit
+    ("Expected annual salary", "95,000", "NO_UNIT"),
+    ("What is your desired base salary?", "$150,000 OTE per year", "SAVED_NOT_BASE"),
     ("Expected annual salary (EUR)", "USD 95,000 per year", "CURRENCY_MISMATCH"),
+    ("Desired salary (hourly or annual)", "USD 95,000 per year", "UNIT_AMBIGUOUS"),
+    ("Desired salary", "$90,000 - $100,000", "UNPARSED"),
 ])
-def test_a_compensation_or_other_unit_wording_holds_without_a_call(
+def test_a_salary_the_derivation_cannot_state_holds_without_a_call(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, value: str, status: str,
 ) -> None:
     provider = ChoiceProvider({"wording": ("q0", 0.99)})
-    field = text_field(label, SemanticType.SALARY_EXPECTATION)
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
-                                         mock_job, field)
+                                         mock_job, salary_text(label + " for this role"))
     assert not provider.asked("wording") and packet.answers == []
     [missing] = packet.missing_inputs
     assert missing.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED
-    [trace] = stage_traces(resolver, "salary_wording")
+    [trace] = stage_traces(resolver, "salary_derivation")
     assert trace["status"] == status and value not in json.dumps(trace)
 
 
 @pytest.mark.parametrize("label", [
     "What is your current salary?",
-    "What is your minimum salary requirement?",
-    "What is your desired salary range?",
-    "What salary are you looking for?",
+    "What is the maximum salary you would consider?",
+    "Why do you deserve this salary?",
 ])
-def test_other_salary_wordings_keep_the_wording_decision(
+def test_a_salary_question_the_desired_salary_does_not_answer_keeps_the_wording_decision(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
 ) -> None:
     provider = ChoiceProvider({"wording": ("NONE", 0.99)})
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary()),
-                                         mock_job, text_field(label, SemanticType.SALARY_EXPECTATION))
+                                         mock_job, salary_text(label))
     assert provider.asked("wording") and packet.answers == []
-    assert not stage_traces(resolver, "salary_wording")
+    assert stage_traces(resolver, "salary_derivation")[0]["status"] == "NOT_DERIVED"
     assert stage_traces(resolver, "question_equivalence")[0]["gate"] == "standard"
 
 
 @pytest.mark.parametrize("label,value,expected,status", [
-    ("Desired base salary", "USD 95,000 per year", "95000", "MAPPED"),
-    ("Expected hourly rate", "$45/hr", "45", "MAPPED"),
-    ("Expected hourly rate", "$45.50 per hour", "45.5", "MAPPED"),
+    ("Desired base salary", "USD 95,000 per year", "95000", "ANSWERED"),
+    ("Expected hourly rate", "$45/hr", "45", "ANSWERED"),
+    ("Expected hourly rate", "$45.50 per hour", "45.5", "ANSWERED"),
+    ("Expected monthly salary", "USD 95,000 per year", "7900", "ANSWERED"),  # converted
     ("Desired base salary", "$45/hr", None, "NUMBER_UNIT_UNSTATED"),  # a bare number reads annual
-    ("Desired base salary", "95,000", None, "NUMBER_UNIT_UNSTATED"),
+    ("Desired base salary", "95,000", None, "NO_UNIT"),
 ])
 def test_a_numeric_salary_input_takes_the_bare_amount_only_in_the_stated_unit(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, value: str,
     expected: str | None, status: str,
 ) -> None:
     provider = ChoiceProvider({"wording": ("q0", 0.99)})
-    field = text_field(label, SemanticType.SALARY_EXPECTATION).model_copy(update={"input_type": "number"})
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
-                                         mock_job, field)
+                                         mock_job, salary_text(label, input_type="number"))
     assert not provider.asked("wording")
     assert [a.value.text for a in packet.answers] == ([expected] if expected else [])
-    assert stage_traces(resolver, "salary_wording")[0]["status"] == status
+    assert stage_traces(resolver, "salary_derivation")[0]["status"] == status
 
 
 def test_a_job_scoped_salary_answer_for_this_job_comes_before_the_global_one(
@@ -4217,7 +4279,7 @@ def test_a_job_scoped_salary_answer_for_this_job_comes_before_the_global_one(
                           job=mock_job, confirmed_at="2026-08-01T12:00:00Z")
     provider = ChoiceProvider({"wording": ("q0", 0.99)})
     packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(), scoped),
-                                  mock_job, text_field("Desired base salary", SemanticType.SALARY_EXPECTATION))
+                                  mock_job, salary_text("Desired base salary"))
     [answer] = packet.answers
     assert (answer.value.text, answer.provenance.reference_ids) == ("USD 120,000 per year", ["sa.salary_job"])
 
@@ -4231,26 +4293,41 @@ def test_a_base_salary_wording_on_a_range_select_takes_the_containing_band(
     assert not provider.requests[1:]  # only the classification: no wording, no option pick
     [answer] = packet.answers
     assert answer.value.label == "$90,000 - $99,999"
-    assert stage_traces(resolver, "salary_wording")[0]["status"] == "MAPPED"
+    assert stage_traces(resolver, "salary_derivation")[0]["status"] == "ANSWERED"
     assert stage_traces(resolver, "salary_range")[0]["unit_source"] == "wording"
+
+
+def test_the_persons_own_salary_answer_to_this_wording_comes_before_the_derivation(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    own = global_answer("sa.salary_own", "Desired base salary?", "Open to discussion",
+                        semantic=SemanticType.SALARY_EXPECTATION, confirmed_at="2026-08-01T12:00:00Z")
+    packet, _, resolver = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, saved_salary(), own),
+                                         mock_job, salary_text("Desired base salary?"))
+    [answer] = packet.answers
+    assert (answer.value.text, answer.provenance.reference_ids) == ("Open to discussion", ["sa.salary_own"])
+    assert not stage_traces(resolver, "salary_derivation")
 
 
 @pytest.mark.parametrize("question,kind", [
     ("What is your desired base salary?", "PLAIN"),
     ("Salary expectations", "PLAIN"),
     ("Expected annual compensation", "PLAIN"),
-    ("Target base salary (USD)", "PLAIN"),
     ("Desired pay", "PLAIN"),
+    ("What salary are you looking for?", "PLAIN"),
     ("Desired base salary and bonus", "COMPENSATION_CLAUSE"),
-    ("Target OTE", "OTHER"),  # no plain-salary noun
+    ("Target OTE", "COMPENSATION_CLAUSE"),
     ("Expected total compensation", "COMPENSATION_CLAUSE"),
-    ("What is your current base salary?", "OTHER"),
-    ("Desired salary range", "OTHER"),
-    ("Why do you deserve this salary?", "OTHER"),
-    ("Where are you based?", "OTHER"),
+    ("Salary Range info.minimumDesiredSalary", "MINIMUM"),
+    ("What is your minimum salary requirement?", "MINIMUM"),
+    ("What is your current base salary?", "NOT_DERIVED"),
+    ("Maximum salary", "NOT_DERIVED"),
+    ("Why do you deserve this salary?", "NOT_DERIVED"),
+    ("In which currency would you like to be paid?", "NOT_DERIVED"),
 ])
 def test_salary_wording_classifies_the_live_wordings(question: str, kind: str) -> None:
     assert salary_wording(question).value == kind
+
 
 
 # 3. EEO answers map by type, not by wording.
@@ -4536,18 +4613,18 @@ def test_an_untyped_pick_on_an_explicit_field_keeps_the_standard_gate(
     assert len(provider.asked("wording")) == 1 and packet.answers == []
 
 
-# 5. The work-location preference.
+# 5. The work-arrangement preference.
 
 UPSTART_LABEL = "Location Preference"
 UPSTART_OPTIONS = ("Remote", "Hybrid", "On-site")
-PREFERENCE = global_answer("sa.work_location", WORK_LOCATION_PREFERENCE_QUESTION, "Remote")
+PREFERENCE = global_answer("sa.work_location", WORK_ARRANGEMENT_PREFERENCE_QUESTION, "remote")
 
 
 def test_the_live_location_preference_select_takes_the_saved_preference(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
     # Upstart: typed LOCATION, so the residence screener read it and held. A single choice
-    # among work modes is the work-location preference whatever its type.
+    # among work modes is the work-arrangement preference whatever its type.
     provider = ChoiceProvider({"residence": ("UNKNOWN", 0.99), "wording": ("NONE", 0.99)},
                               semantic="LOCATION")
     field = choice_field(UPSTART_LABEL, SemanticType.LOCATION, *UPSTART_OPTIONS, control=ControlType.SELECT)
@@ -4560,14 +4637,14 @@ def test_the_live_location_preference_select_takes_the_saved_preference(
     assert (answer.value.label, answer.semantic_type) == ("Remote", SemanticType.LOCATION)
     assert (answer.provenance.source, answer.provenance.reference_ids) == (
         AnswerSource.SAVED_ANSWER, ["sa.work_location"])
-    assert "saved work-location preference" in (answer.provenance.note or "")
-    [trace] = stage_traces(resolver, "work_location_preference")
+    assert "saved work-arrangement preference" in (answer.provenance.note or "")
+    [trace] = stage_traces(resolver, "work_arrangement_preference")
     assert (trace["status"], trace["option_count"]) == ("MAPPED", 3)
     assert "Remote" not in json.dumps(trace)
 
 
 @pytest.mark.parametrize("semantic", ["CUSTOM_SELECT", "LOCATION"])
-def test_a_work_mode_select_with_its_own_wording_maps_the_preference_through_option_equivalence(
+def test_a_work_mode_select_with_its_own_wording_takes_the_option_naming_the_saved_mode(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: str,
 ) -> None:
     provider = ChoiceProvider({"equivalent_0": ("o0", 0.97), "wording": ("NONE", 0.99)}, semantic=semantic)
@@ -4576,12 +4653,26 @@ def test_a_work_mode_select_with_its_own_wording_maps_the_preference_through_opt
                          control=ControlType.RADIO)
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, PREFERENCE,
                                                               *UNTYPED_NOISE), mock_job, field)
-    assert not provider.asked("wording")
-    [request] = provider.asked("equivalent_0")
-    assert request["state"]["stored_answers"] == {"equivalent_0": "Remote"}
+    assert len(provider.requests) == 1  # "Fully remote" names exactly the saved mode: no call
     [answer] = packet.answers
     assert (answer.value.label, answer.provenance.reference_ids) == ("Fully remote", ["sa.work_location"])
-    assert stage_traces(resolver, "work_location_preference")[0]["status"] == "MAPPED"
+    [trace] = stage_traces(resolver, "work_arrangement_preference")
+    assert (trace["status"], trace["mode_options"]) == ("MAPPED", 1)
+
+
+def test_a_work_mode_select_whose_options_mix_modes_maps_the_preference_through_option_equivalence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.97), "wording": ("NONE", 0.99)})
+    field = choice_field("Which work arrangement do you prefer?", SemanticType.CUSTOM_SELECT,
+                         "Remote or hybrid", "Hybrid or on-site", "On-site only", control=ControlType.RADIO)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, PREFERENCE), mock_job, field)
+    assert not provider.asked("wording")
+    [request] = provider.asked("equivalent_0")
+    assert request["state"]["stored_answers"] == {"equivalent_0": "remote"}
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == ("Remote or hybrid", ["sa.work_location"])
+    assert stage_traces(resolver, "work_arrangement_preference")[0]["status"] == "MAPPED"
 
 
 def test_without_a_saved_preference_a_work_mode_select_holds_without_a_call(
@@ -4595,7 +4686,7 @@ def test_without_a_saved_preference_a_work_mode_select_holds_without_a_call(
     assert not any(name in request["questions"] for request in provider.requests
                    for name in ("residence", "equivalent_0", "wording"))
     assert not stage_traces(resolver, "residence_screener")
-    assert stage_traces(resolver, "work_location_preference")[0]["status"] == "NONE"
+    assert stage_traces(resolver, "work_arrangement_preference")[0]["status"] == "NONE"
     [missing] = packet.missing_inputs
     assert missing.field_id == "answer"
 
@@ -4612,7 +4703,7 @@ def test_only_a_preference_among_work_modes_takes_the_saved_preference(
                                "equivalent_0": ("NONE", 0.99)}, semantic="CUSTOM_SELECT")
     field = choice_field(label, SemanticType.CUSTOM_SELECT, *options, control=ControlType.SELECT)
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, PREFERENCE), mock_job, field)
-    assert not stage_traces(resolver, "work_location_preference") and packet.answers == []
+    assert not stage_traces(resolver, "work_arrangement_preference") and packet.answers == []
 
 
 def test_the_persons_own_answer_to_the_preference_wording_comes_first(
@@ -4623,7 +4714,7 @@ def test_the_persons_own_answer_to_the_preference_wording_comes_first(
     packet, _, resolver = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, PREFERENCE, own),
                                          mock_job, field)
     assert [(a.value.label, a.provenance.reference_ids) for a in packet.answers] == [("Hybrid", ["sa.own_pref"])]
-    assert not stage_traces(resolver, "work_location_preference")
+    assert not stage_traces(resolver, "work_arrangement_preference")
 
 
 def test_the_imported_preference_answers_the_live_select(
@@ -4634,11 +4725,12 @@ def test_the_imported_preference_answers_the_live_select(
     from interviewmaxxing_candidate.simple_answers import SimpleAnswers
 
     data = SimpleAnswers.from_identity(fictional_candidate.identity).model_dump()
-    data["work_location_preference"] = "Remote or hybrid"
+    data["work_arrangement_preference"] = "Fully remote"  # normalised to the closed vocabulary
     updates = SimpleAnswers.model_validate(data).saved_answer_updates(
         confirmed_at=datetime(2026, 9, 25, tzinfo=UTC))
     [saved] = updates
-    assert (saved.semantic_type, saved.question) == (None, WORK_LOCATION_PREFERENCE_QUESTION)
+    assert (saved.semantic_type, saved.question, saved.value) == (
+        None, WORK_ARRANGEMENT_PREFERENCE_QUESTION, "remote")
     assert UPSTART_LABEL in saved.match_phrases
     provider = ChoiceProvider({"equivalent_0": ("o0", 0.96)}, semantic="LOCATION")
     field = choice_field("Preferred work arrangement", SemanticType.LOCATION, *UPSTART_OPTIONS,
@@ -4646,5 +4738,399 @@ def test_the_imported_preference_answers_the_live_select(
     packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, saved), mock_job, field)
     [answer] = packet.answers
     assert (answer.value.label, answer.provenance.reference_ids) == ("Remote", [saved.id])
-    [request] = provider.asked("equivalent_0")
-    assert request["state"]["stored_answers"] == {"equivalent_0": "Remote or hybrid"}
+    assert len(provider.requests) == 1  # "Remote" is an option
+
+
+# --- round 10 (follow-up): the live prepare-only retry on the merged head ----------------------
+
+from datetime import date, timedelta  # noqa: E402
+
+from interviewmaxxing_browser.ai.routing import STATUS_REPEAT_MARGIN  # noqa: E402
+from interviewmaxxing_browser.ai.start_dates import (  # noqa: E402
+    bucket_choice,
+    days_from_today,
+    in_words,
+    option_bucket,
+)
+
+TODAY = date(2026, 9, 25)
+GREENHOUSE_BUCKETS = ("Immediately", "Within 2 weeks", "2-4 weeks", "1-3 months", "More than 3 months")
+SOONEST = "When is the soonest you are able to start? Type here..."
+
+
+def without_start_dates(candidate: CandidateProfile) -> CandidateProfile:
+    """The fixture without its own job-scoped start date for Mock Co."""
+    return candidate.model_copy(update={"saved_answers": [
+        a for a in candidate.saved_answers if a.semantic_type is not SemanticType.START_DATE]})
+
+
+def saved_start(value: str) -> SavedAnswer:
+    return global_answer("sa.start", "What is your earliest start date?", value,
+                         semantic=SemanticType.START_DATE)
+
+
+def start_field(*options: str, label: str = "Earliest Start Date?",
+                control: ControlType = ControlType.SELECT) -> ApplicationField:
+    if control is ControlType.TEXTAREA:
+        return ApplicationField(id="answer", selector="#answer", label=label,
+                                semantic_type=SemanticType.START_DATE, control_type=control, required=True)
+    return choice_field(label, SemanticType.START_DATE, *(options or START_OPTIONS), control=control)
+
+
+# 2. Start-date buckets.
+
+@pytest.mark.parametrize("value,options,expected,how", [
+    ("Two weeks after an offer is accepted", START_OPTIONS, "Two weeks after offer acceptance", "contains"),
+    ("immediately", START_OPTIONS, "ASAP", "contains"),
+    ("10 days", START_OPTIONS, "Two weeks after offer acceptance", "next_later"),
+    ("3 weeks notice", START_OPTIONS, "Three weeks after offer acceptance", "contains"),
+    ("2 weeks", GREENHOUSE_BUCKETS, "Within 2 weeks", "contains"),  # the earliest of two buckets
+    ("5 days", GREENHOUSE_BUCKETS, "Within 2 weeks", "contains"),
+    ("3 weeks", GREENHOUSE_BUCKETS, "2-4 weeks", "contains"),
+    ("6 weeks", GREENHOUSE_BUCKETS, "1-3 months", "contains"),
+    ("4-6 weeks", GREENHOUSE_BUCKETS, "1-3 months", "contains"),  # its later bound
+    ("4 months", GREENHOUSE_BUCKETS, "More than 3 months", "contains"),
+    ("ASAP", GREENHOUSE_BUCKETS, "Immediately", "contains"),
+    ("29 days", GREENHOUSE_BUCKETS, "1-3 months", "next_later"),
+])
+def test_the_live_start_date_select_takes_the_bucket_containing_the_saved_availability(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
+    options: tuple[str, ...], expected: str, how: str,
+) -> None:
+    # Lever's "Earliest Start Date?" (5 options, 4 applications): question_equivalence
+    # VALUE_DOES_NOT_FIT 0.87-0.92, then option_equivalence NONE. The saved date or notice
+    # period names no option, so it is bucketed instead.
+    provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": ("NONE", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(without_start_dates(fictional_candidate),
+                                                              saved_start(value), *UNTYPED_NOISE),
+                                         mock_job, start_field(*options))
+    assert len(provider.requests) == 1  # no wording decision, no option pick
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == (expected, ["sa.start"])
+    [trace] = stage_traces(resolver, "start_date_bucket")
+    assert (trace["status"], trace["bucket"]) == ("ANSWERED", how)
+    assert value not in json.dumps(trace)
+
+
+def test_a_saved_date_is_bucketed_relative_to_today(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_core import utc_now
+
+    soon = (utc_now().date() + timedelta(days=10)).isoformat()
+    later = (utc_now().date() + timedelta(days=45)).isoformat()
+    for value, expected in ((soon, "Two weeks after offer acceptance"), (later, None)):
+        provider = ChoiceProvider()
+        packet, _, resolver = resolve_choice(provider, with_saved(without_start_dates(fictional_candidate),
+                                                                  saved_start(value)), mock_job, start_field())
+        [trace] = stage_traces(resolver, "start_date_bucket")
+        if expected is None:  # 45 days: no later option, and "Other" is never chosen
+            assert trace["status"] == "NO_LATER_OPTION" and packet.answers == []
+            [missing] = packet.missing_inputs
+            assert missing.field_id == "answer"
+        else:
+            assert [a.value.label for a in packet.answers] == [expected]
+            assert trace["bucket"] == "next_later"
+
+
+@pytest.mark.parametrize("value,status", [
+    ("Flexible", "UNPARSED"),
+    ("As soon as my visa transfers", "UNPARSED"),
+])
+def test_a_start_date_the_buckets_cannot_read_holds_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str, status: str,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(without_start_dates(fictional_candidate),
+                                                              saved_start(value)), mock_job, start_field())
+    assert len(provider.requests) == 1 and packet.answers == []  # held for the person, never generated
+    assert stage_traces(resolver, "start_date_bucket")[0]["status"] == status
+    [missing] = packet.missing_inputs
+    assert missing.reason is MissingReason.AMBIGUOUS and "cannot be placed on these options" in missing.prompt
+
+
+def test_a_start_date_select_without_availability_options_holds() -> None:
+    assert option_bucket("Other") is None and option_bucket("Not sure") is None
+    assert bucket_choice((14.0, 14.0), []) == (None, "NO_LATER_OPTION")
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("2026-10-15", "October 15, 2026"),
+    ("October 15, 2026", "October 15, 2026"),
+    ("15 October 2026", "October 15, 2026"),
+    ("Two weeks after an offer is accepted", "Two weeks after an offer is accepted"),
+    ("immediately", "immediately"),
+])
+def test_the_free_text_soonest_start_question_is_typed_from_the_saved_value_in_words(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str, expected: str,
+) -> None:
+    # "When is the soonest you are able to start? Type here..." (TEXTAREA, START_DATE 0.99,
+    # AMBIGUOUS 0.52).
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(without_start_dates(fictional_candidate),
+                                                              saved_start(value)), mock_job,
+                                         start_field(label=SOONEST, control=ControlType.TEXTAREA))
+    assert len(provider.requests) == 1
+    [answer] = packet.answers
+    assert (answer.value.text, answer.provenance.reference_ids) == (expected, ["sa.start"])
+    [trace] = stage_traces(resolver, "start_date_bucket")
+    assert (trace["status"], trace["bucket"]) == ("ANSWERED", "text")
+
+
+def test_the_persons_own_start_answer_to_this_wording_comes_before_the_bucket(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    own = global_answer("sa.start_own", "Earliest Start Date?", "ASAP", semantic=SemanticType.START_DATE,
+                        confirmed_at="2026-08-01T12:00:00Z")
+    packet, _, resolver = resolve_choice(ChoiceProvider(), with_saved(without_start_dates(fictional_candidate),
+                                                                      saved_start("6 weeks"), own),
+                                         mock_job, start_field())
+    assert [(a.value.label, a.provenance.reference_ids) for a in packet.answers] == [("ASAP", ["sa.start_own"])]
+    assert not stage_traces(resolver, "start_date_bucket")
+
+
+def test_a_typed_start_date_text_field_keeps_the_type_anchored_wording_path(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Only a select, radio or text area is bucketed; a text input stays on the round-9 path.
+    provider = ChoiceProvider({"wording": ("q0", 0.94)})
+    packet, _, resolver = resolve_choice(provider, with_saved(without_start_dates(fictional_candidate),
+                                                              saved_start("2026-10-15")), mock_job,
+                                         text_field("Earliest Start Date?", SemanticType.START_DATE))
+    assert provider.asked("wording") and not stage_traces(resolver, "start_date_bucket")
+    assert [a.value.text for a in packet.answers] == ["2026-10-15"]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("2 weeks", (14.0, 14.0)), ("two weeks", (14.0, 14.0)), ("4-6 weeks", (28.0, 42.0)),
+    ("1 month", (30.0, 30.0)), ("30 days", (30.0, 30.0)), ("immediately", (0.0, 0.0)),
+    ("Available now", (0.0, 0.0)), ("2026-09-30", (5.0, 5.0)), ("2026-09-01", (0.0, 0.0)),
+    ("September 2026", (0.0, 0.0)), ("Flexible", None),
+])
+def test_days_from_today_reads_dates_and_notice_periods(
+    value: str, expected: tuple[float, float] | None,
+) -> None:
+    assert days_from_today(value, TODAY) == expected
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Immediately", (0.0, 0.0)), ("ASAP", (0.0, 0.0)), ("Within 2 weeks", (0.0, 14.0)),
+    ("Less than 2 weeks", (0.0, 14.0)), ("2 weeks or less", (0.0, 14.0)), ("2-4 weeks", (14.0, 28.0)),
+    ("2 to 4 weeks", (14.0, 28.0)), ("1-3 months", (30.0, 90.0)),
+    ("More than 3 months", (90.0, float("inf"))), ("3+ months", (90.0, float("inf"))),
+    ("One week after offer acceptance", (7.0, 7.0)), ("Two weeks after offer acceptance", (14.0, 14.0)),
+    ("Other", None), ("Not sure", None), ("After my current project", None),
+])
+def test_option_bucket_reads_the_range_an_availability_option_states(
+    label: str, expected: tuple[float, float] | None,
+) -> None:
+    assert option_bucket(label) == expected
+    assert in_words("2026-10-15") == "October 15, 2026"
+
+
+# 3. Status derivation on a five-option select, and one repeat within 0.05 of the gate.
+
+JAZZHR = "Can you work legally in the United States?"
+JAZZHR_OPTIONS = ("Yes", "No", "Yes, with sponsorship", "I have a pending application", "Prefer not to say")
+
+
+@pytest.mark.parametrize("code,expected", [("us_citizen", "Yes"), ("us_permanent_resident", "Yes")])
+def test_a_plain_yes_beside_more_specific_options_is_the_tables_answer_for_a_permanent_status(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, code: str, expected: str,
+) -> None:
+    # JazzHR: status_derivation via Jev was ANSWERED o1 0.98 in one run and BELOW_GATE 0.91 in
+    # the next; the plain Yes is the table's answer for a citizen or permanent resident.
+    field = status_field(JAZZHR, SemanticType.WORK_AUTHORIZATION, *JAZZHR_OPTIONS)
+    assert _status_table(field, code, _option_keys(field)) is not None
+    provider = ChoiceProvider({"status": ("o1", 0.91)})
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, code), mock_job, field)
+    assert not provider.asked("status")
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == (expected, ["sa.status"])
+    [trace] = code_free(resolver, code, "status_derivation")
+    assert (trace["via"], trace["choice"], trace["status"]) == ("table", "o0", "ANSWERED")
+
+
+@pytest.mark.parametrize("code", ["not_authorized", "h1b", "ead_opt"])
+def test_a_non_permanent_status_on_the_five_option_select_stays_with_jev(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, code: str,
+) -> None:
+    field = status_field(JAZZHR, SemanticType.WORK_AUTHORIZATION, *JAZZHR_OPTIONS)
+    assert _status_table(field, code, _option_keys(field)) is None
+    provider = ChoiceProvider({"status": ("UNKNOWN", 0.98)})
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, code), mock_job, field)
+    assert provider.asked("status") and packet.answers == []
+    assert code_free(resolver, code, "status_derivation")[0]["via"] == "jev"
+
+
+def test_the_compound_question_never_takes_the_table_even_with_a_plain_yes(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    field = status_field(BOTH_AT_ONCE, SemanticType.WORK_AUTHORIZATION, *JAZZHR_OPTIONS)
+    assert _status_table(field, "us_citizen", _option_keys(field)) is None
+
+
+class RepeatingProvider(ChoiceProvider):
+    """ChoiceProvider whose ``status`` decisions come from a sequence, one per call."""
+
+    def __init__(self, sequence: list[tuple[str, float]], **kwargs: Any) -> None:
+        super().__init__({}, **kwargs)
+        self.sequence = list(sequence)
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        if "status" in json.loads(body)["questions"]:
+            self.picks["status"] = self.sequence.pop(0)
+        return super().__call__(url, headers, body, timeout)
+
+
+@pytest.mark.parametrize("first,second,expected,confidence", [
+    (("o1", 0.91), ("o1", 0.98), "Not authorized", 0.91),  # within 0.05: repeated, the lower kept
+    (("o1", 0.91), ("o1", 0.93), None, None),  # the repeat still below the gate
+    (("o1", 0.91), ("o0", 0.98), None, None),  # the repeat lands elsewhere
+    (("o1", 0.89), None, None, None),  # more than 0.05 below: no repeat
+    (("o1", 0.96), None, "Not authorized", 0.96),  # passes first time: no repeat
+])
+def test_a_status_decision_just_below_the_gate_is_decided_once_more(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, first: tuple[str, float],
+    second: tuple[str, float] | None, expected: str | None, confidence: float | None,
+) -> None:
+    assert STATUS_REPEAT_MARGIN == 0.05
+    field = status_field("Which describes your U.S. work status?", SemanticType.WORK_AUTHORIZATION,
+                         "Authorized for any employer", "Not authorized", "Authorized with sponsorship")
+    provider = RepeatingProvider([first, *([second] if second else [])])
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, "not_authorized"),
+                                         mock_job, field)
+    calls = provider.asked("status")
+    assert len(calls) == (2 if second else 1)
+    if second:
+        assert calls[0]["state"].get("repeat") is None and calls[1]["state"]["repeat"] == 2
+    [trace] = code_free(resolver, "not_authorized", "status_derivation")
+    if second:
+        assert trace["repeat"]["choice"] == second[0]
+    else:
+        assert "repeat" not in trace
+    if expected is None:
+        assert packet.answers == [] and trace["status"] == "BELOW_GATE"
+        return
+    [answer] = packet.answers
+    assert (answer.value.label, answer.confidence) == (expected, pytest.approx(confidence))
+    assert trace["status"] == "ANSWERED"
+
+
+# 4. A plain authorization wording with no semantic type.
+
+@pytest.mark.parametrize("label", [
+    "Are you authorized to be employed in the United States?",
+    "Are you legally able to work in the U.S.?",
+    "Are you eligible to work in the United States?",
+])
+def test_a_plain_authorization_wording_without_a_type_is_derived_from_the_status(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+) -> None:
+    # Ashby's "Are you authorized to be employed in the United States?" reached routing with
+    # no semantic type (WP10 handles the classifier miss); the wording alone fires the derivation.
+    provider = ChoiceProvider(semantic="UNKNOWN")
+    field = choice_field(label, SemanticType.UNKNOWN, "Yes", "No", control=ControlType.RADIO)
+    packet, ctx, resolver = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"),
+                                           mock_job, field)
+    assert ctx.form.fields[0].semantic_type is SemanticType.UNKNOWN
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids, answer.semantic_type) == (
+        "Yes", ["sa.status"], SemanticType.UNKNOWN)
+    [trace] = code_free(resolver, "us_citizen", "status_derivation")
+    assert (trace["via"], trace["status"]) == ("table", "ANSWERED")
+
+
+@pytest.mark.parametrize("label", [
+    "Will you need us to sponsor your work visa?",  # sponsorship wording: not plain authorization
+    "Are you authorized to work in Canada?",
+    "Do you have a security clearance?",
+])
+def test_other_untyped_wordings_are_not_derived_from_the_status(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+) -> None:
+    provider = ChoiceProvider(semantic="UNKNOWN")
+    field = choice_field(label, SemanticType.UNKNOWN, "Yes", "No", control=ControlType.RADIO)
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"), mock_job, field)
+    assert packet.answers == [] and not stage_traces(resolver, "status_derivation")
+
+
+# 5. Work arrangement: the Greenhouse checkbox group and Ashby's on-site-in-Austin question.
+
+GREENHOUSE_PREFERENCE = "Location Preference"
+GREENHOUSE_HELP = ("As a digital-first company, we are providing our employees with the flexibility to "
+                   "choose where they work. Select all that apply.")
+ASHBY_ONSITE = ("Base is a fully in-person work environment. This role requires working on-site in "
+                "Austin five days a week. Are you able to work on-site in Austin?")
+
+
+def arrangement(code: str) -> SavedAnswer:
+    return global_answer("sa.arrangement", WORK_ARRANGEMENT_PREFERENCE_QUESTION, code)
+
+
+def test_the_greenhouse_location_preference_group_takes_the_saved_arrangement(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)}, semantic="LOCATION")
+    field = choice_field(GREENHOUSE_PREFERENCE, SemanticType.LOCATION, "Remote", "Hybrid", "Office",
+                         control=ControlType.CHECKBOX_GROUP).model_copy(update={"help_text": GREENHOUSE_HELP})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, arrangement("remote"),
+                                                              *UNTYPED_NOISE), mock_job, field)
+    assert len(provider.requests) == 1 and not stage_traces(resolver, "question_equivalence")
+    [answer] = packet.answers
+    assert [c.label for c in answer.value.choices] == ["Remote"]
+    assert answer.provenance.reference_ids == ["sa.arrangement"]
+    assert stage_traces(resolver, "work_arrangement_preference")[0]["status"] == "MAPPED"
+
+
+@pytest.mark.parametrize("code,relocate,city,expected,status", [
+    ("on-site", "Yes", "Springfield", "Yes", "ANSWERED"),  # willing to relocate to Austin
+    ("on-site", "No", "Springfield", "No", "ANSWERED"),
+    ("on-site", None, "Springfield", None, "UNKNOWN"),  # relocation unstated: held
+    ("on-site", None, "Austin", "Yes", "ANSWERED"),  # already in Austin (round 9's city rule)
+    ("remote", "Yes", "Austin", "No", "ANSWERED"),  # on-site not acceptable
+    ("hybrid", "Yes", "Springfield", "No", "ANSWERED"),
+    (None, "Yes", "Austin", None, "UNKNOWN"),  # no preference saved: held
+])
+def test_the_ashby_onsite_in_austin_question_is_derived_from_the_arrangement_and_the_city(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, code: str | None,
+    relocate: str | None, city: str, expected: str | None, status: str,
+) -> None:
+    saved = [arrangement(code)] if code else []
+    if relocate:
+        saved.append(WILLING.model_copy(update={"value": relocate}))
+    address = fictional_candidate.identity.address.model_copy(update={"city": city, "region": "TX" if city == "Austin" else "OR"})
+    candidate = fictional_candidate.model_copy(update={
+        "identity": fictional_candidate.identity.model_copy(update={"address": address})})
+    provider = ChoiceProvider({"residence": ("o0", 0.99), "wording": ("q0", 0.99), "relocation": ("o0", 0.99)},
+                              semantic="LOCATION")
+    field = choice_field(ASHBY_ONSITE, SemanticType.LOCATION, "Yes", "No", control=ControlType.RADIO)
+    packet, _, resolver = resolve_choice(provider, with_saved(candidate, *saved), mock_job, field)
+    assert not any(name in r["questions"] for r in provider.requests
+                   for name in ("residence", "wording", "relocation", "equivalent_0"))
+    [trace] = stage_traces(resolver, "work_arrangement")
+    assert (trace["question"], trace["status"]) == ("onsite_city", status)
+    if expected is None:
+        assert packet.answers == []
+        [missing] = packet.missing_inputs
+        assert missing.field_id == "answer"
+        return
+    [answer] = packet.answers
+    assert answer.value.label == expected
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.arrangement"])
+    assert (trace["onsite_acceptable"], trace["in_named_city"]) == (code == "on-site", city == "Austin")
+    if relocate and city != "Austin" and code == "on-site":
+        assert (trace["relocation"], trace["relocation_reference"]) == (relocate.lower(), "sa.relocate")
+        assert ", the relocation answer" in (answer.provenance.note or "")
+
+
+def test_an_onsite_question_naming_no_city_is_not_derived(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)})
+    field = choice_field("Are you comfortable working on-site five days a week?", SemanticType.CUSTOM_BOOLEAN,
+                         "Yes", "No", control=ControlType.RADIO)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, arrangement("on-site")),
+                                         mock_job, field)
+    assert not stage_traces(resolver, "work_arrangement") and packet.answers == []

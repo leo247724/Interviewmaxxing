@@ -6,8 +6,10 @@ year", "$45/hr", "95k annually"). Three readings of it need no model call:
 - a range select (``salary_range``, ``range_options``, ``containing_option``): the one
   option whose numeric bounds contain the amount, in the same period;
 - a pay-period select: the period the value states (``periods_named``);
-- a base, annual, expected or target salary wording (``salary_wording``): the plain
-  desired salary is a base figure unless its value says otherwise (OTE, total, bonus).
+- a salary-typed field of any wording (``salary_wording``, ``convert_amount``): the plain
+  desired salary is a base figure, converted to the period the wording names; a range or
+  minimum wording takes it as the minimum; a total-compensation wording states it as the
+  base salary.
 
 Nothing here produces a value: every answer is the person's own saved text or one of the
 site's own options."""
@@ -186,7 +188,6 @@ class RangeStatus(StrEnum):
     UNIT_UNSTATED = "UNIT_UNSTATED"
     """Neither the options, the field's wording nor the bounds' magnitude state the
     period the ranges are in."""
-    UNIT_MISMATCH = "UNIT_MISMATCH"
     CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
     NOT_CONTAINED = "NOT_CONTAINED"
     AMBIGUOUS = "AMBIGUOUS"
@@ -216,27 +217,64 @@ def options_period(ranges: Sequence[tuple[FieldOption, SalaryRange]],
     return None, None
 
 
+@dataclass(frozen=True, slots=True)
+class RangeChoice:
+    """The outcome of placing a saved salary on a range select."""
+
+    option: FieldOption | None
+    status: RangeStatus
+    unit_source: str | None
+    """Where the options' period was read: ``options``, ``wording`` or ``magnitude``."""
+    period: str | None
+    """The period the ranges are in (the saved amount is converted to it)."""
+
+
 def containing_option(salary: SavedSalary, ranges: Sequence[tuple[FieldOption, SalaryRange]],
-                      wording: str) -> tuple[FieldOption | None, RangeStatus, str | None]:
-    """The one range option containing the saved amount in the same period, or why there
-    is none: the option, the status and where the options' period was read."""
+                      wording: str) -> RangeChoice:
+    """The one range option containing the saved amount, converted to the period the
+    ranges are in (``convert_amount``), or why there is none."""
     if salary.period is None:
-        return None, RangeStatus.NO_UNIT, None
+        return RangeChoice(None, RangeStatus.NO_UNIT, None, None)
     period, source = options_period(ranges, wording)
     if period is None:
-        return None, RangeStatus.UNIT_UNSTATED, None
-    if period != salary.period:
-        return None, RangeStatus.UNIT_MISMATCH, source
+        return RangeChoice(None, RangeStatus.UNIT_UNSTATED, None, None)
     stated = {bounds.currency for _, bounds in ranges if bounds.currency is not None}
     stated |= currencies_named(wording) if not stated else set()
     if salary.currency is not None and stated and salary.currency not in stated:
-        return None, RangeStatus.CURRENCY_MISMATCH, source
-    containing = [option for option, bounds in ranges if bounds.contains(salary.amount)]
+        return RangeChoice(None, RangeStatus.CURRENCY_MISMATCH, source, period)
+    amount = convert_amount(salary.amount, salary.period, period)
+    containing = [option for option, bounds in ranges if bounds.contains(amount)]
     if not containing:
-        return None, RangeStatus.NOT_CONTAINED, source
+        return RangeChoice(None, RangeStatus.NOT_CONTAINED, source, period)
     if len(containing) > 1:
-        return None, RangeStatus.AMBIGUOUS, source
-    return containing[0], RangeStatus.MAPPED, source
+        return RangeChoice(None, RangeStatus.AMBIGUOUS, source, period)
+    return RangeChoice(containing[0], RangeStatus.MAPPED, source, period)
+
+
+HOURS_PER_YEAR = 2080.0
+_PER_YEAR = {"year": 1.0, "month": 12.0, "week": 52.0, "day": 260.0, "hour": HOURS_PER_YEAR}
+"""How many of each pay period make a year; hourly figures assume 2,080 hours."""
+_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def convert_amount(amount: float, source: str, target: str) -> float:
+    """``amount`` per ``source`` period as an amount per ``target`` period: monthly is
+    annual / 12, hourly is annual / 2080, and the other way round from an hourly or
+    monthly figure; rounded to the nearest 1 for an hourly figure and to the nearest
+    100 otherwise."""
+    if source == target:
+        return amount
+    annual = amount * _PER_YEAR[source]
+    converted = annual / _PER_YEAR[target]
+    return float(round(converted)) if target == "hour" else float(round(converted / 100) * 100)
+
+
+def render_salary(amount: float, period: str | None, currency: str | None) -> str:
+    """A figure in the person's terms: "$95,000 per year", "€7,900 per month", "45 per hour"."""
+    number = f"{amount:,.0f}" if amount.is_integer() else f"{amount:,.2f}".rstrip("0").rstrip(".")
+    symbol = _SYMBOLS.get(currency or "")
+    figure = f"{symbol}{number}" if symbol else f"{currency} {number}" if currency else number
+    return f"{figure} per {period}" if period else figure
 
 
 def field_wording(field: ApplicationField) -> str:
@@ -245,42 +283,48 @@ def field_wording(field: ApplicationField) -> str:
                      *field.section_context])
 
 
-# --- base, annual, expected and target salary wordings ----------------------------------
+# --- what a salary wording asks for --------------------------------------------------------
 
-_SALARY_NOUN = re.compile(r"\b(?:salary|salaries|compensation|comp|pay|wage|wages|remuneration|"
-                          r"rate|earnings)\b", re.IGNORECASE)
-_PLAIN_SALARY = re.compile(r"\b(?:desired|expected|expectation|expectations|target|base|annual|"
-                           r"yearly|ideal|requested)\b", re.IGNORECASE)
 _COMPENSATION_CLAUSE = re.compile(
     r"\b(?:ote|on[- ]target|total|bonus|bonuses|equity|commission|commissions|benefits|"
     r"package|tc|all[- ]in|stock|options|rsus?)\b", re.IGNORECASE)
-"""A wording that asks for more than a base figure: held, never answered by wording."""
-_OTHER_SALARY = re.compile(
-    r"\b(?:current|currently|present|previous|prior|last|most recent|history|minimum|floor|"
-    r"lowest|maximum|highest|range|currency|negotiable|reason|why|explain|justify)\b",
-    re.IGNORECASE)
-"""A salary question the plain desired salary does not answer by itself (a current or
-minimum salary, a range, a currency, an explanation): left to the wording decision."""
+"""A wording that asks for more than a base figure: answered as the desired base salary,
+stated as such."""
+_MINIMUM = re.compile(r"\b(?:minimum|min|floor|lowest|range|at least)\b", re.IGNORECASE)
+"""A range or minimum wording: the saved figure is the minimum; no maximum is invented."""
+_NOT_DERIVED = re.compile(
+    r"\b(?:current|currently|present|previous|prior|last|most recent|history|maximum|max|"
+    r"highest|ceiling|currency|reason|why|explain|justify)\b", re.IGNORECASE)
+"""A salary question the desired salary does not answer (a current, previous or maximum
+salary, a currency, an explanation): left to the wording decision."""
+_SPECIFIC = re.compile(r"\b(?:as specific as possible|be specific|in detail|details)\b", re.IGNORECASE)
 
 
 class WordingKind(StrEnum):
     PLAIN = "PLAIN"
-    """A desired, expected, target, base or annual salary: the saved desired salary."""
+    """A desired, expected, target, base or annual salary: the saved figure itself."""
+    MINIMUM = "MINIMUM"
+    """A range or minimum wording: the saved figure as the minimum."""
     COMPENSATION_CLAUSE = "COMPENSATION_CLAUSE"
-    """OTE, total compensation, bonus or equity: more than the saved base figure."""
-    OTHER = "OTHER"
+    """OTE, total compensation, bonus or equity: the figure stated as the base salary."""
+    NOT_DERIVED = "NOT_DERIVED"
     """Not settled here: the wording decision or the person decides."""
 
 
 def salary_wording(question: str) -> WordingKind:
-    """What a salary question asks for, from its label and help text."""
-    if not _SALARY_NOUN.search(question) or not _PLAIN_SALARY.search(question):
-        return WordingKind.OTHER
+    """What a salary-typed question asks for, from its label, help text and field id."""
+    if _NOT_DERIVED.search(question):
+        return WordingKind.NOT_DERIVED
     if _COMPENSATION_CLAUSE.search(question):
         return WordingKind.COMPENSATION_CLAUSE
-    if _OTHER_SALARY.search(question):
-        return WordingKind.OTHER
+    if _MINIMUM.search(question):
+        return WordingKind.MINIMUM
     return WordingKind.PLAIN
+
+
+def asks_for_detail(question: str) -> bool:
+    """A wording that asks the person to be specific ("as specific as possible")."""
+    return _SPECIFIC.search(question) is not None
 
 
 def render_amount(amount: float) -> str:

@@ -47,7 +47,9 @@ from interviewmaxxing_core import (
     is_work_mode_choice,
     pay_period_of,
     stated_status,
-    stated_work_location_preference,
+    stated_work_arrangement_preference,
+    utc_now,
+    work_mode_of,
 )
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
 from interviewmaxxing_generation.questions import (
@@ -98,15 +100,19 @@ from .providers import (
 from .salary import (
     RangeStatus,
     WordingKind,
+    asks_for_detail,
     containing_option,
+    convert_amount,
     currencies_named,
     field_wording,
     parse_salary,
     periods_named,
     range_options,
     render_amount,
+    render_salary,
     salary_wording,
 )
+from .start_dates import bucket_choice, days_from_today, in_words, option_bucket
 from .stories import (
     story_consistency,
     story_evidence,
@@ -286,8 +292,19 @@ pronoun in "let us know" is not the country), "U.S.", "United States", or "in th
 _SPONSOR = re.compile(r"\bsponsor")
 _NEED = re.compile(r"\b(?:requir\w*|need\w*)\b")
 _AUTHORIZED_TO_WORK = re.compile(
-    r"\b(?:authori[sz]ed|eligible|legally|legal|right|permitted|allowed)\b.*\bwork\b"
-    r"|\bwork authori[sz]ation\b")
+    r"\b(?:authori[sz]ed|eligible|legally|legal|right|permitted|allowed)\b.*"
+    r"\b(?:work|employed|employment)\b|\bwork authori[sz]ation\b"
+    r"|\bwork\b.*\b(?:legally|lawfully)\b")
+_UNTYPED_LEGAL = frozenset({SemanticType.UNKNOWN, SemanticType.CUSTOM_BOOLEAN})
+"""Field types a classifier miss leaves a plain authorization question with; its wording
+("authorized to be employed in the United States", "legally able to work") still gets the
+status derivation (round 10 follow-up)."""
+STATUS_REPEAT_MARGIN = 0.05
+"""A Jev status decision this close below the gate is decided once more; the lower of the
+two scores is kept."""
+_ONSITE_WORDING = re.compile(r"\b(?:on-?\s?site|in-?\s?person|in-?\s?office|in the office)\b",
+                             re.IGNORECASE)
+"""An on-site (in-person, in-office) work question."""
 _STATUS_OPTION = re.compile(
     r"\b(?:citizen\w*|green card|resident\w*|residence|visa|h-?1b|ead|opt|tn|asylee|asylum|"
     r"refugee|daca|tps)\b", re.IGNORECASE)
@@ -635,6 +652,18 @@ def _asks_sponsorship(field: ApplicationField) -> bool:
             or _SPONSOR.search(field.question_text.casefold()) is not None)
 
 
+def _plain_authorization(field: ApplicationField) -> bool:
+    """A plain U.S. work-authorization question by its wording alone ("Are you authorized
+    to be employed in the United States?", "legally able to work"): no sponsorship, no
+    negation, no other subject. The status derivation fires for it even when the
+    classifier gave the field no type."""
+    question = field.question_text.casefold()
+    return (_AUTHORIZED_TO_WORK.search(question) is not None
+            and _US_WORDS.search(field.question_text) is not None
+            and _SPONSOR.search(question) is None and _AUTH_NEGATION.search(question) is None
+            and _AUTH_EXCLUDED.search(question) is None)
+
+
 def _status_table(field: ApplicationField, code: str,
                   keys: dict[str, FieldOption]) -> FieldOption | None:
     """The obvious status pairs, answered without a call; None leaves the question to Jev.
@@ -651,9 +680,16 @@ def _status_table(field: ApplicationField, code: str,
     sponsorship = sponsor and bool(_NEED.search(question))
     authorized = bool(_AUTHORIZED_TO_WORK.search(question))
     options = list(keys.values())
-    if (sponsor and authorized) or any(_STATUS_OPTION.search(o.label) for o in options):
+    if sponsor and authorized:
         return None
     bare = {question_key(o.label): o for o in options}
+    if (authorized and not sponsor and {"yes", "no"} <= set(bare) and len(options) > 2
+            and code in PERMANENT_STATUSES):
+        # Round 10 follow-up: a plain Yes beside more specific options (JazzHR's five) is
+        # the truthful answer to a plain authorization question for a permanent status.
+        return bare["yes"]
+    if any(_STATUS_OPTION.search(o.label) for o in options):
+        return None
     if len(options) == 2 and set(bare) == {"yes", "no"}:
         if sponsorship:
             return bare["no"] if code in PERMANENT_STATUSES else None
@@ -1476,7 +1512,8 @@ class DynamicPacketResolver:
         exact = [a for a in context.candidate.applicable_saved_answers(context.job)
                  if saved_answer_matches(a, question)]
         own = [a for a in exact if not _is_status_question(a)]
-        legal = field.semantic_type in (SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP)
+        legal = field.semantic_type in (SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP) or (
+            field.semantic_type in _UNTYPED_LEGAL and _plain_authorization(field))
         answer: PacketAnswer | None = None
         settled = False
         if self._is_salary_period(context, field) and not any(
@@ -1490,8 +1527,12 @@ class DynamicPacketResolver:
                 answer, settled = self._referral_option(context, field)
             if not settled and not own and self._is_work_location(field):
                 # Round 10: a remote / hybrid / on-site choice, whatever its type, from the
-                # saved work-location preference; the address never answers it.
+                # saved work-arrangement preference; the address never answers it.
                 return self._work_location(context, field, gate)
+            if not settled and not own and self._is_onsite_city_question(field):
+                # Round 10 follow-up: "on-site in Austin" from the preference, the relocation
+                # answer and the verified city; never the residence screener.
+                return self._onsite_city(context, field)
             if not settled and not (legal and exact and not own):
                 # A question asking for the status itself ("Work authorization status") is
                 # derived from the status below, never mapped from its meaning.
@@ -1525,9 +1566,13 @@ class DynamicPacketResolver:
                 return answer
         if not exact:
             if field.semantic_type is SemanticType.SALARY_EXPECTATION:
-                # Round 10: base, annual, expected and target salary wordings are the
-                # desired salary when the unit matches; OTE and total compensation hold.
-                answer, settled = self._salary_wording(context, field, gate)
+                # Round 10: derived from the desired salary (converted to the period the
+                # wording names), not matched by wording.
+                answer, settled = self._salary_derivation(context, field, gate)
+            elif (field.semantic_type is SemanticType.START_DATE
+                    and field.control_type in (ControlType.SELECT, ControlType.RADIO, ControlType.TEXTAREA)):
+                # Round 10 follow-up: the availability bucket containing the saved start date.
+                answer, settled = self._start_date_bucket(context, field, gate)
             if not settled:
                 # Second path: a GLOBAL saved answer to a differently worded question.
                 answer = self._reworded_saved_answer(context, field, gate)
@@ -1976,11 +2021,34 @@ class DynamicPacketResolver:
                 return None
             trace.update(via="jev", choice=answer.choice, confidence=answer.confidence,
                          probability=answer.probabilities.get(answer.choice))
+            confidence = min(answer.confidence, answer.probabilities.get(answer.choice, 0.0))
+            if (answer.choice in keys and not _passes(answer)
+                    and answer.confidence >= MIN_CONFIDENCE - STATUS_REPEAT_MARGIN
+                    and answer.probabilities.get(answer.choice, 0.0) >= MIN_PROBABILITY - STATUS_REPEAT_MARGIN):
+                # Round 10 follow-up: a decision just below the gate (live: o1 at 0.98 in one
+                # run, 0.91 in the next) is decided once more; it must land on the same option
+                # and pass, and the lower of the two scores is kept.
+                try:
+                    again = self.decisions.decide(DecisionRequest(model=self.decisions.model,
+                        state=_choice_state(field, keys, status={
+                            "code": code, "meaning": WORK_AUTHORIZATION_STATUSES[code],
+                            "implications": WORK_AUTHORIZATION_IMPLICATIONS[code]},
+                            stated_answers=stated, repeat=2),
+                        questions={"status": ChoiceQuestion(instructions=_STATUS_INSTRUCTIONS,
+                                                            criteria=criteria)}),
+                        purpose="status_derivation").choice("status")
+                except AIHold as exc:
+                    self._trace(trace | {"status": "BELOW_GATE", "repeat": {"reason": str(exc)}})
+                    return None
+                trace["repeat"] = {"choice": again.choice, "confidence": again.confidence,
+                                   "probability": again.probabilities.get(again.choice)}
+                if again.choice == answer.choice and _passes(again):
+                    confidence = min(confidence, again.confidence, again.probabilities[again.choice])
+                    answer = again
             if answer.choice == "UNKNOWN" or answer.choice not in keys or not _passes(answer):
                 self._trace(trace | {"status": "UNKNOWN" if answer.choice == "UNKNOWN" else "BELOW_GATE"})
                 return None
             option = keys[answer.choice]
-            confidence = min(answer.confidence, answer.probabilities[answer.choice])
         value: AnswerValue = (TextValue(text=option.label) if text_yes_no
                               else _choice_value(field, [option]))
         if answer_problems(field, value):
@@ -2045,10 +2113,10 @@ class DynamicPacketResolver:
     def _salary_range(self, field: ApplicationField, stored: StoredValue,
                       keys: dict[str, FieldOption]) -> tuple[PacketAnswer | None, bool]:
         """A saved salary onto a single choice of numeric ranges, deterministically: the
-        one option whose bounds contain the saved amount in the same pay period, read
-        from the options, the field's wording or the bounds' magnitude. No option that
-        contains it, a boundary two options share, a missing or different unit or a
-        different currency holds. Settled (True) whenever the field is such a select
+        one option whose bounds contain the saved amount converted to the pay period the
+        ranges are in, read from the options, the field's wording or the bounds'
+        magnitude. No option that contains it, a boundary two options share, a missing
+        unit, an unstated period or a different currency holds. Settled (True) whenever the field is such a select
         (typed salary, or ranges naming a currency) and the saved value states one
         amount; otherwise Jev's option equivalence follows."""
         options = list(keys.values())
@@ -2065,11 +2133,16 @@ class DynamicPacketResolver:
             "field_fingerprint": field.fingerprint, "source": stored.provenance.source.value,
             "reference_ids": list(stored.provenance.reference_ids), "option_count": len(keys),
             "range_count": len(ranges)}
-        option, status, unit_source = containing_option(salary, ranges, field_wording(field))
-        if unit_source is not None:
-            trace["unit_source"] = unit_source
+        choice_made = containing_option(salary, ranges, field_wording(field))
+        option = choice_made.option
+        if choice_made.unit_source is not None:
+            trace["unit_source"] = choice_made.unit_source
+        if choice_made.period is not None:
+            trace["period"] = choice_made.period
+            if choice_made.period != salary.period:
+                trace["conversion"] = f"{salary.period}->{choice_made.period}"
         if option is None:
-            self._trace(trace | {"status": status.value})
+            self._trace(trace | {"status": choice_made.status.value})
             return None, True
         value = _choice_value(field, [option])
         if answer_problems(field, value):
@@ -2092,62 +2165,148 @@ class DynamicPacketResolver:
         return max([a for a in saved if a.scope is AnswerScope.JOB] or saved,
                    key=lambda a: a.confirmed_at)
 
-    def _salary_wording(self, context: PacketContext, field: ApplicationField,
-                        gate: FieldRouteDecision) -> tuple[PacketAnswer | None, bool]:
-        """A base, annual, expected or target salary wording answered from the saved
-        desired salary without a wording decision: a plain desired salary states a base
-        figure unless its value says otherwise. Settled (True) with an answer when the
-        unit and currency the question names match the saved value's; settled without one
-        (held) for an OTE, total-compensation, bonus or equity wording, for a monthly or
-        hourly wording the saved value does not carry, or for a saved value that is not a
-        base figure. Any other wording (current or minimum salary, a range) is left to the
-        wording decision."""
-        question = " ".join([field.label, field.help_text or ""])
-        kind = salary_wording(question)
+    def _salary_derivation(self, context: PacketContext, field: ApplicationField,
+                           gate: FieldRouteDecision) -> tuple[PacketAnswer | None, bool]:
+        """A SALARY_EXPECTATION field answered from the saved desired salary by derivation,
+        not by wording equivalence (round 10 follow-up, mirroring the status derivation):
+        the figure with its period converted when the wording names another period
+        (monthly = annual / 12, hourly = annual / 2080, and the other way round), the
+        figure itself for a base, target, desired or expected wording, the figure as the
+        minimum for a range or minimum wording (never an invented maximum), and for a
+        total-compensation wording or a text area one sentence stating it as the desired
+        base salary. Settled (True) whenever a saved salary exists, except for a wording
+        the desired salary does not answer (a current or maximum salary, an explanation),
+        which keeps the wording decision. A saved salary without a unit holds."""
         saved = self._latest_salary(context)
-        if kind is WordingKind.OTHER or saved is None:
+        if saved is None:
             return None, False
+        question = " ".join([field.label, field.help_text or "", field.id])
+        kind = salary_wording(question)
         assert isinstance(saved.value, str)
-        trace: dict[str, Any] = {"stage": "salary_wording", "field_id": field.id,
+        trace: dict[str, Any] = {"stage": "salary_derivation", "field_id": field.id,
             "field_fingerprint": field.fingerprint, "reference_ids": [saved.id],
             "wording": kind.value}
-        if kind is WordingKind.COMPENSATION_CLAUSE:
-            self._trace(trace | {"status": "COMPENSATION_CLAUSE"})
-            return None, True
+        if kind is WordingKind.NOT_DERIVED:
+            self._trace(trace | {"status": "NOT_DERIVED"})
+            return None, False
         salary = parse_salary(saved.value)
         if salary is None:
             self._trace(trace | {"status": "UNPARSED"})
-            return None, False
+            return None, True
+        if salary.period is None:
+            self._trace(trace | {"status": "NO_UNIT"})
+            return None, True
         if not salary.base:
+            # The saved value names OTE, total or bonus: it does not state a base figure.
             self._trace(trace | {"status": "SAVED_NOT_BASE"})
             return None, True
         wording = field_wording(field)
-        units = set(periods_named(wording))
-        if units and salary.period not in units:
-            self._trace(trace | {"status": "UNIT_MISMATCH"})
+        units = periods_named(wording)
+        if len(units) > 1:
+            self._trace(trace | {"status": "UNIT_AMBIGUOUS"})
             return None, True
+        period = units[0] if units else salary.period
         currencies = currencies_named(wording)
         if currencies and salary.currency is not None and salary.currency not in currencies:
-            self._trace(trace | {"status": "CURRENCY_MISMATCH"})
+            self._trace(trace | {"status": "CURRENCY_MISMATCH", "period": period})
             return None, True
-        value: RawValue = saved.value
+        amount = convert_amount(salary.amount, salary.period, period)
+        trace["period"] = period
+        if period != salary.period:
+            trace["conversion"] = f"{salary.period}->{period}"
+        figure = render_salary(amount, period, salary.currency)
+        value: RawValue
         if field.control_type is ControlType.TEXT and field.input_type == "number":
             # A numeric input takes the bare amount only when the question states the
-            # unit, or the saved figure is annual (what a bare salary number means).
-            if not units and salary.period != "year":
+            # unit, or the figure is annual (what a bare salary number means).
+            if not units and period != "year":
                 self._trace(trace | {"status": "NUMBER_UNIT_UNSTATED"})
                 return None, True
-            value = render_amount(salary.amount)
+            value = render_amount(amount)
+        elif field.control_type is ControlType.TEXTAREA or (
+                kind is WordingKind.COMPENSATION_CLAUSE and asks_for_detail(question)):
+            value = f"My desired base salary is {figure}."
+        elif kind is WordingKind.COMPENSATION_CLAUSE:
+            value = f"{figure} base"
+        elif period == salary.period:
+            value = saved.value  # the person's own words, unit included
+        else:
+            value = figure
         stored = StoredValue(value, Provenance(source=AnswerSource.SAVED_ANSWER,
             reference_ids=[saved.id],
-            note=f"saved desired salary for {saved.question!r}: a plain desired salary states "
-                 "the base figure this wording asks for (no wording decision)"))
+            note=f"derived from the saved desired salary for {saved.question!r}"
+                 + (f" (converted to per {period})" if period != salary.period else "")
+                 + (" as the minimum" if kind is WordingKind.MINIMUM else "")
+                 + (", stated as the base salary" if kind is WordingKind.COMPENSATION_CLAUSE else "")))
         mapped = self._answer_from_stored(field, stored, gate)
         if mapped is None or answer_problems(field, mapped.value):
             self._trace(trace | {"status": "VALUE_DOES_NOT_FIT"})
             return None, True
-        self._trace(trace | {"status": "MAPPED"})
+        self._trace(trace | {"status": "ANSWERED"})
         return mapped, True
+
+    # --- the saved start date on an availability choice (round 10 follow-up) ---------------
+
+    @staticmethod
+    def _latest_start_date(context: PacketContext) -> SavedAnswer | None:
+        saved = [a for a in context.candidate.saved_answers_for(SemanticType.START_DATE, job=context.job)
+                 if isinstance(a.value, str) and a.value.strip()]
+        if not saved:
+            return None
+        return max([a for a in saved if a.scope is AnswerScope.JOB] or saved,
+                   key=lambda a: a.confirmed_at)
+
+    def _start_date_bucket(self, context: PacketContext, field: ApplicationField,
+                           gate: FieldRouteDecision) -> tuple[PacketAnswer | None, bool]:
+        """A START_DATE choice answered from the saved earliest start date without a
+        wording decision: the value is read as days from today (a date, or a notice period
+        such as "2 weeks", "immediately", "1 month") and the option whose stated range
+        contains it is chosen, else the next later one; "Other" never. A text area gets the
+        saved value in words. Settled (True) whenever a saved start date exists; a value the
+        buckets cannot place holds the field for the person (``AIHold``), never a generated
+        answer."""
+        saved = self._latest_start_date(context)
+        if saved is None:
+            return None, False
+        assert isinstance(saved.value, str)
+        trace: dict[str, Any] = {"stage": "start_date_bucket", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "reference_ids": [saved.id]}
+        if field.control_type is ControlType.TEXTAREA:
+            stored = StoredValue(in_words(saved.value), Provenance(source=AnswerSource.SAVED_ANSWER,
+                reference_ids=[saved.id],
+                note=f"the saved earliest start date for {saved.question!r}, in words"))
+            mapped = self._answer_from_stored(field, stored, gate)
+            if mapped is None or answer_problems(field, mapped.value):
+                self._trace(trace | {"status": "VALUE_DOES_NOT_FIT", "bucket": "text"})
+                return None, True
+            self._trace(trace | {"status": "ANSWERED", "bucket": "text"})
+            return mapped, True
+        keys = _option_keys(field)
+        buckets = [(key, bounds) for key, option in keys.items()
+                   if (bounds := option_bucket(option.label)) is not None]
+        trace["bucket_count"] = len(buckets)
+        held = (f"Your saved earliest start date ({saved.question!r}) cannot be placed on these "
+                "options. Choose one here.")
+        if not buckets:
+            self._trace(trace | {"status": "NO_BUCKETS"})
+            raise AIHold(held)
+        days = days_from_today(saved.value, utc_now().date())
+        if days is None:
+            self._trace(trace | {"status": "UNPARSED"})
+            raise AIHold(held)
+        choice, how = bucket_choice(days, buckets)
+        if choice is None:
+            self._trace(trace | {"status": how})
+            raise AIHold(held)
+        value = _choice_value(field, [keys[choice]])
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None, True
+        self._trace(trace | {"status": "ANSWERED", "choice": choice, "bucket": how})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[saved.id],
+                note=f"availability bucket containing the saved earliest start date for "
+                     f"{saved.question!r}" + (" (the next later one)" if how == "next_later" else ""))), True
 
     # --- self-identification answers by type (round 10) -----------------------------------
 
@@ -2205,33 +2364,98 @@ class DynamicPacketResolver:
         self._trace(trace | {"status": "MAPPED", "reference_ids": [a.id for a in newest]})
         return mapped, True
 
-    # --- the work-location preference (round 10) ------------------------------------------
+    # --- the work-arrangement preference (round 10) ------------------------------------------
 
     @staticmethod
     def _is_work_location(field: ApplicationField) -> bool:
-        """A single choice among work modes (remote, hybrid, on-site …) asking for the
-        applicant's preference, whatever its type; not one about their current or earlier
-        arrangement."""
+        """A choice among work modes (remote, hybrid, on-site …) asking for the applicant's
+        preference, whatever its type; not one about their current or earlier arrangement."""
         return is_work_mode_choice(field) and _PRESENT_OR_PAST.search(field.label) is None
+
+    @staticmethod
+    def _is_onsite_city_question(field: ApplicationField) -> bool:
+        """A yes/no question about working on-site (in person, in the office) in a named
+        city ("This role requires working on-site in Austin. Are you able to …?"), on a
+        field that is not an explicit-answer type."""
+        return (field.control_type in (ControlType.SELECT, ControlType.RADIO)
+                and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
+                and _yes_no_pair(field)
+                and _ONSITE_WORDING.search(field.question_text) is not None
+                and bool(_places(field.question_text, after_preposition=True)))
+
+    def _onsite_city(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
+        """An on-site-in-a-named-city question derived from ``work_arrangement_preference``
+        with ``willing_to_relocate`` and the verified city (round 9's city rule): on-site
+        acceptable and (already in that city or willing to relocate) is Yes; on-site not
+        acceptable, or not willing to relocate elsewhere, is No; unknown when the
+        preference is null, or the relocation answer is needed and null."""
+        saved = [a for a in context.candidate.applicable_saved_answers(context.job)
+                 if a.semantic_type is None and isinstance(a.value, str)
+                 and stated_work_arrangement_preference(a.question)]
+        trace: dict[str, Any] = {"stage": "work_arrangement", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "question": "onsite_city"}
+        if not saved:
+            self._trace(trace | {"status": "UNKNOWN"})
+            return None
+        preference = max([a for a in saved if a.scope is AnswerScope.JOB] or saved,
+                         key=lambda a: a.confirmed_at)
+        references = [preference.id]
+        acceptable = work_mode_of(str(preference.value)) == "on-site"
+        in_city = _names_city(context.candidate.identity.address.city, field.question_text)
+        trace.update(onsite_acceptable=acceptable, in_named_city=in_city)
+        if acceptable and not in_city:
+            relocation = context.candidate.saved_answers_for(SemanticType.RELOCATION, job=context.job)
+            willing = (max([a for a in relocation if a.scope is AnswerScope.JOB] or relocation,
+                           key=lambda a: a.confirmed_at) if relocation else None)
+            if willing is None or _polarity(str(willing.value)) is None:
+                self._trace(trace | {"status": "UNKNOWN", "relocation": "unstated"})
+                return None
+            # The relocation answer is typed, so the answer cites it in the trace, not in
+            # its references (a LOCATION answer may cite only untyped or same-type answers).
+            trace.update(relocation=_polarity(str(willing.value)), relocation_reference=willing.id)
+        polarity = "yes" if acceptable and (in_city or trace.get("relocation") == "yes") else "no"
+        option = next(o for o in usable_options(field) if _polarity(o.label) == polarity)
+        value = _choice_value(field, [option])
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED", "choice": polarity})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=references,
+                note="derived from the saved work-arrangement preference"
+                     + (", the relocation answer" if "relocation" in trace else "")
+                     + " and the verified city for an on-site question naming a city"))
 
     def _work_location(self, context: PacketContext, field: ApplicationField,
                        gate: FieldRouteDecision) -> PacketAnswer | None:
-        """The saved work-location preference (``work_location_preference``) mapped onto
+        """The saved work-arrangement preference (``work_arrangement_preference``) mapped onto
         the field's options: an exact option, else Jev's option equivalence. A job-scoped
         answer for this job comes first, else the newest GLOBAL one."""
         saved = [a for a in context.candidate.applicable_saved_answers(context.job)
                  if a.semantic_type is None and isinstance(a.value, str)
-                 and stated_work_location_preference(a.question)]
-        trace: dict[str, Any] = {"stage": "work_location_preference", "field_id": field.id,
+                 and stated_work_arrangement_preference(a.question)]
+        trace: dict[str, Any] = {"stage": "work_arrangement_preference", "field_id": field.id,
             "field_fingerprint": field.fingerprint, "option_count": len(usable_options(field))}
         if not saved:
             self._trace(trace | {"status": "NONE"})
             return None
         latest = max([a for a in saved if a.scope is AnswerScope.JOB] or saved,
                      key=lambda a: a.confirmed_at)
-        stored = StoredValue(latest.value, Provenance(source=AnswerSource.SAVED_ANSWER,
-            reference_ids=[latest.id],
-            note=f"saved work-location preference for {latest.question!r} on a work-mode choice"))
+        assert isinstance(latest.value, str)
+        provenance = Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[latest.id],
+            note=f"saved work-arrangement preference for {latest.question!r} on a work-mode choice")
+        mode = work_mode_of(latest.value)
+        same = [o for o in usable_options(field) if mode is not None and work_mode_of(o.label) == mode]
+        multi = field.control_type in MULTI_CHOICE_CONTROLS
+        if same and (multi or len(same) == 1):
+            # The options naming exactly the saved mode ("Fully remote", "In-office"): no call.
+            value = _choice_value(field, same)
+            if not answer_problems(field, value):
+                self._trace(trace | {"status": "MAPPED", "reference_ids": [latest.id],
+                                     "mode_options": len(same)})
+                return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
+                                    value=value, provenance=provenance)
+        stored = StoredValue(latest.value, provenance)
         mapped = self._answer_from_stored(field, stored, gate)
         if mapped is None or answer_problems(field, mapped.value):
             self._trace(trace | {"status": "VALUE_DOES_NOT_FIT", "reference_ids": [latest.id]})
