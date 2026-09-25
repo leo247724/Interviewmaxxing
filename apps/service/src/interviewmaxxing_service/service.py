@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -130,9 +131,14 @@ _DOWNLOAD_TYPES = {
 }
 
 
+SAVED_WORDING_LIMIT = 256
+"""Applications whose saved-answer wording the service keeps (least recently used go)."""
+
+
 class _LoadOnUse(Mapping[str, str]):
     """A mapping read from ``load`` the first time a value is asked for, so a view that
-    needs no saved-answer wording never reads the profile."""
+    needs no saved-answer wording never reads the profile. It answers lookups of one key
+    only: iterating it or taking its length raises instead of reading the profile."""
 
     def __init__(self, load: Callable[[], Mapping[str, str]]) -> None:
         self._load = load
@@ -147,10 +153,10 @@ class _LoadOnUse(Mapping[str, str]):
         return self._loaded()[key]
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._loaded())
+        raise TypeError("saved-answer wording is looked up one id at a time, never listed")
 
     def __len__(self) -> int:
-        return len(self._loaded())
+        raise TypeError("saved-answer wording is looked up one id at a time, never counted")
 
 
 class PresentationService:
@@ -172,8 +178,10 @@ class PresentationService:
         ``review``; optional."""
         self.owner = f"service:{os.getpid()}"
         self.application_links: ApplicationLinks | None = None
-        self._wording: dict[str, tuple[int, dict[str, str]]] = {}
-        """Application id -> (its version, the saved-answer wording its review used)."""
+        self._wording: OrderedDict[str, tuple[int, dict[str, str]]] = OrderedDict()
+        """Application id -> (its version, the saved-answer wording its review used), the
+        most recently used last; at most ``_wording_limit`` entries."""
+        self._wording_limit = SAVED_WORDING_LIMIT
         self._wording_lock = threading.Lock()
 
     # --- plumbing -------------------------------------------------------------------
@@ -284,16 +292,21 @@ class PresentationService:
     def _saved_wording(self, app: Application, packets: list[ApplicationPacket]) -> dict[str, str]:
         """``_saved_questions`` once per application version: the packets a view uses
         change only with the version, so repeated status reads, answers and resumes do
-        not read the profile from disk again. A failed read is not kept."""
+        not read the profile from disk again. A failed read is not kept, and only the
+        ``_wording_limit`` most recently used applications are."""
         with self._wording_lock:
             kept = self._wording.get(app.id)
-        if kept is not None and kept[0] == app.version:
-            return kept[1]
+            if kept is not None and kept[0] == app.version:
+                self._wording.move_to_end(app.id)
+                return kept[1]
         wording = self._saved_questions(packets)
         if wording is None:
             return {}
         with self._wording_lock:
             self._wording[app.id] = (app.version, wording)
+            self._wording.move_to_end(app.id)
+            while len(self._wording) > self._wording_limit:
+                self._wording.popitem(last=False)
         return wording
 
     def _saved_questions(self, packets: list[ApplicationPacket]) -> dict[str, str] | None:

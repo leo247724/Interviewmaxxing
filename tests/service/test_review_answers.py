@@ -817,3 +817,53 @@ def test_a_failed_profile_read_is_tried_again(
     assert wording(item) == ("Where did you study?", True)
     view(h, app_id)
     assert candidates.profile_reads == 2
+
+
+# --- the wording cache stays small and lookups never list the profile (WP11 round 2, L14) --------
+
+
+def test_saved_wording_lookups_never_list_or_count_the_profile() -> None:
+    from interviewmaxxing_service.service import _LoadOnUse
+
+    reads: list[int] = []
+
+    def load() -> dict[str, str]:
+        reads.append(1)
+        return {"sa_rw_school": "Where did you study?"}
+
+    wording = _LoadOnUse(load)
+    for listing in (len, iter, list, dict, bool):
+        with pytest.raises(TypeError):
+            listing(wording)
+    assert reads == []  # neither listing nor counting read the profile
+    assert wording.get("sa_rw_school", "") == "Where did you study?"
+    assert "sa_rw_other" not in wording
+    assert wording.get("sa_rw_other", "") == ""
+    assert reads == [1]  # one read, however many lookups
+
+
+def test_saved_wording_cache_keeps_the_most_recently_used_applications(
+    counted: tuple[Harness, CountingCandidates],
+) -> None:
+    h, candidates = counted
+    h.service._wording_limit = 2
+    add_saved_answers(h, [SCHOOL])
+    form = one_field_form("fld_rw_school", "University attended", SemanticType.UNIVERSITY)
+    apps = []
+    for n in range(3):
+        with seeded(h, f"http://127.0.0.1:9/fictional-co/620{n}/apply") as ctx:
+            ctx.prepare(form, ctx.fill(form, [school_answer(form)]))
+            apps.append(ctx.app_id)
+    first, second, third = apps
+    for app_id in apps:
+        [item] = view(h, app_id)["review"]
+        assert wording(item) == ("Where did you study?", True)
+    assert candidates.profile_reads == 3
+    assert list(h.service._wording) == [second, third]  # the first one went
+
+    view(h, third)
+    view(h, second)
+    assert candidates.profile_reads == 3  # both still kept
+    view(h, first)
+    assert candidates.profile_reads == 4  # read again, and the least recent went
+    assert list(h.service._wording) == [second, first]

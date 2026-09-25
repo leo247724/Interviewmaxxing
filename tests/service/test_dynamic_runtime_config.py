@@ -56,7 +56,9 @@ def test_configured_service_builds_dynamic_factory_without_browser_start(tmp_pat
     assert runner.prepare_only and config.application_mode == 'TEST_ONLY'
     assert runner.browser_factory.config.profile == 'synthetic'
     assert runner.browser_factory.annotator is annotator and runner.resolver is resolver
-    assert calls == [{'env_file': config.ai_env_file, 'writer_model': 'anthropic/claude-opus-5.5'}]
+    # No writer effort is configured; the runtime builder passes it through (WP12 d83e148).
+    assert calls == [{'env_file': config.ai_env_file, 'writer_model': 'anthropic/claude-opus-5.5',
+                      'writer_effort': None}]
     assert not config.paths.state_db.exists()
 
 
