@@ -5,13 +5,53 @@ import type { ReactNode } from "react";
 import type { ServiceReadiness } from "@/lib/service/readiness";
 
 export type Connection = "checking" | "connected" | "unavailable";
-export type Section = "desk" | "pipeline" | "jobs";
+export type Section = "desk" | "pipeline" | "jobs" | "review";
 
 const SECTIONS: { id: Section; label: string; live: string; preview: string }[] = [
   { id: "jobs", label: "Jobs", live: "/jobs", preview: "/preview/jobs" },
   { id: "pipeline", label: "Pipeline", live: "/pipeline", preview: "/preview/pipeline" },
+  { id: "review", label: "Review", live: "/review", preview: "/preview/review" },
   { id: "desk", label: "Desk", live: "/", preview: "/preview" },
 ];
+
+/**
+ * What the execution banner says about the service's mode. The desk starts and
+ * resumes only local test applications; the review lane follows the service's own
+ * mode, and submits only when the service has submission on and the person approves
+ * and confirms the application.
+ */
+export function executionBanner(readiness: ServiceReadiness): {
+  tone: "test" | "live" | "blocked";
+  label: string;
+  text: string;
+  submission: string | null;
+} {
+  const submission =
+    readiness.submission === "enabled" ? "Submission on" : readiness.submission === "disabled" ? "Submission off" : null;
+  if (readiness.applicationMode === "TEST_ONLY") {
+    return {
+      tone: "test",
+      label: "Test mode",
+      text: "Local test applications only. Real employer submissions are disabled.",
+      submission,
+    };
+  }
+  if (readiness.applicationMode === "LIVE") {
+    return {
+      tone: "live",
+      label: "Live mode",
+      text:
+        "The service works on real employer sites. Nothing is submitted unless submission is on in the service and you approve and confirm the application in Review. The desk starts new applications only in test mode.",
+      submission,
+    };
+  }
+  return {
+    tone: "blocked",
+    label: "Applications paused",
+    text: "The service reports an application mode this dashboard doesn't know.",
+    submission: null,
+  };
+}
 
 /** Page frame shared by the desk, pipeline and jobs views. */
 export function AppShell({
@@ -64,10 +104,7 @@ export function AppShell({
         </header>
 
         <main id="main" className="desk__main" tabIndex={-1}>
-          {mode === "live" && readiness && <div className={`execution-banner${readiness.applicationMode !== "TEST_ONLY" ? " execution-banner--blocked" : ""}`} role="status">
-            <span className="execution-banner__label">{readiness.applicationMode === "TEST_ONLY" ? "Test mode" : "Applications paused"}</span>
-            <span>{readiness.applicationMode === "TEST_ONLY" ? "Local test applications only. Real employer submissions are disabled." : "This development workspace requires the service to be in TEST_ONLY mode."}</span>
-          </div>}
+          {mode === "live" && readiness && <ExecutionBanner readiness={readiness} />}
           {children}
         </main>
 
@@ -79,9 +116,29 @@ export function AppShell({
   );
 }
 
+function ExecutionBanner({ readiness }: { readiness: ServiceReadiness }) {
+  const banner = executionBanner(readiness);
+  return (
+    <div
+      className={`execution-banner${banner.tone === "live" ? " execution-banner--live" : banner.tone === "blocked" ? " execution-banner--blocked" : ""}`}
+      role="status"
+    >
+      <span className="execution-banner__label">{banner.label}</span>
+      {banner.submission && (
+        <span
+          className={`execution-banner__label execution-banner__submission${readiness.submission === "enabled" ? " is-on" : ""}`}
+        >
+          {banner.submission}
+        </span>
+      )}
+      <span>{banner.text}</span>
+    </div>
+  );
+}
+
 function SectionIcon({ section }: { section: Section }) {
   return <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-    {section === "jobs" ? <><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></> : section === "pipeline" ? <><rect x="2.5" y="4" width="4" height="12" rx="1"/><rect x="8" y="4" width="4" height="8" rx="1"/><rect x="13.5" y="4" width="4" height="10" rx="1"/></> : <><rect x="3" y="2.5" width="12" height="15" rx="2"/><path d="M6.5 6h5M6.5 9h5M6.5 12H10m3.5.5 2 2 3-4"/></>}
+    {section === "jobs" ? <><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></> : section === "pipeline" ? <><rect x="2.5" y="4" width="4" height="12" rx="1"/><rect x="8" y="4" width="4" height="8" rx="1"/><rect x="13.5" y="4" width="4" height="10" rx="1"/></> : section === "review" ? <><path d="M3 5.5h8M3 10h8M3 14.5h5"/><path d="m11.5 14 2.2 2.2 3.8-4.7"/></> : <><rect x="3" y="2.5" width="12" height="15" rx="2"/><path d="M6.5 6h5M6.5 9h5M6.5 12H10m3.5.5 2 2 3-4"/></>}
   </svg>;
 }
 
