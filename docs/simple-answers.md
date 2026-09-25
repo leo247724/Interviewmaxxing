@@ -6,7 +6,7 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-thirty-eight explicit reusable answers, stored through the existing saved-answer system.
+thirty-nine explicit reusable answers, stored through the existing saved-answer system.
 Each starts as `null`; nothing is filled in for you.
 
 | Map key | Example wording on a form |
@@ -49,6 +49,7 @@ Each starts as `null`; nothing is filled in for you.
 | `available_time_zones` | Which time zones are you available to work in? |
 | `travel_willingness` | How much are you willing to travel for work? |
 | `earliest_start_date` | What is your earliest start date? / When can you start? |
+| `work_authorization_status` | What is your U.S. work authorization status? (one code below) |
 | `race_ethnicity` | Race/Ethnicity / What is your race/ethnicity? |
 | `disability_status` | Disability Status / Do you have a disability? |
 | `pronouns` | What pronouns do you use? / Pronouns |
@@ -104,7 +105,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The thirty-eight additional reusable-answer keys may be omitted or `null`;
+contact value. The thirty-nine additional reusable-answer keys may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
 strings become `null`; phone and postal codes remain strings to preserve formatting
@@ -115,7 +116,7 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the thirty-eight additional keys become explicitly
+Nonblank values for the thirty-nine additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
@@ -125,6 +126,23 @@ employee, relocation, other positions and references. So do government official,
 non-compete, AI tools and the five statements. Desired salary, English
 proficiency, time zones, travel, earliest start date, race/ethnicity, disability status,
 pronouns, familiarity with the company and county are free text in your words.
+
+`work_authorization_status` takes exactly one of these codes:
+- `us_citizen`: I am a U.S. citizen.
+- `us_permanent_resident`: I hold a green card.
+- `ead_opt`: I work on an Employment Authorization Document, such as OPT.
+- `h1b`: I hold an H-1B visa.
+- `tn`: I hold a TN visa.
+- `other_visa`: I am authorized on another visa.
+- `not_authorized`: I am not authorized to work in the U.S.
+
+Every work-authorization and sponsorship question is derived from it, whatever its wording
+("for any employer", "permanent or temporary", "now or in the future"). The derivation is
+described in [dynamic-application-routing.md](dynamic-application-routing.md), "Work
+authorization from the stated status". `authorized_to_work_us` and
+`requires_visa_sponsorship` stay your own answers. A status that contradicts them fails
+import and names both keys: a citizen or permanent resident who requires sponsorship or is
+not authorized, or `not_authorized` with authorized Yes or sponsorship No.
 
 The five statements (`acknowledge_privacy_notice` through `consent_background_check`) are
 definitions you confirm once. A site's consent or attestation reuses your answer only when

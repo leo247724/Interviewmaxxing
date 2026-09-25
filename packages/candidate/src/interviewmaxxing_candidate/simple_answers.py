@@ -14,6 +14,9 @@ from typing import Self
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from interviewmaxxing_core import (
+    PERMANENT_STATUSES,
+    WORK_AUTHORIZATION_STATUS_QUESTION,
+    WORK_AUTHORIZATION_STATUSES,
     AnswerScope,
     CandidateIdentity,
     CandidateProfile,
@@ -64,6 +67,9 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     "available_time_zones": (None, "Which time zones are you available to work in?"),
     "travel_willingness": (None, "How much are you willing to travel for work?"),
     "earliest_start_date": (SemanticType.START_DATE, "What is your earliest start date?"),
+    # Round 8: one stated status (closed vocabulary) from which every work-authorization and
+    # sponsorship question is derived. Untyped, so it backs answers of both types.
+    "work_authorization_status": (None, WORK_AUTHORIZATION_STATUS_QUESTION),
     "race_ethnicity": (SemanticType.EEO_RACE_ETHNICITY, "Race/Ethnicity"),
     "disability_status": (SemanticType.EEO_DISABILITY_STATUS, "Disability Status"),
     "pronouns": (SemanticType.PRONOUNS, "What pronouns do you use?"),
@@ -200,6 +206,10 @@ _REUSABLE_PHRASES = {
         "Earliest available start date",
         "What is your earliest available start date?",
     ],
+    "work_authorization_status": [
+        "Work authorization status", "What is your work authorization status?",
+        "What is your current U.S. work authorization?",
+    ],
     "race_ethnicity": [
         "Race", "What is your race/ethnicity?", "Race and ethnicity", "Ethnicity",
         "Please identify your race",
@@ -310,6 +320,7 @@ class SimpleAnswers(BaseModel):
     available_time_zones: str | None = None
     travel_willingness: str | None = None
     earliest_start_date: str | None = None
+    work_authorization_status: str | None = None
     race_ethnicity: str | None = None
     disability_status: str | None = None
     pronouns: str | None = None
@@ -346,6 +357,39 @@ class SimpleAnswers(BaseModel):
         if value.casefold() not in choices:
             raise ValueError('Use "Yes", "No", or null for this answer.')
         return choices[value.casefold()]
+
+    @field_validator("work_authorization_status", mode="after")
+    @classmethod
+    def _authorization_status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        code = value.casefold().replace("-", "_").replace(" ", "_")
+        if code not in WORK_AUTHORIZATION_STATUSES:
+            raise ValueError("Use one of " + ", ".join(WORK_AUTHORIZATION_STATUSES) + ", or null.")
+        return code
+
+    @model_validator(mode="after")
+    def _authorization_consistent(self) -> Self:
+        """The stated status never contradicts the two stated legal answers."""
+        status = self.work_authorization_status
+        if status is None:
+            return self
+        conflicts = []
+        if status in PERMANENT_STATUSES:
+            if self.requires_visa_sponsorship == "Yes":
+                conflicts.append("requires_visa_sponsorship")
+            if self.authorized_to_work_us == "No":
+                conflicts.append("authorized_to_work_us")
+        elif status == "not_authorized":
+            if self.authorized_to_work_us == "Yes":
+                conflicts.append("authorized_to_work_us")
+            if self.requires_visa_sponsorship == "No":
+                conflicts.append("requires_visa_sponsorship")
+        if conflicts:
+            raise ValueError(f"work_authorization_status {status!r} contradicts "
+                             + " and ".join(f"{key} {getattr(self, key)!r}" for key in conflicts)
+                             + "; correct one of them.")
+        return self
 
     @field_validator("education_start_date", "education_end_date", mode="after")
     @classmethod

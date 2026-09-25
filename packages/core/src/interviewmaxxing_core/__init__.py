@@ -21,6 +21,14 @@ from .applications import (
     can_transition,
 )
 from .artifacts import ArtifactRef, EvidenceKind, EvidenceRef, sha256_file
+from .authorization import (
+    PAY_PERIOD_LABELS,
+    PERMANENT_STATUSES,
+    WORK_AUTHORIZATION_STATUS_QUESTION,
+    WORK_AUTHORIZATION_STATUSES,
+    is_pay_period_choice,
+    pay_period_of,
+)
 from .candidate import (
     AnswerScope,
     CandidateFact,
@@ -165,6 +173,8 @@ __all__ = [
     "DEFAULT_TITLE_PHRASES",
     "EXPLICIT_ANSWER_REQUIRED",
     "KNOWN_SOURCES",
+    "PAY_PERIOD_LABELS",
+    "PERMANENT_STATUSES",
     "PRE_SUBMISSION_STATES",
     "PROFILE_IDENTITY_TYPES",
     "PROTECTED_ATTRIBUTE_TYPES",
@@ -173,6 +183,8 @@ __all__ = [
     "TERMINAL_STATES",
     "TRANSITIONS",
     "USER_ACTION_PAGES",
+    "WORK_AUTHORIZATION_STATUSES",
+    "WORK_AUTHORIZATION_STATUS_QUESTION",
     "ATSAdapter",
     "AnswerReuse",
     "AnswerScope",
@@ -289,11 +301,13 @@ __all__ = [
     "answer_problems",
     "can_transition",
     "employer_job_key",
+    "is_pay_period_choice",
     "listing_id_for",
     "meets_floor",
     "new_id",
     "normalize_application_url",
     "normalize_text",
+    "pay_period_of",
     "provenance_problems",
     "render_question",
     "sha256_file",

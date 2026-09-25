@@ -2928,9 +2928,11 @@ def test_a_salary_period_select_is_answered_from_the_unit_in_the_saved_salary(
     assert next(a for a in packet.answers if a.field_id == "salary").value.text == value
 
 
-def test_a_custom_typed_period_select_is_left_to_the_person(
+def test_a_custom_typed_period_select_next_to_the_salary_is_answered(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
+    # Round 8 (live Lovevery): the unlabelled select is custom-typed; it pairs with the salary
+    # field in the same section, and core lets the salary answer back a pay-period choice.
     saved = global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
                           semantic=SemanticType.SALARY_EXPECTATION)
     salary, period = salary_form("")
@@ -2938,8 +2940,11 @@ def test_a_custom_typed_period_select_is_left_to_the_person(
     provider = ChoiceProvider({"wording": ("NONE", 0.99)}, semantic="CUSTOM_SELECT")
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved),
                                          mock_job, salary, period)
-    assert not stage_traces(resolver, "salary_period")
-    assert all(a.field_id != "period" for a in packet.answers)
+    [trace] = stage_traces(resolver, "salary_period")
+    assert trace["status"] == "ANSWERED"
+    [answer] = [a for a in packet.answers if a.field_id == "period"]
+    assert (answer.value.label, answer.semantic_type) == ("Yearly", SemanticType.CUSTOM_SELECT)
+    assert answer.provenance.reference_ids == ["sa.salary"]
 
 
 def test_an_untyped_answer_superseded_by_a_typed_one_is_not_offered_twice(
@@ -2971,3 +2976,124 @@ def test_a_typed_pronouns_answer_is_reused_by_wording(
     [answer] = packet.answers
     assert answer.value.label == "they/them"
     assert stage_traces(resolver, "question_equivalence")[0]["gate"] == "type_anchored"
+
+
+# --- round 8: work authorization and sponsorship derived from the stated status -----------------
+
+def with_status(candidate: CandidateProfile, code: str) -> CandidateProfile:
+    from interviewmaxxing_core import WORK_AUTHORIZATION_STATUS_QUESTION
+
+    return with_saved(candidate, global_answer("sa.status", WORK_AUTHORIZATION_STATUS_QUESTION, code))
+
+
+ANY_EMPLOYER = "Are you legally authorized to work in the United States for any employer?"
+AUTHORIZED_US = "Are you authorized to work in the US?"
+SPONSOR_US = "Will you require sponsorship to work in the US now or in the future?"
+PERMANENT_OR_TEMPORARY = "Is your authorization to work in the United States:"
+WHERE_YOU_LIVE = ("Your authorization to work in the country where you live. Please choose the "
+                  "option that describes your work authorization")
+
+
+@pytest.mark.parametrize("label,semantic,options,code,expected", [
+    (ANY_EMPLOYER, SemanticType.WORK_AUTHORIZATION, YES_NO, "us_citizen", "Yes"),
+    (AUTHORIZED_US, SemanticType.WORK_AUTHORIZATION, YES_NO, "us_permanent_resident", "Yes"),
+    (AUTHORIZED_US, SemanticType.WORK_AUTHORIZATION, YES_NO, "not_authorized", "No"),
+    (SPONSOR_US, SemanticType.SPONSORSHIP, YES_NO, "us_citizen", "No"),
+    (PERMANENT_OR_TEMPORARY, SemanticType.WORK_AUTHORIZATION,
+     ("Permanent", "Temporary and subject to expiration"), "us_permanent_resident", "Permanent"),
+])
+def test_the_obvious_status_pairs_are_answered_from_the_table_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    semantic: SemanticType, options: tuple[str, ...], code: str, expected: str,
+) -> None:
+    provider = ChoiceProvider()
+    field = choice_field(label, semantic, *options, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, code),
+                                         mock_job, field)
+    [answer] = packet.answers
+    assert answer.value.label == expected
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.status"])
+    assert not provider.asked("status") and not provider.asked("wording")
+    [trace] = stage_traces(resolver, "status_derivation")
+    assert (trace["status"], trace["via"]) == ("ANSWERED", "table")
+    assert code not in json.dumps(trace)  # the stated value never reaches a trace
+
+
+@pytest.mark.parametrize("label,semantic,options,code,pick,expected", [
+    (WHERE_YOU_LIVE, SemanticType.WORK_AUTHORIZATION,
+     ("I am a citizen", "I am a permanent resident", "I hold a work visa", "Other"),
+     "us_citizen", "o0", "I am a citizen"),
+    (SPONSOR_US, SemanticType.SPONSORSHIP, YES_NO, "h1b", "o0", "Yes"),  # not in the table
+    (AUTHORIZED_US, SemanticType.WORK_AUTHORIZATION, YES_NO, "ead_opt", "o0", "Yes"),
+])
+def test_other_status_questions_take_one_truthful_option_decision(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    semantic: SemanticType, options: tuple[str, ...], code: str, pick: str, expected: str,
+) -> None:
+    provider = ChoiceProvider({"status": (pick, 0.98)})
+    field = choice_field(label, semantic, *options, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, code),
+                                         mock_job, field)
+    [request] = provider.asked("status")
+    assert request["state"]["status"]["code"] == code
+    assert set(request["state"]["stated_answers"]) == {"authorized_to_work_us",
+                                                       "requires_visa_sponsorship"}
+    assert "UNKNOWN" in request["questions"]["status"]["criteria"]
+    [answer] = packet.answers
+    assert answer.value.label == expected and answer.provenance.reference_ids == ["sa.status"]
+    [trace] = stage_traces(resolver, "status_derivation")
+    assert (trace["status"], trace["via"], trace["choice"]) == ("ANSWERED", "jev", pick)
+
+
+def test_a_question_the_status_does_not_settle_falls_back_and_holds(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"status": ("UNKNOWN", 0.97), "wording": ("NONE", 0.99)})
+    field = choice_field("Do you hold an active U.S. security clearance?",
+                         SemanticType.WORK_AUTHORIZATION, *YES_NO, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"),
+                                         mock_job, field)
+    assert packet.answers == []
+    assert provider.asked("status")  # never the table: clearance is not the status
+    [trace] = stage_traces(resolver, "status_derivation")
+    assert trace["status"] == "UNKNOWN"
+    assert provider.asked("wording")  # the saved answers' wording path is still tried
+
+
+def test_a_text_yes_no_authorization_question_gets_a_yes_or_no(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider()
+    field = text_field(ANY_EMPLOYER, SemanticType.WORK_AUTHORIZATION)
+    packet, _, _ = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"),
+                                  mock_job, field)
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="Yes")
+
+
+def test_without_a_stated_status_the_saved_answers_are_matched_by_wording(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)})
+    field = choice_field(ANY_EMPLOYER, SemanticType.WORK_AUTHORIZATION, *YES_NO,
+                         control=ControlType.SELECT)
+    _, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
+    assert provider.asked("wording") and not stage_traces(resolver, "status_derivation")
+
+
+@pytest.mark.parametrize("section,paired", [(["Compensation"], True), (["Availability"], False)])
+def test_an_unlabelled_period_select_pairs_only_with_a_salary_in_its_section(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, section: list[str], paired: bool,
+) -> None:
+    saved = global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
+                          semantic=SemanticType.SALARY_EXPECTATION)
+    salary, period = salary_form("")
+    salary = salary.model_copy(update={"section_context": ["Compensation"]})
+    period = period.model_copy(update={"semantic_type": SemanticType.CUSTOM_SELECT,
+                                       "section_context": section})
+    provider = ChoiceProvider({"wording": ("q0", 0.98)}, semantic="CUSTOM_SELECT")
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, saved), mock_job,
+                                  salary, period)
+    chosen = [a.value.label for a in packet.answers if a.field_id == "period"]
+    assert chosen == (["Yearly"] if paired else [])

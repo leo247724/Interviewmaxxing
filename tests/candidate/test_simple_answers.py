@@ -395,3 +395,52 @@ def test_round7_keys_import_as_typed_global_answers_where_a_type_exists():
         SemanticType.CONSENT, SemanticType.ATTESTATION}
     # Education discipline stays untyped: sites type "Discipline" as a custom question.
     assert _REUSABLE_QUESTIONS["education_discipline"][0] is None
+
+
+# --- round 8: the stated work authorization status -------------------------------------------
+
+@pytest.mark.parametrize("given,code", [
+    ("us_citizen", "us_citizen"), ("US-Citizen", "us_citizen"),
+    ("us permanent resident", "us_permanent_resident"), ("ead_opt", "ead_opt"), ("h1b", "h1b"),
+    ("tn", "tn"), ("other_visa", "other_visa"), ("not_authorized", "not_authorized"),
+])
+def test_the_status_takes_the_closed_vocabulary(given, code):
+    assert _round7_answers(work_authorization_status=given).work_authorization_status == code
+
+
+def test_a_status_outside_the_vocabulary_is_rejected_with_the_choices():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="us_citizen, us_permanent_resident, ead_opt"):
+        _round7_answers(work_authorization_status="green card")
+
+
+@pytest.mark.parametrize("status,changes,keys", [
+    ("us_citizen", {"requires_visa_sponsorship": "Yes"}, ["requires_visa_sponsorship"]),
+    ("us_permanent_resident", {"authorized_to_work_us": "No"}, ["authorized_to_work_us"]),
+    ("not_authorized", {"authorized_to_work_us": "Yes"}, ["authorized_to_work_us"]),
+    ("not_authorized", {"requires_visa_sponsorship": "No"}, ["requires_visa_sponsorship"]),
+])
+def test_a_status_that_contradicts_a_stated_answer_names_both_keys(status, changes, keys):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as error:
+        _round7_answers(work_authorization_status=status, **changes)
+    message = str(error.value)
+    assert "work_authorization_status" in message and all(key in message for key in keys)
+
+
+@pytest.mark.parametrize("status,changes", [
+    ("us_citizen", {"requires_visa_sponsorship": "No", "authorized_to_work_us": "Yes"}),
+    ("h1b", {"requires_visa_sponsorship": "Yes", "authorized_to_work_us": "Yes"}),
+    ("ead_opt", {"requires_visa_sponsorship": "Yes"}),
+])
+def test_consistent_statuses_import_as_one_untyped_global_answer(status, changes):
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_core import WORK_AUTHORIZATION_STATUS_QUESTION, AnswerScope
+
+    answers = _round7_answers(work_authorization_status=status, **changes)
+    updates = answers.saved_answer_updates(confirmed_at=datetime(2026, 9, 24, tzinfo=UTC))
+    [saved] = [a for a in updates if a.question == WORK_AUTHORIZATION_STATUS_QUESTION]
+    assert (saved.value, saved.semantic_type, saved.scope) == (status, None, AnswerScope.GLOBAL)

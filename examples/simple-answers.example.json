@@ -49,5 +49,6 @@
   "certify_information_true": null,
   "consent_to_contact": null,
   "consent_reference_checks": null,
-  "consent_background_check": null
+  "consent_background_check": null,
+  "work_authorization_status": null
 }

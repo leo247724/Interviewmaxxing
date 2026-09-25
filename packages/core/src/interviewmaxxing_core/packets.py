@@ -29,6 +29,7 @@ from pydantic import Field, model_validator
 
 from ._base import Confidence, Contract, NonEmptyStr, UtcDatetime, new_id, utc_now
 from .artifacts import ArtifactRef
+from .authorization import is_pay_period_choice
 from .candidate import AnswerScope, CandidateProfile, SavedAnswer, SavedAnswerValue
 from .forms import (
     ADDRESS_DERIVED_TYPES,
@@ -626,7 +627,13 @@ def provenance_problems(
                     continue
                 if not saved.applies_to(job):
                     problems.append(f"{fid!r} cites saved answer {ref!r} scoped to another job")
-                if saved.semantic_type is not None and saved.semantic_type is not answer.semantic_type:
+                field = form.find(fid)
+                # The pay period of a salary is the one answer a salary may give a field of
+                # another type: a single choice whose options are all pay periods.
+                period = (saved.semantic_type is SemanticType.SALARY_EXPECTATION
+                          and field is not None and is_pay_period_choice(field))
+                if (saved.semantic_type is not None and saved.semantic_type is not answer.semantic_type
+                        and not period):
                     problems.append(
                         f"{fid!r} ({answer.semantic_type}) cites saved answer {ref!r} "
                         f"about {saved.semantic_type}"

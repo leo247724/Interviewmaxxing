@@ -134,7 +134,14 @@ Pilot 7 (40 fresh forms, prepare-only) lost fields to three classifier rules, wh
   - Anything more holds with the statement quoted: no AI tools during interviews, a non-compete, arbitration, at-will employment, drug testing, or two obligations the saved statements cover only together.
   - The answer is `SAVED_ANSWER`, carrying the person's own Yes or No.
   - A control the runtime cannot operate is never answered, and neither is a statement with no readable wording.
-- **Salary period (round 7).** A select or radio typed as salary whose options are all pay periods, unlabelled, period-labelled or right after the salary field, is answered from the unit the saved desired salary states. "Per year", "/yr" and "annual" give Yearly or Annual; "per hour" gives Hourly. With no stated unit it holds. A period select the classifier leaves custom-typed is left to the person.
+- **Salary period (rounds 7–8).** A select or radio whose options are all pay periods (at least two of hourly, weekly, monthly, yearly or annual) is answered from the unit the saved desired salary states. Its own wording must be empty or name a period. It must be typed as salary, or sit in the same form section as a salary field (live Lovevery: an unlabelled custom select next to "Desired Salary").
+  - "Per year", "/yr" and "annual" give Yearly or Annual; "per hour" gives Hourly. With no stated unit it holds.
+  - Core lets a salary saved answer back only such a pay-period choice of another type (`is_pay_period_choice`).
+- **Work authorization from the stated status (round 8).** Matching work-authorization questions by wording fails for a sound reason: "authorized for any employer" is a stronger claim than "currently authorized". So with a stated `work_authorization_status` (closed vocabulary), a field typed WORK_AUTHORIZATION or SPONSORSHIP is derived, not matched.
+  - A table answers the obvious pairs without a call, for U.S. questions with no negation and nothing else asked (citizenship, visa type, clearance, another country, expiry). A citizen or permanent resident is authorized Yes, for any employer, and permanent, and needs no sponsorship now or in the future. `not_authorized` gives authorized No.
+  - Otherwise one Jev Choice (`status`, purpose `status_derivation`) runs over the options, or Yes/No for a yes/no text question, plus `UNKNOWN`. Its state holds the status code and meaning and the two stated answers, and it picks the option that is the truthful answer for a person with exactly that status. The gate is 0.95 / 0.90.
+  - The answer is `SAVED_ANSWER` citing the status. The trace (`status_derivation`: via, choice, status) never holds the status itself.
+  - A question the status does not settle (security clearance, an unstated visa) falls back to the saved answers' wording path. Without a stated status nothing changes.
 - **Review items (round 7).**
   - The referral rule-4 fallback records min(confidence, 1 − `NOT_SOURCE`).
   - State codes count only in a comma or slash list of two or more, so a lone "OR" in a shouting label is a word.
