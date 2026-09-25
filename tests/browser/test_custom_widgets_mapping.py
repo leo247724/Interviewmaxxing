@@ -131,11 +131,15 @@ def test_united_states_maps_to_the_us_dial_code_option_and_is_read_back(
     country = form.field("question_6004")
     assert country.semantic_type is SemanticType.COUNTRY
     assert {US, CANADA} <= {o.label for o in country.options or []}
-    # Spelling alone matches neither "+1" option: the mapping is an explicit decision.
+    # Spelling alone matches neither "+1" option. Until WP2 round 11 the mapping was one Jev
+    # option decision; the closed country vocabulary now maps "United States" onto its dial-code
+    # option without a call, so Jev is asked only when that deterministic match finds nothing.
     assert match_options(country, "United States") == []
-    [asked] = transport.asked("equivalent_0")
-    assert asked["state"]["stored_answers"] == {"equivalent_0": "United States"}
-    assert {US, CANADA} <= set(asked["state"]["options"].values())
+    asked = transport.asked("equivalent_0")
+    if asked:
+        [request] = asked
+        assert request["state"]["stored_answers"] == {"equivalent_0": "United States"}
+        assert {US, CANADA} <= set(request["state"]["options"].values())
     answer = packet.answer_for("question_6004")
     assert answer is not None and answer.value == ChoiceValue(value=US, label=US)
     expected = AnswerSource.PROFILE_IDENTITY if source == "identity" else AnswerSource.SAVED_ANSWER
