@@ -1109,9 +1109,9 @@ def test_the_form_allowance_is_granted_once_per_step_per_run(candidate, mock_job
     first = asyncio.run(resolver.resolve(ctx))
     assert first.is_complete
     limits = (budget.max_calls, budget.max_usd)
-    # One WRITER field: 24 + 12 calls and USD 0.30 + 0.30 on top of the classification call
+    # One WRITER field: 24 + 24 calls and USD 0.30 + 0.75 on top of the classification call
     # made before the grant (its reservation included).
-    assert limits[0] == 24 + 12 + 1 and 0.60 <= limits[1] < 0.61
+    assert limits[0] == 24 + 24 + 1 and 1.05 <= limits[1] < 1.06
     second = asyncio.run(resolver.resolve(ctx))  # the same step again: nothing more is granted
     assert second.is_complete and (budget.max_calls, budget.max_usd) == limits
     other = replace(ctx, application=ctx.application.model_copy(update={"id": "app-other"}))

@@ -86,7 +86,7 @@ cited sentences fit in 2000 tokens, a 300-word cover letter with citations in 30
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
-FORM_WRITER_CALLS, FORM_WRITER_USD = 12, 0.30
+FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
 FORM_CAP_CALLS, FORM_CAP_USD = 120, 2.00
 
 
