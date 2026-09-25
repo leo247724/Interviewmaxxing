@@ -994,7 +994,9 @@ class GenericApplicationBrowser:
             inspection = (await self._model(evidence=label)).inspection
         if inspection.job_identity is None and posting_identity is not None:
             inspection = inspection.model_copy(update={"job_identity": posting_identity})
-        if notes:
+        if notes and inspection.kind not in USER_ACTION_PAGES:
+            # How the form (or the page instead of it) was reached; a page that asks the
+            # person to act (sign in, a consent, a CAPTCHA) keeps the site's own message.
             lead = ("Reached the form: " if inspection.kind is PageKind.APPLICATION_FORM
                     else "Taken from the posting (no application form yet): ")
             reached = lead + "; then ".join(notes) + "."
