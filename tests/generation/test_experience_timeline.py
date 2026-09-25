@@ -109,3 +109,16 @@ def test_a_role_naming_a_member_counts_toward_its_families(fictional_candidate: 
     assert tl.with_families({"SEO"}) == {"SEO", "digital marketing"}
     assert tl.with_families({"Google Ads"}) == {"Google Ads", "paid search", "paid media", "digital marketing"}
     assert tl.with_families(set()) == set()
+
+
+def test_story_facts_in_the_profile_add_areas_to_their_linked_role(fictional_candidate: CandidateProfile) -> None:
+    profile = with_roles(fictional_candidate, [
+        ("r1", "Glaze Agency", "PPC Specialist", "2021-01", "2022-12", False, "Ran campaigns."),
+    ])
+    story_fact = profile.facts[0].model_copy(update={
+        "id": "sf_story1_abc", "key": "skills", "source": "story:" + "0" * 64,
+        "value": "I built the reporting in Looker Studio and ran call tracking (resume: Glaze Agency, 2021-01 to 2022-12)",
+        "evidence": ["Story 01: x", "period_source: resume_role", "story_source: candidate-stories", "resume_role_id: r1"]})
+    profile = profile.model_copy(update={"facts": [*profile.facts, story_fact]})
+    facts = {fact.key: fact.value for fact in tl.derive_experience_years(profile, today=TODAY, verified_at=NOW)}
+    assert facts["years_experience.looker_studio"] == 2 and facts["years_experience.call_tracking"] == 2

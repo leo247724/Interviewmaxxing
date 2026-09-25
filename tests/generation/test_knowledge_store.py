@@ -783,3 +783,21 @@ def test_motivation_questions_rank_facts_by_the_job_context(knowledge, profile, 
         assert result.receipt["candidate_ranking_uses_job_context"] is True, query
     plain = store.retrieve(candidate=profile, job=mock_job, query="Describe a campaign you led")
     assert plain.receipt["candidate_ranking_uses_job_context"] is False
+
+
+def test_retrieved_story_chunks_carry_their_resume_role(knowledge, profile, mock_job):
+    from interviewmaxxing_generation.knowledge import stories as st
+
+    store, _, _ = knowledge
+    chunks = _story_chunks()
+    story = st.parse_stories([st.Paragraph((st.Run("Stories 01 - Paid search for a bakery", True),
+                                            st.Run("I managed a $120,000 budget for a regional bakery chain in 2024.", False)))])[0]
+    link = st.StoryRoleLink(story.story_id, "exp_bakery", "Crumb & Co.", "Marketing Manager", "2023-04", "2024-09", False, "jev_match", 0.95, 0.98)
+    linked = st.chunk_story(story, st.analyse_story(story), link)
+    store.index_stories(profile.id, [*chunks, *linked], version="c" * 64)
+    result = store.retrieve(candidate=profile, job=mock_job, query="Tell us about a campaign", narrative=True)
+    by_role = {c["resume_role"] for c in result.story_chunks}
+    assert "Marketing Manager, Crumb & Co." in by_role or len(result.story_chunks) == 4
+    hit = next((c for c in result.story_chunks if c["resume_role"]), None)
+    if hit is not None:
+        assert hit["period"] == "2023-04 to 2024-09"

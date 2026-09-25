@@ -116,6 +116,15 @@ def role_spans(profile: CandidateProfile, *, today: date,
     linked: dict[str, set[str]] = {}
     for story_id, link in (story_links or {}).items():
         linked.setdefault(link.resume_role_id, set()).update((story_areas or {}).get(story_id, ()))
+    # Story facts already in the profile name their resume role in their evidence, so
+    # every indexed stories source counts, whichever run derived the years.
+    for fact in profile.verified_facts():
+        if not fact.source.startswith("story:") or not isinstance(fact.value, str):
+            continue
+        role_id = next((line[len("resume_role_id: "):] for line in fact.evidence
+                        if line.startswith("resume_role_id: ")), None)
+        if role_id:
+            linked.setdefault(role_id, set()).update(find_skills(fact.value), find_tools(fact.value))
     spans = []
     now = today.year * 12 + (today.month - 1)
     for role in resume_roles(profile):

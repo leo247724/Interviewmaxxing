@@ -596,6 +596,7 @@ class PgKnowledgeStore:
             stories.append({"id": "story:" + hit["content_hash"], "text": hit["body"],
                             "story_id": header["story_id"], "title": header["title"],
                             "employer": header["employer"] or header["project"],
+                            "resume_role": header["resume_role"],
                             "period": header["period"], "themes": list(header["themes"]),
                             "source_version": hit["source_version"], "score": float(score),
                             "rank": rank})

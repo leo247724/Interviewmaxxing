@@ -639,3 +639,80 @@ def test_preferences_and_ordinary_narratives_keep_the_explicit_scope_hold(candid
                                     Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
     assert held(packet, ctx) and not writer.calls
     assert not any(t["stage"] == "motivation_narrative" for t in resolver.narrative_traces)
+
+
+# --- round 2, items 1 (resume dates on the evidence) and 4 (bounded review evidence) -----------
+
+
+def test_linked_story_evidence_carries_the_resume_dates_as_authoritative(candidate, mock_job):
+    from interviewmaxxing_browser.ai.stories import (
+        resume_dates_note,
+        story_evidence,
+        transient_story_facts,
+        validate_story_chunks,
+    )
+
+    chunk = story_chunk(period="2024-03 to 2025-05")
+    chunk["text"] = chunk["text"].replace("| period: 2024-03 to 2025-05", "| resume role: Marketing Manager, Crumb & Co. | period: 2024-03 to 2025-05")
+    chunk["id"] = "story:" + hashlib.sha256(chunk["text"].encode()).hexdigest()
+    chunk["resume_role"] = "Marketing Manager, Crumb & Co."
+    [valid] = validate_story_chunks([chunk], reserved_ids=set())
+    assert valid["resume_role"] == "Marketing Manager, Crumb & Co."
+    note = resume_dates_note(valid)
+    assert note == ("The resume dates this role (Marketing Manager, Crumb & Co.) 2024-03 to 2025-05; "
+                    "these dates are authoritative for this passage and supersede any year the passage itself states.")
+    [entry] = story_evidence([valid])
+    assert entry["story"]["resume_role"] == "Marketing Manager, Crumb & Co." and entry["story"]["note"] == note
+    stand_in = transient_story_facts([valid])[valid["id"]]
+    assert "Resume role: Marketing Manager, Crumb & Co." in stand_in.evidence and note in stand_in.evidence
+    assert resume_dates_note(story_chunk()) is None and "note" not in story_evidence([story_chunk()])[0]["story"]
+    # The consistency check tells Jev the same, and the writer sees the note in its evidence.
+    money = fact(candidate, "Managed a $40,000 paid search budget for a florist in 2022.", fid="fact.florist")
+    profile = candidate.model_copy(update={"facts": [*candidate.facts, money]})
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery", valid["id"]]}])
+    jev = Jev()
+    packet, _, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [valid]), writer, jev)
+    assert packet.is_complete
+    [request] = jev.story_requests()
+    state_chunk = request["state"]["story_chunks"]["c0"]
+    assert state_chunk["resume_role"] == "Marketing Manager, Crumb & Co." and state_chunk["dates_note"] == note
+    assert "supersede any year the passage itself states" in request["questions"]["c0"]["instructions"]
+    assert writer.calls[0]["facts"][-1]["story"]["note"] == note
+
+
+@dataclass
+class ReviewingWriter(Writer):
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+
+    def review(self, **kwargs: Any) -> Any:
+        self.reviews.append(kwargs)
+        return SimpleNamespace(verdict="SUPPORTED", issues=[], reference_ids=[])
+
+
+def test_the_evidence_review_gets_the_selected_and_most_competing_facts_never_the_whole_store(fictional_candidate, mock_job):
+    from interviewmaxxing_browser.ai.routing import REVIEW_EVIDENCE_LIMIT
+
+    base = fictional_candidate.verified_facts()[0]
+    facts = [base.model_copy(update={"id": f"fact.{i}", "key": "experience",
+                                     "value": f"Managed a ${(i + 1) * 1000:,} paid search budget for client {i} in 2024.",
+                                     "evidence": [f"bullet {i}"]}) for i in range(100)]
+    profile = fictional_candidate.model_copy(update={"facts": facts, "experience": [], "education": []})
+    selected = facts[:3]
+    writer = ReviewingWriter([{"text": "I managed paid search budgets for several clients in 2024.",
+                               "fact_ids": [f.id for f in selected]}])
+    jev = Jev(consistency=0.9)  # uncertain: every comparison goes to the independent review
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever(selected), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert writer.reviews, "the uncertain consistency score must reach the Opus review"
+    for review in writer.reviews:
+        if review["purpose"] != "evidence_consistency":
+            continue
+        ids = [f["id"] for f in review["facts"]]
+        assert len(ids) <= len(selected) + REVIEW_EVIDENCE_LIMIT < 128
+        assert set(f.id for f in selected) <= set(ids) and len(set(ids)) == len(ids)
+    scope = next(t for t in resolver.narrative_traces
+                 if t["stage"] == "strong_review" and t["purpose"] == "evidence_consistency")
+    assert scope["selected_fact_ids"] == [f.id for f in selected]
+    assert len(scope["fact_ids"]) == len(selected) + REVIEW_EVIDENCE_LIMIT
+    assert scope["competing_total"] == 97 and scope["limit"] == REVIEW_EVIDENCE_LIMIT
+    assert len([f for f in writer.calls[0]["facts"]]) == len(selected)  # the writer never sees the store
