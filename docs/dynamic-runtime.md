@@ -541,7 +541,8 @@ are solved through 2Captcha behind a flag (see "CAPTCHAs").
     the policy, wait for the page's one "I Accept", keep evidence of the policy shown
     (`data-consent`), click it and read the form it leads to (with the posting's identity).
     The runner records `consent.accepted` (the question, the page and the ids of the
-    answers that cover it), once per run.
+    answers that cover it), once per preparation run; a submission run of an approval
+    resolves nothing, so there the page stays the person's.
   Accepting sends the consent to the site; it never submits an application. A consent no
   statement covers stops the run as before ("Accept the data-processing consent"). Mock
   `jobvite-like` (`?policies=regional` for one policy per location).

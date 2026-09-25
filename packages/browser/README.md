@@ -96,7 +96,7 @@ Details in `docs/dynamic-runtime.md` ("Round 14"); mocks `greenhouse-aria`, `pay
 Follow CONTRACTS.md section 7. Browser-specific points:
 
 - For `USER_ACTION_PAGES`: call `user.request_action(...)`, then `await browser.wait_for_user(reason, timeout_s)`, renewing the claim during long waits.
-- For a data-processing consent page (`consent_gate`), first resolve the question `await browser.data_consent(residence)` returns, like any consent; only a checked answer from the person's own answers (a saved answer or input) may call `accept_data_consent(question, residence)`, once per run. Otherwise treat it as any user-action page.
+- For a data-processing consent page (`consent_gate`), first resolve the question `await browser.data_consent(residence)` returns, like any consent; only a checked answer from the person's own answers (a saved answer or input) may call `accept_data_consent(question, residence)`, once per preparation run (a submission run of an approval resolves nothing). Otherwise treat it as any user-action page.
 - For required `UNSUPPORTED` fields (the resolver's `UNSUPPORTED_CONTROL` items): ask the user to operate them in the visible window, call `wait_for_user`, then re-inspect and resolve again.
 - `SubmitActionResult.dispatched=False` still needs `confirm()`, which returns the proof-bearing `NOT_SUBMITTED` observation to record.
 - To settle `SUBMISSION_UNKNOWN`: start a session, call `obs = await browser.reconcile(job.application_url, tie=ConfirmationTie.from_job(job), lookup_email=candidate.identity.email)`, and if `reconciliation_from(obs, method=...)` returns one, pass it to `store.reconcile_submission`. Never call the mock's `/__test__/` API from product code.

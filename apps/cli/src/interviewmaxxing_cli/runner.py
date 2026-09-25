@@ -1144,7 +1144,8 @@ class _Run:
 
     async def _step(self, page: PageInspection) -> PageInspection:
         kind = page.kind
-        if consent_gate(page) and not self.consent_tried:
+        if consent_gate(page) and not self.consent_tried and self.approved is None:
+            # A submission run of an approval resolves nothing: the page is the person's.
             accepted = await self._accept_consent()
             if accepted is not None:
                 return accepted
@@ -1221,8 +1222,9 @@ class _Run:
         on a form: an exact saved answer or input, else the routing resolver's
         statement-coverage decision over the person's saved statements. Only a checked
         answer from the person's own answers lets the browser choose the policy and click
-        "I Accept" (``accept_data_consent``), once per run. Returns the page it leads to,
-        or None: the page is then the person's to accept, as before."""
+        "I Accept" (``accept_data_consent``), once per preparation run (a submission run
+        of an approval resolves nothing). Returns the page it leads to, or None: the page
+        is then the person's to accept, as before."""
         offer = getattr(self.browser, "data_consent", None)
         accept = getattr(self.browser, "accept_data_consent", None)
         if not callable(offer) or not callable(accept):

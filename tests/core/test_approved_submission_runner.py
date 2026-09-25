@@ -980,3 +980,55 @@ def test_the_last_guard_before_a_submit_refuses_without_an_approval(isolated_imx
         assert store.list_attempts(app.id) == []
         assert store.get_application(app.id).state is S.FAILED_RETRYABLE
     assert "submit" not in site.calls
+
+
+# --- round 14: a data-processing consent page in front of an approved application ------------
+
+CONSENT_MESSAGE = ("Jobvite asks you to accept its data-processing consent before the application "
+                   "form. Accept it yourself in the browser window, then continue; a consent is "
+                   "never accepted automatically.")
+
+
+class ConsentBrowser(FakeBrowser):
+    """A site whose apply URL shows Jobvite's consent page first; it offers the consent
+    question (``data_consent``) and records whether anything asked for or accepted it."""
+
+    async def open(self, url: str) -> PageInspection:
+        await super().open(url)
+        return PageInspection(kind=PageKind.SIGN_IN_REQUIRED, observed_url=URL, message=CONSENT_MESSAGE)
+
+    async def data_consent(self, residence: str | None = None) -> ApplicationForm:
+        self.site.calls.append("data_consent")
+        return ApplicationForm(url=URL, fields=[ApplicationField(
+            id="data-consent", selector="#jv-country-select", label="I accept the Global POLICY",
+            control_type=ControlType.CHECKBOX, semantic_type=SemanticType.CONSENT, required=True)])
+
+    async def accept_data_consent(self, question: ApplicationForm, residence: str | None = None) -> PageInspection:
+        self.site.calls.append("accept_data_consent")
+        return self._page()
+
+
+class ConsentFactory(FakeFactory):
+    async def start(self, options: BrowserOptions) -> FakeBrowser:
+        self.starts += 1
+        self.site.options.append(options)
+        return ConsentBrowser(self.site)
+
+
+def test_a_submission_run_leaves_a_consent_page_to_the_person(isolated_imx_home, candidates):
+    """A submission run of an approval resolves nothing, so it never asks whether the
+    person's statement covers the consent, let alone accepts it: the page is theirs."""
+    site = Site(steps=[_contact()])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    _approve(isolated_imx_home, app_id)
+    site.calls.clear()
+    runner = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ConsentFactory(site), candidates=candidates, resolver=NeverResolve(),
+        limits=RunLimits(max_steps=8, max_same_form=2), prepare_only=False)
+    result = asyncio.run(runner.submit(app_id))
+    assert result.state is S.NEEDS_INPUT, result.message
+    [need] = result.missing_inputs
+    assert (need.label, need.reason) == ("Accept the data-processing consent", MissingReason.USER_ACTION)
+    assert "data_consent" not in site.calls and "accept_data_consent" not in site.calls
+    assert "submit" not in site.calls and "fill" not in site.calls
