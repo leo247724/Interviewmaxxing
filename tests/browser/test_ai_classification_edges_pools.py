@@ -141,7 +141,8 @@ def test_a_pool_share_over_one_within_jev_tolerance_is_recorded_as_one() -> None
         observed("Upload your CV", ControlType.FILE, field_id="cv"))
     live, cv = report.field("live"), report.field("cv")
     assert (live.semantic_type, live.semantic_pool_share) == (SemanticType.LOCATION, 1.0)
-    assert (cv.route, cv.document_pool_share, cv.autofill) == (FieldRoute.APPROVED_DOCUMENT, 1.0, False)
+    # Not confidently an attachment, so the page may also parse it (round 2).
+    assert (cv.route, cv.document_pool_share, cv.autofill) == (FieldRoute.APPROVED_DOCUMENT, 1.0, True)
 
 
 @pytest.mark.parametrize("split,expected", [
@@ -247,7 +248,8 @@ def test_a_confident_non_residence_reading_is_never_overridden_by_the_pool() -> 
 
 
 def test_custom_thresholds_move_the_pooled_gate_and_invalidate_the_cache() -> None:
-    wide = {"COUNTRY": 0.50, "LOCATION": 0.46, "CUSTOM_BOOLEAN": 0.04}
+    # A competing custom reading (on Yes/No options CUSTOM_BOOLEAN would be the shape).
+    wide = {"COUNTRY": 0.50, "LOCATION": 0.46, "CUSTOM_TEXT": 0.04}
     provider = Jev({"answer": {"s": (wide, 0.6)}})
     r = router(provider)
     form = ApplicationForm(url="https://synthetic.test/apply",
@@ -258,8 +260,8 @@ def test_custom_thresholds_move_the_pooled_gate_and_invalidate_the_cache() -> No
     relaxed = r.classify_form(form, document_id="thresholds")
     assert relaxed.fields[0].semantic_type is SemanticType.COUNTRY
     assert relaxed.context_hash != strict.context_hash and len(provider.requests) == 2
-    # A stricter probability gate holds the pilot's exact 0.95 split.
-    r.thresholds = RouteThresholds(probability=0.97)
+    # A stricter probability gate holds the pilot's split (0.98 with the Yes/No shape).
+    r.thresholds = RouteThresholds(probability=0.99)
     provider.scripts = {"answer": {"s": (SPLIT, 0.61)}}
     assert r.classify_form(form, document_id="thresholds").fields[0].semantic_type is SemanticType.UNKNOWN
 
@@ -341,7 +343,7 @@ def test_reports_with_pool_shares_round_trip_and_older_reports_still_load() -> N
     assert FormRouteReport.model_validate(report.model_dump(mode="json")) == report
     assert FormRouteReport.model_validate_json(report.model_dump_json()) == report
     dumped = report.model_dump(mode="json")
-    assert dumped["fields"][0]["semantic_pool_share"] == pytest.approx(0.95)
+    assert dumped["fields"][0]["semantic_pool_share"] == pytest.approx(0.98)  # with the Yes/No shape
     assert dumped["fields"][1]["document_pool_share"] == pytest.approx(0.98)
     # A report recorded before these fields existed still loads, with empty defaults.
     for key in ("batches", "options_per_field"):
@@ -366,6 +368,6 @@ def test_a_cached_report_keeps_its_pool_shares_and_annotation() -> None:
     assert annotated.fields[0].semantic_type is SemanticType.LOCATION
     cached = r.classify_form(form, document_id="cache")
     assert cached.provider_calls == 0
-    assert cached.fields[0].semantic_pool_share == pytest.approx(0.95)
+    assert cached.fields[0].semantic_pool_share == pytest.approx(0.98)  # with the Yes/No shape
     assert r.report_for(form) == r.report_for(annotated)
     assert r.report_for(annotated).fields[0].semantic_type is SemanticType.LOCATION

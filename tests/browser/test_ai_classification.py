@@ -307,13 +307,18 @@ class PurposeProvider(BatchProvider):
     probability map (the choice is the most probable purpose)."""
 
     def __init__(self, *, confidence: float = 1.0, probabilities: dict[str, float] | None = None,
-                 **kwargs: Any) -> None:
+                 route_probabilities: dict[str, float] | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.purpose_confidence, self.purpose_probabilities = confidence, probabilities
+        self.route_probabilities = route_probabilities
 
     def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
         payload = json.loads(super().__call__(url, headers, body, timeout).body)
         for key, answer in payload["answers"].items():
+            if key.startswith("r") and self.route_probabilities is not None:
+                answer["probabilities"] = {option: self.route_probabilities.get(option, 0.0)
+                                           for option in answer["probabilities"]}
+                answer["choice"] = max(answer["probabilities"], key=lambda o: answer["probabilities"][o])
             if not key.startswith("d"):
                 continue
             answer["confidence"] = self.purpose_confidence
@@ -345,26 +350,35 @@ def test_a_custom_cv_upload_that_autofills_is_typed_resume_and_attached(
 def test_uncertain_or_other_upload_purpose_is_not_approved(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
-    f = file_form("Autofill from resume", SemanticType.RESUME)
+    # The purpose gate still protects an optional upload whatever its route, and a required
+    # resume whose route is not sure it uploads the approved document (round 2).
+    optional = file_form("Autofill from resume", SemanticType.RESUME, required=False)
+    required = file_form("Autofill from resume", SemanticType.RESUME)
+    parser = {"APPLICATION_ATTACHMENT": 0.30, "AUTOFILL_PARSER": 0.66, "OTHER_OR_UNCLEAR": 0.04}
+    unsure = {"APPROVED_DOCUMENT": 0.90, "AMBIGUOUS": 0.10}
     cases = [
         # Attachment plus autofill mass reaches 0.96, but 0.04 is on another purpose (over the
         # pooled gate's 0.03 outside bound): held as a parser, never uploaded.
-        (PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
-            "APPLICATION_ATTACHMENT": 0.30, "AUTOFILL_PARSER": 0.66, "OTHER_OR_UNCLEAR": 0.04}),
+        (optional, PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities=parser),
          FieldRoute.UNSUPPORTED),
         # Attachment plus autofill mass below 0.95: still held as a parser.
-        (PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
+        (optional, PurposeProvider(route="APPROVED_DOCUMENT", confidence=0.95, probabilities={
             "APPLICATION_ATTACHMENT": 0.30, "AUTOFILL_PARSER": 0.60, "OTHER_OR_UNCLEAR": 0.10}),
          FieldRoute.UNSUPPORTED),
         # Another or unclear purpose: never a verified attachment.
-        (BatchProvider(route="APPROVED_DOCUMENT", purpose="OTHER_OR_UNCLEAR"), FieldRoute.AMBIGUOUS),
+        (optional, BatchProvider(route="APPROVED_DOCUMENT", purpose="OTHER_OR_UNCLEAR"),
+         FieldRoute.AMBIGUOUS),
+        (required, PurposeProvider(confidence=0.95, probabilities=parser, route_probabilities=unsure),
+         FieldRoute.UNSUPPORTED),
+        (required, PurposeProvider(purpose="OTHER_OR_UNCLEAR", route_probabilities=unsure),
+         FieldRoute.AMBIGUOUS),
     ]
-    for index, (provider, route) in enumerate(cases):
+    for index, (f, provider, route) in enumerate(cases):
         packet, annotated, r, resolver = resolve_upload(provider, f, fictional_candidate, mock_job,
                                                         f"uncertain-{index}")
-        assert not packet.answers and not packet.is_complete
+        assert not packet.answers
         decision = r.report_for(annotated).fields[0]
-        assert decision.route is route and decision.autofill is False
+        assert decision.route is route and decision.autofill is False, index
         assert not resume_upload_traces(resolver)
 
 

@@ -91,8 +91,10 @@ class FieldRouteDecision(BaseModel):
     semantic_confidence: float | None = Field(default=None, ge=0, le=1)
     semantic_probabilities: dict[str, float] = Field(default_factory=dict)
     semantic_pool_share: float | None = Field(default=None, ge=0, le=1)
-    """Jev's semantic mass on the residence types together, for a single-choice field
-    whose meaning Jev classified; the pooled residence gate reads this share."""
+    """Jev's semantic mass on the pool that can decide a field's meaning, when Jev classified
+    it: on a single-choice control the residence types together (with CUSTOM_BOOLEAN on
+    Yes/No options while they outweigh it), on a text box whose label asks for an address
+    ADDRESS and LOCATION. The pooled gate reads this share."""
     narrative_probability: float | None = Field(default=None, ge=0, le=1)
     narrative_confidence: float | None = Field(default=None, ge=0, le=1)
     narrative_probabilities: dict[str, float] = Field(default_factory=dict)
@@ -232,6 +234,11 @@ RESIDENCE_TYPES: tuple[SemanticType, ...] = (SemanticType.LOCATION, SemanticType
 residence screener answers any of them from the whole verified address, so Jev's mass
 split among them is one reading (ties go to the first in this order)."""
 _RESIDENCE_POOL = frozenset(t.value for t in RESIDENCE_TYPES)
+_SHAPE_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value})
+"""On Yes/No options, the reading that only restates the control's yes/no shape."""
+_ADDRESS_POOL = frozenset({SemanticType.ADDRESS.value, SemanticType.LOCATION.value})
+"""On a text box whose label asks for an address, the location reading is the address."""
+_ADDRESS_LABEL = re.compile(r"\baddress\b", re.IGNORECASE)
 _DOCUMENT_POOL = frozenset({DocumentPurpose.APPLICATION_ATTACHMENT.value,
                             DocumentPurpose.AUTOFILL_PARSER.value})
 """A required resume is the approved attachment whether the page attaches or parses it."""
@@ -531,18 +538,31 @@ class AIFormRouter:
         if answer.confidence < self.thresholds.confidence or answer.probabilities[answer.choice] < threshold:
             route, reason = FieldRoute.AMBIGUOUS, "Route probability or confidence below configured threshold"
         semantic_pool = None
+        yes_no = _yes_no_choice(fld)
         if semantic is not None:
             meaning = (SemanticType(semantic.choice)
                        if semantic.confidence >= self.thresholds.confidence
                        and semantic.probabilities[semantic.choice] >= self.thresholds.probability
                        else SemanticType.UNKNOWN)
             if fld.control_type in _SINGLE_CHOICE:
-                semantic_pool = _pool_share(semantic, _RESIDENCE_POOL)
-                if meaning is SemanticType.UNKNOWN and self._pooled(semantic, _RESIDENCE_POOL):
-                    # "Do you currently reside in the US?" is both COUNTRY and LOCATION;
-                    # together they are one residence reading whatever the split.
-                    shares = semantic.probabilities
+                shares = semantic.probabilities
+                # "Do you currently reside in the US?" is both COUNTRY and LOCATION; together
+                # they are one residence reading whatever the split. On Yes/No options a
+                # CUSTOM_BOOLEAN reading is the control's shape rather than another meaning,
+                # so it joins the pool while the residence types together outweigh it.
+                shape = shares.get(SemanticType.CUSTOM_BOOLEAN.value, 0.0)
+                residence = _pool_share(semantic, _RESIDENCE_POOL)
+                pool = _RESIDENCE_POOL | _SHAPE_POOL if yes_no and shape < residence else _RESIDENCE_POOL
+                semantic_pool = _pool_share(semantic, pool)
+                if meaning is SemanticType.UNKNOWN and self._pooled(semantic, pool):
                     meaning = max(RESIDENCE_TYPES, key=lambda t: shares.get(t.value, 0.0))
+            elif fld.control_type is ControlType.TEXT and _ADDRESS_LABEL.search(fld.label):
+                # "What is your current home address?" reads as ADDRESS or LOCATION; its label
+                # asks for the address, so together they are the address.
+                semantic_pool = _pool_share(semantic, _ADDRESS_POOL)
+                if meaning is SemanticType.UNKNOWN and self._pooled(semantic, _ADDRESS_POOL):
+                    meaning = SemanticType.ADDRESS
+        resume_typed = SemanticType.RESUME in (fld.semantic_type, meaning)
         prose_probability = narrative.probabilities["prose"]
         if route is FieldRoute.COPY_KNOWN and (
                 prose_probability > self.thresholds.max_copy_narrative_probability
@@ -559,7 +579,7 @@ class AIFormRouter:
         # literal answer about the applicant's own facts: "Have you worked in a performance
         # marketing agency environment?" is an ordinary yes/no question, however the
         # inspector or Jev typed it. A real consent reads as an explicit answer and stays.
-        plain_yes_no = (_yes_no_choice(fld) and not _consent_wording(fld)
+        plain_yes_no = (yes_no and not _consent_wording(fld)
                         and answer.choice == FieldRoute.COPY_KNOWN.value
                         and self._pooled(applicability, _APPLICANT_SCOPES))
         if plain_yes_no and meaning in _CONSENT_TYPES:
@@ -580,22 +600,26 @@ class AIFormRouter:
             route, reason = FieldRoute.AMBIGUOUS, "Document route requires a live file control"
         purpose = DocumentPurpose(document.choice) if document else None
         document_pool = _pool_share(document, _DOCUMENT_POOL) if document else None
+        attachment = (document is not None and purpose is DocumentPurpose.APPLICATION_ATTACHMENT
+                      and document.confidence >= self.thresholds.confidence
+                      and document.probabilities[document.choice] >= self.thresholds.probability)
         autofill = False
         resume_label = (_RESUME_LABEL.search(fld.label or "") is not None
                         and _COVER_LETTER_LABEL.search(fld.label or "") is None)
-        if (fld.control_type is ControlType.FILE and fld.required and document is not None
-                and (SemanticType.RESUME in (fld.semantic_type, meaning) or resume_label)
-                and purpose in (DocumentPurpose.APPLICATION_ATTACHMENT, DocumentPurpose.AUTOFILL_PARSER)
-                and self._pooled(document, _DOCUMENT_POOL)):
-            # The required resume is the approved attachment even when the page also
-            # parses it (or Jev splits between the two); the browser uploads it first and
-            # re-inspects the fields after.
-            autofill = purpose is DocumentPurpose.AUTOFILL_PARSER
+        if (fld.control_type is ControlType.FILE and fld.required and (resume_typed or resume_label)
+                and (answer.probabilities.get(FieldRoute.APPROVED_DOCUMENT.value, 0.0) + _POOL_TOLERANCE
+                         >= self.thresholds.probability
+                     or (document is not None and self._pooled(document, _DOCUMENT_POOL)))):
+            # The required resume is the approved attachment when Jev's route is sure it
+            # uploads the approved document, whatever the purpose reading, or when attachment
+            # and parser purposes together are sure. A page that may also parse it is
+            # harmless: the browser uploads it first and re-inspects the fields after.
+            autofill = not attachment
             if autofill:
-                reason = ("Required resume upload that also autofills other fields; uploaded first, "
-                          "then the form is re-inspected")
+                reason = ("Required resume upload the page may also parse to autofill other fields; "
+                          "uploaded first, then the form is re-inspected")
             elif route is not FieldRoute.APPROVED_DOCUMENT:
-                reason = "Required resume upload; its attachment purpose approves the document route"
+                reason = "Required resume upload approved as the application attachment"
             route = FieldRoute.APPROVED_DOCUMENT
             # A WRITER reading above made it long text; the upload is still the resume.
             if fld.semantic_type in CUSTOM_TYPES or fld.semantic_type is SemanticType.RESUME:

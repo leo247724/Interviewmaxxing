@@ -144,8 +144,9 @@ def test_a_split_residence_reading_is_one_reading_whatever_its_confidence(
     decision = r.report_for(annotated).fields[0]
     assert decision.semantic_type is expected
     assert decision.semantic_confidence == confidence  # the raw reading is kept for the trace
+    # On Yes/No options the CUSTOM_BOOLEAN shape joins the residence pool (round 2).
     assert decision.semantic_pool_share == pytest.approx(
-        sum(split.get(t, 0.0) for t in ("LOCATION", "COUNTRY", "STATE", "CITY")))
+        sum(split.get(t, 0.0) for t in ("LOCATION", "COUNTRY", "STATE", "CITY", "CUSTOM_BOOLEAN")))
     assert decision.route is FieldRoute.COPY_KNOWN
 
 
@@ -169,9 +170,9 @@ def test_the_greenhouse_residence_question_is_answered_from_the_verified_address
 
 @pytest.mark.parametrize("split", [
     # The pool reaches 0.96 but another reading holds 0.04, over the 0.03 outside bound.
-    {"COUNTRY": 0.50, "LOCATION": 0.46, "CUSTOM_BOOLEAN": 0.04},
+    {"COUNTRY": 0.50, "LOCATION": 0.46, "CUSTOM_TEXT": 0.04},
     # Every outside reading is small, but the pool is only 0.94.
-    {"COUNTRY": 0.40, "LOCATION": 0.54, "CUSTOM_BOOLEAN": 0.02, "UNKNOWN": 0.02,
+    {"COUNTRY": 0.40, "LOCATION": 0.54, "CUSTOM_TEXT": 0.02, "UNKNOWN": 0.02,
      "RELOCATION": 0.02},
     # Work authorization is not residence, however it is split.
     {"COUNTRY": 0.50, "WORK_AUTHORIZATION": 0.50},
@@ -222,6 +223,8 @@ def test_a_confident_residence_type_needs_no_pool_and_other_types_are_not_pooled
 
 ASHBY_RESUME = "Resume / or drag and drop here"
 ROUTE_099 = ({"APPROVED_DOCUMENT": 0.99, "AMBIGUOUS": 0.01}, 0.97)
+ROUTE_090 = ({"APPROVED_DOCUMENT": 0.90, "AMBIGUOUS": 0.10}, 0.90)
+"""A route not sure the upload is the approved document: the purpose gates decide."""
 
 
 def resume_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
@@ -229,10 +232,11 @@ def resume_traces(resolver: DynamicPacketResolver) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("purpose,autofill", [
-    ({"APPLICATION_ATTACHMENT": 0.52, "AUTOFILL_PARSER": 0.46, "OTHER_OR_UNCLEAR": 0.02}, False),
+    ({"APPLICATION_ATTACHMENT": 0.52, "AUTOFILL_PARSER": 0.46, "OTHER_OR_UNCLEAR": 0.02}, True),
     ({"APPLICATION_ATTACHMENT": 0.46, "AUTOFILL_PARSER": 0.52, "OTHER_OR_UNCLEAR": 0.02}, True),
-    # Unsplit but not confident: the pooled gate does not read the per-choice confidence.
-    ({"APPLICATION_ATTACHMENT": 0.97, "AUTOFILL_PARSER": 0.03}, False),
+    # Unsplit but not confident: the pooled gate does not read the per-choice confidence,
+    # and a purpose that is not confidently an attachment may also be parsed (round 2).
+    ({"APPLICATION_ATTACHMENT": 0.97, "AUTOFILL_PARSER": 0.03}, True),
 ])
 def test_the_ashby_required_resume_is_approved_on_its_pooled_purpose(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
@@ -240,7 +244,7 @@ def test_the_ashby_required_resume_is_approved_on_its_pooled_purpose(
 ) -> None:
     field = observed(ASHBY_RESUME, ControlType.FILE)
     assert field.semantic_type is SemanticType.RESUME
-    provider = Jev({"answer": {"r": ROUTE_099, "d": (purpose, 0.55)}})
+    provider = Jev({"answer": {"r": ROUTE_090, "d": (purpose, 0.55)}})
     packet, ctx, r, resolver = resolve(provider, fictional_candidate, mock_job, field)
     decision = r.report_for(ctx.form).fields[0]
     assert decision.route is FieldRoute.APPROVED_DOCUMENT
@@ -268,7 +272,8 @@ def test_a_resume_purpose_with_outside_mass_is_not_pooled(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
     purpose: dict[str, float], route: FieldRoute,
 ) -> None:
-    provider = Jev({"answer": {"r": ROUTE_099, "d": (purpose, 0.55)}})
+    # With a route that is not sure (round 2 approves a sure one whatever the purpose).
+    provider = Jev({"answer": {"r": ROUTE_090, "d": (purpose, 0.55)}})
     packet, ctx, r, resolver = resolve(provider, fictional_candidate, mock_job,
                                        observed(ASHBY_RESUME, ControlType.FILE))
     decision = r.report_for(ctx.form).fields[0]
@@ -326,7 +331,7 @@ def test_a_pooled_resume_stays_the_resume_after_a_writer_reading(
     packet, ctx, r, _ = resolve(provider, fictional_candidate, mock_job,
                                 observed(ASHBY_RESUME, ControlType.FILE))
     decision = r.report_for(ctx.form).fields[0]
-    assert decision.route is FieldRoute.APPROVED_DOCUMENT
+    assert decision.route is FieldRoute.APPROVED_DOCUMENT and decision.autofill is True
     assert decision.semantic_type is ctx.form.field("answer").semantic_type is SemanticType.RESUME
-    assert decision.reason == "Required resume upload; its attachment purpose approves the document route"
+    assert "uploaded first" in decision.reason and "re-inspected" in decision.reason
     assert [a.provenance.source for a in packet.answers] == [AnswerSource.RESUME]
