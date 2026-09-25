@@ -170,8 +170,9 @@ class Transport:
     role (write, humanize or review) from scripted queues; ``None`` is an HTTP 500."""
 
     def __init__(self, *, write: list[Any], humanize: list[Any] | None = None,
-                 review: list[Any] | None = None) -> None:
+                 review: list[Any] | None = None, finish: list[str] | None = None) -> None:
         self.queues = {"write": list(write), "humanize": list(humanize or []), "review": list(review or [])}
+        self.finish = list(finish or ["stop"])  # write calls' finish reasons; the last repeats
         self.requests: list[dict[str, Any]] = []
         self.roles: list[str] = []
 
@@ -186,8 +187,11 @@ class Transport:
         payload = queue.pop(0) if len(queue) > 1 else queue[0]
         if payload is None:
             return HttpResponse(500, {}, b"{}")
+        finish = "stop"
+        if role == "write":
+            finish = self.finish.pop(0) if len(self.finish) > 1 else self.finish[0]
         return HttpResponse(200, {}, json.dumps({"model": MODEL, "usage": {"cost": 0.01}, "choices": [{
-            "finish_reason": "stop", "message": {"content": json.dumps(payload)}}]}).encode())
+            "finish_reason": finish, "message": {"content": json.dumps(payload)}}]}).encode())
 
 
 def fact(candidate: CandidateProfile, value: str, *, fid: str, key: str = "experience",
@@ -424,7 +428,8 @@ def test_humanizer_rewrites_the_draft_keeps_citations_and_grounds_again(candidat
     assert lint(value.text) == []
     assert transport.roles == ["write", "humanize"]
     rewrite = transport.requests[1]
-    assert rewrite["reasoning"] == {"effort": "high"} and rewrite["response_format"]["json_schema"]["strict"]
+    assert rewrite["reasoning"] == {"max_tokens": 2560} and rewrite["response_format"]["json_schema"]["strict"]
+    assert rewrite["max_tokens"] == 2560 + 3000  # the humanize rewrite keeps a cover letter's room
     user = json.loads(rewrite["messages"][1]["content"])
     assert user["purpose"] == "answer" and user["voice_samples"] == ["I write short, plain sentences."]
     assert {f["pattern"] for f in user["findings"]} >= {"throat_clearing", "banned_word", "binary_contrast"}
@@ -523,8 +528,9 @@ def test_effort_follows_the_purpose_and_is_recorded(candidate, mock_job, monkeyp
     jev = Jev(support=0.9)  # uncertain grounding: the low-effort Opus review runs each time
     packet, resolver, _ = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]]), writer, jev, humanize=True)
     assert packet.is_complete
-    efforts = {role: request["reasoning"]["effort"] for role, request in zip(transport.roles, transport.requests, strict=True)}
-    assert efforts == {"write": "high", "humanize": "high", "review": "low"}
+    reasoning = {role: request["reasoning"] for role, request in zip(transport.roles, transport.requests, strict=True)}
+    # Narrative calls carry an explicit high-effort reasoning budget; the review keeps effort.
+    assert reasoning == {"write": {"max_tokens": 2560}, "humanize": {"max_tokens": 2560}, "review": {"effort": "low"}}
     usage = resolver.provider_usage()
     assert usage["reasoning_effort"] == {"humanize": "high", "narrative": "high", "opus_draft_grounding": "low"}
     assert usage["writer_effort"] == {"narrative": "high", "review": "low"}
@@ -627,11 +633,11 @@ def test_interest_questions_are_cover_letter_narratives_despite_an_explicit_scop
     ])
     packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST), retriever, writer, jev)
     assert packet.is_complete and ctx.problems(packet) == []
-    assert writer.calls[0]["purpose"] == "cover_letter"
+    assert writer.calls[0]["purpose"] == "motivation"
     assert [e["id"] for e in writer.calls[0]["job_evidence"]] == [JOB_EVIDENCE["id"]]
     assert retriever.calls[0]["narrative"] is True and retriever.calls[0]["query"] == INTEREST
     trace = next(t for t in resolver.narrative_traces if t["stage"] == "motivation_narrative")
-    assert trace["status"] == "COVER_LETTER_PURPOSE" and trace["source_scope"] == "EXPLICIT_ANSWER"
+    assert trace["status"] == "MOTIVATION_PURPOSE" and trace["source_scope"] == "EXPLICIT_ANSWER"
     assert trace["source_scope_probabilities"]["EXPLICIT_ANSWER"] == 0.78
     assert not any("candidate_narrative" in r["questions"] for r in jev.requests)  # no writer-scope call
     answer = packet.answers[0]
@@ -823,3 +829,151 @@ def test_nothing_usable_left_holds(candidate, mock_job):
     assert held(packet, ctx) and not writer.calls
     missing = next(m for m in packet.missing_inputs if m.field_id == "response")
     assert "No usable verified evidence remains" in (missing.prompt or "")
+
+
+# --- round 3: motivation as alignment, budgets and finish reasons, enumerations ----------------
+
+CAREER_MOTIVATION = ("I look for roles where paid media budgets are tied to measured outcomes and "
+                     "where I can build the tracking that shows what worked.")
+DIRECT_REPORTS = ("How many direct reports do you currently manage, or have you managed in previous "
+                  "roles? Please describe the teams.")
+TEAM_FACTS = [("fact.team_bakery", "Managed a team of 2 marketing coordinators at Crumb & Co. Bakeries (2023-04 to 2024-09)."),
+              ("fact.team_agency", "Led 5 SEO specialists at Glaze Agency (2021-01 to 2023-03).")]
+
+
+def with_career_motivation(candidate: CandidateProfile) -> CandidateProfile:
+    statement = fact(candidate, CAREER_MOTIVATION, fid="career_motivation", key="career_motivation",
+                     source="user:simple-answers")
+    return candidate.model_copy(update={"facts": [*candidate.facts, statement]})
+
+
+class DraftQueue:
+    """A writer double answering each call with the next scripted draft (the last repeats)
+    and supporting every independent review (a corrective rewrite is reviewed)."""
+
+    def __init__(self, *drafts: list[dict[str, Any]]) -> None:
+        self.drafts, self.calls = list(drafts), []  # type: ignore[var-annotated]
+        self.reviews: list[dict[str, Any]] = []
+
+    def write(self, **kwargs: Any) -> NarrativeDraft:
+        self.calls.append(kwargs)
+        sentences = self.drafts.pop(0) if len(self.drafts) > 1 else self.drafts[0]
+        return NarrativeDraft.model_validate({"status": "READY", "sentences": sentences, "missing_information": []})
+
+    def review(self, **kwargs: Any) -> Any:
+        self.reviews.append(kwargs)
+        return SimpleNamespace(verdict="SUPPORTED", issues=[], reference_ids=[])
+
+
+def test_motivation_narratives_state_alignment_and_cite_the_career_motivation_fact(candidate, mock_job):
+    from interviewmaxxing_browser.ai.routing import _required_details
+
+    chunk = story_chunk()
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    # Retrieval did not surface the statement; the resolver adds it for a motivation question.
+    retriever = Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE])
+    writer = Writer([
+        {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+        {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
+         "fact_ids": ["fact.bakery"], "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+        {"text": "I look for roles where budgets are tied to measured outcomes.", "fact_ids": ["career_motivation"]},
+    ])
+    profile = with_career_motivation(candidate)
+    packet, resolver, ctx = resolve(context(profile, mock_job, question=INTEREST), retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    call = writer.calls[0]
+    assert call["purpose"] == "motivation" and call["guidance"] == []
+    assert [f["id"] for f in call["facts"]] == ["fact.bakery", "career_motivation", chunk["id"]]
+    assert call["facts"][1]["key"] == "career_motivation" and call["facts"][1]["value"] == CAREER_MOTIVATION
+    answer = packet.answers[0]
+    assert answer.provenance.reference_ids == ["fact.bakery", "career_motivation"]
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "motivation_narrative")
+    assert trace["status"] == "MOTIVATION_PURPOSE"
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert draft["attempts"] == []  # the double makes no provider call
+    [details] = _required_details(ctx.form.fields[0], "motivation")
+    assert "alignment" in details and "personal reason for interest in the company is not required" in details
+    # Without a statement the alignment alone is the reason: nothing is demanded.
+    writer = Writer([
+        {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+        {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
+         "fact_ids": ["fact.bakery"], "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+    ])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
+                                    Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert [f["id"] for f in writer.calls[0]["facts"]] == ["fact.bakery", chunk["id"]]
+
+
+def test_the_draft_trace_records_each_writer_attempt_and_its_finish_reason(candidate, mock_job):
+    transport = Transport(write=[ready(CLEAN)], finish=["length", "stop"])
+    budget = CallBudget()
+    packet, resolver, ctx = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]]),
+                                    real_writer(transport, budget=budget), Jev())
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert transport.roles == ["write", "write"]  # one retry at the same effort, a larger budget
+    assert [r["reasoning"] for r in transport.requests] == [{"max_tokens": 2560}, {"max_tokens": 3840}]
+    assert [r["max_tokens"] for r in transport.requests] == [2560 + 2000, 3840 + 4000]
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert [(a["attempt"], a["status"], a["finish_reason"], a["reasoning_budget_tokens"]) for a in draft["attempts"]] == [
+        (1, "OUTPUT_LIMIT", "length", 2560), (2, "OK", "stop", 3840)]
+    assert [r.status for r in budget.receipts if r.purpose == "narrative"] == ["OUTPUT_LIMIT", "OK"]
+    # A second cut holds after the retry, never before it.
+    transport = Transport(write=[ready(CLEAN)], finish=["length"])
+    packet, resolver, ctx = resolve(context(candidate, mock_job), Retriever([candidate.facts[0]]),
+                                    real_writer(transport), Jev())
+    assert held(packet, ctx) and transport.roles == ["write", "write"]
+    [missing] = packet.missing_inputs
+    assert "output token limit twice" in missing.prompt
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert [a["finish_reason"] for a in draft["attempts"]] == ["length", "length"]
+
+
+@pytest.mark.parametrize("question,expected", [
+    (DIRECT_REPORTS, True),
+    ("How many people have you managed?", True),
+    ("Which platforms have you managed?", True),
+    ("List the tools you use daily.", True),
+    ("Describe a campaign you led and what it achieved.", False),
+    ("How many years of paid media experience do you have?", False),
+    (INTEREST, False),
+])
+def test_enumeration_questions_are_recognised(question: str, expected: bool) -> None:
+    from interviewmaxxing_browser.ai.routing import _enumeration_question
+
+    assert _enumeration_question(question) is expected
+
+
+def test_enumeration_questions_write_from_the_facts_at_hand_without_totality_words(candidate, mock_job):
+    from interviewmaxxing_browser.ai.routing import ENUMERATION_GUIDANCE, _required_details
+
+    teams = [fact(candidate, text, fid=fid) for fid, text in TEAM_FACTS]
+    profile = candidate.model_copy(update={"facts": teams})
+    listed = [
+        {"text": "At Crumb & Co. Bakeries I managed a team of 2 marketing coordinators from April 2023 to September 2024.",
+         "fact_ids": ["fact.team_bakery"]},
+        {"text": "At Glaze Agency I led 5 SEO specialists from January 2021 to March 2023.", "fact_ids": ["fact.team_agency"]},
+    ]
+    totalled = [*listed, {"text": "In total I have managed 7 people across all my roles.",
+                          "fact_ids": ["fact.team_bakery", "fact.team_agency"]}]
+    writer = DraftQueue(totalled, listed)
+    packet, resolver, ctx = resolve(context(profile, mock_job, question=DIRECT_REPORTS), Retriever(teams), writer, Jev())
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert packet.answers[0].value.text == NarrativeDraft.model_validate(ready(listed)).text
+    first, second = writer.calls
+    assert first["guidance"] == [ENUMERATION_GUIDANCE] and not first["review_feedback"]
+    assert "do not use totality words" in ENUMERATION_GUIDANCE and "do not return NEEDS_INPUT for completeness" in ENUMERATION_GUIDANCE
+    [issue] = second["review_feedback"]
+    assert issue.startswith("Remove totality words") and "the supplied facts state no total" in issue
+    assert next(t["status"] for t in resolver.narrative_traces if t["stage"] == "draft") == "TOTALITY_REJECTED"
+    [rewrite] = [t for t in resolver.narrative_traces if t["stage"] == "corrective_rewrite"]
+    assert rewrite["review_verdict"] == "UNSUPPORTED" and rewrite["status"] == "ONE_REWRITE_ALLOWED"
+    assert len(writer.reviews) == 1  # the rewrite gets the independent review, as any rewrite does
+    [details] = _required_details(ctx.form.fields[0], "answer")
+    assert details.startswith("Present each item the cited facts state") and "no total may be claimed" in details
+    # A fact that states the total allows the word.
+    total = fact(candidate, "I have managed a total of 7 direct reports across the two teams.", fid="fact.total")
+    writer = DraftQueue([*totalled[:2], {"text": "In total I have managed 7 people across all my roles.", "fact_ids": ["fact.total"]}])
+    packet, resolver, ctx = resolve(context(profile.model_copy(update={"facts": [*teams, total]}), mock_job, question=DIRECT_REPORTS),
+                                    Retriever([*teams, total]), writer, Jev())
+    assert packet.is_complete and len(writer.calls) == 1

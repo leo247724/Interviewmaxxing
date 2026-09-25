@@ -147,7 +147,7 @@ def _cited(draft: NarrativeDraft) -> tuple[set[str], set[str]]:
 
 
 def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
-                  purpose: Literal["answer", "cover_letter"], supplied_ids: set[str],
+                  purpose: Literal["answer", "cover_letter", "motivation"], supplied_ids: set[str],
                   job_ids: set[str], max_length: int | None) -> str | None:
     """Why a rewrite is unacceptable, or None: it must be READY, keep every cited id and
     cite nothing new, add no number, stay near the draft's length and within the
@@ -218,19 +218,20 @@ _RULES = (
 
 
 def rewrite_draft(writer: NarrativeWriter, *, question: str,
-                  purpose: Literal["answer", "cover_letter"], draft: NarrativeDraft,
+                  purpose: Literal["answer", "cover_letter", "motivation"], draft: NarrativeDraft,
                   job: dict[str, str], voice_samples: list[str], findings: list[Finding],
                   max_length: int | None, attempt: int) -> NarrativeDraft:
     """One bounded Opus rewrite of a grounded draft; the same budget, transport and
     structured schema as the writer, recorded under the purpose ``humanize``."""
-    if purpose not in ("answer", "cover_letter"):
+    if purpose not in ("answer", "cover_letter", "motivation"):
         raise AIHold("Unsupported narrative purpose")
     if any(not isinstance(sample, str) for sample in voice_samples):
         raise AIHold("Narrative voice samples must be text")
     effort = writer.effort_for("humanize")
+    reasoning, request_max_tokens = writer.narrative_budget("humanize")
     payload = {
-        "model": writer.model, "max_tokens": writer.max_tokens,
-        "reasoning": {"effort": effort},
+        "model": writer.model, "max_tokens": request_max_tokens,
+        "reasoning": reasoning,
         "provider": {"require_parameters": True, "allow_fallbacks": False},
         "messages": [
             {"role": "system", "content": _RULES},
@@ -247,7 +248,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
             "name": "cited_application_response", "strict": True, "schema": _draft_schema()}},
     }
     body = json.dumps(payload).encode()
-    reserve = (len(body) + 2048) * 4 / 1_000_000 + writer.max_tokens * 20 / 1_000_000
+    reserve = (len(body) + 2048) * 4 / 1_000_000 + request_max_tokens * 20 / 1_000_000
     writer.budget.reserve(body, reserve)
     started = time.monotonic()
     resolved: str | None = None
@@ -303,7 +304,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
 
 
 def humanize_draft(writer: NarrativeWriter, *, question: str,
-                   purpose: Literal["answer", "cover_letter"], draft: NarrativeDraft,
+                   purpose: Literal["answer", "cover_letter", "motivation"], draft: NarrativeDraft,
                    job: dict[str, str], voice_samples: list[str], max_length: int | None,
                    supplied_ids: set[str], job_ids: set[str],
                    ground: Callable[[NarrativeDraft, dict[str, Any]], None],

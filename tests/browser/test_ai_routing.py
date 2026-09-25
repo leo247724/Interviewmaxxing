@@ -1423,7 +1423,7 @@ def test_a_select_all_experience_question_selects_the_options_verified_facts_sta
                                            for i, label in enumerate(PLATFORM_OPTIONS)}
     assert [fact["id"] for fact in request["state"]["facts"].values()] == [
         "fact.platforms", "fact.languages"]
-    assert request["state"]["screener_version"] == "experience-screener-v1"
+    assert request["state"]["screener_version"] == "experience-screener-v2"
     [trace] = stage_traces(resolver, "fact_screener")
     assert (trace["kind"], trace["status"], trace["selected"], trace["evidence_ids"]) == (
         "multi", "ANSWERED", ["o0", "o1"], ["fact.platforms"])
@@ -3097,3 +3097,91 @@ def test_an_unlabelled_period_select_pairs_only_with_a_salary_in_its_section(
                                   salary, period)
     chosen = [a.value.label for a in packet.answers if a.field_id == "period"]
     assert chosen == (["Yearly"] if paired else [])
+
+
+# --- WP12 round 3: derived years facts and story facts select the platforms they name ---------
+
+PAID_MEDIA_PLATFORMS = "Which paid media platforms have you directly managed? (Select all that apply)"
+META_STORY = "I ran Meta Ads prospecting and retargeting for Crumb & Co. Bakeries, reporting monthly to the owner."
+GOOGLE_ADS_YEARS = ("Years of Google Ads experience derived from the resume roles that name it: 40 months "
+                    "with overlaps merged, rounded down to whole years")
+
+
+class SourcedProvider(MultiProvider):
+    """MultiProvider whose ``source_o<i>`` choices name the fact ``sources`` maps the option
+    label to (by fact id), so a derived years fact or a story fact can be the source."""
+
+    def __init__(self, picks: dict[str, tuple[str, float]], *, sources: dict[str, str],
+                 scope: str = "HISTORICAL_OR_CONTEXTUAL") -> None:
+        super().__init__(picks, option=by_label(dict.fromkeys(sources, 1.0)), scope=scope)
+        self.sources = sources
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        response = super().__call__(url, headers, body, timeout)
+        request, answers = self.requests[-1], json.loads(response.body)["answers"]
+        state = request["state"]
+        for name, question in request["questions"].items():
+            if not name.startswith("source_"):
+                continue
+            wanted = self.sources.get(state["options"][name.removeprefix("source_")])
+            key = next((k for k, f in state["facts"].items() if f["id"] == wanted), "NONE")
+            answers[name] = {"type": "choice", "choice": key, "confidence": self.confidence,
+                             "probabilities": {k: float(k == key) for k in question["criteria"]}}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+            "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def with_derived_and_story_facts(candidate: CandidateProfile) -> CandidateProfile:
+    base = candidate.verified_facts()[0]
+    derived = base.model_copy(update={
+        "id": "derived_years_experience_google_ads", "key": "years_experience.google_ads", "value": 3,
+        "source": "derived:experience_timeline",
+        "evidence": [GOOGLE_ADS_YEARS, "roles: Fictional Widgets Co (2021-03 to 2024-06)"]})
+    story = base.model_copy(update={
+        "id": "sf_bakery_0002", "key": "experience", "value": META_STORY, "source": "story:" + "d" * 64,
+        "evidence": [META_STORY, "period_source: resume_role", "resume_role_id: exp_bakery"]})
+    languages = base.model_copy(update={"id": "fact.languages", "key": "languages",
+                                        "value": "Speaks conversational Spanish",
+                                        "evidence": ["Speaks conversational Spanish"]})
+    return candidate.model_copy(update={"facts": [derived, story, languages], "experience": [], "education": []})
+
+
+def paid_media_field() -> ApplicationField:
+    return choice_field(PAID_MEDIA_PLATFORMS, SemanticType.CUSTOM_MULTISELECT, *PLATFORM_OPTIONS,
+                        control=ControlType.MULTISELECT, field_id="platforms")
+
+
+def test_derived_years_and_story_facts_select_the_platforms_they_name(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = SourcedProvider({"fact_select": ("SUPPORTED", 0.98)}, sources={
+        "Google Ads": "derived_years_experience_google_ads", "Meta Ads": "sf_bakery_0002"})
+    packet, _, resolver = resolve_choice(provider, with_derived_and_story_facts(fictional_candidate),
+                                         mock_job, paid_media_field())
+    assert packet.is_complete
+    [answer] = packet.answers
+    assert [(c.value, c.label) for c in answer.value.choices] == [("v0", "Google Ads"), ("v1", "Meta Ads")]
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_FACTS
+    assert set(answer.provenance.reference_ids) == {"derived_years_experience_google_ads", "sf_bakery_0002"}
+    [request] = provider.asked("fact_select")
+    assert request["state"]["screener_version"] == "experience-screener-v2"
+    facts = request["state"]["facts"].values()
+    assert {f["source"] for f in facts} >= {"derived:experience_timeline", "story:" + "d" * 64}
+    assert any(f["key"] == "years_experience.google_ads" and f["value"] == 3 for f in facts)
+    questions = json.dumps(request["questions"])
+    assert "years_experience.<area>" in questions and "whose source starts with story:" in questions
+    [trace] = stage_traces(resolver, "fact_screener")
+    assert (trace["kind"], trace["status"], trace["selected"]) == ("multi", "ANSWERED", ["o0", "o1"])
+    assert trace["sources"] == {"o0": "derived_years_experience_google_ads", "o1": "sf_bakery_0002"}
+    assert not provider.asked("route")
+
+
+def test_the_choice_screeners_retrieve_with_their_option_labels() -> None:
+    query = DynamicPacketResolver._screener_query(paid_media_field())
+    assert query == PAID_MEDIA_PLATFORMS + "\nOptions: " + ", ".join(PLATFORM_OPTIONS)
+    plain = choice_field("How many people have you managed?", SemanticType.CUSTOM_SELECT,
+                         control=ControlType.TEXT, field_id="count")
+    assert DynamicPacketResolver._screener_query(plain) == "How many people have you managed?"
+    wide = choice_field("Which tools?", SemanticType.CUSTOM_MULTISELECT, *[f"Tool {i}" for i in range(60)],
+                        control=ControlType.MULTISELECT)
+    assert DynamicPacketResolver._screener_query(wide).count("Tool") == 40

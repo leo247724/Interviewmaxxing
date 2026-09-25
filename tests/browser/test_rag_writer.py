@@ -8,6 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from interviewmaxxing_browser.ai.providers import (
+    ANSWER_TOKENS,
+    REASONING_BUDGET_TOKENS,
     AIHold,
     CallBudget,
     CallReceipt,
@@ -110,7 +112,7 @@ def test_legacy_answer_calls_and_sentence_constructors_remain_compatible() -> No
     assert draft.sentences[0].paragraph == 0
     request = provider.requests[0]
     assert request["model"] == MODEL
-    assert request["reasoning"] == {"effort": "low"}
+    assert request["reasoning"] == {"max_tokens": 1024} and request["max_tokens"] == 1024 + 2000
     assert request["provider"] == {"require_parameters": True, "allow_fallbacks": False}
     schema = request["response_format"]["json_schema"]
     assert schema["strict"] is True
@@ -255,7 +257,7 @@ def test_cover_letter_renders_three_paragraphs_and_fits_default_call_budget() ->
     assert not draft.text.startswith("Dear")
     assert budget.calls == 1 and budget.reserved_usd < budget.max_usd
     assert budget.receipts[0].status == "OK"
-    assert provider.requests[0]["max_tokens"] == 3000
+    assert provider.requests[0]["max_tokens"] == 1024 + 3000  # low-effort reasoning + the letter
     assert provider.timeouts == [90.0]
     assert json.loads(provider.requests[0]["messages"][1]["content"])["purpose"] == "cover_letter"
 
@@ -352,8 +354,9 @@ def test_writer_failures_have_precise_safe_statuses(
     with pytest.raises(AIHold, match=message) as caught:
         writer(provider, budget=budget).write(question="Explain", facts=FACTS, job=JOB,
                                               max_length=300)
-    assert len(provider.requests) == 1 and budget.calls == 1
-    assert budget.receipts[0].status == status
+    calls = 2 if kwargs.get("finish_reason") == "length" else 1  # a length cut is retried once
+    assert len(provider.requests) == calls and budget.calls == calls
+    assert [receipt.status for receipt in budget.receipts] == [status] * calls
     assert "private-writer-marker" not in str(caught.value)
     assert "private-writer-marker" not in json.dumps(budget.metadata())
 
@@ -583,8 +586,9 @@ def test_writer_and_review_send_and_record_explicit_reasoning_without_changing_c
     instance.write(question="Describe your work", facts=FACTS, job=JOB, max_length=100)
     provider.draft = review_result(reference_ids=["fact:campaigns"])
     instance.review(question="Check", facts=FACTS, job={}, purpose="evidence_consistency")
-    assert [request["reasoning"] for request in provider.requests] == [{"effort": effort}] * 2
-    assert [request["max_tokens"] for request in provider.requests] == [3000, 1200]
+    budget_tokens = REASONING_BUDGET_TOKENS[effort]
+    assert [request["reasoning"] for request in provider.requests] == [{"max_tokens": budget_tokens}, {"effort": effort}]
+    assert [request["max_tokens"] for request in provider.requests] == [budget_tokens + 2000, 1200]
     assert [request["model"] for request in provider.requests] == [MODEL, MODEL]
     assert provider.timeouts == [90.0, 90.0]
     assert [receipt.requested_reasoning_effort for receipt in budget.receipts] == [effort, effort]
@@ -1132,3 +1136,150 @@ def test_a_form_routing_answer_malformed_once_is_retried_and_routes_the_form() -
         ["MALFORMED_RESPONSE", "OK"] + ["OK"] * (report.batches - 1))
     assert jev.requests[0] == jev.requests[1]
     assert (report.provider_calls, report.unknown_cost_calls) == (report.batches + 1, 1)
+
+
+# --- WP12 round 3: reasoning budgets, the one retry after a length cut, motivation ------------
+
+class SequenceTransport(MockWriterTransport):
+    """A writer transport whose finish reasons follow a queue (the last one repeats)."""
+
+    def __init__(self, draft: dict[str, Any], *, finish_reasons: list[str]) -> None:
+        super().__init__(draft)
+        self.finish_reasons = list(finish_reasons)
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        self.finish_reason = (self.finish_reasons.pop(0) if len(self.finish_reasons) > 1
+                              else self.finish_reasons[0])
+        return super().__call__(url, headers, body, timeout)
+
+
+def high_writer(transport: Any, *, budget: CallBudget | None = None) -> NarrativeWriter:
+    return NarrativeWriter(ApiKey("synthetic-writer-key", source="test"), MODEL,
+                           budget or CallBudget(), transport=transport, narrative_effort="high")
+
+
+ALIGNED = ready(
+    {"text": "The role centres on paid acquisition and qualified pipeline reporting.",
+     "fact_ids": [], "job_evidence_ids": ["job:description"]},
+    {"text": "I managed paid campaigns and reported qualified pipeline, the same work.",
+     "fact_ids": ["fact:campaigns"], "job_evidence_ids": ["job:description"]})
+
+
+@pytest.mark.parametrize("purpose,answer_tokens", [("answer", 2000), ("cover_letter", 3000),
+                                                   ("motivation", 2000)])
+def test_narrative_calls_send_a_reasoning_budget_and_keep_the_answers_room(
+        purpose: str, answer_tokens: int) -> None:
+    provider = MockWriterTransport(cover_letter() if purpose == "cover_letter" else ALIGNED)
+    attempts: list[dict[str, Any]] = []
+    instance = high_writer(provider)
+    instance.write(question="Why this role?", facts=FACTS, job=JOB, max_length=None,
+                   job_evidence=JOB_EVIDENCE, purpose=purpose, on_attempt=attempts.append)  # type: ignore[arg-type]
+    [request] = provider.requests
+    assert request["reasoning"] == {"max_tokens": 2560}  # high: at least the 80% of 3000 OpenRouter gave
+    assert request["max_tokens"] == 2560 + answer_tokens and ANSWER_TOKENS[purpose] == answer_tokens
+    assert attempts == [{"attempt": 1, "status": "OK", "finish_reason": "stop",
+                         "reasoning_budget_tokens": 2560, "max_tokens": 2560 + answer_tokens}]
+    assert instance.narrative_budget(purpose) == ({"max_tokens": 2560}, 2560 + answer_tokens)
+    assert instance.narrative_budget(purpose, retry=True) == ({"max_tokens": 3840}, 3840 + 2 * answer_tokens)
+    assert REASONING_BUDGET_TOKENS == {"low": 1024, "medium": 1536, "high": 2560, "xhigh": 5120, "max": 10240}
+
+
+def test_a_length_cut_is_retried_once_at_the_same_effort_with_a_larger_budget() -> None:
+    provider = SequenceTransport(ready({"text": "I managed paid campaigns.",
+                                        "fact_ids": ["fact:campaigns"]}), finish_reasons=["length", "stop"])
+    budget = CallBudget()
+    attempts: list[dict[str, Any]] = []
+    draft = high_writer(provider, budget=budget).write(question="Describe your work", facts=FACTS,
+                                                       job=JOB, max_length=100, on_attempt=attempts.append)
+    assert draft.text == "I managed paid campaigns."
+    assert [r["reasoning"]["max_tokens"] for r in provider.requests] == [2560, 3840]
+    assert [r["max_tokens"] for r in provider.requests] == [2560 + 2000, 3840 + 4000]
+    assert [r.status for r in budget.receipts] == ["OUTPUT_LIMIT", "OK"] and budget.calls == 2
+    assert [r.requested_reasoning_effort for r in budget.receipts] == ["high", "high"]
+    assert [(a["attempt"], a["status"], a["finish_reason"]) for a in attempts] == [
+        (1, "OUTPUT_LIMIT", "length"), (2, "OK", "stop")]
+
+
+def test_two_length_cuts_hold_after_the_one_retry() -> None:
+    provider = SequenceTransport(ready({"text": "I managed paid campaigns.",
+                                        "fact_ids": ["fact:campaigns"]}), finish_reasons=["length"])
+    budget = CallBudget()
+    with pytest.raises(AIHold, match="output token limit twice"):
+        high_writer(provider, budget=budget).write(question="Describe your work", facts=FACTS,
+                                                   job=JOB, max_length=100)
+    assert [r.status for r in budget.receipts] == ["OUTPUT_LIMIT", "OUTPUT_LIMIT"]
+    assert len(provider.requests) == 2
+
+
+def test_a_retry_the_budget_refuses_holds_naming_both_reasons() -> None:
+    provider = SequenceTransport(ready({"text": "I managed paid campaigns.",
+                                        "fact_ids": ["fact:campaigns"]}), finish_reasons=["length"])
+    budget = CallBudget(max_calls=1)
+    attempts: list[dict[str, Any]] = []
+    with pytest.raises(AIHold, match="output token limit and the larger retry exceeds the call budget"):
+        high_writer(provider, budget=budget).write(question="Describe your work", facts=FACTS,
+                                                   job=JOB, max_length=100, on_attempt=attempts.append)
+    assert len(provider.requests) == 1 and budget.calls == 1
+    assert [a["status"] for a in attempts] == ["OUTPUT_LIMIT", "BUDGET_EXHAUSTED"]
+    assert attempts[1]["finish_reason"] is None and attempts[1]["max_tokens"] == 3840 + 4000
+
+
+def test_motivation_answers_need_the_job_description_and_cite_both_namespaces() -> None:
+    provider = MockWriterTransport(ALIGNED)
+    instance = writer(provider)
+    with pytest.raises(AIHold, match="Motivation answer needs explicit facts"):
+        instance.write(question="What interests you about this role?", facts=FACTS, job=JOB,
+                       max_length=None, purpose="motivation")
+    with pytest.raises(AIHold, match="Motivation answer needs explicit facts"):
+        instance.write(question="What interests you about this role?", facts=[], job=JOB,
+                       max_length=None, job_evidence=JOB_EVIDENCE, purpose="motivation")
+    draft = instance.write(question="What interests you about this role?", facts=FACTS, job=JOB,
+                           max_length=None, job_evidence=JOB_EVIDENCE, purpose="motivation",
+                           guidance=["Name two requirements."])
+    assert len(draft.sentences) == 2 and draft.sentences[1].fact_ids == ["fact:campaigns"]
+    [request] = provider.requests
+    system = request["messages"][0]["content"]
+    assert "alignment between the job's stated requirements" in system
+    assert "career_motivation" in system and "never return NEEDS_INPUT for the lack of a personal reason" in system
+    user = json.loads(request["messages"][1]["content"])
+    assert user["purpose"] == "motivation" and user["guidance"] == ["Name two requirements."]
+    provider.draft = ready({"text": "I managed paid campaigns.", "fact_ids": ["fact:campaigns"]})
+    with pytest.raises(AIHold, match="Motivation answer must cite verified resume facts and the job description"):
+        instance.write(question="What interests you about this role?", facts=FACTS, job=JOB,
+                       max_length=None, job_evidence=JOB_EVIDENCE, purpose="motivation")
+    nine = [{"text": f"Sentence {i}.", "fact_ids": ["fact:campaigns"], "job_evidence_ids": ["job:description"]}
+            for i in range(9)]
+    provider.draft = ready(*nine)
+    with pytest.raises(AIHold, match="exceeds the sentence limit"):
+        instance.write(question="What interests you about this role?", facts=FACTS, job=JOB,
+                       max_length=None, job_evidence=JOB_EVIDENCE, purpose="motivation")
+
+
+def test_writer_guidance_is_bounded_and_never_a_factual_source() -> None:
+    provider = MockWriterTransport(ready({"text": "I managed paid campaigns.", "fact_ids": ["fact:campaigns"]}))
+    with pytest.raises(AIHold, match="Writer guidance requires at most 8"):
+        writer(provider).write(question="Describe your work", facts=FACTS, job=JOB, max_length=100,
+                               guidance=["rule"] * 9)
+    with pytest.raises(AIHold, match="Writer guidance requires at most 8"):
+        writer(provider).write(question="Describe your work", facts=FACTS, job=JOB, max_length=100,
+                               guidance=["  "])
+    assert provider.requests == []
+    writer(provider).write(question="Describe your work", facts=FACTS, job=JOB, max_length=100,
+                           guidance=["Present each team the facts state."])
+    system = provider.requests[0]["messages"][0]["content"]
+    assert "guidance lists the caller's rules for this particular question" in system
+    assert "they never add facts" in system
+
+
+def test_the_review_prompt_accepts_alignment_and_enumerations_as_complete() -> None:
+    provider = MockWriterTransport(review_result(reference_ids=["fact:campaigns"]))
+    sentences = NarrativeDraft.model_validate(ALIGNED).sentences
+    writer(provider).review(question="Why this role?", facts=FACTS, job=JOB, job_evidence=JOB_EVIDENCE,
+                            sentences=sentences, purpose="draft_grounding")
+    system = provider.requests[0]["messages"][0]["content"]
+    assert "a personal reason is not required unless a career_motivation fact states one" in system
+    assert "must not claim a total the facts do not state" in system
+    assert provider.requests[0]["reasoning"] == {"effort": "low"}  # reviews keep effort
+    provider = MockWriterTransport(review_result())
+    writer(provider).review(question="Check", facts=FACTS, job={}, purpose="evidence_consistency")
+    assert "career_motivation" not in provider.requests[0]["messages"][0]["content"]

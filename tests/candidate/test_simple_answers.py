@@ -444,3 +444,66 @@ def test_consistent_statuses_import_as_one_untyped_global_answer(status, changes
     updates = answers.saved_answer_updates(confirmed_at=datetime(2026, 9, 24, tzinfo=UTC))
     [saved] = [a for a in updates if a.question == WORK_AUTHORIZATION_STATUS_QUESTION]
     assert (saved.value, saved.semantic_type, saved.scope) == (status, None, AnswerScope.GLOBAL)
+
+
+# --- WP12 round 3: the one-time career_motivation statement -----------------------------------
+
+CAREER_MOTIVATION = ("I look for roles where paid media budgets are tied to measured outcomes and "
+                     "where I can build the tracking that shows what worked.")
+
+
+def test_career_motivation_imports_as_a_verified_fact_and_exports_from_it(
+    write_candidate, candidate_store, tmp_path
+):
+    directory = write_candidate()
+    target = tmp_path / "simple-answers.json"
+    assert run("export", target).returncode == 0
+    data = json.loads(target.read_text())
+    assert data["career_motivation"] is None
+    data["career_motivation"] = CAREER_MOTIVATION
+    target.write_text(json.dumps(data))
+    result = run("import", target)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["facts_updated"] == ["career_motivation"] and report["saved_answers_updated"] == 0
+    assert "measured outcomes" not in result.stdout  # keys are reported, never the statement
+    profile = candidate_store.load("default")
+    statement = profile.find_fact("career_motivation")
+    assert statement is not None and statement.is_verified
+    assert (statement.key, statement.value, statement.source) == (
+        "career_motivation", CAREER_MOTIVATION, "user:simple-answers")
+    assert statement.verification.method.value == "USER_STATED"
+    assert not any("career" in a.question.lower() for a in profile.saved_answers)  # a fact, not a saved answer
+    verified_at = statement.verification.verified_at
+    # A repeated import writes nothing; a null keeps the statement and its verification time.
+    result = run("import", target)
+    assert result.returncode == 0 and json.loads(result.stdout)["facts_updated"] == []
+    data["career_motivation"] = None
+    target.write_text(json.dumps(data))
+    assert run("import", target).returncode == 0
+    profile = candidate_store.load("default")
+    kept = profile.find_fact("career_motivation")
+    assert kept is not None and kept.value == CAREER_MOTIVATION
+    assert kept.verification.verified_at == verified_at
+    exported = tmp_path / "exported.json"
+    assert run("export", exported).returncode == 0
+    assert json.loads(exported.read_text())["career_motivation"] == CAREER_MOTIVATION
+    assert not (directory / "answers.json").exists()
+
+
+def test_the_career_motivation_fact_is_null_safe_and_idempotent():
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_candidate.simple_answers import SimpleAnswers
+
+    when = datetime(2026, 9, 24, tzinfo=UTC)
+    assert _round7_answers().career_motivation_fact(confirmed_at=when) is None
+    assert _round7_answers(career_motivation="   ").career_motivation is None
+    answers = _round7_answers(career_motivation=CAREER_MOTIVATION)
+    statement = answers.career_motivation_fact(confirmed_at=when)
+    assert statement is not None and statement.id == "career_motivation"
+    assert statement.verification.verified_at == when and statement.is_verified
+    assert statement.evidence == ["Written by the applicant in the simple answers map: what they look for in a role"]
+    assert answers.saved_answer_updates(confirmed_at=when) == []  # never a saved answer
+    assert "career_motivation" in SimpleAnswers.model_fields
+    assert json.loads((REPO / "examples/simple-answers.example.json").read_text())["career_motivation"] is None

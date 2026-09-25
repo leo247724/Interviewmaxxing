@@ -18,15 +18,25 @@ from interviewmaxxing_core import (
     WORK_AUTHORIZATION_STATUS_QUESTION,
     WORK_AUTHORIZATION_STATUSES,
     AnswerScope,
+    CandidateFact,
     CandidateIdentity,
     CandidateProfile,
+    FactVerification,
     PostalAddress,
     SavedAnswer,
     SemanticType,
+    VerificationMethod,
+    VerificationStatus,
     new_id,
 )
 
 from .answers import question_key, value_key
+
+CAREER_MOTIVATION_KEY = "career_motivation"
+"""Two or three sentences the person writes once about what they look for in a role; a
+verified fact (not a saved answer) that motivation narratives may cite."""
+CAREER_MOTIVATION_FACT_ID = "career_motivation"
+CAREER_MOTIVATION_SOURCE = "user:simple-answers"
 
 _CONTACT_KEYS = frozenset({
     "first_name", "last_name", "preferred_name", "email", "phone", "linkedin_url",
@@ -328,6 +338,7 @@ class SimpleAnswers(BaseModel):
     non_compete_agreement: str | None = None
     uses_ai_tools: str | None = None
     familiar_with_company: str | None = None
+    career_motivation: str | None = None
     county: str | None = None
     acknowledge_privacy_notice: str | None = None
     certify_information_true: str | None = None
@@ -432,6 +443,9 @@ class SimpleAnswers(BaseModel):
     def from_profile(cls, profile: CandidateProfile) -> Self:
         """Export the map's exact question scopes, without borrowing job answers."""
         data = cls.from_identity(profile.identity).model_dump()
+        statement = profile.find_fact(CAREER_MOTIVATION_FACT_ID)
+        if statement is not None and statement.is_verified and isinstance(statement.value, str):
+            data[CAREER_MOTIVATION_KEY] = statement.value
         for key, (semantic, question) in _REUSABLE_QUESTIONS.items():
             prototype = SavedAnswer(
                 id="map_export", scope=AnswerScope.GLOBAL, semantic_type=semantic, question=question,
@@ -448,6 +462,25 @@ class SimpleAnswers(BaseModel):
             if isinstance(value, str):
                 data[key] = value
         return cls.model_validate(data)
+
+    def career_motivation_fact(self, *, confirmed_at: datetime,
+                               current: CandidateProfile | None = None) -> CandidateFact | None:
+        """The ``career_motivation`` statement as a verified, user-stated fact, or None when
+        the map has none or the profile already holds the same statement (the verification
+        time is then kept). Null never erases an earlier statement."""
+        if self.career_motivation is None:
+            return None
+        existing = current.find_fact(CAREER_MOTIVATION_FACT_ID) if current is not None else None
+        if (existing is not None and existing.is_verified and existing.value == self.career_motivation
+                and existing.key == CAREER_MOTIVATION_KEY):
+            return None
+        return CandidateFact(
+            id=CAREER_MOTIVATION_FACT_ID, key=CAREER_MOTIVATION_KEY, value=self.career_motivation,
+            source=CAREER_MOTIVATION_SOURCE,
+            verification=FactVerification(status=VerificationStatus.VERIFIED,
+                                          method=VerificationMethod.USER_STATED,
+                                          verified_at=confirmed_at),
+            evidence=["Written by the applicant in the simple answers map: what they look for in a role"])
 
     def saved_answer_updates(
         self, *, confirmed_at: datetime, current: Sequence[SavedAnswer] = ()
