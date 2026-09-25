@@ -381,6 +381,38 @@ salary from the saved figure), consent and attestation statements (the person's 
 keys), earliest start date (the saved value does not fit the sites' option wordings), and one-off
 questions (county, pronouns, AI tools, familiarity, location preference).
 
+**September 25, morning: the cloud detour, the recovered rounds, and retries three and four.**
+Overnight the WP2, WP10, WP1 and WP9 rounds ran as Claude Code cloud sessions and finished green,
+but none could push: the account's GitHub connection never covered this repository, so the CLI
+uploaded bundles and the sessions' git proxy refused every push (see `docs/cloud-rounds.md`). The
+work came back as patch attachments downloaded from the shared session pages and applied with
+`git am`; the review pass 5 report is in `docs/reviews/pass-5-2026-09-24.md`. Everything is merged
+at d4539e9 (gates: 5043 passed, 25 e2e). No further work goes to the cloud.
+
+The person filled every reusable key (53), stated his experience (8 years professional, 7 paid
+media across Google, Meta and LinkedIn Ads, 6 SEO, 7 performance marketing, 5 leading teams),
+confirmed all story facts, and added his LinkedIn entries, the Adscriptly site (30 pages) and a
+first-person builder story to the corpus: 131 verified facts and about 165 story passages, from
+39 facts and 19 passages the evening before.
+
+Retry three (answers only, head 8775a34): 29 run, 1 more prepared (10 of 40), holds 115 → 106.
+Retry four (merged head d4539e9, facts and years in): 27 run, 1 more prepared (11 of 40), 23 held,
+3 failed, holds 105 → 95. The salary derivation cleared seven of the eight salary holds. What still
+holds, from the traces:
+
+1. *Experience screeners (32 yes/no, 6 multi-select).* Three defects, none about the facts: the
+   screener never runs when the route ends AMBIGUOUS (confidence 0.84–0.92), a Jev YES at 0.99
+   without `supporting_ids` is discarded as UNKNOWN, and the evidence set is the top 8 retrieved
+   facts, which rarely include the `years_experience.*` and user-stated facts. WP2 round 11 has
+   these as an addendum; WP10 round 6 types the "N+ years of …" questions.
+2. *Conditional follow-ups, Yes/No answers on free-text fields, SMS consent, country lists*: WP2
+   round 11.
+3. *Paylocity controls and its work-history block*: WP1 round 12.
+4. *Consents and one-offs the person answers once*: the answer sheet (`holds --sheet`,
+   `answer --sheet`) is merged; the next step is to generate it and have the person fill it.
+5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
+   portfolios. Honest Nos the person gives once through the sheet.
+
 **Second retry on the merged head (22:29, `prepare-batch --retry pilot7-20260924 --all --batch-id
 pilot7-retry2`, j-workspace 9ca484b = WP2 round 9 + WP12 rounds 3–4 + WP7 + WP1 round 10).** 29 of the
 40 applications were run again (9 prepared, 2 need only explicit answers): 0 more prepared, 27 held,
