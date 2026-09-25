@@ -122,15 +122,25 @@ CAPTCHA_TEXT = _rx(
 )
 APPLY_LINK = _rx(
     r"^(?!.*\bsubmit\b)(?!.*\bapply (?:with|using|via)\b)(?!.*\buse my\b)\s*(?:"
-    r"apply(?: now| here| online| today)?"
+    r"(?:easy |quick )?apply(?: now| here| online| today)?"
     r"|apply (?:for|to) (?:this |the )?(?:job|role|position|opening)"
+    r"|apply (?:without (?:an? )?account|as (?:an? )?guest)"
+    r"|continue as (?:an? )?guest"
     r"|(?:start|begin) (?:your |my )?application"
     r"|continue to (?:the |your )?application"
     r"|i'?m interested)\s*[\u00bb\u203a>\u2192]?\s*$"
 )
 """Text of a control that leads to the application form (a posting's apply link or
-button). Third-party flows ("Apply with LinkedIn", "Use my Indeed resume") and
-anything mentioning "submit" are excluded."""
+button, LinkedIn's "Easy Apply", a guest-apply choice). Third-party flows ("Apply with
+LinkedIn", "Use my Indeed resume") and anything mentioning "submit" are excluded."""
+
+APPLY_ENTRY = _rx(
+    r"^\s*(?:(?:easy|quick) apply|i'?m interested|apply (?:without (?:an? )?account|as (?:an? )?guest)"
+    r"|continue as (?:an? )?guest|(?:start|begin) (?:your |my )?application"
+    r"|continue to (?:the |your )?application)\b"
+)
+"""Apply wording that only ever opens an application ("Easy Apply", "I'm interested",
+"Start your application"), never submits one, whatever form it sits in."""
 STATUS_LINK = _rx(
     r"application status|check (?:your )?status|already applied|my applications|candidate (?:home|portal)"
 )
@@ -188,7 +198,8 @@ _NEXT = _rx(r"\bnext\b|continue|proceed|\breview\b|go to step|save (?:and|&) (?:
 _OTHER = _rx(
     r"\bback\b|previous|cancel|save (?:as )?draft|save for later|sign ?in|log ?in|upload|attach|"
     r"browse|\badd\b|remove|delete|clear|reset|check (?:your )?status|search|\bedit\b|close|"
-    r"autofill|import|choose file|select file"
+    r"autofill|import|choose file|select file|\bsave\b|\bdismiss\b|\bdiscard\b|\bskip\b|download|"
+    r"\bpaste\b|\bshow(?: \d+)? (?:more|less)\b|\bsee(?: \d+)? (?:more|less)\b"
 )
 
 

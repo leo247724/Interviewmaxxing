@@ -96,6 +96,11 @@ required flag and option `value`/`label` pairs, and each job's flags (such as
 | `custom-uploader` | Customer Marketing Manager (BWA-GH-131) | Greenhouse-style uploaders that page script mounts (the static HTML holds one `div[data-mount-html]` placeholder each). Resume: `div#resume-field.field.uploader[role=group][aria-labelledby=resume-label][aria-required=true]` with "Resume/CV *", a drop zone `#resume-dropzone` ("Drop or select a file", `button#resume-button` "Upload resume", which opens the file chooser), a hint, `input#resume-input[type=file][name=resume]` with `display:none` and **no label, no `aria-label`, no `required`**, `div#resume-chip.file-chip[hidden]` and `div#resume-notice.upload-notice[role=status][aria-live=polite]`. On `change` the file moves into page state and the input is **cleared at once**; the chip shows `span.file-chip__name`, `span.file-chip__size` "(N bytes)" and `button.file-chip__remove[aria-label="Remove file"]`; the notice says "Uploading…" (`aria-busy=true`), then after `upload_ms` (800) "<name> uploaded" (`aria-busy=false`). The remove button clears the page state, the chip and the notice. A `drop` on the zone goes through the input. The form's `formdata` event posts the stored file as `resume`. Cover letter (optional): `input#cover-letter-input[name=cover_letter].visually-hidden` inside `label.upload-label[data-testid=cover_letter]` ("Attach cover letter", no `for`); it keeps its file and `#cover-letter-chip` shows its name. Both are validated like `file` (kinds `custom_file` and `label_file`). A 422 re-render shows them empty with an inline error; nothing is retained. `fixture_identity`. |
 | `linkedin-autofill` | Marketing Operations Specialist (BWA-LV-132) | Lever-style: the native `#f-resume` first, then `name` ("Full name", `autocomplete=name`), `email`, `phone`, `location` ("Current location", optional) and `urls[LinkedIn]` ("LinkedIn URL", optional, id `f-urls[LinkedIn]`). Before the first field block, `div#awli` holds `button#linkedin-apply.awli-button[aria-busy=true]` "Loading…" (after `loading_ms`, 1500, "Apply with LinkedIn" without `aria-busy`) under `div#linkedin-overlay.awli-overlay[title="Apply with LinkedIn"]`, a transparent overlay covering the button exactly, so a pointer click lands on the overlay. The button's own click sets `name` = "LinkedIn Member" and `email` = "member@linkedin.example.test". An autofill prompt `div#autofill-prompt[role=dialog][aria-modal=true]` ("Autofill your application?", buttons `#autofill-prompt-accept` "Autofill with LinkedIn" and `#autofill-prompt-dismiss` "No thanks") is appended to `body`, outside `main`, after load or after the resume changes (see below); while it is shown, `main` is `inert` and `aria-hidden`. "No thanks" removes it and restores `main`; "Autofill with LinkedIn" does too and sets the LinkedIn values. A closed prompt never returns. `fixture_identity`. |
 | `react-controlled` | Retention Marketing Manager (BWA-RC-133) | React-like controlled inputs: first name, last name, email and phone (standard markup) inside `div#react-root`, the native resume outside it. Only trusted `input` events (typing: `page.fill`, `press_sequentially`) update the page state (`__mock.state`, which starts from the rendered values); every 150 ms and on `focusout` any other value, such as a value assignment followed by a synthetic `input` event, is reset to the state. The first typed change re-renders the fields once: after `rerender_ms` (0) the field blocks give way to `p#react-saving[aria-busy=true]` "Saving draft…", and `unmount_ms` (300) later **new** elements with the same ids, names, labels and attributes are mounted with the state's values (element handles taken before are disconnected). With `?lose_first=1` the first typed value never reaches the state (typing before hydration), so the re-render drops it. The form's `formdata` event posts the state. `fixture_identity`. |
+| `changed-after-prepare` | Decision Scientist (BWA-DS-128) | The core questions (contact, résumé, work authorization, sponsorship) on the **first** load of `/jobs/changed-after-prepare/apply`. From the second load on the form also asks a new required radio question, "Are you willing to travel to client sites up to 25% of the time?" (`travel_willingness`: `travel_yes`/`travel_no`). The server counts the GETs of this application page (in `state.json`; `/__test__/reset` clears the count) and renders and validates whichever form it served last, so answers prepared on the first load no longer match the form when it is opened again, and a POST without the new answer is a 422 rejection. The catalog names the question as `added_on_reload`. Used to prove that an approved application whose form changed is not submitted. |
+| `modal-wizard` | Growth Marketing Lead (BWA-LI-130) | LinkedIn-style Easy Apply. The job view's Easy Apply control (a link by default, a type-less button with `?trigger=button`) opens a four-step modal `role="dialog"` built by page script: Contact info (pre-filled), Resume (saved resume cards and an upload), Additional Questions, Review. Page-behind decoys stay in the document: a search form, an "Easy Apply" search-filter toggle and two form-less fillable controls. Only "Submit application" contacts the server, with one `POST /jobs/modal-wizard/easy-apply`. See [Replicated application flows](#replicated-application-flows). |
+| `iframe-embed` | Partnerships Manager (BWA-GH-141) | An employer careers page with "Role overview" and "Application" tabs. Page script injects the Greenhouse-style `iframe#grnhse_iframe` into the hidden Application panel 300 ms after load; the iframe shows the `standard` form from `/embed/job_app`. "Apply Now" and the Application tab only switch panels. |
+| `stepper-ambiguous` | Head of Paid Media (BWA-JZ-132) | JazzHR-style: the form has no `<button>` at all. "Attach resume", "Paste resume" and "Submit Application" are `href="#"` anchors; "Submit Application" validates on the client, then submits the form by script. Cookie-consent buttons and a Share anchor sit outside the form. `?sections=2` splits the form into two client-side sections with Next, Save and Back anchors. |
+| `apply-in-alert-form` | Marketing Project Manager (BWA-DF-133) | Dayforce-style: the whole posting is one ASP.NET-style form whose Apply button posts to `/start`, beside a "Get job alerts" email field and a Subscribe button (`formaction` `/alerts`). Apply leads to "How would you like to apply?", whose "Apply without an Account" routes on the client (2.5 s, `history.pushState`) to the `CORE` form. `?nav=spa` has no forms and also routes on the client from the posting. A typed alert email is recorded as a job-alert subscription, never as an application. |
 
 ### Static pages
 
@@ -185,6 +190,148 @@ The parameters belong to the apply page's own URL, for example
 `/jobs/linkedin-autofill/apply?loading_ms=300&prompt=none`. A 422 re-render is posted to
 the plain apply path, so it uses the defaults.
 
+### Replicated application flows
+
+Four scenarios reproduce the structure of real vendor pages, with fictional text. They
+follow the vendors' markup, not the conventions under "Shared behavior": some controls
+have only an `aria-label`, and some actions are anchors or type-less buttons. Their
+timers are fixed: 300 ms and 400 ms (Easy Apply), 300 ms (iframe injection) and 2.5 s
+(Dayforce routes). Page script keeps its configuration in an `application/json` script
+element whose `<`, `>` and `&` are escaped, so no route content reads as markup in the raw HTML.
+
+#### `modal-wizard`: LinkedIn-style Easy Apply
+
+| Method and path | Result |
+| --- | --- |
+| `GET /jobs/modal-wizard` | The job view: `_job_heading` identity, canonical link and JSON-LD as on every posting, the apply control, and the page-behind decoys. |
+| `GET /jobs/modal-wizard/apply` | The SDUI apply URL: the same job view, with the dialog opened by script 300 ms after load. |
+| `POST /jobs/modal-wizard/easy-apply?resumes=<variant>` | The dialog's only request (multipart, sent by `fetch`). |
+| `POST /jobs/modal-wizard/apply` | 405. Nothing is recorded. |
+
+Variants are query parameters. The link's `href` keeps them.
+
+| Parameter | Values |
+| --- | --- |
+| `trigger` | `link` (default): `<a aria-label="Easy Apply to this job" href="/jobs/modal-wizard/apply?openSDUIApplyFlow=true&…">` wrapping an `svg[aria-hidden]` and the text "Easy Apply". `button`: `button#jobs-apply-button-id.jobs-apply-button[data-live-test-job-apply-button]` with `aria-label="Easy Apply to Growth Marketing Lead at Brambleway Analytics"`, no `type` and outside any form. A click opens the dialog 400 ms later (a simulated request, no navigation). |
+| `resumes` | Saved resume cards on the Resume step; the first is preselected. `match` (default): "Avery_Quill_Resume_2025.pdf", "resume_avery_quill.pdf". `one`: "Avery_Quill_Resume_2025.pdf". `nomatch`: "Avery_Quill_Resume_2025.pdf", "AQ_CV_marketing.docx". `none`: no card, so a file must be uploaded. Unknown values mean `match`. |
+| `shadow` | `1`: `div#interop-outlet[data-testid=interop-shadowdom]` is appended to `body` at load, and the whole `#artdeco-modal-outlet` subtree, with a copy of the dialog styles, is rendered inside its **open** shadow root. While the dialog is open the host has `style="position:fixed;inset:0;z-index:1000"`. `document.querySelector` finds none of the dialog; `label[for]` ids resolve inside the shadow root; Playwright CSS and label locators pierce it. |
+| `import` | `1`: the Contact info step opens with the paragraph "Import from LinkedIn or fill out this form." and a `type=button` "Import from LinkedIn" (counted in `window.__easyApply.imported`). Its footer has two `type=submit` buttons in the step's form. "Skip" moves on without validation and is counted in `skipped`. "Continue" (`aria-label="Continue to next step"`) replaces Next. The whole dialog's text reads like an autofill offer. A runtime must not decline it with Skip or Dismiss; only `advance()` moves the step on. |
+
+Page-behind decoys, which a runtime must ignore once the dialog is open:
+
+- `form[role=search][method=get][action="/jobs/modal-wizard"]` with `input[type=search][name=keywords][aria-label="Search jobs"]` (also `id="jobs-search-keywords"` with a visually hidden `<label for>`) and a submit button "Search".
+- `button.filter-pill[type=button][aria-pressed]` "Easy Apply", plus a "Remote" pill. These are search-filter toggles that flip `aria-pressed`.
+- `textarea[aria-label="Write a message to the hiring team"]` and `input[type=text][aria-label="Add a note about this job"]`, outside any form.
+
+The dialog, appended to `body` when it opens and removed when it closes:
+`div#artdeco-modal-outlet` > `div.artdeco-modal-overlay.artdeco-modal-overlay--is-top-layer[data-test-modal-container][aria-hidden=false]` >
+`div[data-test-modal][role=dialog][tabindex=-1][aria-labelledby=jobs-apply-header].artdeco-modal.jobs-easy-apply-modal`. It has **no** `aria-modal`.
+Inside it are `button[aria-label=Dismiss][data-test-modal-close-btn]` (no `type`), `h2#jobs-apply-header` "Apply to Brambleway Analytics" and
+`div.artdeco-modal__content` > `div[role=region][aria-label="Your job application progress is at N percent."]`. The region holds
+`progress.artdeco-completeness-meter-linear__progress-element` and `span[role=note]` "N%" (N is 0, 33, 67 or 100), then one `<form>` with no attributes,
+whose `submit` is prevented so Enter never navigates. The form holds `div.ph5` (the step, headed by `h3.t-16.t-bold`) and `footer[role=presentation]`.
+The footer shows "Submitting this application won’t change your LinkedIn profile." and `type="button"` buttons with `span.artdeco-button__text`:
+
+- Next: `aria-label="Continue to next step"`, `data-easy-apply-next-button`.
+- Back: `aria-label="Back to previous step"`.
+- Review: `aria-label="Review your application"`.
+- Submit application: `aria-label="Submit application"`, `data-live-test-easy-apply-submit-button`.
+
+Each question sits in `div.fb-dash-form-element[data-test-form-element]` with a `<label for>` (the radio group has a `<legend>`). Every select starts with
+the option "Select an option", and every option's value is its text. In the ids below, `S` is
+`text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4007130` and `T` is the same with
+`single-line-text-form-component`.
+
+| Step (progress) | Question | Control and id | Initial value |
+| --- | --- | --- | --- |
+| Contact info (0) | Email address | `select#S-9001-multipleChoice` ("avery.quill@example.test", "a.quill@example.test") | `avery.quill@example.test` |
+| | Phone country code | `select#S-9002-phoneNumber-country` ("United States (+1)", "Canada (+1)", "United Kingdom (+44)", "Afghanistan (+93)") | `United States (+1)` |
+| | Mobile phone number | `input#T-9002-phoneNumber-nationalNumber[type=text][inputmode=text]` | `3035550142` |
+| | City | `input#T-9003-text[type=text]` | `Boulder` |
+| Resume (33) | resume cards, upload | see below | first card selected |
+| Additional Questions (67) | How many years of work experience do you have with SQL? | `input#T-9004-numeric[type=text]`: a whole number 0–99 | empty |
+| | Are you legally authorized to work in the United States? | `fieldset#radio-button-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4007130-9005-multipleChoice` whose `<legend>` also contains a visually hidden "Required". The radios Yes/No have the `name` `urn:li:fsd_formElement:urn:li:jobs_applyformcommon_easyApplyFormElement:(4007130,9005,multipleChoice)` and the ids `<name>-0`, `<name>-1` | none |
+| | Will you now or in the future require sponsorship for employment visa status? | `select#S-9006-multipleChoice` (Yes, No) | "Select an option" |
+| Review your application (100) | Follow Brambleway Analytics to stay up to date with their page. | `input#follow-company-checkbox.visually-hidden-checkbox[type=checkbox]` | checked |
+
+The contact profile card (name, headline, location) is display-only. Next and Review validate the current step. Like
+LinkedIn, every question block ends with an empty `div#<control id>-error` that stays in place. A bad field gets
+`aria-invalid="true"`, `aria-describedby="<control id>-error"`, the class `fb-dash-form-element__error-field` and, inside
+that container, `div.artdeco-inline-feedback.artdeco-inline-feedback--error[role=alert]` > `span.artdeco-inline-feedback__message` with
+"Please enter a valid answer" (for the SQL question when it is not a whole number: "Enter a whole number between 0 and 99").
+Typing into the field empties the container again.
+The Resume step needs a selected card or an uploaded file ("Please select or upload a resume"). The Review step lists
+the answers in one `section` per step (`dl`), each with a `type="button"` "Edit" button (`aria-label="Edit Contact info"`,
+`"Edit Resume"`, `"Edit Additional Questions"`) that returns to that step.
+
+Resume step: `span.jobs-document-upload__title--is-required` "Be sure to include an updated resume". Each card is a
+`div.ui-attachment.jobs-document-upload-redesign-card__container.ui-attachment--pdf` (or `--docx`) with `tabindex="0"`.
+It holds `h3.jobs-document-upload-redesign-card__file-name`, a details line such as "290 KB · Last used on 8/12/2026",
+a no-op download button (`aria-label="Download resume <name>"`) and `input#jobsDocumentCardToggle-N.visually-hidden-radio[type=radio]`
+with **no** `name`. The radio's `label[for]` wraps `span.a11y-text`. The selected card has the class
+`jobs-document-upload-redesign-card__container--selected`, `aria-label="Selected"`, a checked radio and the label text "Deselect resume <name>".
+The others have `aria-label="Select this resume"`, an unchecked radio and "Select resume <name>". Card ids are stable per card (uploads
+get the next number). Selecting a card deselects the others. Clicking the selected card's toggle deselects it, which leaves no resume.
+The radios are clipped to 1 px (`clip: rect(1px,1px,1px,1px)`), so they keep a box but sit under their visible 24 px label.
+A pointer `check()` aimed at the radio is intercepted by that label; `check()` on `label[for=jobsDocumentCardToggle-N]`
+(or a forced check) selects the card. With two or more cards, a no-op
+`button.jobs-document-upload__show-more-less-button` shows "Show N more resumes". The upload is
+`label.jobs-document-upload__upload-button[for=jobs-document-upload-file-input-upload-resume]` holding a
+`span[role=button]` "Upload resume", with `input#jobs-document-upload-file-input-upload-resume.hidden[type=file][name=file]` (`display:none`,
+`accept` DOC, DOCX and PDF) and the hint "DOC, DOCX, PDF (2 MB)". A chosen .pdf, .doc or .docx file of at most 2 MB becomes a new selected card at the top
+("1 KB · Uploaded just now"). The file is kept in page state until the submit.
+
+"Submit application" posts `FormData` with the answers under their keys (`email`, `phone_country`, `phone`, `city`,
+`sql_years`, `work_authorization`, `sponsorship`), `follow_company=yes` when the checkbox is checked, and either the uploaded file as
+`resume` or the selected card's file name as `resume_choice`. The server validates like the other scenarios. A
+`resume_choice` must name a card of the request's `?resumes=` variant, and an upload must be a DOC, DOCX or PDF file of at most 2 MB. It then
+answers JSON:
+
+- **Accepted**: 200 `{"accepted": true, "submission_id", "confirmation_reference", "job_id", "job_code"}`. The dialog content becomes
+  `h3` "Application submitted" and "Your application for **Growth Marketing Lead** (Job ID BWA-LI-130) was sent to Brambleway Analytics."
+  (inside `role="status"`), with a "Done" button that closes the dialog. A saved card is recorded as
+  `files.resume = {"source": "saved_resume", "filename", "details"}`; an upload as ordinary upload metadata. `resume_choice` never
+  appears in `extra_fields`.
+- **Rejected**: 422 `{"accepted": false, "errors": {…}}`, shown as `#jobs-easy-apply-submit-error[role=alert]` in the Review step. The
+  rejection is recorded, not counted.
+
+`window.__easyApply` is test instrumentation, like `window.__widgetState`:
+`{open, opens, step, submitted, answers, writes}` (plus `result` after acceptance). `step` is 1–4. `answers` holds each key's
+current value: selects keep their raw value (the placeholder is "Select an option"), the radio is `null` until chosen, `resume` is the
+selected card's file name or `null`, `resume_uploaded` is a boolean and `follow` is a boolean. `writes` counts the `input` and
+`change` events per key (`email`, `phone_country`, `phone`, `city`, `sql_years`, `work_authorization`, `sponsorship`, `resume`, `follow`),
+so a zero proves that a pre-filled value was never touched. Selecting a card counts under `resume`, and so does the deselection, which
+fires `input` and `change` from script. Each opening starts from fresh answers and zero counts. Dismiss or Done closes the dialog and
+sets `open` to false.
+
+#### `iframe-embed`: a careers page embedding a Greenhouse-style iframe
+
+- `GET /jobs/iframe-embed`: the careers page. It has the job identity, canonical link and JSON-LD, and a hidden GET search form with one field. `div#main-content[role=tablist]` holds `button#tab-overview[role=tab][aria-controls=job-detail-panel]` "Role overview" (`aria-selected=true`) and `button#tab-application[role=tab][aria-controls=job-application-panel]` "Application". `div#job-detail-panel[role=tabpanel]` holds the description and `button.apply-btn[aria-label="Switch to application form"]` "Apply Now" (no `type`, no form). `div#job-application-panel[role=tabpanel]` has `display:none` and holds `div#grnhse_app`. "Apply Now" or the Application tab switches panels without navigating. About 300 ms after load, page script (standing in for `boards.greenhouse.io/embed/job_board/js?for=brambleway`) injects `<iframe id="grnhse_iframe" title="Greenhouse Job Board" width="100%" height="1200" frameborder="0" scrolling="no" src="/embed/job_app?for=brambleway&token=4007131">` into `#grnhse_app`. The form in it is taller than 1200 px; its document scrolls only by script.
+- `?panel=visible` selects the Application tab from the start. `?embedded_only=1` appends `&embedded_only=1` to the iframe `src`.
+- `GET /embed/job_app?for=brambleway&token=4007131` serves exactly the page of `GET /jobs/iframe-embed/apply` (the `standard` questions, posting to `/jobs/iframe-embed/apply`, which answers like any single-page form). Any other `for` or `token` returns 404. With `embedded_only=1` the form is served only when the request header `Sec-Fetch-Dest` is `iframe`. For `document`, any other value or no header (a non-browser client), it returns 403 with the page "This application form can only be shown on the Brambleway Analytics careers page." Chromium sends `iframe` for the injected frame.
+
+#### `stepper-ambiguous`: JazzHR-style anchor actions
+
+- `GET /jobs/stepper-ambiguous` is an ordinary posting. `GET /jobs/stepper-ambiguous/apply` has a cookie-consent bar outside the form (`#resumator-cookie-consent`, "This website uses cookies…", with type-less `<button>`s "Dismiss", "ALLOW" and "REJECT ALL"; any of them hides the bar), `a.share[role=button][href="#"]` "Share", and a hidden `button#resumator-mobile-apply-button[type=button]` "Apply".
+- `form#form_submit_new_resume[method=post][action="/jobs/stepper-ambiguous/apply"][enctype=multipart/form-data]` contains six hidden inputs (`resumator-job-id`, `resumator-board-code`, `resumator-source`, `resumator-referrer`, `resumator-applicant-token`, `resumator-form-version`), which are recorded in `extra_fields`. `div.job-form-fields` holds `div.form-group`s, each a `<label for>` and a control, with ids `resumator-<x>-value` and machine names: First Name (`first_name`), Last Name (`last_name`), Email (`email`), Phone (`phone`), the optional "Desired salary" (`desired_salary`), and the select "How did you hear about this job?" (`heard_about`: `hear_linkedin`, `hear_indeed`, `hear_site` and `hear_other` for LinkedIn, Indeed, Company website and Other). Required controls carry `aria-required="true"`; there is no `required` attribute. `div#resumator-resume` holds `a#resumator-choose-upload` "Attach resume", which clicks the hidden `input#resumator-resume-file[type=file][name=resume][accept=".pdf,.doc,.docx"][aria-label=Resume]` (`display:none`, also labelled "Resume"), and `a#resumator-choose-paste` "Paste resume", which reveals the optional `textarea#resumator-resume-value[name=resume_text]`. The resume is required, but pasted text stands in for the file. `div#resumator-submit.form-group` holds `a#resumator-submit-resume.btn.btn-primary[href="#"]` "Submit Application". There is **no `<button>` inside the form**.
+- "Submit Application" validates on the client. Each bad control gets `aria-invalid`, the group class `has-error` and `span#<id>-error.help-block[role=alert]` ("This field is required.", "Enter a valid email address." or "Attach or paste your resume."). If the form is valid, the anchor calls `form.requestSubmit()`. The POST is handled like any single-page form: a 422 re-render of this page (error summary, inline errors, preserved values, a retained resume), or a 303 to the confirmation.
+- `?sections=2` (the action keeps `?sections=2`): section 1 (`#resumator-section-1`: the contact fields) ends with the anchors `a.btn` "Next" and "Save". Save stores the section's values in `sessionStorage["resumator-saved-application"]` and shows "Saved" in `#resumator-save-status[role=status]`; it never posts. Next validates section 1, hides it and shows `#resumator-section-2` (the resume, "Desired salary" and "How did you hear about this job?"), which has a "Back" anchor and the "Submit Application" anchor. Nothing is posted before Submit Application. A 422 re-render opens the section that holds the first error.
+
+#### `apply-in-alert-form`: a Dayforce-style posting inside a job-alert form
+
+| Method and path | Result |
+| --- | --- |
+| `GET /jobs/apply-in-alert-form` | The legacy portal. The whole content is `form#aspnetForm[method=post][action="/jobs/apply-in-alert-form/start"]`, with `__VIEWSTATE` and `__EVENTVALIDATION` hidden inputs, the identity, `button[type=submit][name=apply][value=1][aria-label="Apply for Marketing Project Manager"]` "Apply" (the form's default button), the description, and a "Get job alerts" block. The block has `label[for=alert-email]` "Email address for job alerts", `input#alert-email[type=email][name=alert_email]` and `button[type=submit][formaction="/jobs/apply-in-alert-form/alerts"][name=subscribe][value=1]` "Subscribe". |
+| `GET /jobs/apply-in-alert-form?nav=spa` | The current portal. There are no forms. `button[type=button].ant-btn.ant-btn-primary[test-id=apply-button]` (same `aria-label`) "Apply" and a form-less "Share" button. A click on Apply waits 2.5 s, then calls `history.pushState` to `/jobs/apply-in-alert-form/apply?flowSelection=true` and renders that route in `main`, without a document load. |
+| `POST /jobs/apply-in-alert-form/start` | Records a job-alert subscription if `alert_email` is not empty, then always returns 303 to `/jobs/apply-in-alert-form/apply?flowSelection=true`. |
+| `POST /jobs/apply-in-alert-form/alerts` | With a non-empty `alert_email`: records a subscription and re-renders the posting with "You are subscribed to job alerts at …". With an empty one: 422 and "Enter an email address for job alerts." Nothing is recorded. |
+| `GET /jobs/apply-in-alert-form/apply?flowSelection=true` | No forms: `h1` "How would you like to apply?" and the `type="button"` buttons "Apply without an Account" and "Sign In". "Apply without an Account" waits 2.5 s, then calls `history.pushState` to `/jobs/apply-in-alert-form/apply/manual` and renders the application form in place. It is exactly the `_render_single` page body. "Sign In" navigates to `/login?next=/jobs/apply-in-alert-form/apply%3FflowSelection%3Dtrue`. |
+| `GET /jobs/apply-in-alert-form/apply/manual`, `GET /jobs/apply-in-alert-form/apply` | The application form page (`CORE` questions). |
+| `POST /jobs/apply-in-alert-form/apply` | The standard single-page POST. |
+
+Client-side routes answer the browser's Back button with a reload of the URL. Tests assert that nothing was
+subscribed (`alert_count` stays 0) when a runtime applies without typing into the alert email.
+
 ### Shared behavior
 
 - **Disabled options.** `missing-required` offers "3 months or more (no longer offered)" as a disabled option; posting its value is rejected.
@@ -195,6 +342,7 @@ the plain apply path, so it uses the defaults.
 - **Status page.** `/jobs/<job_id>/application-status?email=…` is a public page linked from each posting ("Already applied? Check your application status"). For each matching record it shows the reference, or "still processing" while the confirmation is withheld. This page is how a runtime reconciles an uncertain outcome.
 - **Job identity.** Postings include the title, company, location and Job ID. They also carry a canonical link and a schema.org `JobPosting` JSON-LD block with `identifier.value` set to the Job ID. The apply pages repeat the same identity line.
 - **Deterministic ids.** Ids come from counters in a fresh state dir: `sub_000001`/`BWA-000001`, `dft_000001`, `upl_000001`, `cap_000001`. Captcha answers are derived from the token. Only timestamps vary. The server adds no artificial delays except the fixed 250 ms of `/__fixture__/cities`. Page scripts have their own timers (`spa-loading`, and the upload and autofill scenarios).
+- **Job alerts are not applications.** `apply-in-alert-form` records job-alert subscriptions (`{"job_id", "email", "received_at"}`) separately. They never count as submissions or rejections.
 
 ## Test-only API — never call from product code
 
@@ -205,11 +353,11 @@ must reconcile through the public pages. The pages never link to these endpoints
 | --- | --- |
 | `GET /__test__/health` | `{"ok": true, "origin", "state_dir"}` |
 | `GET /__test__/jobs` | Scenario catalog and sign-in credentials |
-| `GET /__test__/submissions[?job_id=<job>]` | `{"accepted_count", "rejected_count", "submissions": [...], "rejections": [...]}` |
+| `GET /__test__/submissions[?job_id=<job>]` | `{"accepted_count", "rejected_count", "submissions": [...], "rejections": [...], "alert_count", "alerts": [{"job_id", "email", "received_at"}]}` |
 | `GET /__test__/submissions/<submission_id>` | One submission record |
 | `POST /__test__/submissions/<submission_id>/reveal` | Makes a withheld confirmation visible on later page visits |
 | `GET /__test__/captcha/<token>` | `{"token", "answer", "used"}`, which stands in for the person solving it |
-| `POST /__test__/reset` | Clears all state, including counters, uploads, drafts and sessions |
+| `POST /__test__/reset` | Clears all state, including counters, uploads, drafts, sessions, page-load counts and job-alert subscriptions |
 | `POST /__test__/shutdown` | Stops this server |
 
 A submission record looks like this:
@@ -252,3 +400,10 @@ The tests use only the standard library. They fill forms by visible label and en
 them the way a browser submits native forms (multipart or urlencoded). They also
 start the CLI as a subprocess to check the printed origin, the ready file and signal
 or endpoint shutdown. All state is written to temporary directories.
+
+The replicated flows need page script, so they are tested with headless Chromium
+through Playwright and the `tests/browser/conftest.py` fixtures (about 20 seconds):
+
+```bash
+uv run --no-sync pytest tests/browser/test_wizard_mock.py -q
+```

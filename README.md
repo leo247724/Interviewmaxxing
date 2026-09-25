@@ -4,7 +4,7 @@ A local job-search workspace with a jobs browser, pipeline tracker and applicati
 
 - **Jobs:** OpenCLI reads LinkedIn, Built In, Indeed and Google job results. Jev through OpenRouter evaluates semantic performance-marketing fit, prioritizing Austin onsite/hybrid roles over eligible US-wide remote work and retaining unresolved compensation or location evidence for review.
 - **Pipeline:** track interviews, follow-ups and decisions; edit all 23 reference-workbook fields; import CSV/JSON without duplicating prior rows; retain original source records and link application receipts.
-- **Desk:** provide a URL, confirmed details and a selected resume. The Python runner fills accessible HTML forms, asks for missing information, submits once and records observed confirmation. Uncertain submissions remain locked for reconciliation.
+- **Desk:** provide a URL, confirmed details and a selected resume. The Python runner fills accessible HTML forms, asks for missing information and stops at the final review step without submitting. An application you review and approve is submitted only by an explicit CLI command, exactly as approved, once; the observed confirmation is recorded and uncertain submissions remain locked for reconciliation.
 
 The dashboard currently runs in **TEST_ONLY** mode. Its application flows are verified with fictional profiles and a localhost applicant-tracking site. Real job discovery and Jev decisions are separate from application execution. No employer acceptance or thousands-of-applications-per-day capacity is claimed.
 
@@ -75,19 +75,31 @@ interviewmaxxing apply https://jobs.example.com/acme/123      # visible browser
 interviewmaxxing apply URL --headless --json                  # hidden browser, machine-readable
 ```
 
-Asking to apply authorizes the submission; there is no extra confirmation step. The run ends in one of these states:
+`apply` and `resume` prepare: they fill the form and stop at its final review step as `NEEDS_INPUT` (exit 3) without submitting, or earlier when something is missing. Submitting is a separate, explicit step.
+
+### Review, approve and submit
+
+```bash
+interviewmaxxing apply URL --headless                     # prepare; stops at the final review step
+interviewmaxxing status APP                               # "prepared: ... nothing was submitted"
+interviewmaxxing approve APP                              # approve the prepared answers (lists them); submits nothing
+IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit APP --yes  # submit exactly what you approved, once
+interviewmaxxing receipt APP
+```
+
+Nothing is submitted without all three: your approval, `IMX_ALLOW_SUBMISSION=1` and `--yes`. The submission run opens the site again, checks that every question still matches what you approved (wording, options, required flag, the final step), fills the approved answers without resolving anything again and submits once. If the form changed, or the site rejects an approved answer, it stops before anything is accepted and withdraws the approval: prepare it again (`resume APP`), review and approve again. See [docs/submission.md](docs/submission.md). `submit` ends in one of these states:
 
 | Result | Exit | What it means / what to do |
 | --- | --- | --- |
 | `SUBMITTED` | 0 | The site confirmed the application; the receipt is saved (`interviewmaxxing receipt APP`). |
-| `NEEDS_INPUT` | 3 | Required questions your profile cannot answer, or an action in the browser (sign-in, CAPTCHA, a custom control). Nothing was submitted. |
-| `FAILED_RETRYABLE` | 3 | Stopped safely (browser error, ambiguous next/submit button, a loop). Nothing was submitted; `resume` retries. |
+| `NEEDS_INPUT` | 3 | The form no longer matches what you approved, or the site rejected an approved answer: nothing was submitted and the approval is withdrawn (prepare with `resume APP`, review, approve again). Or an action in the browser (sign-in, CAPTCHA, a custom control you set yourself): the approval stands; `submit APP --yes --act` in a visible browser. |
+| `FAILED_RETRYABLE` | 3 | Stopped safely before submitting (browser error, a field that could not be operated, an ambiguous Next button). The approval stands; `submit` again retries. |
 | `SUBMISSION_UNKNOWN` | 5 | The submit may have reached the employer but no confirmation tied to this job was seen. It is never retried; `reconcile` it. |
-| already submitted / duplicate / in progress | 4 | Nothing was done. A submit interrupted by a crash becomes `SUBMISSION_UNKNOWN` once its lease lapses (ten minutes at most); `reconcile` it. It is never repeated. |
+| not approved / submission not enabled / already submitted / duplicate / in progress | 4 | Nothing was done. Without `IMX_ALLOW_SUBMISSION=1` the command prints how to enable it. A submit interrupted by a crash becomes `SUBMISSION_UNKNOWN` once its lease lapses (ten minutes at most); `reconcile` it. It is never repeated. |
 
 ### Many jobs at once
 
-`interviewmaxxing prepare-batch --inventory FILE --workers 3` prepares every Saved job of an inventory file through the same `apply` flow, one headless browser per worker, and stops each one at its final review step without submitting. Finished jobs are written to a resumable ledger under `$IMX_HOME/batches/`, with a summary of what is prepared and what still needs you. See [docs/mass-preparation.md](docs/mass-preparation.md). The measured state of this path on real Saved applications, and the bottlenecks that still limit scale, are in [docs/mass-apply-readiness.md](docs/mass-apply-readiness.md).
+`interviewmaxxing prepare-batch --inventory FILE --workers 3` prepares every Saved job of an inventory file through the same `apply` flow, one headless browser per worker, and stops each one at its final review step without submitting. Finished jobs are written to a resumable ledger under `$IMX_HOME/batches/`, with a summary of what is prepared and what still needs you. See [docs/mass-preparation.md](docs/mass-preparation.md). After you approve prepared applications, `IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit-approved --batch BATCH_ID --slots 3 --yes` (or `--all-approved`) submits each approved one exactly as approved and records the outcome and receipt id in the batch ledger; `batch-report BATCH_ID` then includes a Submissions table. The measured state of this path on real Saved applications, and the bottlenecks that still limit scale, are in [docs/mass-apply-readiness.md](docs/mass-apply-readiness.md).
 
 ### Missing answers (across restarts)
 
@@ -122,6 +134,10 @@ Instead of stopping, `apply --interactive` (or `resume --interactive`) asks on t
 | `interviewmaxxing apply URL [--candidate ID] [--headless] [--interactive] [--act] [--json]` | Apply to the job at `URL` |
 | `interviewmaxxing resume APP [--headless] [--interactive] [--act] [--json]` | Continue a stopped application |
 | `interviewmaxxing prepare-batch --inventory FILE [--backends A,B] [--limit N] [--workers N] [--max-prepared N] [--batch-id ID] [--json]` | Prepare many Saved jobs to their final review step, never submitting ([docs/mass-preparation.md](docs/mass-preparation.md)) |
+| `interviewmaxxing batch-report [BATCH_ID] [--top N] [--json]` | Summarize batch ledgers: outcomes, holds, durations, cards and submissions |
+| `interviewmaxxing approve APP [--packet PKT] [--json]` | Approve the prepared answers you reviewed; submits nothing ([docs/submission.md](docs/submission.md)) |
+| `IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit APP --yes [--headless] [--act] [--json]` | Submit exactly what you approved, once |
+| `IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit-approved (--batch ID \| --all-approved) [--slots N] --yes [--batch-id ID] [--json]` | Submit every approved application of a batch (or all of them) |
 | `interviewmaxxing answer APP (--set FIELD=VALUE ... \| --answers FILE) [--reuse application\|job\|global]` | Answer recorded questions |
 | `interviewmaxxing reconcile APP [--headless] [--json]` | Re-check an uncertain submission on the site |
 | `interviewmaxxing status [APP] [--json]` | List applications, or show one with attempts and pending questions |

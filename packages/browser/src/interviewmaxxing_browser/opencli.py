@@ -48,6 +48,7 @@ from .annotations import FormAnnotator, SchemaHintLoader
 from .aria import ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, COMBO_STATE, PHONE_STATE
 from .driver import (
     _FILE_DIGEST,
+    DEEP_QUERY,
     FILE_ANCHOR,
     FILE_SHOWN,
     DriverError,
@@ -196,28 +197,39 @@ _DOC_STATE = (
     "status: n && n.responseStatus ? n.responseStatus : null}; }"
 )
 _CONTROL_STATE = (
-    "(sel) => { const el = document.querySelector(sel); if (!el) return null; "
+    "(sel) => { " + DEEP_QUERY + "const el = deepOne(sel); if (!el) return null; "
     "return {origin: String(performance.timeOrigin), url: location.href, value: el.value, "
     "checked: !!el.checked, values: el.tagName === 'SELECT' ? Array.from(el.selectedOptions).map((o) => o.value) : null, "
     "files: el.files ? Array.from(el.files).map((f) => ({name: f.name, size: f.size})) : null}; }"
 )
 _ACTIONABLE = (
-    "(sel) => { let els; try { els = document.querySelectorAll(sel); } catch (e) { return {n: -1}; } "
+    "(sel) => { " + DEEP_QUERY + "let els; try { document.querySelector(sel); els = deepAll(sel); } "
+    "catch (e) { return {n: -1}; } "
     "if (els.length !== 1) return {n: els.length}; const el = els[0]; const r = el.getBoundingClientRect(); "
     "const cs = getComputedStyle(el); return {n: 1, disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', "
     "visible: r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'}; }"
 )
 _HTML = "() => document.documentElement.outerHTML"
 _FOCUSED = (
-    "(sel) => { let els; try { els = document.querySelectorAll(sel); } catch (e) { return false; } "
-    "return els.length === 1 && document.activeElement === els[0]; }"
+    "(sel) => { " + DEEP_QUERY + "let els; try { document.querySelector(sel); els = deepAll(sel); } "
+    "catch (e) { return false; } let active = document.activeElement; "
+    "while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement; "
+    "return els.length === 1 && active === els[0]; }"
 )
+_IN_SHADOW = (
+    "(sel) => { " + DEEP_QUERY + "if (String(sel).includes(' >> ')) return deepAll(sel).length > 0; "
+    "let light; try { light = document.querySelectorAll(sel).length; } "
+    "catch (e) { return false; } return light === 0 && deepAll(sel).length > 0; }"
+)
+"""Whether a selector reaches its element only inside an open shadow root, which
+OpenCLI's own targeting (CSS and semantic locators) does not enter."""
 
 _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     inspector_script(), ARIA_EXPANSION, ARIA_OBSERVE, ARIA_STATE, _DOC_STATE, _CONTROL_STATE, _ACTIONABLE, _HTML, _FILE_DIGEST,
     _READ_CONTROL, _READ_CHECKED, _NATIVE_VALIDITY, _EFFECTIVE_SUBMISSION, _DOCUMENT_IDENTITY,
     COMBO_STATE, PHONE_STATE, _FOCUSED, FILE_ANCHOR, FILE_SHOWN, _BUTTONS_WITHIN, UPLOAD_STATE,
     _IN_OWN_POPUP,
+    _IN_SHADOW,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
 
@@ -241,6 +253,11 @@ class OpenCliConfig:
     protected_sessions: frozenset[str] = frozenset({"imx-assessment-opencli"})
     protected_tabs: frozenset[str] = frozenset()
     """Tab ids the driver must never act on (e.g. the user's own working tab)."""
+    attach_files: bool = False
+    """Browser Bridge refuses ``upload``. Without it a dialog wizard's resume step uses a
+    resume the site already has (the pinned file's, or the only one), or is left to the
+    person ("Attach your resume in the browser window"); a page form's file field is
+    still tried once and reports what the person can do."""
 
     def __post_init__(self) -> None:
         session = self.session.strip()
@@ -272,6 +289,10 @@ class OpenCliDriver:
         """Every argv sent (for diagnostics and tests)."""
 
     # --- transport ---------------------------------------------------------------
+
+    @property
+    def attaches_files(self) -> bool:
+        return self.config.attach_files
 
     @property
     def tab(self) -> str | None:
@@ -390,6 +411,24 @@ class OpenCliDriver:
             )
         return state
 
+    async def _targeted(self, argv: list[str], selector: str) -> Any:
+        """Run one action command on ``selector``. An element OpenCLI cannot find because
+        it lives inside an open shadow root (which its CSS and semantic locators do not
+        enter) is reported as a capability the person has to cover, not as a missing
+        element."""
+        try:
+            return await self._call(argv)
+        except OpenCliTargetError as exc:
+            try:
+                shadowed = await self.evaluate(_IN_SHADOW, selector) is True
+            except DriverError:
+                shadowed = False
+            if shadowed:
+                raise CapabilityUnsupported(
+                    f"OpenCLI cannot reach {selector} inside the page's shadow root; do this step "
+                    "yourself in the browser window, then continue") from exc
+            raise
+
     def _check_match(self, envelope: Any, what: str) -> dict[str, Any]:
         if not isinstance(envelope, dict):
             raise UnverifiedAction(f"{what}: unexpected response {envelope!r}")
@@ -401,7 +440,7 @@ class OpenCliDriver:
 
     async def fill(self, selector: str, text: str) -> None:
         envelope = self._check_match(
-            await self._call(self._argv(["fill"], positionals=[selector, text])), f"fill {selector}"
+            await self._targeted(self._argv(["fill"], positionals=[selector, text]), selector), f"fill {selector}"
         )
         if not envelope.get("verified") or envelope.get("actual") != text:
             raise UnverifiedAction(f"fill {selector}: the field reads back {envelope.get('actual')!r}")
@@ -416,7 +455,7 @@ class OpenCliDriver:
                 "choose the options yourself in the browser window"
             )
         self._check_match(
-            await self._call(self._argv(["select"], positionals=[selector, values[0]])),
+            await self._targeted(self._argv(["select"], positionals=[selector, values[0]]), selector),
             f"select {selector}",
         )
         state = await self._control(selector)
@@ -434,7 +473,7 @@ class OpenCliDriver:
 
     async def set_checked(self, selector: str, checked: bool, *, label_selector: str | None = None) -> None:
         envelope = self._check_match(
-            await self._call(self._argv(["check" if checked else "uncheck"], positionals=[selector])),
+            await self._targeted(self._argv(["check" if checked else "uncheck"], positionals=[selector]), selector),
             f"{'check' if checked else 'uncheck'} {selector}",
         )
         state = await self._control(selector)
@@ -503,14 +542,16 @@ class OpenCliDriver:
                 raise OpenCliTargetError(f"{selector} is disabled or not visible")
             return
         self._mark = self._doc.origin
-        self._check_match(await self._call(self._argv(["click"], positionals=[selector])),
+        self._check_match(await self._targeted(self._argv(["click"], positionals=[selector]), selector),
                           f"click {selector}")
 
-    async def _keyboard(self, command: str, positionals: list[str], what: str) -> Any:
+    async def _keyboard(self, command: str, positionals: list[str], what: str,
+                        selector: str | None = None) -> Any:
         """Run a focus/keys/type command; a refusal of the command itself means this
         session cannot use the keyboard here, and nothing was done."""
         try:
-            return await self._call(self._argv([command], positionals=positionals))
+            argv = self._argv([command], positionals=positionals)
+            return await (self._targeted(argv, selector) if selector else self._call(argv))
         except (OpenCliTargetError, OpenCliUnavailable, OpenCliTimeout):
             raise
         except OpenCliError as exc:
@@ -520,7 +561,7 @@ class OpenCliDriver:
             ) from exc
 
     async def focus(self, selector: str) -> None:
-        self._check_match(await self._keyboard("focus", [selector], f"focus {selector}"),
+        self._check_match(await self._keyboard("focus", [selector], f"focus {selector}", selector),
                           f"focus {selector}")
         await self._control(selector)
 
@@ -534,7 +575,7 @@ class OpenCliDriver:
 
     async def type_text(self, selector: str, text: str, *, delay_s: float = 0.03) -> None:
         reject_control_characters(text, selector)
-        self._check_match(await self._keyboard("type", [selector, text], f"type into {selector}"),
+        self._check_match(await self._keyboard("type", [selector, text], f"type into {selector}", selector),
                           f"type {selector}")
         await self._control(selector)
 
@@ -632,8 +673,16 @@ class OpenCliApplicationBrowser(GenericApplicationBrowser):
         self._keep_for_review = True
         return self.location
 
+    @property
+    def waiting_for_person(self) -> bool:
+        """The last page is waiting for the person to attach a file (the resume of a
+        dialog wizard): the tab stays open for them."""
+        last = self._last
+        return last is not None and any(
+            last.bindings[field_id].attach_by_person for field_id in last.unsupported_pending)
+
     async def close(self) -> None:
-        await self.driver.release(keep_tab=self._keep_for_review)
+        await self.driver.release(keep_tab=self._keep_for_review or self.waiting_for_person)
 
 
 class OpenCliSessionFactory:

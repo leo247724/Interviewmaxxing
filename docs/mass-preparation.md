@@ -576,3 +576,22 @@ harness with three workers, real headless Chromium and the fictional candidate
 against the localhost mock ATS, then the loop (`holds`, a retry that skips explicit-only
 holds, one `answer` line per shared question, a retry that prepares them, a combined
 report), and checks that the server received no submission.
+
+## Submitting what you approved
+
+`prepare-batch` never submits. Once you have reviewed a prepared application, approve
+it with `interviewmaxxing approve APP`; then submit every approved application of the
+batch, each exactly as approved:
+
+```sh
+IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit-approved --batch BATCH_ID --slots 3 --yes
+interviewmaxxing batch-report BATCH_ID   # now with a Submissions table
+```
+
+It uses the same worker slots and browser profiles, appends one `kind: "submission"`
+line per application (outcome and receipt id) to the batch's ledger, and never
+launches an application that line records as submitted or uncertain again. A form
+that changed since you approved it is not submitted and comes back as `needs_input`.
+`prepare-batch --retry` leaves an approved application alone (skipped as
+`approved (left to submit-approved)`): preparing it again would withdraw the
+approval. The rules, events and exit codes are in [submission.md](submission.md).
