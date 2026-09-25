@@ -413,6 +413,35 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Fifth merge wave (September 25, 17:30, j-workspace 480fed4).** WP12 round 6 (cover letters graded
+on the text that ships: one combined grounding-plus-rubric review per draft, per-requirement fact
+retrieval with the long-form stories as the spine, the rubric's line rules checked in code with
+corrective rewrites, a per-letter allowance of 24 calls / USD 2.50 on top of the writer field's, the
+person's voice register from his 2017 posts and the Adscriptly docs page as style only) and WP2
+round 13 (`metro_area`: an Austin-metro job takes on-site or hybrid as the posting states, any other
+US job takes Remote, office lists pick the metro office or Remote, "if you are not based in Austin"
+relocation questions read the verified address). Gates on the combined tree: 5980 passed, 9 skipped, 3 xfailed in 17.5 minutes, 25 e2e, ruff and mypy clean. The 2Captcha
+MCP server is configured in `.mcp.json` (key `TWOCAPTCHA_API_KEY` in `env.local`); the runtime's
+own solver is WP1 round 14, still in flight with the questions that appear mid-fill, the Paylocity
+leftovers and the consent and attestation controls.
+
+Cover letters after four batches of three (Base Power, Maximus, Superhuman), all written by
+`scripts/rag_answers.py draft --cover-letter --application-id`, nothing submitted:
+
+| batch | code | result |
+| --- | --- | --- |
+| 1 | 776b6f8 | three shipped or held; the read-only judge graded all three **D** (attribution clauses, generic company facts, side projects as proof, bare year ranges) and ranked ten fixes |
+| 2 | 4cb0bdb | ten fixes applied; **Maximus READY** (321 words, 15 calls, USD 0.66, rubric PASSED, humanizer REWRITTEN, lint clean); Base Power and Superhuman held (bridging claims; one date range) |
+| 3 | 7efb864 | all three held: side projects as full sentences, "in 2024" for work spanning 2024-03 to 2025-05 (the round's own date rule, reverted) |
+| 4 | fd7c4a1 | **Base Power READY** (284 words, 15 calls, USD 0.98, rubric PASSED on the shipped text, humanizer REWRITTEN); Maximus and Superhuman held on `Review HTTP_402` |
+
+Spend over the four batches: USD 11.45 in 258 provider calls. The loop stopped when OpenRouter
+answered HTTP 402: the account shows USD 0.85 of its 125 credits left, so batch 5, retry eight and
+any preparation that writes a narrative wait on a top-up. The judge is grading the two READY letters
+(`.imx/rag-writing/cover-letters/batch-4/JUDGE.md`). The worker's own reading of Base Power is B/B+:
+every HARD line passes; the soft misses are two stacked scale figures in the proof, the
+offline-conversion rebuild told four times, and no tradeoff because the passage states none.
+
 **Retry seven (16:11, fourth wave with the standing policies imported).** 14 run, 2 more prepared:
 **22 of 40 prepared**, 9 held, 3 failed; 6 skipped as needing only the person (CAPTCHA, consent
 clicks). 13 holds remain: two Greenhouse EEO blocks and a Teamtailor LinkedIn field that appear
@@ -543,7 +572,9 @@ years-of-experience facts from the resume timeline.
    the Lever start-date select, the five-option legal select and the work-arrangement
    questions all have an answer in the profile and still hold on wording equivalence.
    WP2 round 10 (cloud) derives them from the saved values the way the work-authorization
-   status is derived.
+   status is derived. *Status, September 25:* landed through WP2 round 13 (salary shapes,
+   start-date buckets, the legal select, the standing answer policies, the metro rule for
+   work arrangement); what still holds here is a wording the policies do not cover.
 3. **Classifier misses.** Seven live wordings were untyped or mistyped (an authorization
    question with no type, an agency-experience question typed CONSENT, an ad-spend
    question typed WEBSITE, the time-zone multi-select untyped). WP10 round 5 (cloud) adds
@@ -551,7 +582,10 @@ years-of-experience facts from the resume timeline.
 4. **Controls the runtime still cannot operate.** BambooHR conditional reveals fail two
    applications (WP1 round 11, cloud); Paylocity's address block (country, state, address
    line, county) and two Greenhouse checkbox groups whose options were never observed
-   hold four more (candidate WP1 round 12).
+   hold four more (candidate WP1 round 12). *Status, September 25:* WP1 rounds 11–13 landed
+   (conditional reveals, Paylocity's controls, forms that re-render mid-fill); round 14 is
+   in flight with the questions that appear during the fill, the Paylocity leftovers, the
+   checkbox-group options, the consent and attestation controls and the 2Captcha solver.
 5. **Sign-in-gated backends.** LinkedIn Easy Apply is out of scope (the person applies
    by hand). Wellfound (30), Indeed (10), Workday (51; the account step is left to the
    person, WP7) and iCIMS (8) still need the person's browser session or an account.
@@ -564,6 +598,11 @@ years-of-experience facts from the resume timeline.
 8. **Stale inventory and the dashboard.** 2–3% of Saved jobs are already closed
    (`prepare-batch` moves their cards to Closed); the dashboard executor is still
    single-run and loopback-only, so bulk preparation goes through the CLI.
+9. **Provider credits are a hard stop.** Every Jev decision, writer call and review goes
+   through the OpenRouter account in `env.local`; when it ran dry on September 25 the
+   letter loop stopped with HTTP 402 and every narrative field would hold the same way.
+   Check the balance (`GET /api/v1/credits`) before a batch; the full inventory with one
+   letter per form is USD 200–360 at the measured rates.
 
 ## How to run the next batch
 
