@@ -406,6 +406,9 @@ _ENUMERATION_QUESTION = re.compile(
 _TOTALITY_WORDS = re.compile(
     r"\b(?:all of (?:my|the)|every|only ever|in total|a total of|total across|across all|"
     r"altogether|my entire|throughout my career)\b", re.IGNORECASE)
+MOTIVATION_MISSING_DETAIL = (
+    "a story about this kind of work (indexed with scripts/index_candidate_stories.py) or a "
+    "career_motivation statement in the simple answers map")
 ENUMERATION_GUIDANCE = (
     "The question asks to enumerate or count. Write from the supplied facts: each team, "
     "report, client, campaign or tool the facts state, with its size, employer and dates, each "
@@ -798,8 +801,9 @@ def _required_details(field: ApplicationField, purpose: str) -> list[str]:
         return ["Write a tailored cover letter using candidate facts for personal claims and job evidence for employer claims."]
     if purpose == "motivation":
         return ["State why the role fits: the alignment between the job's cited requirements or "
-                "priorities and the applicant's cited experience, and a career_motivation fact when "
-                "one is supplied. A personal reason for interest in the company is not required."]
+                "priorities and the applicant's cited experience, with the applicant's own reason "
+                "from a cited story passage or the career_motivation statement. Familiarity with "
+                "the company or enthusiasm is not required."]
     if _enumeration_question(field.question_text):
         return ["Present each item the cited facts state (team, size, employer, dates) as the "
                 "question asks; the facts need not be exhaustive, and no total may be claimed "
@@ -931,6 +935,9 @@ class DynamicPacketResolver:
     max_concurrency: int = 3
     """Fields resolved at once within one form (each phase), bounding provider calls,
     rate limits and memory; 1 resolves them one after another."""
+    _allowed_steps: set[str] = dataclass_field(default_factory=set, init=False, repr=False)
+    """Steps (application id + form fingerprint) whose form allowance this resolver
+    granted: a re-resolve of the same step grants nothing more (WP12 round 4, L11)."""
     humanize: bool = False
     """Rewrite a grounded narrative under the no-AI-slop rules and ground it again; a
     failed rewrite keeps the draft that passed (``ai.humanize``). Off for a bare resolver;
@@ -1092,8 +1099,11 @@ class DynamicPacketResolver:
         """Stored answers, then the route gates on every answer, then generative routing
         for the fields still open. Within each pass independent fields are resolved
         concurrently (``_each``); the packet is assembled in form order."""
-        self.decisions.budget.allow_form(sum(1 for decision in report.fields
-                                             if decision.route is FieldRoute.WRITER))
+        step = f"{context.application.id}:{context.form.fingerprint}"
+        if step not in self._allowed_steps:  # once per step per run, whatever re-resolves it
+            self._allowed_steps.add(step)
+            self.decisions.budget.allow_form(sum(1 for decision in report.fields
+                                                 if decision.route is FieldRoute.WRITER))
         packet, held = await self._map_stored_answers(context, packet, report)
         answers: list[PacketAnswer] = []
         missing = list(packet.missing_inputs)
@@ -2734,7 +2744,15 @@ class DynamicPacketResolver:
         chosen_ids = {fact.id for fact in selected}
         candidates = [fact for fact in all_facts.values() if any(competing(chosen, fact) for chosen in selected)]
         competition = {fact.id: sum(competing(chosen, fact) for chosen in selected) for fact in candidates}
-        others = sorted(candidates, key=lambda fact: (-competition[fact.id], fact.id))[:CONSISTENCY_COMPARISON_LIMIT]
+        def tier(fact: CandidateFact) -> int:
+            """Same-key (non-additive) competitors, global claims and explicit negatives
+            first: one contradiction in a slot must not fall below the bound behind many
+            additive bullets about the same subject; then the rest by how many selected
+            facts they compete with."""
+            same_key = any(chosen.id != fact.id and chosen.key == fact.key
+                           and chosen.key.casefold() not in ADDITIVE_FACT_KEYS for chosen in selected)
+            return 0 if same_key or _global_claim(fact) or fact.value is False else 1
+        others = sorted(candidates, key=lambda fact: (tier(fact), -competition[fact.id], fact.id))[:CONSISTENCY_COMPARISON_LIMIT]
         competing_total = sum(1 for fact in candidates if fact.id not in chosen_ids)
         confidence = 1.0
         def contextual(fact: CandidateFact) -> dict[str, Any]:
@@ -2810,6 +2828,7 @@ class DynamicPacketResolver:
                 "canonical_alternative_ids": [fact.id for fact in chunk], "probabilities": scores,
                 "dropped_story_fact_ids": [fact_id for fact_id, _ in dropped_now],
                 "competing_total": competing_total, "compared": len(others),
+                "tiered_first": sum(1 for fact in others if tier(fact) == 0),
                 "cached": sorted(set(relevant) - set(asking)),
                 "comparison_ids": {key: [fact.id for fact in facts] for key, facts in comparisons.items()},
                 "status": "CONSISTENT" if min(scores.values(), default=1.0) >= MIN_PROBABILITY else "HELD"})
@@ -2819,7 +2838,7 @@ class DynamicPacketResolver:
                     # The selected facts and the canonical facts competing with the most of
                     # them, never the whole fact store: bounded evidence, bounded request.
                     ranked = sorted((other for other in candidates if other.id not in chosen_ids),
-                                    key=lambda other: (-competition[other.id], other.id))
+                                    key=lambda other: (tier(other), -competition[other.id], other.id))
                     reviewed_facts = [*selected, *ranked[:REVIEW_EVIDENCE_LIMIT]]
                     self._strong_review(context, question=
                         "Do these verified candidate facts contain any direct factual contradiction? "
@@ -3094,6 +3113,10 @@ class DynamicPacketResolver:
         if not relevant:
             raise AIHold("No usable verified evidence remains after dropping story evidence that "
                          "contradicts the resume")
+        if purpose == "motivation" and not story_chunks and all(f.key != "career_motivation" for f in relevant):
+            # The job's requirements frame the answer; the reason must be the applicant's own.
+            raise AIHold("Motivation answer needs the applicant's own reason: " + MOTIVATION_MISSING_DETAIL,
+                         missing_information=[MOTIVATION_MISSING_DETAIL])
         if platform_question and not _platform_evidence_present(relevant):
             raise AIHold("Narrative needs explicit facts: " + ABM_MISSING_DETAIL)
         supplied = {f.id: f for f in relevant}
@@ -3179,6 +3202,16 @@ class DynamicPacketResolver:
                          + "; ".join(draft.missing_information))
         supplied_job = {e["id"]: e for e in job_evidence}
         evidence = [*relevant, *stories.values()]
+        if purpose == "motivation" and not any(
+                fid in stories or supplied[fid].key == "career_motivation"
+                for s in draft.sentences for fid in s.fact_ids):
+            # Alignment alone is the job's case, not the applicant's reason: one rewrite
+            # to cite the story passage or the statement that states it, else the hold.
+            trace["status"] = "MOTIVATION_UNCITED"
+            raise _CorrectableDraftRejection("UNSUPPORTED", [
+                "The sentence giving the reason for interest must cite the applicant's own account "
+                "of this kind of work (a story: passage) or the career_motivation statement; the "
+                "alignment with the job's requirements is not by itself the applicant's reason."])
         if enumeration and _TOTALITY_WORDS.search(draft.text) and not any(
                 re.search(r"\btotal\b", str(fact.value), re.IGNORECASE) for fact in relevant):
             # A total the facts do not state: one corrective rewrite, like a review finding.
@@ -3192,9 +3225,11 @@ class DynamicPacketResolver:
         if self.humanize and isinstance(self.writer, NarrativeWriter):
             def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
                 self._check_additive_consistency(context, relevant)  # cached; same evidence
+                # Every humanized draft gets the independent review, not only an uncertain
+                # score: the rewrite is new prose over the same citations.
                 self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
                     supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence,
-                    trace=entry, rewrite_attempt=rewrite_attempt)
+                    trace=entry, rewrite_attempt=rewrite_attempt, force_review=True)
 
             draft = humanize_draft(self.writer, question=field.question_text, purpose=purpose,
                 draft=draft, job=job, voice_samples=voice_samples, max_length=field.max_length,
@@ -3231,7 +3266,7 @@ class DynamicPacketResolver:
                       purpose: Literal["answer", "cover_letter", "motivation"], supplied: dict[str, CandidateFact],
                       supplied_job: dict[str, dict[str, str]], evidence: list[CandidateFact],
                       job_evidence: list[dict[str, str]], trace: dict[str, Any],
-                      rewrite_attempt: int) -> dict[str, Any]:
+                      rewrite_attempt: int, force_review: bool = False) -> dict[str, Any]:
         """Citations, per-sentence grounding and question completeness by Jev, then the
         independent Opus review when a score is uncertain; a failure holds. Returns the
         grounding scores and whether the strong review ran. ``supplied`` may include
@@ -3294,7 +3329,8 @@ class DynamicPacketResolver:
             trace["status"] = "INCOMPLETE"
             raise AIHold("Narrative needs explicit facts or a complete answer: "
                          + (ABM_MISSING_DETAIL if platform_question else " ".join(_required_details(field, purpose))))
-        strong_grounding = rewrite_attempt > 0 or min([completeness_score, *sentence_scores]) < MIN_PROBABILITY
+        strong_grounding = (force_review or rewrite_attempt > 0
+                            or min([completeness_score, *sentence_scores]) < MIN_PROBABILITY)
         if strong_grounding:
             try:
                 self._strong_review(context, question=field.question_text,

@@ -223,6 +223,19 @@ facts state with its size, employer and dates, never hold for completeness, and 
 totality words unless a fact states the total; a draft with one gets the one corrective
 rewrite (trace status `TOTALITY_REJECTED`).
 
+**Round 4 (WP12).** Provenance: story facts and per-area years facts are written
+`UNVERIFIED` by the index script and become evidence only once the person confirms them
+through `scripts/rag_answers.py import-facts` (the review's `.confirm.json`); the total
+years fact stays verified; areas come from role titles or bullets that state their own
+duration, never from a mention or a linked story ([rag-writing.md](rag-writing.md), Round
+4). Motivation narratives need the applicant's own reason, a cited story passage or the
+`career_motivation` statement, or hold before writing; a draft citing neither gets the one
+corrective rewrite (`MOTIVATION_UNCITED`). The consistency comparison set tiers same-key
+and global claims before the count-ranked rest (`tiered_first`), for the Jev check and the
+review. The humanizer keeps each sentence's citation set together (`REJECTED_MOVED_CITATION`)
+and every humanized draft gets the independent review. The form allowance is granted once
+per step per runtime, so a re-resolve of a step grants nothing more.
+
 ## Bounds and observations
 
 Production budgets scale with the form (round 6). Each resolved form gets 24 calls and USD 0.30, plus 12 calls and USD 0.30 per `WRITER`-routed field (raised from 8 calls and USD 0.15 by WP12, so the story consistency check, the no-slop rewrite and its second grounding never starve a narrative), on top of what the runtime already used, capped at 120 calls and USD 2.00 in total (`CallBudget(scales_with_form=True)`, set by `build_ai_runtime`). The runner's `provider.budget` event records the limits used. A budget without that flag keeps fixed limits, and its defaults share one per-runtime budget: 48 provider calls (raised from 32 when option-equivalence and lookup-suggestion decisions were added; each is one cheap Jev call), USD 0.50 of conservative reservations and 60,000 request bytes. Jev uses a 15-second timeout; the writer uses a 90-second timeout and at most 3,000 output tokens. Strong review allows at most 1,200 output tokens. Runtime embedding requests reserve and record costs in the same budget before HTTP. Each provider call has one attempt. The router batches the whole form (default 16, configurable 8/16/32 in the historical benchmark), recursively splits oversized requests without dropping context, and handles at most 100 fields, fact routing at most 40 verified facts per bounded comparison, and the writer at most eight relevant facts. Exceeding a bound holds; it never silently truncates candidate evidence or retries indefinitely.

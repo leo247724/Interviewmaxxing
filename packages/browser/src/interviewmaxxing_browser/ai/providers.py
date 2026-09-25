@@ -441,14 +441,15 @@ class NarrativeWriter:
             writing_instructions = (
                 "Write a concise first-person answer (at most 8 sentences, one or two paragraphs) "
                 "to a question about the applicant's interest in, motivation for or fit with the "
-                "role or company. The reason is the alignment between the job's stated "
+                "role or company. Frame it as the alignment between the job's stated "
                 "requirements or priorities (cite job_evidence) and the applicant's own experience "
                 "(cite facts): name two or three specific requirements and the matching work, "
-                "employer and period. A fact keyed career_motivation states what the applicant "
-                "looks for in a role and may be cited as a reason; without one, the alignment "
-                "alone is the reason. Do not require, invent or imply a personal reason, "
-                "familiarity with the company, enthusiasm or opinions the evidence does not "
-                "carry, and never return NEEDS_INPUT for the lack of a personal reason. "
+                "employer and period. The reason itself must be the applicant's own and cited: a "
+                "story entry (their account of this kind of work, cited by its story: id) or a "
+                "fact keyed career_motivation (what they look for in a role); the sentence that "
+                "gives the reason cites one of them. Do not invent or imply familiarity with the "
+                "company, enthusiasm or opinions the evidence does not carry, and never return "
+                "NEEDS_INPUT for the lack of a personal reason beyond those entries. "
             )
         else:
             writing_instructions = (

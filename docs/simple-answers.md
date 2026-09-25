@@ -201,7 +201,7 @@ are measured, the environment). Import stores it as a verified, user-stated cand
 (`id` and `key` `career_motivation`, source `user:simple-answers`, never a saved answer), so
 the writer may cite it: an interest, motivation or "why us" narrative states, as its
 reason, the alignment between the job description's cited requirements and your cited
-experience, and cites this statement when one exists. With `null` the alignment alone is
-the reason; a null never erases an earlier statement, an unchanged one keeps its
+experience, and cites this statement when one exists. With `null` the reason must come from a cited story
+passage about this kind of work, else the question holds; a null never erases an earlier statement, an unchanged one keeps its
 verification time, and export reads the statement back from the profile. The import
 report lists `facts_updated` (keys only, never the text).

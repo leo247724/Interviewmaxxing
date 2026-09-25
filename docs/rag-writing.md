@@ -321,8 +321,9 @@ one; the draft must cite both namespaces. One reusable statement, `career_motiva
 (two or three sentences the person writes once about what they look for in a role,
 `docs/simple-answers.md`), is stored as a verified user-stated fact; the resolver adds it
 to a motivation field's evidence whether or not retrieval surfaced it, so the writer may
-cite it as a reason. With no statement the alignment alone is the reason. The review
-prompt accepts that alignment as a complete answer.
+cite it as a reason. (Round 4 tightened this: the reason must be the applicant's own,
+a cited story passage or the statement; see below.) The review prompt accepts the
+alignment as a complete frame.
 
 **Output budgets.** The high-effort writer had reached its output token limit: with
 `reasoning.effort` OpenRouter reserves about 80% of `max_tokens` for reasoning, leaving a
@@ -372,6 +373,77 @@ check and the review prompt accept the non-exhaustive list as complete. A draft 
 claims a total the facts do not state gets the one corrective rewrite with that as its
 feedback (draft trace status `TOTALITY_REJECTED`); a fact that states the total allows the
 word.
+
+## Round 4: fact provenance, the applicant's own reason, bounded comparisons, reviewed rewrites
+
+**Story facts are extracted, not confirmed (H5).** CONTRACTS 3: `VERIFIED` means the
+person stated or confirmed the fact; a run clock is neither. `extract_story_facts` now
+writes every story fact `UNVERIFIED` (no method, no time), and only sentences in the first
+person singular (I, my, me) or resume-style sentences opening with a verb become facts;
+"We grew ARR 3x", "our team of 6 closed the deal" describe the team's work, stay in the
+story chunks as narrative evidence and are counted in the receipt's `skipped` list as
+`plural_subject_only` (the analysis still reads them as the story's actions). An
+unverified fact is never writer, screener or retrieval evidence (`verified_facts()`,
+`index_candidate` and the resolvers use verified facts only), so a story that has not
+been confirmed contributes its passages, not facts.
+
+**Confirming facts.** `--facts-review` writes, beside the review JSON and Markdown, a
+`<name>.confirm.json`: every unverified fact of the run (story facts and per-area years)
+in the facts-import format (`id`, `key`, `value`, `evidence`). Delete the rows you do not
+stand behind, then run `uv run --no-sync python scripts/rag_answers.py import-facts --file
+<that file>` and `index-profile`. The import records the confirmation (`VERIFIED`,
+`USER_STATED`, provenance `user:confirmed fact import`), and the index script keeps a
+confirmed fact by id on every later run (`kept_confirmed` in the receipt): it never
+replaces or downgrades it, while an unconfirmed fact it produces again stays
+`UNVERIFIED` and one it no longer produces is removed. Fact ids are content hashes, so an
+unchanged sentence keeps its confirmation across re-runs; a corrected sentence is a new
+fact to confirm. The review Markdown shows each fact's status.
+
+**Years of experience (H4).** `timeline.py` derives an area only from a role's title
+(the whole role: "PPC Specialist" dates PPC, paid search, paid media, digital marketing for
+its full span) or from a bullet that states its own duration ("ran paid social on Meta
+Ads for 18 months", "managed Google Ads for over 3 years", "owned SEO from 2021 to
+2023": that duration, capped at the role's length; `stated_duration_months`). A bullet
+that merely mentions an area ("piloted TikTok Ads in Q4") dates nothing, and linked
+stories never date an area (their tools are the story's evidence, not a timeline). The
+total across dated roles stays `VERIFIED` (`USER_CONFIRMED`: it only restates the
+person's confirmed role dates); each per-area fact is `UNVERIFIED` until confirmed
+through the import above, with its basis in the evidence ("Glaze Agency: title, 24
+months"; "Crumb & Co.: a bullet stating 36 months"). The numeric screener therefore
+answers "How many years of X" from a per-area fact only once the person confirmed it.
+
+**The applicant's own reason (M7).** A motivation narrative needs, besides the
+alignment, the applicant's own reason: a retrieved story passage about this kind of work
+or the `career_motivation` statement. With neither, the field holds before any writer
+call ("Motivation answer needs the applicant's own reason: a story about this kind of
+work … or a career_motivation statement …"). A draft whose sentences cite neither gets
+the one corrective rewrite with that feedback (draft trace `MOTIVATION_UNCITED`), then
+holds.
+
+**Bounded comparisons (M8).** The consistency comparison set (40 for Jev, 24 for the
+review) is tiered: facts with the same non-additive key as a selected fact, global claims
+("never", "throughout my career") and explicit negatives come first, then the rest by
+how many selected facts they compete with; a contradiction in one slot can no longer fall
+below the bound behind many additive bullets about the same subject (`tiered_first` in
+the consistency trace).
+
+**Reviewed rewrites (M9).** `check_rewrite` keeps each draft sentence's exact citation
+set (fact ids and job evidence ids) together on one rewritten sentence: a set that is
+split, recombined or moved rejects the rewrite (`REJECTED_MOVED_CITATION`), so a metric
+cannot travel to a sentence cited by other facts; sentences citing the same set may
+still merge. Every humanized draft is grounded again *and* independently reviewed
+(`force_review`), not only at an uncertain score or after a corrective rewrite.
+
+**Smaller items.** An unlinked story's facts carry a span only when its stated years are
+adjacent (2022, 2023, 2024) or the story states an explicit range ("2019 to 2023");
+years stated apart ("in 2019 … by 2023") date nothing (L8, `stated_year_span`). The
+printed receipt carries counts only: `stated_year_count` per story and, for the derived
+facts, count/verified/unverified; the values stay in the private review files (L9).
+Story chunks still stand in for voice samples when the profile has none (L10): the
+writer prompt keeps them style-only and the humanizer's lexical guard (no new number,
+name or claim) applies, so a borrowed phrase cannot become a claim. The form allowance
+(`allow_form`) is granted once per step (application id and form fingerprint) per
+runtime; a re-resolve of the same step grants nothing more (L11).
 
 ## Verification
 
