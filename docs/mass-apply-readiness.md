@@ -413,6 +413,16 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Fourth merge wave (16:10, j-workspace fbcd23f).** WP11 round 3 (the dashboard review-and-submit
+lane: a Prepared queue, every answer with its provenance badge and RAG citations, approve and the
+gated submit from the page, edit and re-prepare), WP1 round 13 (forms that re-render mid-fill:
+renamed questions matched by shape and position, inserted follow-ups taken in, appearing questions
+named), WP9 round 4 (mass-run tooling: sheets per batch, per-entry sheet results, `--only-app`,
+yield over retries, `--exclude-batches`) and WP2 round 12 (the person's standing answer policies,
+one Jev class decision per unsettled required question: experience claims Yes, thresholds Yes,
+certifications Yes, current-or-former-employee No, sanctioned locations No). Gates on the
+combined tree: 5860 passed, 25 e2e. The policies are imported; retry seven runs on this head.
+
 **Retry six (14:45, second merge wave: WP2 round 11, WP1 round 12, WP12 round 5, WP10 round 6, WP8
 round 3).** 18 run, 4 more prepared: **20 of 40 prepared**, 10 held, 4 failed, holds 24 → 15. Of the
 40, six are skipped because their only open items need the person (a CAPTCHA at the final step, a
