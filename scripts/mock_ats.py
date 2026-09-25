@@ -43,6 +43,25 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
+
+def _load_workday() -> Any:
+    """``scripts/mock_workday.py`` (the ``workday-wizard`` scenario), loaded by path so
+    this file keeps running as a plain script and as a module loaded by path."""
+    import importlib.util
+
+    name = "mock_workday"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("mock_workday.py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+WD = _load_workday()
+
 COMPANY = "Brambleway Analytics"
 REFERENCE_PREFIX = "BWA"
 MAX_BODY_BYTES = 10 * 1024 * 1024
@@ -790,6 +809,26 @@ def _single(*fields: Field) -> tuple[Step, ...]:
     return (Step("Application", fields),)
 
 
+_WD_KINDS = {"text": "text", "dropdown": "select", "radio": "radio", "checkbox": "checkbox",
+             "checkgroup": "checkbox_group", "prompt": "multiselect", "date": "text", "file": "file"}
+
+
+def _workday_steps() -> tuple[Step, ...]:
+    """The wizard's questions for the catalog (``/__test__/jobs``), page by page."""
+    steps = []
+    for page_def in WD.PAGES:
+        fields = []
+        for f in page_def["fields"]:
+            if f["kind"] == "add_section":
+                continue
+            options = ([[leaf, leaf] for leaf in WD.prompt_leaves(f)] if f["kind"] == "prompt"
+                       else f.get("options") or [])
+            fields.append(Field(f["name"], f["label"], _WD_KINDS[f["kind"]], f["required"],
+                                _options(*((v, lbl) for v, lbl in options)), dom_id=f["id"]))
+        steps.append(Step(page_def["title"], tuple(fields)))
+    return tuple(steps)
+
+
 STANDARD_FIELDS = _single(
     FIRST_NAME,
     LAST_NAME,
@@ -1263,6 +1302,24 @@ JOBS: dict[str, Job] = {
             "beside Apply; Apply leads to a flow-selection page, then a client-side route to the form.",
             _single(*CORE_FIELDS),
         ),
+        Job(
+            WD.SLUG,
+            WD.CODE,
+            WD.TITLE,
+            "Marketing",
+            WD.LOCATION,
+            "A Workday-style application (scripts/mock_workday.py): the posting's Apply opens a "
+            "\"Start Your Application\" popup (Autofill with Resume, Apply Manually, Use My Last "
+            "Application); Apply Manually shows the Create Account / Sign In step until the user "
+            "signs in; then one document runs five pages (My Information, My Experience, "
+            "Application Questions, Voluntary Disclosures, Self Identify) and Review with Save "
+            "and Continue, a progress list, button dropdowns, a search-on-Enter multi-select "
+            "prompt, a Month/Day/Year date, a country phone code beside the number, a résumé "
+            "uploader that sends the file on attach, and Submit.",
+            _workday_steps(),
+            requires_signin=True,
+            formless=True,
+        ),
     )
 }
 SCENARIO_JOBS = frozenset(
@@ -1550,6 +1607,68 @@ class Store:
     def has_session(self, token: str) -> bool:
         with self.lock:
             return token in self.data["sessions"]
+
+    def session_email(self, token: str) -> str | None:
+        with self.lock:
+            session = self.data["sessions"].get(token)
+            return str(session["email"]) if session else None
+
+    # workday-wizard: accounts, drafts and what the fixture observed
+    def _wd(self) -> dict[str, Any]:
+        return self.data.setdefault("workday", {
+            "accounts": {}, "drafts": {}, "route_visits": {}, "saves": [], "submit_calls": [],
+        })
+
+    def wd_note(self, kind: str, entry: Any) -> None:
+        with self.lock:
+            state = self._wd()
+            if kind == "route_visits":
+                state["route_visits"][entry] = state["route_visits"].get(entry, 0) + 1
+            else:
+                state[kind].append(entry)
+            self._save()
+
+    def wd_create_account(self, email: str, password: str) -> bool:
+        with self.lock:
+            accounts = self._wd()["accounts"]
+            if email in accounts or email == SIGNIN_EMAIL:
+                return False
+            accounts[email] = hashlib.sha256(f"wd-account:{password}".encode()).hexdigest()
+            self._save()
+            return True
+
+    def wd_account_ok(self, email: str, password: str) -> bool:
+        with self.lock:
+            digest = self._wd()["accounts"].get(email)
+            return digest == hashlib.sha256(f"wd-account:{password}".encode()).hexdigest()
+
+    def wd_draft(self, email: str) -> dict[str, Any]:
+        with self.lock:
+            drafts = self._wd()["drafts"]
+            draft = drafts.setdefault(email, {"pages": {}, "resume": None})
+            return json.loads(json.dumps(draft))
+
+    def wd_save_page(self, email: str, page_id: str, values: dict[str, Any]) -> None:
+        with self.lock:
+            draft = self._wd()["drafts"].setdefault(email, {"pages": {}, "resume": None})
+            draft["pages"][page_id] = values
+            self._save()
+
+    def wd_set_resume(self, email: str, meta: dict[str, Any]) -> None:
+        with self.lock:
+            draft = self._wd()["drafts"].setdefault(email, {"pages": {}, "resume": None})
+            draft["resume"] = meta
+            self._wd().setdefault("uploads", []).append(meta["upload_id"])
+            self._save()
+
+    def wd_summary(self) -> dict[str, Any]:
+        with self.lock:
+            state = json.loads(json.dumps(self._wd()))
+            state["accounts"] = sorted(state["accounts"])
+            state["submit_call_count"] = len(state["submit_calls"])
+            state["accepted_count"] = len([s for s in self.data["submissions"]
+                                           if s["job_id"] == WD.SLUG])
+            return state
 
 
 # --------------------------------------------------------------------------
@@ -4919,6 +5038,12 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (r"/postings/apply-wording", "GET", "get_apply_wording_posting"),
         (r"/postings/go-apply", "POST", "post_go_apply"),
         (r"/__fixture__/cities", "GET", "get_fixture_cities"),
+        (rf"/jobs/{WD.SLUG}/apply/(?P<route>autofillWithResume|applyManually|useMyLastApplication)",
+         "GET", "get_wd_route"),
+        (rf"/jobs/{WD.SLUG}/account", "POST", "post_wd_account"),
+        (rf"/jobs/{WD.SLUG}/wizard/(?P<action>save|upload|submit)", "POST", "post_wd_wizard"),
+        (rf"/jobs/{WD.SLUG}/wizard/submitted", "GET", "get_wd_submitted"),
+        (r"/__test__/workday", "GET", "test_workday"),
         (r"/__test__/health", "GET", "test_health"),
         (r"/__test__/jobs", "GET", "test_jobs"),
         (r"/__test__/submissions", "GET", "test_submissions"),
@@ -5149,6 +5274,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def get_job(self, slug: str) -> None:
         job = self._job(slug)
+        if slug == WD.SLUG:
+            self._send_html(HTTPStatus.OK, WD.posting_html(self.app.origin))
+            return
         if job.slug == MODAL_WIZARD:
             self._render_easy_apply(job, auto_open=False)
             return
@@ -5181,6 +5309,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def get_apply(self, slug: str) -> None:
         job = self._job(slug)
+        if slug == WD.SLUG:
+            self._send_html(HTTPStatus.OK, WD.apply_page_html(self.app.origin))
+            return
         if job.requires_signin and not self._signed_in():
             self._redirect_to_login(job)
             return
@@ -5205,6 +5336,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_apply(self, slug: str) -> None:
         job = self._job(slug)
+        if slug == WD.SLUG:
+            self._read_body()
+            raise HttpError(HTTPStatus.METHOD_NOT_ALLOWED)
         if job.requires_signin and not self._signed_in():
             self._read_body()
             self._redirect_to_login(job)
@@ -5611,6 +5745,111 @@ class Handler(BaseHTTPRequestHandler):
             + result
         )
         self._send_html(HTTPStatus.OK, page(f"Application status: {job.title}", body))
+
+    # workday-wizard (scripts/mock_workday.py)
+    def _wd_email(self) -> str | None:
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return None
+        morsel = cookie.get(WD.SESSION_COOKIE)
+        return self.store.session_email(morsel.value) if morsel else None
+
+    def get_wd_route(self, route: str) -> None:
+        self.store.wd_note("route_visits", route)
+        email = self._wd_email()
+        if email is None:
+            mode = "signin" if (self.query.get("view") or [""])[0] == "signin" else "create"
+            self._send_html(HTTPStatus.OK, WD.account_html(self.app.origin, mode=mode))
+            return
+        if route != "applyManually":
+            body = f"<h3>{esc(route)}</h3><p>This route is not part of the fixture flow.</p>"
+            self._send_html(HTTPStatus.OK, page(route, body))
+            return
+        draft = self.store.wd_draft(email)
+        self._send_html(HTTPStatus.OK, WD.wizard_html(
+            self.app.origin, email=email, saved=draft["pages"], resume=draft["resume"]))
+
+    def post_wd_account(self) -> None:
+        form, _ = self._read_form()
+        mode = (form.get("mode") or ["create"])[0]
+        email = (form.get("email") or [""])[0].strip().lower()
+        password = (form.get("password") or [""])[0]
+        error = None
+        if not email or not password:
+            error = "Enter your email address and password."
+        elif mode == "create":
+            verify = (form.get("verifyPassword") or [""])[0]
+            if password != verify:
+                error = "The passwords do not match."
+            elif not (form.get("createAccountCheckbox") or [""])[0]:
+                error = "Acknowledge the Candidate Privacy Notice to create an account."
+            elif not self.store.wd_create_account(email, password):
+                error = "An account with this email address already exists. Sign in instead."
+        elif not ((email == SIGNIN_EMAIL and password == SIGNIN_PASSWORD)
+                  or self.store.wd_account_ok(email, password)):
+            error = "Wrong email address or password."
+        if error is not None:
+            self._send_html(HTTPStatus.UNPROCESSABLE_ENTITY,
+                            WD.account_html(self.app.origin, mode=mode, error=error, email=email))
+            return
+        token = self.store.new_session(email)
+        cookie = f"{WD.SESSION_COOKIE}={token}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"
+        self._redirect(f"/jobs/{WD.SLUG}/apply/applyManually", (("Set-Cookie", cookie),))
+
+    def post_wd_wizard(self, action: str) -> None:
+        email = self._wd_email()
+        if email is None:
+            self._read_body()
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "Sign in to continue."})
+            return
+        job = self._job(WD.SLUG)
+        if action == "upload":
+            _, files = self._read_form()
+            upload = (files.get("file") or [None])[0]
+            if upload is None or not upload.filename.lower().endswith((".pdf", ".doc", ".docx")):
+                self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "Upload a .pdf, .doc or .docx file."})
+                return
+            meta = self.store.store_upload(upload)
+            self.store.wd_set_resume(email, meta)
+            self._send_json(HTTPStatus.OK, {"filename": meta["filename"], "upload_id": meta["upload_id"]})
+            return
+        try:
+            payload = json.loads(self._read_body() or b"{}")
+        except ValueError:
+            raise HttpError(HTTPStatus.BAD_REQUEST, "expected JSON") from None
+        draft = self.store.wd_draft(email)
+        if action == "save":
+            page_id = str(payload.get("page") or "")
+            values = payload.get("values") or {}
+            errors = WD.validate_page(page_id, values, draft["resume"])
+            self.store.wd_note("saves", {"page": page_id, "ok": not errors, "errors": errors,
+                                         "values": values})
+            if errors:
+                step = WD.PAGE_IDS.index(page_id) + 2 if page_id in WD.PAGE_IDS else None
+                self.store.add_rejection(job, errors, step)
+                self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"errors": errors})
+                return
+            self.store.wd_save_page(email, page_id, values)
+            self._send_json(HTTPStatus.OK, {"ok": True})
+            return
+        # submit: the only request that records (and counts) an application
+        self.store.wd_note("submit_calls", email)
+        missing = [p for p in WD.PAGE_IDS if p not in draft["pages"]
+                   or WD.validate_page(p, draft["pages"][p], draft["resume"])]
+        if missing:
+            self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {"error": "Complete every page before submitting: " + ", ".join(missing)})
+            return
+        fields = {name: value for p in WD.PAGE_IDS for name, value in draft["pages"][p].items()
+                  if value not in (None, "", [], False)}
+        resume = {k: v for k, v in (draft["resume"] or {}).items()}
+        record = self.store.add_submission(job, fields, {}, {"resume": resume} if resume else {})
+        self._send_json(HTTPStatus.OK, {"reference": record["confirmation_reference"]})
+
+    def get_wd_submitted(self) -> None:
+        reference = (self.query.get("ref") or [""])[0]
+        self._send_html(HTTPStatus.OK, WD.submitted_html(self.app.origin, reference))
 
     # sign-in
     def _login_page(self, next_path: str, error: str | None, email: str, status: HTTPStatus) -> None:
@@ -6375,6 +6614,9 @@ class Handler(BaseHTTPRequestHandler):
                 "jobs": [job.describe() for job in JOBS.values()],
             },
         )
+
+    def test_workday(self) -> None:
+        self._send_json(HTTPStatus.OK, self.store.wd_summary())
 
     def test_submissions(self) -> None:
         job_id = (self.query.get("job_id") or [None])[0]

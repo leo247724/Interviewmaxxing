@@ -28,6 +28,27 @@ def linux_user_agent(user_agent: str) -> str:
     return agent.replace("HeadlessChrome/", "Chrome/")
 
 
+BLOCKED_HOSTS: tuple[str, ...] = ("linkedin.com", "licdn.com", "applywithlinkedin.myworkdaygadgets.com")
+"""Hosts an application session never contacts (the owner's rule of 2026-09-24: no
+LinkedIn traffic). A Workday tenant's "Start Your Application" dialog embeds an "Apply
+with LinkedIn" gadget that posts to www.linkedin.com as soon as the dialog shows."""
+
+
+def blocked_request_pattern(hosts: tuple[str, ...]) -> re.Pattern[str]:
+    """A URL pattern matching requests to ``hosts`` or any of their subdomains."""
+    names = "|".join(re.escape(host) for host in hosts)
+    return re.compile(rf"^[a-z][a-z0-9+.-]*://(?:[^/?#@]*@)?(?:[^/?#:]*\.)?(?:{names})\.?(?::\d+)?(?:[/?#]|$)",
+                      re.IGNORECASE)
+
+
+async def _block_hosts(context: BrowserContext, hosts: tuple[str, ...]) -> None:
+    """Abort requests, and close WebSockets without connecting, to ``hosts``."""
+    if hosts:
+        pattern = blocked_request_pattern(hosts)
+        await context.route(pattern, lambda route: route.abort("blockedbyclient"))
+        await context.route_web_socket(pattern, lambda socket: socket.close())
+
+
 _HEADLESS_AGENTS: dict[str, str] = {}
 """Browser executable -> its headless user agent with a Linux platform (per process)."""
 
@@ -108,7 +129,10 @@ class PlaywrightSessionFactory:
     Headless sessions present the browser's own user agent with a Linux desktop
     platform segment (see ``linux_user_agent``), so menu widgets expose the selection
     state the runtime reads back; visible sessions keep the platform's user agent.
-    ``user_agent`` sets one explicitly for every session (tests, diagnostics)."""
+    ``user_agent`` sets one explicitly for every session (tests, diagnostics).
+
+    Requests to ``blocked_hosts`` (default ``BLOCKED_HOSTS``: LinkedIn) are aborted in
+    every session, so opening a posting never contacts them."""
 
     def __init__(
         self,
@@ -119,6 +143,7 @@ class PlaywrightSessionFactory:
         annotator: FormAnnotator | None = None,
         schema_hint_loader: SchemaHintLoader | None = None,
         user_agent: str | None = None,
+        blocked_hosts: tuple[str, ...] = BLOCKED_HOSTS,
     ) -> None:
         self.action_timeout_s = action_timeout_s
         self.settle_timeout_s = settle_timeout_s
@@ -126,6 +151,7 @@ class PlaywrightSessionFactory:
         self.annotator = annotator
         self.schema_hint_loader = schema_hint_loader
         self.user_agent = user_agent
+        self.blocked_hosts = blocked_hosts
 
     async def start(self, options: BrowserOptions) -> PlaywrightApplicationBrowser:
         playwright = await async_playwright().start()
@@ -142,6 +168,7 @@ class PlaywrightSessionFactory:
                     accept_downloads=False,
                     user_agent=agent,
                 )
+                await _block_hosts(context, self.blocked_hosts)
                 page = context.pages[0] if context.pages else await context.new_page()
             else:
                 browser = await playwright.chromium.launch(
@@ -150,6 +177,7 @@ class PlaywrightSessionFactory:
                 agent = self.user_agent or (
                     await _headless_user_agent(playwright, browser) if options.headless else None)
                 context = await browser.new_context(accept_downloads=False, user_agent=agent)
+                await _block_hosts(context, self.blocked_hosts)
                 page = await context.new_page()
         except BaseException:
             if browser is not None:

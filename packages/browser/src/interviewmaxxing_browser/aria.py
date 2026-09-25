@@ -160,9 +160,69 @@ const comboRefs = (el) => {
   if (refs.length || !menuProxy(el)) return refs;
   return [el.getAttribute('data-menu-id')].filter(Boolean);
 };
+// A picker's search box (Workday's prompt): an editable text input without ARIA menu
+// semantics, described by a selection count ("0 items selected", "1 item selected, United
+// States of America (+1)"; "Expanded" while its list is open, "Minimized" after), or a search box
+// (enterkeyhint=search) sitting with its list of chosen items ("items selected").
+const pickerCount = /\b\d+\s+items?\s+selected\b|^\s*(?:expanded|collapsed|minimized)\s*$/i;
+const pickerChosenList = (l) => /\bselected\b/i.test(l.getAttribute('aria-label') || '');
+// The listboxes of chosen items in a picker's own box, below its field label.
+const pickerLists = (el) => {
+  for (let box = el.parentElement, depth = 0; box && depth < 5 && box !== document.body; box = box.parentElement, depth++) {
+    if (box.querySelector('label,legend,h1,h2,h3,h4,h5,h6,[role=heading]')) break;
+    const lists = [...box.querySelectorAll('[role=listbox]')].filter((l) => !l.contains(el) && pickerChosenList(l));
+    if (lists.length) return lists;
+  }
+  return [];
+};
+const pickerSearch = (el) => !!el && el.isConnected && el.tagName === 'INPUT' && !el.readOnly &&
+  ['', 'text', 'search'].includes((el.getAttribute('type') || '').toLowerCase()) &&
+  el.getAttribute('role') !== 'combobox' && !el.hasAttribute('aria-haspopup') &&
+  ((el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean)
+    .some((id) => { const d = document.getElementById(id); return !!d && pickerCount.test(d.textContent || ''); }) ||
+   ((el.getAttribute('enterkeyhint') || '').toLowerCase() === 'search' && pickerLists(el).length > 0));
+// An option's name without the state some widgets append to it ("Career Websites not
+// checked", "United States of America (+1), press delete to clear value.").
+const optionState = /(?:[\s,]+(?:not\s+)?(?:checked|selected)|,\s*press delete to clear value)\.?\s*$/i;
+const shownText = (node) => {
+  const parts = [];
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    const hidden = t.parentElement && t.parentElement.closest('[aria-hidden=true]');
+    if (!(hidden && node.contains(hidden) && hidden !== node)) parts.push(t.nodeValue);
+  }
+  return ariaText(parts.join(' '));
+};
+const optionLabel = (o) => {
+  const aria = ariaText(o.getAttribute('aria-label')), text = shownText(o);
+  if (aria && text && aria !== text && aria.replace(optionState, '') === text) return text;
+  return aria || text;
+};
+const pickerChosen = (el) => pickerLists(el).flatMap((l) => [...l.querySelectorAll('[role=option]')])
+  .filter((o) => ariaVisible(o)).map(optionLabel).filter(Boolean);
+// The list a picker without ARIA references opened: while its search box (or the list)
+// holds focus, the one visible listbox that no control names and no picker shows its
+// chosen items in.
+const pickerPopup = (el) => {
+  if (!pickerSearch(el)) return null;
+  const owned = new Set([...document.querySelectorAll('[aria-controls],[aria-owns]')].flatMap((n) => ariaRefs(n)));
+  const chosen = new Set();
+  for (const input of document.querySelectorAll('input')) {
+    if (pickerSearch(input)) for (const l of pickerLists(input)) chosen.add(l);
+  }
+  // Its rows may hold their own radio or checkbox (a single-select prompt), never a
+  // text box or another question.
+  const lists = [...document.querySelectorAll('[role=listbox]')].filter((l) => ariaVisible(l) && !chosen.has(l) &&
+    !owned.has(l.id) && !l.parentElement.closest('[role=listbox]') &&
+    !l.querySelector('input:not([type=hidden]):not([type=radio]):not([type=checkbox]),select,textarea'));
+  if (lists.length !== 1) return null;
+  const active = document.activeElement;
+  return active === el || lists[0].contains(active) ? lists[0] : null;
+};
 const comboLike = (el) => {
   if (!el || !el.isConnected || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') return false;
   if (menuProxy(el)) return !el.closest('a[href]');
+  if (pickerSearch(el)) return !el.closest('a[href]');
   if (el.getAttribute('role') !== 'combobox' && comboPopup(el) !== 'listbox') return false;
   if (el.tagName === 'INPUT' && !['', 'text', 'search'].includes((el.getAttribute('type') || '').toLowerCase())) return false;
   if (el.tagName === 'BUTTON' && el.type !== 'button') return false;
@@ -206,6 +266,10 @@ const comboDisplayNodes = (el) => {
 // "-- Select --", and BambooHR's "Select" between en dashes (any dash punctuation, \p{Pd}).
 const comboPlaceholderText = /^(?:(?:please\s+)?(?:select|choose|pick)(?:\s+(?:an?|one|your|the)\b.{0,40})?|search|(?:type|start typing)\b.{0,40}|\p{Pd}+\s*(?:select|choose)\b.{0,40})\s*(?:\.\.\.|…|:)?\s*\p{Pd}*$/iu;
 const comboDisplay = (el) => {
+  if (pickerSearch(el)) {
+    const text = pickerChosen(el).join(', ');
+    return {text, placeholder: !text};
+  }
   if (el.tagName === 'INPUT') {
     if (el.value) return {text: ariaText(el.value), placeholder: false};
     const nodes = comboDisplayNodes(el);
@@ -239,11 +303,13 @@ const comboDisplay = (el) => {
 const comboFacts = (el) => {
   if (!comboLike(el)) return null;
   const shown = comboDisplay(el);
+  const picker = pickerSearch(el);
   return {combo: 1, role: el.getAttribute('role') || '', haspopup: comboPopup(el),
     autocomplete: (el.getAttribute('aria-autocomplete') || '').toLowerCase(),
     editable: comboEditable(el), multiselectable: el.getAttribute('aria-multiselectable') === 'true',
-    dialog: !!el.closest('[role=dialog],dialog'),
-    value: shown.placeholder ? '' : shown.text, expanded: el.getAttribute('aria-expanded') === 'true'};
+    dialog: !!el.closest('[role=dialog],dialog'), ...(picker ? {picker: true} : {}),
+    value: shown.placeholder ? '' : shown.text,
+    expanded: el.getAttribute('aria-expanded') === 'true' || (picker && !!pickerPopup(el))};
 };
 // Never the aria-label: menus put their placeholder or shown value there (Rippling: "Select";
 // Fabric: "Country United States"). A proxy's toggle is named by its select's name and labels.
@@ -260,9 +326,10 @@ const comboIdentity = (el) => {
 // page-wide option scan).
 const comboMenu = (el) => {
   const refs = comboRefs(el);
-  if (!refs.length) return null;
+  const popup = refs.length ? null : pickerPopup(el);
+  if (!refs.length && !popup) return null;
   if (refs.length > 1) return {error: 'several owned popups'};
-  const found = document.querySelectorAll('#' + CSS.escape(refs[0]));
+  const found = popup ? [popup] : document.querySelectorAll('#' + CSS.escape(refs[0]));
   // A menu named only by data-menu-id is rendered the first time it opens.
   if (!found.length && !ariaRefs(el).length) return null;
   if (found.length !== 1) return {error: 'owned popup is missing or ambiguous'};
@@ -279,14 +346,16 @@ const comboMenu = (el) => {
   const nodes = [...box.querySelectorAll(item)].filter((o) => o.closest(lists) === box);
   const options = nodes.slice(0, 600).map((o, index) => ({
     index, id: o.id || '', selector: ariaUniqueId(o.id) ? '#' + CSS.escape(o.id) : '',
-    label: ariaText(o.getAttribute('aria-label') || o.textContent),
+    label: optionLabel(o),
     value: o.hasAttribute('data-value') ? o.getAttribute('data-value') : null,
     selected: o.getAttribute('aria-selected') === 'true' || (checked(o) && o.getAttribute('aria-checked') === 'true'),
     marked: o.hasAttribute('aria-selected') || checked(o),
     // A class token naming the selection (react-select's select__option--is-selected).
     classed: [...o.classList].some((t) => /selected/i.test(t) && !/(?:un|de|non|not[-_]?)selected/i.test(t)),
     disabled: o.getAttribute('aria-disabled') === 'true' || o.hasAttribute('disabled'),
-    visible: ariaVisible(o), nested: !!o.querySelector(item)}));
+    visible: ariaVisible(o), nested: !!o.querySelector(item),
+    // An option that opens a sub-list (a category of a tree picker such as Workday's prompt).
+    branch: o.hasAttribute('aria-haspopup') || o.hasAttribute('aria-expanded')}));
   const notice = ariaText([...box.childNodes].filter((n) => !(n.nodeType === 1 &&
     (n.matches(item) || n.querySelector(item)))).map((n) => n.textContent).join(' '));
   const sizes = nodes.map((o) => Number(o.getAttribute('aria-setsize'))).filter((n) => n > 0);
@@ -391,7 +460,9 @@ COMBO_STATE = "(arg) => {" + ARIA_HELPERS + """
   return {origin: String(performance.timeOrigin), url: location.href, control: comboIdentity(el),
     like: comboLike(el), editable: comboEditable(el), visible: ariaVisible(el),
     disabled: !!el.disabled || !!el.closest('[aria-disabled=true]'),
-    expanded: el.getAttribute('aria-expanded') === 'true', focused: document.activeElement === el,
+    expanded: el.getAttribute('aria-expanded') === 'true' || (pickerSearch(el) && !!pickerPopup(el)),
+    focused: document.activeElement === el, picker: pickerSearch(el),
+    chosen: pickerSearch(el) ? pickerChosen(el) : null,
     display: shown.text, placeholder: shown.placeholder,
     dialog: !!el.closest('[role=dialog],dialog,[aria-modal=true]'),
     input: el.tagName === 'INPUT' ? el.value : null,
@@ -410,6 +481,23 @@ PHONE_STATE = "(selector) => {" + ARIA_HELPERS + """
     picker: picker ? {kind: picker.kind, text: phonePickerText(picker)} : null};
 }"""
 """Read-only value of a tel input and the text of its own country picker."""
+
+ENTER_SAFE = """(selector) => {
+  let found;
+  try { found = document.querySelectorAll(selector); } catch (e) { return false; }
+  if (found.length !== 1) return false;
+  const form = found[0].form;
+  if (!form) return true;
+  const elements = [...form.elements];
+  const submitter = elements.some((e) => (e.tagName === 'BUTTON' && (e.getAttribute('type') || 'submit').toLowerCase() === 'submit')
+    || (e.tagName === 'INPUT' && ['submit', 'image'].includes((e.type || '').toLowerCase())));
+  const boxes = elements.filter((e) => e.tagName === 'INPUT' && !['hidden', 'checkbox', 'radio', 'button', 'submit',
+    'reset', 'image', 'file'].includes((e.type || '').toLowerCase()));
+  return !submitter && boxes.length > 1;
+}"""
+"""Read-only: whether pressing Enter in this input cannot submit a form (implicit
+submission needs a submit button, or a form with a single text box). A search picker
+that lists results only after Enter (Workday's prompt) is searched only then."""
 
 
 def _norm(text: str) -> str:
@@ -483,6 +571,8 @@ _NO_SUGGESTION_GRACE_S = 3.0
 """A first query may load the site's place-search library before it answers."""
 _MAX_SUGGESTIONS = 20
 _TYPE_DELAY_S = 0.03
+_ENTER_GRACE_S = 1.0
+"""How long a tree picker's search may show no results before Enter is pressed."""
 
 
 @dataclass(frozen=True)
@@ -507,12 +597,21 @@ class MenuObservation:
     """Probing stops for the rest of this document (it changed, or a menu stayed open)."""
     close_method: str = ""
     """The closing step that closed the probed menu (see ``_close_menu``)."""
+    multi: bool = False
+    """A lookup over a multi-select tree picker (Workday's prompt): the search box of a
+    list whose items are categories, or empty until searched, answered with one value.
+    Its results may appear only after Enter, a choice leaves the list open and becomes
+    an item (a pill) beside the search box, and a chosen result is never clicked again."""
 
     @property
     def listbox_id_pattern(self) -> str:
         """The owned listbox id with digit runs generalized: ids may be regenerated on
-        every open, so a binding never stores the id itself."""
-        return re.sub(r"\d+", r"\\d+", re.escape(self.listbox_id)) if self.listbox_id else ""
+        every open, so a binding never stores the id itself. A short generated token
+        (Workday's "cq4q3") names nothing stable and constrains nothing; the control's
+        own reference and the option set still do."""
+        if not self.listbox_id or re.fullmatch(r"[A-Za-z0-9]{1,8}", self.listbox_id):
+            return ""
+        return re.sub(r"\d+", r"\\d+", re.escape(self.listbox_id))
 
     @property
     def signature(self) -> str:
@@ -535,6 +634,8 @@ class MenuObservation:
             "listbox_id_pattern": self.listbox_id_pattern, "editable": self.editable,
             "signature": self.signature, "expanded": bool(facts.get("expanded")), "visible": True,
         }
+        if self.multi:
+            base["multi"] = True
         if self.kind == "lookup":
             return {**base, "options": [], "value": display}
         labels = [str(o["label"]) for o in self.options]
@@ -548,6 +649,12 @@ class MenuObservation:
                    for i, o in enumerate(self.options)]
         return {**base, "options": options,
                 "value": options[shown]["value"] if shown is not None else ""}
+
+
+def _meaningful(options: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Options without the list's own "no answer" entry: a disabled option with an empty
+    value (Workday's "Select One" at the top of every dropdown)."""
+    return [o for o in options if not (o.get("disabled") and o.get("value") == "")]
 
 
 def _open(state: Mapping[str, Any]) -> bool:
@@ -700,6 +807,19 @@ def _classify(opened: dict[str, Any], before: Mapping[str, Any], selector: str,
                            editable=bool(before.get("editable")))
     lookup = replace(base, kind="lookup", reason="options appear only after typing")
     menu = opened.get("menu")
+    if before.get("picker") and base.editable:
+        # A picker's search box (Workday's prompt: categories to browse, results with a
+        # checkbox, chosen items listed beside the box) is a lookup for one value.
+        listbox = str(menu.get("id") or "") if isinstance(menu, dict) and not menu.get("error") else ""
+        return replace(lookup, listbox_id=listbox, multi=True)
+    if isinstance(menu, dict) and base.editable and _open(opened) \
+            and (menu.get("multiselectable") or menu.get("bad")) \
+            and (not menu.get("options") or any(o.get("branch") for o in menu.get("options") or [])):
+        # The search box of a multi-select tree (Workday's prompt: categories that open
+        # sub-lists, or nothing until searched; results with checkboxes) is a lookup for
+        # one value: typing finds it. A flat list of every choice ("Which channels have
+        # you managed?") stays with the user.
+        return replace(lookup, listbox_id=str(menu.get("id") or ""), multi=True)
     if isinstance(menu, dict) and menu.get("multiselectable"):
         return replace(base, reason="multi-select menus are operated by the user")
     if not _open(opened):
@@ -709,7 +829,7 @@ def _classify(opened: dict[str, Any], before: Mapping[str, Any], selector: str,
     lookup = replace(lookup, listbox_id=base.listbox_id)
     if menu.get("bad") or menu.get("links"):
         return replace(base, reason="the menu holds other controls")
-    options = menu.get("options") or []
+    options = _meaningful(menu.get("options") or [])
     if not options:
         return lookup if base.editable else replace(base, reason="the menu is empty")
     if int(menu.get("count", 0)) > _MAX_OPTIONS or len(options) > _MAX_OPTIONS:
@@ -808,8 +928,9 @@ class MenuProbe:
     """Per-document cache of probed menu controls, with the probing budget.
 
     Observations are keyed by the control's id (or selector) and label, scoped to one
-    document (``DomSnapshot.document``) and dropped on navigation or context loss, so
-    later inspections of the same document reuse them without reopening anything."""
+    page (``DomSnapshot.document`` and the step it shows, see ``page``) and dropped on
+    navigation, a step change or context loss, so later inspections of the same page
+    reuse them without reopening anything."""
 
     def __init__(self, *, max_probes: int = 24, max_seconds: float = 20.0,
                  per_control_s: float = 3.0, open_wait_s: float = _OPEN_WAIT_S) -> None:
@@ -859,12 +980,21 @@ class MenuProbe:
             and not facts.get("expanded")
             and (not facts.get("dialog") or (dialog is not None and control.dialog_index == dialog))
             and not facts.get("multiselectable")
-            and (facts.get("haspopup") in ("listbox", "true", "menu") or facts.get("autocomplete") == "list")
+            and (facts.get("haspopup") in ("listbox", "true", "menu") or facts.get("autocomplete") == "list"
+                 or bool(facts.get("picker")))
         )
+
+    @staticmethod
+    def page(snapshot: DomSnapshot) -> str:
+        """The page observations belong to: the document, and the step it shows. A
+        single-page wizard (Workday) keeps one document for every step, and each step is
+        a page of its own (its own menus and probing budget)."""
+        step = snapshot.step
+        return snapshot.document + (f" step {step.current}/{step.total}" if step is not None else "")
 
     def targets(self, snapshot: DomSnapshot, form_index: int | None,
                 dialog: int | None = None) -> list[DomControl]:
-        if form_index is None or snapshot.document != self.document:
+        if form_index is None or self.page(snapshot) != self.document:
             return []
         return [c for c in snapshot.controls
                 if self.candidate(c, form_index, dialog) and self.key(c) not in self.observations]
@@ -872,8 +1002,8 @@ class MenuProbe:
     def merge(self, snapshot: DomSnapshot) -> DomSnapshot:
         """Attach cached observations to their (closed or open) controls and drop the
         leftover lists of probed keyboard menus. Pure; never touches the page."""
-        if snapshot.document != self.document:
-            self.reset(snapshot.document)
+        if self.page(snapshot) != self.document:
+            self.reset(self.page(snapshot))
         if not self.observations:
             return snapshot
         popups = {o.listbox_id for o in self.observations.values() if o.listbox_id}
@@ -1021,18 +1151,21 @@ def _check_probed(state: Mapping[str, Any], binding: Mapping[str, Any]) -> None:
 
 
 def _probed_options(state: Mapping[str, Any], binding: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The owned listbox's options, required to be the probed option set."""
+    """The owned listbox's options, required to be the probed option set (a tree
+    picker's results may be multi-select; one of them is chosen)."""
     from .driver import NotActionable
 
     menu = state.get("menu")
-    if not isinstance(menu, dict) or menu.get("error") or menu.get("multiselectable") or menu.get("bad") \
+    multi = bool(binding.get("multi"))
+    if not isinstance(menu, dict) or menu.get("error") or (
+            not multi and (menu.get("multiselectable") or menu.get("bad"))) \
             or (menu.get("links") and binding.get("kind") != "lookup"):
         raise NotActionable("the menu does not expose one single-choice listbox")
     pattern = str(binding.get("listbox_id_pattern") or "")
     if pattern and not re.fullmatch(pattern, str(menu.get("id") or "")):
         raise NotActionable("the menu opened a different listbox than when it was inspected")
     options: list[dict[str, Any]] = []
-    for option in menu.get("options") or []:
+    for option in _meaningful(menu.get("options") or []):
         label = str(option.get("label") or "")
         value = option.get("value")
         options.append({**option, "value": label if value is None else str(value)})
@@ -1251,12 +1384,26 @@ async def fill_lookup(
     Suggestions are read from the listbox the input owns once they are stable for
     400 ms (at most 6 s; 3 s when none appear). With exactly one accepted suggestion it
     is clicked and read back; otherwise the input is cleared again and the suggestions
-    are returned."""
+    are returned.
+
+    A tree picker's search box (``multi``, Workday's prompt) differs in three ways: a
+    picker that already shows exactly this answer as its one chosen item is left alone;
+    when its list shows no results (it searches only on Enter) Enter is pressed once,
+    and only where Enter cannot submit a form; and a result it already marks chosen is
+    not clicked again (a second click would take it out). Its list stays open after a
+    choice and is closed the way the probe closed it; the chosen item must then be what
+    the picker shows."""
     from .driver import NotActionable
 
+    multi = bool(binding.get("multi"))
     read = _reader(driver, selector)
     state = await read()
     _check_probed(state, binding)
+    chosen_items = [str(item) for item in state.get("chosen") or []]
+    if multi and not state.get("input") and len(chosen_items) == 1 and choose(text, chosen_items) == [0]:
+        # The picker already holds exactly this answer (Workday fills Country Phone Code
+        # in): choosing it again could take it out.
+        return LookupOutcome(chosen_items[0], verified=True, detail="the picker already shows this answer")
     await driver.clear_text(selector)
     if (await read()).get("input"):
         raise NotActionable("the lookup input could not be cleared")
@@ -1267,6 +1414,7 @@ async def fill_lookup(
     end = started + _SUGGESTION_WAIT_S
     last_key: tuple[Any, ...] | None = None
     stable_since = started
+    entered = False
     state = await read()
     while True:
         _check_probed(state, binding)
@@ -1278,6 +1426,15 @@ async def fill_lookup(
         if key != last_key:
             last_key, stable_since = key, now
         settled = now - stable_since >= _SUGGESTION_STABLE_S and not loading
+        if multi and settled and not entered and not _labels(state) \
+                and (present or now - started >= _ENTER_GRACE_S) \
+                and await driver.evaluate(ENTER_SAFE, selector):
+            # The picker searches only on Enter (Workday's prompt).
+            await driver.press(selector, "Enter")
+            entered = True
+            started, end, last_key = loop.time(), loop.time() + _SUGGESTION_WAIT_S, None
+            state = await read()
+            continue
         if settled and (present or now - started >= _NO_SUGGESTION_GRACE_S):
             break
         if now >= end:
@@ -1312,15 +1469,35 @@ async def fill_lookup(
         await driver.clear_text(selector)
         return LookupOutcome(None, suggestions=tuple(suggestions),
                              detail="the chosen suggestion is no longer shown")
-    await driver.click(str(target[0]["selector"]))
-    after = await _poll(read, lambda s: not s.get("expanded") or not s.get("menu"), _CLOSE_WAIT_S)
+    already = bool(multi and target[0].get("selected"))
+    if already:
+        # Chosen before: a second click would take it out. The search typed to find it
+        # goes again, as a person would clear it.
+        await driver.clear_text(selector)
+    else:
+        await driver.click(str(target[0]["selector"]))
+
+    def settled_choice(s: dict[str, Any]) -> bool:
+        if not s.get("expanded") or not s.get("menu"):
+            return True
+        return multi and any(o.get("selected") and o["label"][:200] == chosen for o in _probed_options(
+            s, {**binding, "listbox_id_pattern": ""})) if _open(s) else False
+
+    after = await _poll(read, settled_choice, _CLOSE_WAIT_S)
     if not after.get("expanded") or not after.get("menu"):
+        # A site that saves the choice first (Ashby) empties the input until its save
+        # returns, then writes the suggestion back.
         after = await _poll(read, lambda s: bool(s.get("display")) and not s.get("placeholder"), _COMMIT_WAIT_S)
     _check_probed(after, binding)
-    display = str(after.get("display") or "")
+    if multi and after.get("expanded") and after.get("menu"):
+        # A tree picker keeps its list open for more choices: close it the way the probe did.
+        await _close_menu(driver, selector, read, "click", str(binding.get("close_method") or ""))
+        after = await read()
+        _check_probed(after, binding)
+    display = "" if after.get("placeholder") else str(after.get("display") or "")
     typed = str(after.get("input") or "")
     closed = not after.get("expanded") or not after.get("menu")
-    verified = (closed and not after.get("placeholder") and _norm(display) == _norm(chosen)
+    verified = (closed and _norm(display) == _norm(chosen)
                 and (typed == "" or _norm(typed) == _norm(chosen)))
     detail = "" if verified else f"shows {display!r} after choosing {chosen!r}"
     return LookupOutcome(chosen, verified=verified, suggestions=tuple(suggestions), detail=detail)

@@ -80,6 +80,21 @@
   for (const c of document.querySelectorAll('[class*="datepicker-popper"], [class*="calendar-popup"], .flatpickr-calendar')) {
     if (!Array.from(popupRoots).some((p) => p.contains(c))) popupRoots.add(c);
   }
+  // So do a picker's list of chosen items (in its own box) and the list its search box
+  // opened (Workday's prompt names neither with aria-controls).
+  for (const input of document.querySelectorAll("input")) {
+    if (!pickerSearch(input)) continue;
+    for (const list of pickerLists(input)) popupRoots.add(list);
+    const opened = pickerPopup(input);
+    if (opened) {
+      let root = opened;
+      while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(input)) {
+        root = root.parentElement;
+      }
+      popupRoots.add(root);
+    }
+  }
+  const inPickerPart = (el) => { for (const p of popupRoots) if (p === el || p.contains(el)) return true; return false; };
   const selectorFor = (el) => {
     if (el.id && unique("#" + CSS.escape(el.id))) return "#" + CSS.escape(el.id);
     // Inside a shadow root the selector is "<host selector> >> <selector within the
@@ -136,6 +151,11 @@
     return r.right + window.scrollX > 0 && r.bottom + window.scrollY > 0;
   };
   const visible = (el) => !!el && !hiddenByAncestor(el) && cssVisible(el) && hasBox(el);
+  const TEXT_BOX_TYPES = new Set(["", "text", "email", "tel", "url", "number", "date", "search", "month",
+    "week", "time", "datetime-local"]);
+  const textBox = (el) => el.tagName === "TEXTAREA" ||
+    (el.tagName === "INPUT" && TEXT_BOX_TYPES.has((el.getAttribute("type") || "").toLowerCase()));
+  const tiny = (el) => { const r = el.getBoundingClientRect(); return r.width < 2 || r.height < 2; };
 
   const textOf = (root, exclude) => {
     if (!root) return "";
@@ -348,13 +368,18 @@
     return -1;
   };
   const stepIn = (root) => {
+    const text = (root === document.body ? document.body.innerText : root.innerText) || "";
+    // A progress list that names every step ("completed step 1 of 6", "current step 2 of
+    // 6", "step 3 of 6": Workday's screen-reader labels) says which one is current; the
+    // number may run straight into the step's name ("current step 1 of 6My Information").
+    const named = text.match(/\bcurrent\s+step\s+(\d+)\s*(?:of|\/)\s*(\d+)(?!\d)/i);
+    if (named) return { current: Number(named[1]), total: Number(named[2]), source: "text" };
     const current = root.querySelector('[aria-current="step"]');
     if (current && current.parentElement) {
       const items = Array.from(current.parentElement.children);
       return { current: items.indexOf(current) + 1, total: items.length, source: "aria-current" };
     }
-    const text = (root === document.body ? document.body.innerText : root.innerText) || "";
-    const m = text.match(/\bstep\s+(\d+)\s*(?:of|\/)\s*(\d+)\b/i);
+    const m = text.match(/\bstep\s+(\d+)\s*(?:of|\/)\s*(\d+)(?!\d)/i);
     return m ? { current: Number(m[1]), total: Number(m[2]), source: "text" } : null;
   };
 
@@ -369,9 +394,43 @@
   // So is a menu toggle's proxy select, and the search box in a toggle's menu.
   const proxySelects = new Set(menuToggles.values());
   const inTogglePopup = (el) => { for (const p of togglePopups) if (p.contains(el)) return true; return false; };
+
+  // A segmented date (Workday: Month / Day / Year spinbutton inputs, typed as one
+  // MM/DD/YYYY value that moves on by itself) is one control: its first segment
+  // stands for the whole date, the other segments are part of it.
+  const SEGMENT_KINDS = [["month", /^(?:month|mm?)$/i], ["day", /^(?:day|dd?)$/i], ["year", /^(?:year|y{2,4})$/i]];
+  const segmentKind = (el) => {
+    if (el.tagName !== "INPUT" || (el.getAttribute("role") || "") !== "spinbutton") return "";
+    const names = [el.getAttribute("aria-label"), el.getAttribute("placeholder")].map((v) => (v || "").trim());
+    for (const [kind, pattern] of SEGMENT_KINDS) if (names.some((n) => pattern.test(n))) return kind;
+    return "";
+  };
+  const dateGroups = new Map();
+  const segmentLead = new Map();
+  for (const el of document.querySelectorAll('input[role="spinbutton"]')) {
+    if (segmentLead.has(el) || !segmentKind(el)) continue;
+    let members = null;
+    let root = el.parentElement;
+    for (let depth = 0; root && root !== document.body && depth < 4; root = root.parentElement, depth++) {
+      const inside = Array.from(root.querySelectorAll("input, select, textarea"))
+        .filter((f) => !SKIP_TYPES.has((f.type || "").toLowerCase()));
+      if (inside.some((f) => !segmentKind(f))) break;
+      if (inside.length > 1) { members = inside; break; }
+    }
+    if (!members) continue;
+    const kinds = members.map(segmentKind);
+    if (new Set(kinds).size !== kinds.length || !kinds.includes("month") || !kinds.includes("year")) continue;
+    dateGroups.set(members[0], { root, segments: members.map((m, i) => ({ kind: kinds[i], el: m })) });
+    for (const m of members) segmentLead.set(m, members[0]);
+  }
+  // A radio or checkbox inside an open list (a prompt's rows carry their own) belongs to
+  // that list's row, never to the form.
+  const inListRow = (el) => ["radio", "checkbox"].includes((el.type || "").toLowerCase()) &&
+    !!el.closest('[role="listbox"]') && inPickerPart(el);
   const nativeControls = deepAll("input, select, textarea")
     .filter((el) => !SKIP_TYPES.has((el.type || "").toLowerCase()) && !comboProxy(el) &&
-      !proxySelects.has(el) && !inTogglePopup(el));
+      !proxySelects.has(el) && !inTogglePopup(el) &&
+      (!segmentLead.has(el) || segmentLead.get(el) === el) && !inListRow(el));
 
   // A phone field's own country picker (an intl-tel-input flag, which may be a combobox
   // named "Country", or a dialog button before the number) belongs to that field: its
@@ -389,7 +448,7 @@
   const CALENDAR = '[class*="datepicker__month"], [class*="datepicker-popper"], [class*="datepicker__header"], ' +
     '[class*="calendar-popup"], [class*="DayPicker"], .flatpickr-calendar';
   const customWidgets = [];
-  for (const el of deepAll("[role], [contenteditable]")) {
+  for (const el of deepAll("[role], [contenteditable], button[aria-haspopup]")) {
     // A <button> with a widget role (e.g. role="combobox") is a custom control, not an action.
     if (NATIVE.has(el.tagName)) continue;
     if (inPhonePicker(el) || inTogglePopup(el)) continue;
@@ -399,10 +458,13 @@
     // own: Ashby's lookup names a wrapper around its suggestion listbox (a portal).
     if (["listbox", "menu", "tree", "grid"].includes(role) && Array.from(popupRoots).some((p) => p.contains(el))) continue;
     const editable = el.hasAttribute("contenteditable") && el.isContentEditable;
-    if (!(CUSTOM_ROLES.has(role) || editable)) continue;
+    // So is a menu button without a role (Workday: <button type="button"
+    // aria-haspopup="listbox">), a select whose options exist only while it is open.
+    const menuButton = el.tagName === "BUTTON" && !role && comboLike(el);
+    if (!(CUSTOM_ROLES.has(role) || editable || menuButton)) continue;
     // A list that is not shown is a closed popup (some menus leave theirs in the
-    // document after closing), never a question of its own.
-    if (role === "listbox" && !visible(el)) continue;
+    // document after closing), never a question of its own; nor is a menu's open list.
+    if (role === "listbox" && (!visible(el) || inPickerPart(el))) continue;
     if (el.querySelector("input:not([type=hidden]), select, textarea")) continue; // wraps native controls
     if (customWidgets.some((w) => w.contains(el))) continue;
     customWidgets.push(el);
@@ -666,10 +728,37 @@
       .map((d) => ({ text: textOf(d), error: errorFor(el, d) }))
       .filter((d) => d.text);
 
+  // The question of a segmented date: a label of one of its segments that is not the
+  // segment's own name ("Month"), else the group or wrapper that names it, else a
+  // <label> just before the wrapper.
+  const dateLabelOf = (date) => {
+    const segmentName = (t) => SEGMENT_KINDS.some(([, pattern]) => pattern.test(t));
+    for (const { el: s } of date.segments) {
+      const t = Array.from(s.labels || []).map((l) => textOf(l)).join(" ").trim();
+      if (t && !segmentName(t)) return [t, "label"];
+    }
+    for (let n = date.root, d = 0; n && n !== document.body && d < 4; n = n.parentElement, d++) {
+      const by = byIds(n.getAttribute("aria-labelledby")).map((x) => textOf(x)).join(" ").trim();
+      if (by) return [by, "aria-labelledby"];
+      const aria = (n.getAttribute("aria-label") || "").trim();
+      if (aria && !segmentName(aria) && n.matches('[role="group"], fieldset')) return [aria, "aria-label"];
+      const legend = n.tagName === "FIELDSET" ? Array.from(n.children).find((c) => c.tagName === "LEGEND") : null;
+      if (legend && textOf(legend)) return [textOf(legend), "label"];
+      const label = Array.from(n.parentElement ? n.parentElement.children : [])
+        .filter((c) => c.tagName === "LABEL" && (c.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          (!c.htmlFor || !!date.root.querySelector("#" + CSS.escape(c.htmlFor))))
+        .map((c) => textOf(c)).filter(Boolean).pop();
+      if (label) return [label, "label"];
+    }
+    return ["", "none"];
+  };
+  const SEGMENT_FORMAT = { month: "MM", day: "DD", year: "YYYY" };
+
   const describeNative = (el) => {
     const members = groupMembers(el);
     const form = el.form;
     const container = containerFor(members, form);
+    const date = dateGroups.get(el) || null;
     const exclude = new Set([...ownedEls, ...popupRoots]);
     for (const m of members) for (const l of m.labels || []) exclude.add(l);
     for (const m of members) for (const d of byIds(m.getAttribute("aria-describedby"))) exclude.add(d);
@@ -679,6 +768,10 @@
     // text around the group.
     const unlabelled = members.length > 1 ? members.filter((m) => !(m.labels && m.labels.length)) : [];
     for (const m of unlabelled) { const b = ownBox(m); if (b) exclude.add(b); }
+    if (date) {
+      exclude.add(date.root);
+      for (const { el: s } of date.segments) for (const l of s.labels || []) exclude.add(l);
+    }
     const fs = el.closest("fieldset");
     if (fs) for (const d of byIds(fs.getAttribute("aria-describedby"))) exclude.add(d);
     const combo = comboLike(el);
@@ -698,7 +791,7 @@
     const trigger = upload ? popupTriggerOf(el) : null;
     const [adjacent, adjacentErrors] = trigger ? [[], []] : adjacentText(container, exclude, upload);
     const [label, labelSource] = trigger ? [triggerName(trigger), "trigger"]
-      : upload ? fileLabelOf(el) : labelOf(el);
+      : upload ? fileLabelOf(el) : date ? dateLabelOf(date) : labelOf(el);
     const [legend, legendSelector, legendDescribed] = legendOf(el);
     const [groupLabel, groupDescribed] = groupLabelOf(el);
     const errTarget = byIds(el.getAttribute("aria-errormessage"))[0];
@@ -729,16 +822,21 @@
       choice_group: (() => { const b = choiceBox(el); return b ? selectorFor(b) : ""; })(),
       pressed_options: pressed.map((b) => ({ label: squashText(textOf(b)), selector: selectorFor(b), pressed: b.getAttribute("aria-pressed") === "true" })),
       label_selector: el.labels && el.labels.length ? selectorFor(el.labels[0]) : null,
-      required: el.required || el.getAttribute("aria-required") === "true" ||
-        !!(el.closest('[aria-required="true"]')) || (!!trigger && trigger.getAttribute("aria-required") === "true"),
+      required: (date ? date.segments.map((s) => s.el) : [el]).some((m) =>
+        m.required || m.getAttribute("aria-required") === "true" || !!(m.closest('[aria-required="true"]'))) ||
+        (!!trigger && trigger.getAttribute("aria-required") === "true"),
       disabled: el.disabled || el.getAttribute("aria-disabled") === "true",
-      visible: visible(el),
+      // A text box squeezed below 2 px (Workday's honeypot: 1 x 0.01 px) is not one a
+      // person can see or type into.
+      visible: visible(el) && !(textBox(el) && tiny(el)),
       label_visible: labelVisible(el),
       readonly: !!el.readOnly,
-      value: type === "file" ? "" : String(el.value ?? ""),
+      value: type === "file" ? "" : date
+        ? (date.segments.some((s) => s.el.value) ? date.segments.map((s) => s.el.value || "").join("/") : "")
+        : String(el.value ?? ""),
       checked: !!el.checked,
       files: type === "file" ? Array.from(el.files || []).map((f) => ({ name: f.name, size: f.size })) : [],
-      placeholder: el.getAttribute("placeholder") || "",
+      placeholder: date ? date.segments.map((s) => SEGMENT_FORMAT[s.kind]).join("/") : el.getAttribute("placeholder") || "",
       autocomplete: (el.getAttribute("autocomplete") || "").toLowerCase(),
       accept: el.getAttribute("accept") || "",
       max_length: el.maxLength > 0 ? el.maxLength : null,
@@ -761,6 +859,7 @@
         : uploadTriggerOf(el, container),
       upload_anchor: trigger ? triggerBoxOf(trigger) : "",
       dialog_index: dialogIndexOf(el),
+      date_segments: date ? date.segments.map((s) => ({ kind: s.kind, selector: selectorFor(s.el) })) : [],
     };
   };
 
@@ -782,11 +881,13 @@
     const hasValue = selectedOption || el.getAttribute("aria-checked") === "true" ||
       (el.isContentEditable && textOf(el) !== "") || !!(hiddenInput && hiddenInput.value);
     const form = el.closest("form");
+    const menuButton = el.tagName === "BUTTON" && !el.getAttribute("role");
     return {
       kind: "custom",
       tag: el.tagName.toLowerCase(),
-      type: el.getAttribute("role") || (proxy ? "combobox" : "contenteditable"),
-      name: proxy ? proxy.getAttribute("name") || "" : hiddenInput ? hiddenInput.getAttribute("name") || "" : "",
+      type: el.getAttribute("role") || (proxy ? "combobox" : menuButton ? "button" : "contenteditable"),
+      name: proxy ? proxy.getAttribute("name") || ""
+        : (menuButton && el.getAttribute("name")) || (hiddenInput ? hiddenInput.getAttribute("name") || "" : ""),
       id: el.id || "",
       selector: selectorFor(el),
       role: el.getAttribute("role") || "",
@@ -806,8 +907,14 @@
       adjacent,
       adjacent_errors: adjacentErrors,
       label_selector: null,
+      // A menu button without aria-required (Workday) still says so: in its accessible
+      // name ("Country United States of America Required") or with the asterisk its
+      // label shows, even when that asterisk is hidden from assistive technology. A
+      // menu toggle with a proxy select is required when that select is.
       required: el.getAttribute("aria-required") === "true" ||
-        !!(proxy && (proxy.required || proxy.getAttribute("aria-required") === "true")),
+        !!(proxy && (proxy.required || proxy.getAttribute("aria-required") === "true")) ||
+        (!proxy && menuButton && (/\brequired\s*$/i.test(el.getAttribute("aria-label") || "") ||
+          Array.from(el.labels || []).some((l) => /[*\u2731\uff0a]\s*$/.test((l.textContent || "").trim())))),
       disabled: el.getAttribute("aria-disabled") === "true",
       visible: visible(el),
       label_visible: false,

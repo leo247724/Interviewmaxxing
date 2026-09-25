@@ -101,6 +101,50 @@ required flag and option `value`/`label` pairs, and each job's flags (such as
 | `iframe-embed` | Partnerships Manager (BWA-GH-141) | An employer careers page with "Role overview" and "Application" tabs. Page script injects the Greenhouse-style `iframe#grnhse_iframe` into the hidden Application panel 300 ms after load; the iframe shows the `standard` form from `/embed/job_app`. "Apply Now" and the Application tab only switch panels. |
 | `stepper-ambiguous` | Head of Paid Media (BWA-JZ-132) | JazzHR-style: the form has no `<button>` at all. "Attach resume", "Paste resume" and "Submit Application" are `href="#"` anchors; "Submit Application" validates on the client, then submits the form by script. Cookie-consent buttons and a Share anchor sit outside the form. `?sections=2` splits the form into two client-side sections with Next, Save and Back anchors. |
 | `apply-in-alert-form` | Marketing Project Manager (BWA-DF-133) | Dayforce-style: the whole posting is one ASP.NET-style form whose Apply button posts to `/start`, beside a "Get job alerts" email field and a Subscribe button (`formaction` `/alerts`). Apply leads to "How would you like to apply?", whose "Apply without an Account" routes on the client (2.5 s, `history.pushState`) to the `CORE` form. `?nav=spa` has no forms and also routes on the client from the posting. A typed alert email is recorded as a job-alert subscription, never as an application. |
+| `workday-wizard` | Growth Marketing Manager (JR-BWA-201) | A Workday tenant, from `scripts/mock_workday.py` (see **Workday wizard** below). The posting's Apply opens a "Start Your Application" popup; "Apply Manually" leads to the Create Account / Sign In step until the user signs in; then one document runs My Information, My Experience, Application Questions, Voluntary Disclosures, Self Identify and Review. Only "Submit" records an application. |
+
+### Workday wizard
+
+`workday-wizard` reproduces the Workday candidate site as observed read-only on four live
+tenants on 2026-09-24 up to the account step, and Workday's conventions behind it (not
+observable without an account). Every route lives under `/jobs/workday-wizard`.
+
+| Path | Result |
+| --- | --- |
+| `GET /jobs/workday-wizard` | The posting: `h2[data-automation-id=jobPostingHeader]`, a `role=alert` "… page is loaded" announcement, the job details list ("job requisition id JR-BWA-201"), JSON-LD `JobPosting` and Apply = `a[role=button][data-automation-id=adventureButton]` to `…/apply`. Header buttons "English", "Sign In" and "Search for Jobs". |
+| posting Apply, clicked | A `wd-popup-glass` with a `role=dialog` "Start Your Application" popup in the page (the URL stays, `#root` turns `aria-hidden`): a Close button and three `a[role=button]` routes, `autofillWithResume`, `applyManually`, `useMyLastApplication`. |
+| `GET …/apply` | The same three routes on a page of their own, `div[data-automation-id=applyAdventurePage]` with h2 "Start Your Application" (the live site's response to that URL). |
+| `GET …/apply/<route>` | Records a route visit. Signed out: the account step. Signed in: the wizard (`applyManually`) or a placeholder (other routes). |
+| account step | The progress list `ol[data-automation-id=progressBar]` (each `li` labelled "current step 1 of 7", "step 2 of 7" …), `h2[data-automation-id=jobTitleHeading]`, `h3#authViewTitle` "Create Account", the password rules, a `form[data-automation-id=signInFormo]` (Email Address, Password, Verify New Password, the privacy-notice checkbox `createAccountCheckbox`, a `click_filter` `div[role=button]` over a hidden `aria-hidden` submit), "Already have an account? Sign In" (`signInLink`, to `?view=signin`), "Forgot your password?" and the zero-height honeypot `input[data-automation-id=beecatcher][name=website]` labelled "Enter website. This input is for robots only, do not enter if you're human." The sign-in view has Email Address and Password. |
+| `POST …/account` | `mode=create` (email, password, `verifyPassword`, `createAccountCheckbox`) or `mode=signin`; the fixture's credentials (`/__test__/jobs` `signin`) or an account created here. Errors re-render the step (422). Success sets the `bwa_wd_session` cookie (HttpOnly, one day, so a persistent browser profile keeps it) and redirects to `…/apply/applyManually`. |
+| wizard | One document (the URL never changes; JSON-LD kept) whose script renders a page per step: My Information (a search-on-Enter multi-select prompt "How Did You Hear About Us?", a Yes/No radio, `button[aria-haspopup=listbox]` dropdowns Country, State and Phone Device Type, text fields, a single-select Country Phone Code prompt prefilled with "United States of America (+1)", Phone Number and Phone Extension), My Experience (a Work Experience "Add" button, the résumé drop zone and LinkedIn), Application Questions (three dropdowns), Voluntary Disclosures (three dropdowns and a consent checkbox), Self Identify (Name, a Month / Day / Year spinbutton date, a one-box-only disability checkbox group) and Review (answers by section, "Submit"). Footer buttons "Back" and "Save and Continue" (`pageFooterNextButton`; `pageFooterSubmitButton` "Submit" on Review). A `role=alert` announces "<page> page is loaded". |
+| `POST …/wizard/save` | JSON `{page, values}` from the page script. Server checks: required answers, listed option values, a phone number without its country code ("+1 …" is refused) of 10 digits, a real `MM/DD/YYYY` date, one disability box. 422 `{errors}` (recorded as a rejection, never counted): the page shows an alert banner "Errors Found (n)" and, per field, an "Error: …" message the control is described by with `aria-invalid=true`. 200: the page is stored in the account's draft and the next page shows. |
+| `POST …/wizard/upload` | Multipart `file` (.pdf, .doc, .docx), sent on attach; the uploader then empties its input and shows the file's name and "Delete". |
+| `POST …/wizard/submit` | The only request that records (and counts) an application, and only when every page is saved and valid; otherwise 422. `GET …/wizard/submitted?ref=` shows the confirmation. |
+
+Widgets keep their answers in page state (`window.__wdState`) and mirror the live site.
+Dropdowns: `button[type=button][aria-haspopup=listbox][aria-label="<label> <shown> Required"]`
+(no `aria-expanded`/`aria-required` while closed) with a zero-size text input beside it;
+opened, `aria-expanded=true` and `aria-controls` name a body-portal
+`ul[role=listbox][tabindex=-1]` whose id is a new short token each time, focus moves into
+it, the first option is `li#select-one[role=option][aria-disabled=true][data-value=""]`
+"Select One", the others `li[role=option][id=<value>][data-value=<value>]` (opaque values
+such as `wd_country_1`); a click, Escape or an outside press closes it. Prompts ("How Did
+You Hear About Us?" multi-select, "Country Phone Code" single-select, prefilled "United
+States of America (+1)"): the search box has no role, `aria-haspopup`, `aria-controls` or
+`aria-expanded`, has `enterkeyhint=search` and is described by a hidden "N items selected[,
+labels]" ("Expanded" while open; the single-select one says "Minimized" once closed); a
+click opens a body-portal `div[role=listbox][aria-label="Options Expanded"]` of
+`div[role=option][aria-label="<label> not checked"|"<label> checked"]` rows (categories
+with a chevron, or a flat list with a radio per row for the single-select prompt); typed
+words are searched on Enter (leaves whose words all begin with the typed words, after
+300 ms); a click on a multi-select row toggles it and keeps the list open, on a
+single-select row replaces the item and closes the list; Escape does nothing, an outside
+press closes it. Chosen items are `ul[role=listbox][aria-label="items selected"] >
+li[role=presentation] > div[role=option][aria-label="<label>, press delete to clear
+value."]` with an aria-hidden delete charm (a click removes the item) and
+`p[data-automation-label]`. Date segments accept digits only and move to the next segment
+after two (month, day) digits; "/" moves on too.
 
 ### Static pages
 
@@ -353,6 +397,7 @@ must reconcile through the public pages. The pages never link to these endpoints
 | --- | --- |
 | `GET /__test__/health` | `{"ok": true, "origin", "state_dir"}` |
 | `GET /__test__/jobs` | Scenario catalog and sign-in credentials |
+| `GET /__test__/workday` | `workday-wizard`: route visits, saves (page, ok, errors, values), submit calls, uploads, accounts and drafts by account email |
 | `GET /__test__/submissions[?job_id=<job>]` | `{"accepted_count", "rejected_count", "submissions": [...], "rejections": [...], "alert_count", "alerts": [{"job_id", "email", "received_at"}]}` |
 | `GET /__test__/submissions/<submission_id>` | One submission record |
 | `POST /__test__/submissions/<submission_id>/reveal` | Makes a withheld confirmation visible on later page visits |
