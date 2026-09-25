@@ -14,6 +14,7 @@ is submitted.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import shutil
@@ -24,17 +25,29 @@ from typing import Any
 import pytest
 
 from interviewmaxxing_browser import PlaywrightSessionFactory
+from interviewmaxxing_browser.ai import AIFormRouter, BoundedDecisions, CallBudget
+from interviewmaxxing_browser.ai.routing import DynamicPacketResolver
 from interviewmaxxing_cli.runner import LocalApplicationRunner, NoninteractiveInteraction
 from interviewmaxxing_core import (
+    AnswerSource,
+    Application,
     ApplicationForm,
     ApplicationState,
     ApplicationStore,
+    BooleanValue,
     BrowserOptions,
+    CandidateProfile,
     ControlType,
     FieldFillStatus,
+    JobRecord,
     LocalPaths,
+    MissingReason,
+    PacketContext,
     SemanticType,
+    TextValue,
 )
+from interviewmaxxing_selection.credentials import ApiKey
+from interviewmaxxing_selection.jev import HttpResponse, JevClient
 
 REPO = Path(__file__).resolve().parents[2]
 RESUME_PATH = REPO / "tests" / "fixtures" / "browser" / "resume_avery_quill.pdf"
@@ -316,6 +329,8 @@ def test_the_runner_prepares_paylocity_when_its_address_menu_was_never_probed(
 # --- 2. Paylocity's work-history dates from the profile's most recent role ----------------
 
 WORK = "/jobs/paylocity-work-history/apply"
+START, END, BOX = ("txt-workHistory-startDate-0", "txt-workHistory-endDate-0",
+                   "workHistory.currentlyWorkingHere.0")
 WORK_STATE = """() => ({
   company: document.querySelector('[name="workHistory.companyName.0"]').value,
   position: document.querySelector('[name="workHistory.position.0"]').value,
@@ -336,6 +351,10 @@ def _write_work_profile(paths: LocalPaths, *, current: bool) -> None:
     directory = paths.profile_dir / "default"
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(RESUME_PATH, directory / "resume.pdf")
+    (directory / "profile.json").write_text(json.dumps(_work_profile(current=current), indent=2))
+
+
+def _work_profile(*, current: bool) -> dict[str, Any]:
     latest = {"id": "exp.latest", "company": "Brambleway Media", "title": "Paid Media Lead", "start": "2021-03",
               "current": current, "fact_ids": ["fact.latest"]}
     if not current:
@@ -355,7 +374,7 @@ def _write_work_profile(paths: LocalPaths, *, current: bool) -> None:
         ],
         "saved_answers": [],
     }
-    (directory / "profile.json").write_text(json.dumps(profile, indent=2))
+    return profile
 
 
 @pytest.mark.parametrize(("current", "expected"), [
@@ -371,3 +390,105 @@ def test_the_runner_writes_the_most_recent_roles_dates(
     _write_work_profile(isolated_imx_home, current=current)
     _, state = _prepare(kit, isolated_imx_home, server.url(WORK), WORK_STATE)
     assert state == {"company": "Brambleway Media", "position": "Paid Media Lead", **expected}, state
+
+
+# --- 2. live route decisions: Jev reads a work-history entry as the applicant's past ---------
+
+class HistoryJev:
+    """Routes every field COPY_KNOWN as literal text, with the source scope live Paylocity
+    got: the applicant's past (HISTORICAL_OR_CONTEXTUAL) for the entry's questions, split
+    0.84 / 0.14 with the applicant's present at confidence 0.80 for "I currently work
+    here", ``other`` for questions named in it, the present for the rest."""
+
+    def __init__(self, other: tuple[str, ...] = ()) -> None:
+        self.other = other
+
+    def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+        request = json.loads(body)
+        fields = request["state"].get("fields", {})
+        answers: dict[str, Any] = {}
+        for name, question in request["questions"].items():
+            criteria = list(question["criteria"])
+            wording = fields.get(f"f{name[1:]}", {}).get("question", "")
+            confidence, probabilities = 1.0, {}
+            if name[0] == "u" and name[1:].isdigit():
+                if any(label in wording for label in self.other):
+                    probabilities = {"OTHER_PERSON_OR_ENTITY": 1.0}
+                elif "currently work here" in wording:
+                    confidence = 0.80
+                    probabilities = {"HISTORICAL_OR_CONTEXTUAL": 0.84, "APPLICANT_CURRENT": 0.14,
+                                     "EXPLICIT_ANSWER": 0.02}
+                elif wording.startswith(("Company Name", "Position", "Start Date", "End Date")):
+                    probabilities = {"HISTORICAL_OR_CONTEXTUAL": 1.0}
+                else:
+                    probabilities = {"APPLICANT_CURRENT": 1.0}
+            else:
+                choice = {"r": "COPY_KNOWN", "n": "literal", "s": "CUSTOM_TEXT",
+                          "d": "APPLICATION_ATTACHMENT"}.get(name[0], "NONE")
+                probabilities = {choice: 1.0}
+            probabilities = {key: probabilities.get(key, 0.0) for key in criteria}
+            choice = max(probabilities, key=probabilities.__getitem__)
+            answers[name] = {"type": "choice", "choice": choice, "confidence": confidence,
+                             "probabilities": probabilities}
+        return HttpResponse(200, {}, json.dumps({"model": "typesafe/jev-1.13-20260917",
+                                                 "answers": answers, "usage": {"cost": 0.0001}}).encode())
+
+
+def _with_roles(candidate: CandidateProfile, *, current: bool) -> CandidateProfile:
+    """The fixture candidate with the work profile's facts and roles."""
+    work = _work_profile(current=current)
+    return CandidateProfile.model_validate(
+        candidate.model_dump(mode="json") | {"facts": work["facts"], "experience": work["experience"]})
+
+
+def _routed(form: ApplicationForm, candidate: CandidateProfile, job: JobRecord,
+            jev: HistoryJev) -> tuple[Any, DynamicPacketResolver]:
+    decisions = BoundedDecisions(JevClient(ApiKey("synthetic-key", source="test"), transport=jev,
+                                           max_attempts=1), CallBudget())
+    resolver = DynamicPacketResolver(decisions, router=AIFormRouter(decisions))
+    app = Application(id="app-history-test", request_id="request-history-test", job_id=job.id,
+                      candidate_id=candidate.id, state=ApplicationState.INSPECTING, version=2,
+                      created_at="2026-09-25T00:00:00Z", updated_at="2026-09-25T00:00:00Z")
+    context = PacketContext(application=app, job=job, form=form, candidate=candidate)
+    packet = asyncio.run(resolver.resolve(context))
+    assert context.problems(packet) == []
+    return packet, resolver
+
+
+@pytest.mark.parametrize("current", [True, False], ids=["current-role", "ended-role"])
+def test_the_route_gate_admits_the_roles_dates_as_the_applicants_past(
+    current: bool, kit: SimpleNamespace, server: Any, options: BrowserOptions,
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    (form,) = kit.run(_forms(options, server.url(WORK)))
+    candidate = _with_roles(fictional_candidate, current=current)
+    packet, resolver = _routed(form, candidate, mock_job, HistoryJev())
+    answers = {a.field_id: a for a in packet.answers}
+    assert answers[START].value == TextValue(text="03/2021")
+    assert answers[BOX].value == BooleanValue(checked=current)
+    for field_id in (START, BOX):
+        assert answers[field_id].provenance.source is AnswerSource.CANDIDATE_FACT
+        assert answers[field_id].provenance.reference_ids == ["fact.latest"]
+    approved = {t["field_id"] for t in resolver.narrative_traces if t["stage"] == "work_history"}
+    if current:
+        # The end date stays blank, not routed or asked: the box is checked instead.
+        assert END not in answers and approved == {START, BOX}
+        (blank,) = [m for m in packet.missing_inputs if m.field_id == END]
+        assert blank.required is False and "currently work here" in blank.prompt
+        assert not [t for t in resolver.narrative_traces if t.get("field_id") == END]
+    else:
+        assert answers[END].value == TextValue(text="08/2025") and approved == {START, END, BOX}
+    assert not [m for m in packet.missing_inputs if m.field_id in (START, BOX) or (m.field_id == END and m.required)]
+
+
+def test_the_route_gate_never_admits_another_persons_dates(
+    kit: SimpleNamespace, server: Any, options: BrowserOptions,
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    (form,) = kit.run(_forms(options, server.url(WORK)))
+    candidate = _with_roles(fictional_candidate, current=False)
+    packet, resolver = _routed(form, candidate, mock_job, HistoryJev(other=("Start Date",)))
+    assert START not in {a.field_id for a in packet.answers}
+    (held,) = [m for m in packet.missing_inputs if m.field_id == START]
+    assert held.required and held.reason is MissingReason.NO_ANSWER
+    assert {t["field_id"] for t in resolver.narrative_traces if t["stage"] == "work_history"} == {END, BOX}

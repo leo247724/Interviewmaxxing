@@ -84,6 +84,7 @@ from interviewmaxxing_generation.values import (
     us_states_named,
     usable_options,
 )
+from interviewmaxxing_generation.work_history import work_history_value
 from interviewmaxxing_selection.jev import (
     ChoiceAnswer,
     ChoiceQuestion,
@@ -1466,7 +1467,11 @@ class DynamicPacketResolver:
                                                  if decision.route is FieldRoute.WRITER))
         packet, held = await self._map_stored_answers(context, packet, report)
         packet, blank = self._conditional_follow_ups(context, packet, report)
-        held = held | blank
+        # A required question the factual packet leaves blank on purpose (a non-blocking
+        # missing input: the end date of the role the person still holds) is not routed.
+        kept_blank = {m.field_id for m in packet.missing_inputs
+                      if m.field_id is not None and not m.required and context.form.field(m.field_id).required}
+        held = held | blank | kept_blank
         answers: list[PacketAnswer] = []
         missing = list(packet.missing_inputs)
         copy_scope_attempted: set[str] = set()
@@ -1533,7 +1538,15 @@ class DynamicPacketResolver:
         # checks, not by the source scope (a relocation question may read as a preference).
         relocation = (not allowed and answer.provenance.source is AnswerSource.PROFILE_IDENTITY
                       and self._is_relocation_place(fld, gate))
-        allowed = allowed or relocation
+        # A work-history entry's date or box from the profile's own role (round 14): its
+        # source is the applicant's past, which the profile copy never covers.
+        history = (not allowed and answer.provenance.source is AnswerSource.CANDIDATE_FACT
+                   and self._own_work_history(context, fld, gate, answer))
+        if history:
+            self._trace({"stage": "work_history", "field_id": fld.id, "field_fingerprint": fld.fingerprint,
+                         "source_scope": gate.source_scope.value,
+                         "reference_ids": list(answer.provenance.reference_ids), "status": "APPROVED"})
+        allowed = allowed or relocation or history
         if (not allowed and answer.provenance.source is AnswerSource.PROFILE_IDENTITY
                 and gate.route is not FieldRoute.UNSUPPORTED
                 and self._profile_link_kind(fld) is not None
@@ -1562,7 +1575,7 @@ class DynamicPacketResolver:
                 held_reason = str(exc)
         if allowed:
             confidence = (answer.confidence if explicit
-                          else min(answer.confidence, _route_confidence(gate)) if relocation
+                          else min(answer.confidence, _route_confidence(gate)) if relocation or history
                           else min(answer.confidence,
                                    self._gate_confidence(gate, source_approval=clarified_scope)))
             if approved and gate.autofill:
@@ -1574,6 +1587,26 @@ class DynamicPacketResolver:
             return None, MissingInput.for_field(context.form, fld,
                 reason=MissingReason.NO_ANSWER, prompt=held_reason), attempted
         return None, None, attempted
+
+    @staticmethod
+    def _own_work_history(context: PacketContext, field: ApplicationField, gate: FieldRouteDecision,
+                          answer: PacketAnswer) -> bool:
+        """Round 14 (WP1): a work-history entry's date or "currently work here" box answered
+        from the profile's own role (``work_history_value``: exactly that answer, citing that
+        role's verified facts). Jev reads such a question as the applicant's past
+        (``HISTORICAL_OR_CONTEXTUAL``, so the profile copy is not allowed), and the role is
+        that past: a sure ``COPY_KNOWN`` route whose source is the applicant's own, current or
+        historical, admits it; another person's or an explicit answer never does."""
+        derived = work_history_value(context.candidate, field)
+        own = (gate.source_scope_probabilities.get(SourceScope.APPLICANT_CURRENT.value, 0.0)
+               + gate.source_scope_probabilities.get(SourceScope.HISTORICAL_OR_CONTEXTUAL.value, 0.0))
+        return (derived is not None and derived[0] == answer.value
+                and list(derived[1]) == list(answer.provenance.reference_ids)
+                and gate.route is FieldRoute.COPY_KNOWN
+                and (gate.confidence or 0.0) >= MIN_CONFIDENCE
+                and gate.probabilities.get(FieldRoute.COPY_KNOWN.value, 0.0) >= MIN_PROBABILITY
+                and gate.source_scope in (SourceScope.APPLICANT_CURRENT, SourceScope.HISTORICAL_OR_CONTEXTUAL)
+                and own >= MIN_PROBABILITY)
 
     @staticmethod
     def _profile_link_kind(field: ApplicationField) -> str | None:

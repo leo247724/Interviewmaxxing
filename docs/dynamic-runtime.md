@@ -503,8 +503,14 @@ are solved through 2Captcha behind a flag (see "CAPTCHAs").
   question states (`MM/YYYY`, `YYYY-MM`, a month input), and every answer cites the role's
   verified facts (`interviewmaxxing_generation.work_history`). For a role the person still
   holds, the box is checked and the end date is left blank, which is not asked of the
-  person. "I currently work here" is a yes/no question (`CUSTOM_BOOLEAN`), not an
-  attestation. Mock `paylocity-work-history`.
+  person (a non-blocking missing input that routing leaves alone). "I currently work here"
+  is a yes/no question (`CUSTOM_BOOLEAN`), not an attestation. In routed runs Jev reads
+  these questions as the applicant's past (`HISTORICAL_OR_CONTEXTUAL`, live: 1.0 for the
+  dates, 0.84 with 0.14 current for the box), for which the profile copy is never allowed,
+  so the route gate held every such answer. It now admits exactly this derivation when the
+  route is a sure `COPY_KNOWN` and the source is the applicant's own, current or historical
+  together at 0.95 or more (`_own_work_history`, traced as `work_history`); another
+  person's dates never pass. Mock `paylocity-work-history`.
 - **Checkbox and radio groups drawn as ARIA widgets** (Greenhouse's job board, Radix-style):
   every option is a `button[role=checkbox|radio][aria-checked]` named by a `<label for>`,
   beside an `aria-hidden`, invisible native "bubble" input that carries the name and value.
