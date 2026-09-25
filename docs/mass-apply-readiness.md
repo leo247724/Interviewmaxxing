@@ -368,6 +368,16 @@ person's professional stories chunked into a `story` kind in pgvector, retrieval
 and narrative answers, Opus 5.5 at high effort, a no-AI-slop rewrite that must re-pass grounding).
 LinkedIn Easy Apply is out of scope for good.
 
+**Stories in the RAG (WP12, merged a966528).** The person's four professional stories are indexed
+as a `story` kind (15 chunks, 39 story-provenance facts merged into the profile); narrative fields
+retrieve story chunks with the facts, the writer runs at high effort, and a no-AI-slop rewrite
+must re-pass grounding. The first live rerun proved the grounding guard: every story-backed
+narrative was held by the independent review because the extraction had stamped all story facts
+with the year 2026 while the resume dates the same role Mar 2024 – May 2025. Round 2 makes facts
+carry only stated or resume-linked dates and re-indexes; it also writes "what interests you about
+us" questions as cover-letter narratives (today skipped as personal preferences) and derives
+years-of-experience facts from the resume timeline.
+
 ## Bottlenecks to debug next (ordered by jobs affected)
 
 1. **Sign-in-gated backends need the user's Chrome.** LinkedIn Easy Apply (78),
