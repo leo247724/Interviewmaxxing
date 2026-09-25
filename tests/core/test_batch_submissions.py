@@ -32,8 +32,10 @@ from interviewmaxxing_cli.batch import (
     classify_submission,
     read_ledger,
     read_ledger_lines,
+    read_submission_lines,
     read_submissions,
     render_report_markdown,
+    render_submissions_markdown,
     run_submissions,
 )
 from interviewmaxxing_cli.main import EXIT_BLOCKED, EXIT_INCOMPLETE, EXIT_OK, EXIT_UNCERTAIN, main
@@ -315,6 +317,9 @@ def test_each_submission_is_recorded_from_the_store(paths, fake, tmp_path):
         assert line["env"]["IMX_STATE_DB"] == str(paths.state_db)
     ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
     assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+    workers = paths.home / "browser-workers"  # created by this run, owner-only at every level
+    for directory in (workers, *workers.iterdir()):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
     assert [e.application_id for e in read_submissions(ledger)] == [e.application_id for e in seen]
     assert len(read_ledger(ledger)) == len(kinds)  # the prepare lines, unchanged
     # Submission lines are not unreadable prepare lines.
@@ -448,3 +453,24 @@ def test_a_retry_leaves_approved_applications_to_submit_approved(paths):
     assert plan.stats.skipped == {"approved (left to submit-approved)": 1}
     assert [t.application_id for t in approved_targets(paths, "default", source_batch="b1")] == [
         approved]
+
+
+def test_unreadable_submission_lines_are_counted_and_shown(paths, fake, tmp_path):
+    ids = _approved_batch(paths, ["one"])
+    _plan(tmp_path, {ids["one"]: "changed"})
+    ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
+    with ledger.open("a") as fh:  # a hand edit and a truncated write
+        fh.write(json.dumps({"kind": "submission", "batch_id": "b1", "application_id": "app_x"}) + "\n")
+        fh.write('{"kind": "submission", "batch_i\n')
+
+    summary = asyncio.run(run_submissions(_options(paths, fake), approved_targets(
+        paths, "default", source_batch="b1"), source_batch="b1"))
+
+    assert read_submission_lines(ledger)[1] == 1  # the submission line that is not readable
+    assert read_ledger_lines(ledger)[1] == 1  # the line that is not JSON at all
+    assert summary.ledger_lines_ignored == 1
+    assert "- unreadable submission lines ignored: 1" in render_submissions_markdown(summary)
+    report = build_report(paths, ["b1"])
+    assert report.submissions is not None and report.submissions.lines_ignored == 1
+    assert report.ledger_lines_ignored == 1
+    assert "Unreadable submission lines ignored: 1." in render_report_markdown(report)

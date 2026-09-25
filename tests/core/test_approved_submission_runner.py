@@ -24,6 +24,7 @@ from interviewmaxxing_cli.runner import (
     RunLimits,
     create_submission_runner,
     field_record,
+    redact_detail,
 )
 from interviewmaxxing_core import (
     AnswerSource,
@@ -109,6 +110,10 @@ class Site:
     showing_errors: dict[str, str] = field(default_factory=dict)
     after_user: list[ApplicationField] | None = None
     """The current step's questions once the user acted in the browser."""
+    resume_at: int | None = None
+    """The step the site opens at (a kept draft); the first one when None."""
+    fill_detail: dict[str, str] = field(default_factory=dict)
+    """Field id -> the detail a fill result reports for it."""
     options: list[BrowserOptions] = field(default_factory=list)
 
     def form(self, step: int) -> ApplicationForm:
@@ -137,7 +142,7 @@ class FakeBrowser:
         self.site.runs += 1
         self.site.showing_errors = {}
         self.site.calls.append("open")
-        self.step = 0
+        self.step = self.site.resume_at or 0
         return self._page()
 
     async def inspect(self) -> PageInspection:
@@ -155,7 +160,8 @@ class FakeBrowser:
         self.filled[form.step] = packet
         return FillResult(form_step=form.step, fields=[
             FieldFillResult(field_id=a.field_id,
-                            status=self.site.fill_status.get(a.field_id, FieldFillStatus.FILLED))
+                            status=self.site.fill_status.get(a.field_id, FieldFillStatus.FILLED),
+                            detail=self.site.fill_detail.get(a.field_id))
             for a in packet.answers])
 
     async def advance(self) -> NavigationResult:
@@ -680,3 +686,72 @@ def test_an_older_preparation_is_compared_by_its_packet_s_form(isolated_imx_home
     else:
         assert result.state is S.SUBMITTED, result.message
         assert [p.id for _, p in site.fills] == [packet_id]
+
+
+# --- review fixes: the whole attempt, redacted details ----------------------------------------
+
+
+@pytest.mark.parametrize("site_resumes", [False, True])
+def test_pages_filled_before_a_question_stop_are_pinned_and_checked(
+    isolated_imx_home, candidates, site_resumes
+):
+    """Page 1 is filled by a run that stops for a question on page 2; the next run carries
+    on in the site's draft at page 2. The preparation pins page 1 with its questions, and
+    a submission run fills every pinned page itself before it submits: a site that skips
+    page 1 is not submitted."""
+    motivation = _text("motivation", "Why this role?", SemanticType.CUSTOM_TEXT)
+    site = Site(steps=[_contact()[:3], [motivation], []])  # contact, a question, the review page
+    first = asyncio.run(_runner(isolated_imx_home, candidates, site,
+                                prepare_only=True).apply(URL, candidate_id="c1"))
+    assert first.state is S.NEEDS_INPUT and [m.field_id for m in first.missing_inputs] == ["motivation"]
+    app_id = first.application_id
+    [stop] = [e for e in _events(isolated_imx_home, app_id) if e.to_state is S.NEEDS_INPUT]
+    page_one = stop.metadata["steps"][0]
+    assert page_one["form_step"] == 0 and page_one["fields"] == [field_record(f) for f in site.steps[0]]
+
+    site.resume_at = 1
+    second = asyncio.run(_runner(isolated_imx_home, candidates, site, prepare_only=True,
+                                 interaction=Answering("Forecasting is my field.")).resume(app_id))
+    assert second.state is S.NEEDS_INPUT and "Prepared to the final review step" in second.message
+    [ready] = [e for e in _events(isolated_imx_home, app_id) if e.event == "preparation.ready"]
+    assert [s["form_step"] for s in ready.metadata["steps"]] == [0, 1, 2]
+    assert ready.metadata["steps"][0] == {**page_one, "final": False}
+    _approve(isolated_imx_home, app_id)
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        approval = store.submission_approval(app_id)
+    assert approval is not None and approval.steps[0].packet_id == page_one["packet_id"]
+    site.resume_at = 1 if site_resumes else None
+    site.fills.clear()
+    site.calls.clear()
+
+    result, _ = _submit(isolated_imx_home, candidates, site, app_id)
+
+    if site_resumes:
+        assert result.state is S.NEEDS_INPUT and result.message.startswith(MISMATCH_MESSAGE)
+        assert "the site did not show step 1, so its approved answers could not be checked" in result.message
+        assert "submit" not in site.calls
+    else:
+        assert result.state is S.SUBMITTED, result.message
+        assert [(step, p.id) for step, p in site.fills] == [
+            (s.form_step, s.packet_id) for s in approval.steps]
+
+
+def test_values_read_back_from_the_page_are_redacted(isolated_imx_home, candidates):
+    site = Site(steps=[_contact()])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    _approve(isolated_imx_home, app_id)
+    site.fill_status = {"email": FieldFillStatus.VERIFICATION_MISMATCH}
+    site.fill_detail = {"email": "reads back 'someone@example.test', not avery@example.test "
+                                 "(+1 (555) 010-0199)"}
+
+    result, _ = _submit(isolated_imx_home, candidates, site, app_id)
+
+    [withdrawn] = [e for e in _events(isolated_imx_home, app_id)
+                   if e.event == "application.approval_invalidated"]
+    for text in (result.message, *withdrawn.metadata["details"]):
+        assert "example.test" not in text and "0199" not in text and "555" not in text
+    assert ("the approved answer to 'Email' does not read back (reads back '…', not …@… (…))"
+            in withdrawn.metadata["details"])
+    assert redact_detail("typed avery@example.test, +1 (555) 010-0199 on 2026-09-24") == (
+        "typed …@…, … on …")
+    assert redact_detail("option not found") == "option not found"

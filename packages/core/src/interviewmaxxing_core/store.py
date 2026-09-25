@@ -97,6 +97,9 @@ AUTHORIZED_EVENT = "application.submission_authorized"
 APPROVAL_INVALIDATED_EVENT = "application.approval_invalidated"
 _RUN_STATES = frozenset({S.INSPECTING, S.PACKET_READY, S.FILLING})
 """States a run passes through between two stops."""
+_ATTEMPT_STARTS = frozenset({S.REQUESTED, S.FAILED_RETRYABLE, S.FAILED_PERMANENT, S.DUPLICATE})
+"""Transitions after which a form is filled from its first page again. A question stop
+(NEEDS_INPUT) is not one: the resumed run carries on in the draft the site kept."""
 
 _PREPARATION_TRIGGER = """
 CREATE TRIGGER IF NOT EXISTS preparation_blocks_submission
@@ -1190,44 +1193,55 @@ class ApplicationStore:
 
     def _prepared_steps(self, c: sqlite3.Connection, application_id: str,
                         prepared: sqlite3.Row) -> list[ApprovedStep]:
-        """Each step's packet of the preparing run: the ``steps`` the runner recorded
-        with ``preparation.ready``, else (older preparations) the latest packet saved per
-        step after the previous stop. The final step always takes the prepared packet."""
+        """Each step's packet of the preparing attempt: the latest packet saved per step
+        since the last request, failure or DUPLICATE transition (through question stops,
+        whose pages stay in the site's draft), overridden by the ``steps`` the runner
+        recorded with ``preparation.ready``. The final step always takes the prepared
+        packet."""
         meta = self._meta(prepared)
+        start = c.execute(
+            "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE application_id = ?"
+            f" AND seq < ? AND to_state IN ({', '.join('?' for _ in _ATTEMPT_STARTS)})",
+            (application_id, prepared["seq"], *(s.value for s in sorted(_ATTEMPT_STARTS))),
+        ).fetchone()["seq"]
         latest: dict[int, str] = {}
+        for r in c.execute(
+            "SELECT metadata FROM events WHERE application_id = ? AND event = 'packet.saved'"
+            " AND seq > ? AND seq < ? ORDER BY seq", (application_id, start, prepared["seq"]),
+        ):
+            saved = json.loads(r["metadata"])
+            if isinstance(saved.get("form_step"), int) and isinstance(saved.get("packet_id"), str):
+                latest[saved["form_step"]] = saved["packet_id"]
         recorded = meta.get("steps")
-        if isinstance(recorded, list) and recorded:
-            for item in recorded:
-                if (isinstance(item, dict) and isinstance(item.get("form_step"), int)
-                        and isinstance(item.get("packet_id"), str)):
-                    latest[item["form_step"]] = item["packet_id"]
-        else:
-            start = c.execute(
-                "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE application_id = ?"
-                " AND seq < ? AND to_state IS NOT NULL AND to_state NOT IN (?, ?, ?)",
-                (application_id, prepared["seq"], *(s.value for s in sorted(_RUN_STATES))),
-            ).fetchone()["seq"]
-            for r in c.execute(
-                "SELECT metadata FROM events WHERE application_id = ? AND event = 'packet.saved'"
-                " AND seq > ? AND seq < ? ORDER BY seq", (application_id, start, prepared["seq"]),
-            ):
-                saved = json.loads(r["metadata"])
-                if isinstance(saved.get("form_step"), int) and isinstance(saved.get("packet_id"), str):
-                    latest[saved["form_step"]] = saved["packet_id"]
+        for item in recorded if isinstance(recorded, list) else []:
+            if (isinstance(item, dict) and isinstance(item.get("form_step"), int)
+                    and isinstance(item.get("packet_id"), str)):
+                latest[item["form_step"]] = item["packet_id"]
         final_step, final_packet = meta.get("form_step"), meta.get("packet_id")
         if isinstance(final_step, int) and isinstance(final_packet, str):
             latest = {step: pid for step, pid in latest.items() if step < final_step}
             latest[final_step] = final_packet
         return [ApprovedStep(form_step=step, packet_id=pid) for step, pid in sorted(latest.items())]
 
+    @staticmethod
+    def _answered_since(c: sqlite3.Connection, application_id: str, seq: int) -> bool:
+        """The user saved answers (``input.received``) after event ``seq``."""
+        return c.execute(
+            "SELECT 1 FROM events WHERE application_id = ? AND event = 'input.received'"
+            " AND seq > ? LIMIT 1", (application_id, seq),
+        ).fetchone() is not None
+
     def _approval_row(self, c: sqlite3.Connection, application_id: str) -> sqlite3.Row | None:
         """The latest ``application.approved`` event while it is valid: it approved the
-        latest ``preparation.ready`` and no ``application.approval_invalidated`` followed."""
+        latest ``preparation.ready``, no ``application.approval_invalidated`` followed, and
+        no answer was saved since that preparation (it is not in the approved packet)."""
         approved = self._latest_event(c, application_id, APPROVED_EVENT)
         if approved is None:
             return None
         prepared = self._latest_event(c, application_id, PREPARED_EVENT)
         if prepared is None or prepared["id"] != self._meta(approved).get("preparation_event_id"):
+            return None
+        if self._answered_since(c, application_id, prepared["seq"]):
             return None
         if c.execute(
             "SELECT 1 FROM events WHERE application_id = ? AND event = ? AND seq > ? LIMIT 1",
@@ -1268,7 +1282,8 @@ class ApplicationStore:
 
         Allowed only when the application is NEEDS_INPUT, stopped right after its latest
         ``preparation.ready`` (``prepared_packet``), ``packet_id`` is that preparation's
-        packet, and the packet of every prepared step exists and is complete. Anything
+        packet, no answer was saved since that preparation (a fresh preparation fills it
+        in), and the packet of every step of the preparing attempt exists and is complete. Anything
         else raises ``SubmissionBlocked``. Approving the approved packet again returns
         the existing approval. Approval alone never lifts the no-submit restriction."""
         approver = approver.strip()
@@ -1292,6 +1307,10 @@ class ApplicationStore:
                 raise SubmissionBlocked(
                     f"packet {packet_id} is not the prepared packet of {row['id']} "
                     f"({meta.get('packet_id')})")
+            if self._answered_since(c, row["id"], prepared["seq"]):
+                raise SubmissionBlocked(
+                    f"answers were saved for {row['id']} after it was prepared and are not in "
+                    "the prepared packet; prepare it again so they are filled in, then approve it")
             steps = self._prepared_steps(c, row["id"], prepared)
             for step in steps:
                 packet = self._stored_packet(c, step.packet_id)

@@ -32,8 +32,11 @@ interviewmaxxing batch-report BATCH_ID         # prepare totals plus a Submissio
 1. **Prepare.** A prepare-only run records the no-submit restriction
    (`application.preparation_only`) before it opens the browser, fills every step and
    stops at the final review step as `NEEDS_INPUT` with a `preparation.ready` event. That
-   event names the prepared packet and, for every step the run filled, the step's packet
-   and the questions it answered (`steps`, see [Events](#events)).
+   event names the prepared packet and, for every step of the attempt, the step's packet
+   and the questions it answered (`steps`, see [Events](#events)). The attempt runs back
+   through question stops to the last request, failure or DUPLICATE: a run resumed after
+   you answer may carry on in the draft the site kept, so the pages an earlier run filled
+   are pinned too (each question stop records the pages its run filled).
 2. **Review.** Check the filled form's evidence (`$IMX_HOME/artifacts/APP/`), the answers
    (`status APP --json`, the dashboard's review lane) and the event history.
 3. **Approve.** `approve APP` approves the packet of the preparation the application is
@@ -72,7 +75,10 @@ pinned resume and selected-job check), then for each form step:
 4. A value that does not read back (`VERIFICATION_MISMATCH`), a lookup whose approved value
    no longer commits (`NEEDS_CHOICE`), or an approved option the site now disables stops the
    run. A step that changes while filling is inspected and compared again.
-5. It advances with the same unambiguous-Next rules as preparation. On the final step it
+5. It advances with the same unambiguous-Next rules as preparation. Before the final
+   submit, every approved step must have been filled by this run: a site that goes straight
+   to a later page (a kept draft) is not submitted, because the earlier pages could not be
+   checked. On the final step it
    calls `begin_submission` with the approved packet id, clicks the final submit control
    once and records what the site shows (`record_submission_outcome`). These operations and
    the `is_final_step` checks are the same as for any submission.
@@ -108,9 +114,12 @@ future dashboard action call these operations (see `CONTRACTS.md` §7):
   stop after it), `packet_id` equal to its packet, and every prepared step's packet present
   and complete. Otherwise `SubmissionBlocked`. Approving the same packet again returns the
   existing approval.
-- An approval is valid while it names the latest `preparation.ready` and no
-  `application.approval_invalidated` followed it (`submission_approval`, `approved_packet`).
-  A new preparation invalidates it.
+- An approval is valid while it names the latest `preparation.ready`, no
+  `application.approval_invalidated` followed it and no answer was saved since that
+  preparation (`submission_approval`, `approved_packet`). A new preparation invalidates it.
+- An answer saved after the preparation (`input.received`) is not in the prepared packet,
+  so the application must be prepared again before it can be approved; an approval given
+  before the answer lapses. (The answered values are not pinned into an old packet.)
 - `authorize_submission(claim)` requires a pre-submission state and a valid approval.
 - A prepare-only run calls `require_preparation_only`, which records the restriction again
   on an authorized application, so a prepare-only run after an approval never submits.
@@ -128,7 +137,8 @@ future dashboard action call these operations (see `CONTRACTS.md` §7):
 | `preparation.ready` | runner (prepare-only run at the final review step) | `form_url`, `form_step`, `form_fingerprint`, `packet_id`, `submitted: false`, `browser_location`, `captcha_pending`, `steps: [{form_step, packet_id, form_url, form_fingerprint, final, fields: [{id, fingerprint, required, semantic_type, control_type, options, label}]}]` (`options` is a digest of the option values and labels, or null; `label` is the question's first line, at most 80 characters) |
 | `application.approved` | store (`approve_submission`) | `packet_id`, `approver` (`cli:<login>` from the CLI), `form_step`, `form_url`, `form_fingerprint`, `preparation_event_id`, `steps: [{form_step, packet_id}]`, `captcha_pending` |
 | `application.submission_authorized` | store (`authorize_submission`) | `packet_id`, `approval_event_id`, `approver` |
-| `application.approval_invalidated` | store (`invalidate_approval`, called by the runner) | `packet_id`, `approval_event_id`, `reason`, `details` (what differed, at most 20) |
+| `application.approval_invalidated` | store (`invalidate_approval`, called by the runner) | `packet_id`, `approval_event_id`, `reason`, `details` (what differed, at most 20; values read from the page are redacted by `runner.redact_detail`: quoted values, emails, digit runs) |
+| `application.needs_input` (a question stop of a prepare-only run) | store transition, runner metadata | `missing_inputs`, `reason`, and `steps` (the pages this run filled, as in `preparation.ready`) |
 | `application.submitting` → `application.submitted` / `application.submission_unknown` / … | store (`begin_submission`, `record_submission_outcome`) | `attempt_id`, `attempt_number`, `packet_id` (the approved packet); then the observation |
 
 A preparation recorded before this change has no `steps`. It can still be approved: the
@@ -172,6 +182,8 @@ application, at most `--slots` at a time, each slot with its own browser profile
 submission stopped by the timeout while submitting is `uncertain`, never `error`. Prepare
 lines and submission lines share the file without being mistaken for each other. Running the
 same ledger id again never launches an application it records as submitted or uncertain.
+Submission lines that cannot be read are counted (`ledger_lines_ignored` in the summary,
+`submissions.lines_ignored` in `batch-report`) and shown.
 `submission-summary.json` holds the run's summary (prepare-batch's `summary.json` is left
 alone). `prepare-batch --retry` never re-prepares an application that still has a valid
 approval (skipped as `approved (left to submit-approved)`), and its ledger reader does not
@@ -191,5 +203,7 @@ applications) and no longer says "nothing was submitted" once one was.
 - Questions that appear only after another answer is filled stop preparation already; the
   submission run stops the same way.
 - A multi-step site that keeps drafts gets a new draft from the submission run; the draft
-  the preparing run saved stays behind on the site.
+  the preparing run saved stays behind on the site. A site that resumes its draft at a later
+  page cannot be submitted through this path (the earlier pages cannot be checked); submit
+  it in the browser yourself.
 - The dashboard has no approve action yet; it is planned on top of `approve_submission`.

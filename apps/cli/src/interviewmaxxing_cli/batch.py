@@ -1547,19 +1547,30 @@ class SubmissionEntry(Contract):
     duration_s: float = Field(ge=0.0)
 
 
-def read_submissions(path: Path) -> list[SubmissionEntry]:
-    """Every submission line of a ledger, in file order (other lines are skipped)."""
+def read_submission_lines(path: Path) -> tuple[list[SubmissionEntry], int]:
+    """Every readable submission line of a ledger in file order, and the number of
+    submission lines (``kind: "submission"``) that could not be read (a hand edit, or a
+    line written by a newer version). Prepare lines are skipped; a line that is not JSON
+    at all is counted by ``read_ledger_lines``."""
     if not path.exists():
-        return []
+        return [], 0
     entries: list[SubmissionEntry] = []
+    ignored = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
             entries.append(SubmissionEntry.model_validate_json(line))
         except ValidationError:
-            continue
-    return entries
+            if _is_submission_line(line):
+                ignored += 1
+    return entries, ignored
+
+
+def read_submissions(path: Path) -> list[SubmissionEntry]:
+    """Every readable submission line of a ledger, in file order (``read_submission_lines``
+    without the count)."""
+    return read_submission_lines(path)[0]
 
 
 def _append_line(path: Path, data: dict[str, Any]) -> None:
@@ -1687,8 +1698,7 @@ async def _submit_one(options: SubmitBatchOptions, target: SubmissionTarget, *, 
             finished_at=finished_at, duration_s=max((finished_at - started_at).total_seconds(), 0.0),
             **extra)
 
-    browser_dir = options.worker_browser_dir(slot)
-    browser_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_dirs(options.worker_browser_dir(slot))
     try:
         proc = await asyncio.create_subprocess_exec(
             *options.submit_argv(target.application_id), env=options.submit_environment(slot),
@@ -1748,6 +1758,10 @@ class SubmissionSummary(Contract):
     application_ids: dict[str, list[str]] = Field(default_factory=dict)
     receipts: list[SubmissionReceiptRow] = Field(default_factory=list)
     ledger_path: str
+    ledger_lines_ignored: int = Field(default=0, ge=0)
+    """Submission lines of this ledger that could not be read (their applications look
+    unrecorded, so a rerun may launch them again; the store still refuses a second
+    submission)."""
 
 
 def latest_submissions(entries: Iterable[SubmissionEntry]) -> dict[str, SubmissionEntry]:
@@ -1760,7 +1774,8 @@ def latest_submissions(entries: Iterable[SubmissionEntry]) -> dict[str, Submissi
 def summarize_submissions(batch_id: str, entries: Sequence[SubmissionEntry], *,
                           source_batch_id: str | None, started_at: datetime,
                           finished_at: datetime, targets: int, launched: int,
-                          skipped_settled: int, ledger_path: Path) -> SubmissionSummary:
+                          skipped_settled: int, ledger_path: Path,
+                          ledger_lines_ignored: int = 0) -> SubmissionSummary:
     latest = latest_submissions(entries)
     totals: Counter[str] = Counter(e.outcome for e in latest.values())
     ids: dict[str, list[str]] = defaultdict(list)
@@ -1777,6 +1792,7 @@ def summarize_submissions(batch_id: str, entries: Sequence[SubmissionEntry], *,
                                        company=e.company, title=e.title)
                   for e in latest.values() if e.outcome == "submitted"],
         ledger_path=str(ledger_path),
+        ledger_lines_ignored=ledger_lines_ignored,
     )
 
 
@@ -1793,7 +1809,7 @@ async def run_submissions(options: SubmitBatchOptions, targets: Sequence[Submiss
     batch_dir = default_batch_dir(options.paths, options.batch_id)
     options.paths.ensure()
     ledger_path = batch_dir / LEDGER_NAME
-    history = read_submissions(ledger_path)
+    history, ignored = read_submission_lines(ledger_path)
     attempts: Counter[str] = Counter(e.application_id for e in history)
     settled = {e.application_id for e in latest_submissions(history).values()
                if e.outcome in ("submitted", "uncertain")}
@@ -1835,7 +1851,7 @@ async def run_submissions(options: SubmitBatchOptions, targets: Sequence[Submiss
     summary = summarize_submissions(
         options.batch_id, history, source_batch_id=source_batch, started_at=started_at,
         finished_at=_now(), targets=len({t.application_id for t in targets}), launched=launched,
-        skipped_settled=skipped, ledger_path=ledger_path)
+        skipped_settled=skipped, ledger_path=ledger_path, ledger_lines_ignored=ignored)
     path = batch_dir / SUBMISSION_SUMMARY_NAME
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1869,6 +1885,8 @@ def render_submissions_markdown(summary: SubmissionSummary) -> str:
         f"- approved applications selected{source}: {summary.targets}; submitted this run: "
         f"{summary.launched}; already settled in this ledger: {summary.skipped_settled}",
         "- only approved applications were submitted, each exactly as approved",
+        *([f"- unreadable submission lines ignored: {summary.ledger_lines_ignored}"]
+          if summary.ledger_lines_ignored else []),
         "",
         "| outcome | count |",
         "| --- | --- |",
@@ -1961,6 +1979,8 @@ class SubmissionReport(Contract):
     totals: dict[str, int] = Field(default_factory=dict)
     application_ids: dict[str, list[str]] = Field(default_factory=dict)
     receipts: list[SubmissionReceiptRow] = Field(default_factory=list)
+    lines_ignored: int = Field(default=0, ge=0)
+    """Submission lines that could not be read."""
 
 
 class BatchReport(Contract):
@@ -2286,9 +2306,12 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
     costed = list(costed_rows.values())
     total_cost = round(sum(e.provider_cost_usd or 0.0 for e in costed), 6) if costed else None
     prepared_rows = totals["prepared"]
+    submission_lines = {batch_id: read_submission_lines(root / batch_id / LEDGER_NAME)
+                        for batch_id in ids}
     submitted = latest_submissions(sorted(
-        (s for batch_id in ids for s in read_submissions(root / batch_id / LEDGER_NAME)),
+        (s for entries, _ in submission_lines.values() for s in entries),
         key=lambda s: s.finished_at))
+    submissions_ignored = sum(count for _, count in submission_lines.values())
     submission_totals: Counter[str] = Counter(s.outcome for s in submitted.values())
     submission_ids: dict[str, list[str]] = defaultdict(list)
     for sub in submitted.values():
@@ -2302,7 +2325,8 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
                                            confirmation_reference=e.confirmation_reference,
                                            company=e.company, title=e.title)
                       for e in submitted.values() if e.outcome == "submitted"],
-        ) if submitted else None,
+            lines_ignored=submissions_ignored,
+        ) if submitted or submissions_ignored else None,
         provider_cost_usd=total_cost,
         provider_calls=sum(e.provider_calls or 0 for e in costed),
         provider_cost_rows=len(costed),
@@ -2383,6 +2407,8 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
     lines.append(f"| **all** | {sum(report.totals.values())} |")
     if submissions is not None:
         lines += ["", "## Submissions", "",
+                  *([f"Unreadable submission lines ignored: {submissions.lines_ignored}.", ""]
+                    if submissions.lines_ignored else []),
                   f"Approved applications submitted with submit-approved: {submissions.applications} "
                   "(each once, at its latest submission).", "",
                   "| outcome | count |", "| --- | --- |"]
@@ -2498,6 +2524,7 @@ __all__ = [
     "read_inventory",
     "read_ledger",
     "read_ledger_lines",
+    "read_submission_lines",
     "read_submissions",
     "read_summary",
     "render_report_markdown",
