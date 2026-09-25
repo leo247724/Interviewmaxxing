@@ -188,6 +188,37 @@ def saved_answer_matches(answer: SavedAnswer, question: QuestionText) -> bool:
     return bool(saved_answer_phrases(answer) & question.keys)
 
 
+# --- motivation questions --------------------------------------------------------------
+
+_MOTIVATION_QUESTION = re.compile(
+    r"\b(?:what (?:interests|excites|draws|attracts|appeals to|brings) you"
+    r"|why (?:do|would|did|does) you (?:want|wish|like|choose|apply)"
+    r"|why are you (?:interested|applying|excited|drawn|a (?:good|great|strong) fit)"
+    r"|why (?:this|our|the) (?:company|role|position|team|job|opportunity|organi[sz]ation)"
+    r"|why us\b|why work (?:for|with|at|here)|why join"
+    r"|what motivates you|what about (?:this role|the role|our company|our team|us) "
+    r"|your interest in (?:this|the|our)|tell us why|what makes you (?:want|interested)"
+    r"|(?:good|great|strong|right) fit for (?:this|the|our)|why would you be a"
+    r"|reasons? (?:for|you're|you are) (?:applying|interested)"
+    r"|why [A-Z][\w&.'-]*[?!.]*$)", re.IGNORECASE)
+_EXPLICIT_PREFERENCE = re.compile(
+    r"\b(?:salary|salaries|compensation|pay|wage|rate|relocat\w*|availab\w*|start date|"
+    r"notice period|hours|travel|schedule|shift|remote|hybrid|on-?site|visa|sponsor\w*|"
+    r"authori[sz]\w*|citizen\w*|commut\w*|overtime|weekends?|earliest|when can you)\b",
+    re.IGNORECASE)
+
+
+def motivation_question(text: str | None) -> bool:
+    """Whether a question asks about the applicant's interest, motivation or fit ("Why do
+    you want to work here?", "What interests you about Acme?"): a cover-letter narrative
+    grounded in the job description and the candidate's own account. Questions about
+    salary, relocation, availability, hours, travel or work authorization are not."""
+    if not text:
+        return False
+    cleaned = " ".join(text.split())
+    return bool(_MOTIVATION_QUESTION.search(cleaned)) and not _EXPLICIT_PREFERENCE.search(cleaned)
+
+
 # --- factual questions ---------------------------------------------------------------
 
 _GENERIC_EXPERIENCE_QUALIFIERS = frozenset({"professional", "work", "total", "industry"})

@@ -452,6 +452,31 @@ class LocalCandidateStore:
             write_json_private(path, updated)
         return report.profile
 
+    def remove_facts(self, candidate_id: str, fact_ids: list[str]) -> CandidateProfile:
+        """Delete the facts with these ids under the profile lock (unknown ids are
+        ignored), dropping them from any experience or education group. For a fact that
+        an import replaced: a revoked fact stays as UNVERIFIED with ``upsert_facts``, a
+        removed one is gone. Identity, resume and saved answers remain intact."""
+        if any(not isinstance(fact_id, str) or not fact_id for fact_id in fact_ids):
+            raise TypeError("fact_ids must be nonempty strings")
+        doomed = set(fact_ids)
+        directory = self.candidate_dir(candidate_id)
+        with _exclusive_lock(directory / _LOCK_FILENAME):
+            path = self._existing_profile_path(candidate_id)
+            raw = self._read_profile_object(path, candidate_id)
+            self._report_from_raw(candidate_id, path, raw)
+            updated = {
+                **raw,
+                "facts": [fact for fact in raw.get("facts", []) if fact.get("id") not in doomed],
+                "experience": [{**group, "fact_ids": [i for i in group.get("fact_ids", []) if i not in doomed]}
+                               for group in raw.get("experience", [])],
+                "education": [{**group, "fact_ids": [i for i in group.get("fact_ids", []) if i not in doomed]}
+                              for group in raw.get("education", [])],
+            }
+            report = self._report_from_raw(candidate_id, path, updated)
+            write_json_private(path, updated)
+        return report.profile
+
     def candidate_setup(self, candidate_id: str) -> CandidateSetup:
         """Contact details, resumes and completeness for the setup UI. Works before
         any profile exists (nothing is invented) and for imported profiles.

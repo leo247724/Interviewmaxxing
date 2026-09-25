@@ -211,6 +211,55 @@ The trace stage `humanize` lists pattern names and counts, attempts and their st
 receipt purpose is `humanize`. `DynamicPacketResolver.humanize` is off for a bare
 resolver and on in `build_ai_runtime`.
 
+## Round 2: story dates, motivation questions, years of experience
+
+**Dates.** A story's facts and chunk headers carry only a period that is grounded. The
+indexing script links each story to a resume role (`candidate.experience`): first by a
+distinctive company token the story mentions (`match_role_by_name`, generic words such as
+"agency" or "law" never match, and two matching roles are no match), otherwise by one Jev
+decision over the resume roles with their titles, dates and verified bullets
+(`link_story_to_role`, prompt `story-role-link-v1`, purpose `story_role_link`), accepted
+only at confidence 0.90 and probability 0.95. A linked story carries the resume role's
+dates (`2024-03 to 2025-05`, `2025-06 to present`) in its chunk header (`resume role:`,
+`period:`), its summary chunk and every fact's value, and records
+`resume_role_id: <experience id>` and `period_source: resume_role` in the fact's
+evidence. An unlinked story carries a year only when the story states one
+(`period_source: story`); otherwise no period at all (`period_source: none`). There is
+never a default year. When a story states a year outside the linked role's dates, the
+resume dates are used (the verified profile is authoritative) and the receipt counts a
+`stated_year_discrepancies` entry; the review file names the story so the person can
+correct the document or the resume. Re-indexing replaces the previous story facts: every
+profile fact whose provenance starts with `story:` (or is `derived:experience_timeline`)
+that the run does not produce again is removed through `LocalCandidateStore.remove_facts`
+before the new ones are merged, so a fact that was dated wrongly disappears. `--dry-run`
+links by name only and calls no provider; `--no-links` skips the Jev decision.
+
+**Motivation questions.** A WRITER-routed text question whose wording asks about the
+applicant's interest, motivation or fit ("What interests you about Acme?", "Why do you
+want to work here?", "What draws you to this role?", "Why this company?"; see
+`motivation_question`) is written with `purpose="cover_letter"` whatever the
+explicit-answer share of its source scope: grounded in the indexed job description and
+the candidate's own account, stating alignment facts, never inventing enthusiasm,
+circumstances or opinions the evidence does not carry (the cover-letter writer prompt,
+grounding and review enforce that as before, and the field needs the indexed job
+description). Its confidence is the route's own, and the trace stage
+`motivation_narrative` records the decision with the source-scope probabilities. Salary,
+relocation, availability, hours, travel and work-authorization questions are not
+motivation questions and keep their explicit-answer hold. The knowledge store also ranks
+candidate facts by the job's description for such a question, as for a cover letter.
+
+**Years of experience.** `knowledge/timeline.py` derives duration facts from the resume
+timeline: `years_experience` (the dated roles merged, overlaps counted once) and
+`years_experience.<area>` for every area a role's title or verified bullets name, or that
+a story linked to the role names through its tools and skills. Values are whole years
+rounded down; an area under a full year yields no fact (the question holds rather than
+answering 0); no area exceeds the total. The keys follow the convention the factual
+resolver already reads (`years_fact_area`), so both the deterministic years path and the
+Jev numeric screener can use them. The facts are `VERIFIED` (`USER_CONFIRMED`, derived
+from the confirmed role dates) with provenance `derived:experience_timeline`, ids
+`derived_years_experience[_<area>]`, and are replaced on every run like the story facts.
+A question about a skill no role names still holds.
+
 ## Verification
 
 Mocked tests cover isolated retrieval, changed and revoked facts, source separation,
