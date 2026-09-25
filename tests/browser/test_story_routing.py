@@ -2110,3 +2110,41 @@ def test_a_rewrite_may_reformat_a_figure_but_never_add_one() -> None:
         {"text": "Each one took 5-10 touch points before the owner signed off.", "fact_ids": ["fact.bakery"]}]))
     assert check_rewrite(original, added, purpose="answer", supplied_ids={"fact.bakery"}, job_ids=set(),
                          max_length=None) == "new_number"
+
+
+def test_uncertain_facts_and_passages_share_one_evidence_review(candidate, mock_job):
+    chunk = story_chunk()
+    rival = fact(candidate, "Grew repeat orders by 12% for a regional bakery chain (2023).", fid="fact.repeat")
+    profile = candidate.model_copy(update={"facts": [*candidate.facts, rival]})
+    answer = [{"text": "I grew online orders by 35% for a regional bakery chain in 2024.",
+               "fact_ids": ["fact.bakery", chunk["id"]]}]
+    jev = Jev(consistency=0.9, story=0.6)  # both uncertain
+    writer = LetterWriter([answer])
+    packet, resolver, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer, jev)
+    assert packet.is_complete and writer.purposes().count("evidence_consistency") == 1
+    [review] = [r for r in writer.reviews if r["purpose"] == "evidence_consistency"]
+    ids = {item["id"] for item in review["facts"]}
+    assert {"fact.bakery", chunk["id"]} <= ids and review["question"].startswith("Two checks in one review.")
+    merged = next(t for t in resolver.narrative_traces if t["stage"] == "strong_review" and t.get("merged_fact_review"))
+    assert merged["story_ids"] == [chunk["id"]] and merged["status"] == "SUPPORTED"
+    assert any(item["id"] == chunk["id"] for item in writer.calls[0]["facts"])  # the passage stays
+    # A contradiction the review pins on the passage drops the passage; the facts stand.
+    writer = LetterWriter([[{**answer[0], "fact_ids": ["fact.bakery"]}]],
+                          evidence=[("CONFLICT", ["The passage's figure contradicts fact.bakery."],
+                                     [chunk["id"], "fact.bakery"])])
+    packet, resolver, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer,
+                                  Jev(consistency=0.9, story=0.6))
+    assert packet.is_complete and writer.purposes().count("evidence_consistency") == 1
+    assert not any(item["key"] == "story" for item in writer.calls[0]["facts"])
+    # A contradiction among the facts themselves holds, as the fact review alone would.
+    writer = LetterWriter([answer], evidence=[("CONFLICT", ["fact.bakery and fact.repeat disagree."],
+                                               ["fact.bakery", "fact.repeat"])])
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer,
+                                    Jev(consistency=0.9, story=0.6))
+    assert held(packet, ctx) and not writer.calls
+    # Without an uncertain passage the fact review runs alone, once.
+    writer = LetterWriter([[{**answer[0], "fact_ids": ["fact.bakery"]}]])
+    packet, resolver, _ = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer,
+                                  Jev(consistency=0.9, story=1.0))
+    assert packet.is_complete and writer.purposes().count("evidence_consistency") == 1
+    assert not any(t.get("merged_fact_review") for t in resolver.narrative_traces if t["stage"] == "strong_review")

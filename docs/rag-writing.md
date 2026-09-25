@@ -712,7 +712,7 @@ aside, confidence without puffery, "the bottom line" once) but never the posts' 
 blog tics (bucket brigades, "awesome", "insanely", "skyrocket", "explosive", "It's no secret
 that...", "You might be wondering:"), which the lint names `blog_tic`.
 
-**Cost and bounds.** Citation ids travel as short aliases on the writer's and the rewriter's
+**Cost and bounds.** When both the field's fact consistency and its story passages need the independent evidence review, one call asks both ("Two checks in one review"): a contradiction pinned on a passage drops the passage, one among the facts holds as before. Citation ids travel as short aliases on the writer's and the rewriter's
 wire (`F1`, `S1`, `J1`, `L1`; a hashed id costs some 45 output tokens per citation) and are
 mapped back before any check; Jev grounding carries each cited fact, passage and job chunk once
 per request, and grounding and consistency requests are split under 85% of the request bound

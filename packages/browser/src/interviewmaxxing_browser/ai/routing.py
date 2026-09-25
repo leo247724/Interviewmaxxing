@@ -571,6 +571,10 @@ this id: a transient stand-in from the identity, never a fact in packet provenan
 LETTER_ATTEMPTS = 3
 """A cover letter gets two corrective rewrites for its deterministic rubric lines and its
 grounding; every other narrative gets one."""
+FACT_REVIEW_QUESTION = (
+    "Do these verified candidate facts contain any direct factual contradiction? "
+    "Independent employment, education, project and skill claims may coexist; "
+    "use their canonical group relations and retain explicit global counterclaims.")
 RUBRIC_PASSES = 1
 """Improvement drafts for the letter review's rubric findings on a grounded cover letter; an
 improvement that fails a check is dropped and the grounded letter stands (one pass keeps a
@@ -3457,7 +3461,8 @@ class DynamicPacketResolver:
 
     def _check_additive_consistency(self, context: PacketContext,
                                     selected: list[CandidateFact], *, allow_strong_review: bool = False,
-                                    dropped: list[CandidateFact] | None = None) -> float:
+                                    dropped: list[CandidateFact] | None = None,
+                                    defer: list[dict[str, Any]] | None = None) -> float:
         """Scoped bullets may coexist, but omitted contradictory claims still count.
 
         Keys are arbitrary: include all unscoped facts, same-group facts, global
@@ -3470,16 +3475,17 @@ class DynamicPacketResolver:
         log = _FIELD_LOG.get()
         if log is None or log.turns is None:
             return self._consistency(context, selected, allow_strong_review=allow_strong_review,
-                                     dropped=dropped)
+                                     dropped=dropped, defer=defer)
         log.turns.wait(log.turn)
         try:
             return self._consistency(context, selected, allow_strong_review=allow_strong_review,
-                                     dropped=dropped)
+                                     dropped=dropped, defer=defer)
         finally:
             log.turns.release(log.turn)  # later fields need not wait for this one's writer
 
     def _consistency(self, context: PacketContext, selected: list[CandidateFact], *,
-                     allow_strong_review: bool, dropped: list[CandidateFact] | None = None) -> float:
+                     allow_strong_review: bool, dropped: list[CandidateFact] | None = None,
+                     defer: list[dict[str, Any]] | None = None) -> float:
         """``dropped``, when given, receives the story-derived selected facts whose Jev
         verdict falls below the threshold instead of holding on them: the resume is
         canonical, so a contradicted story fact leaves the evidence and the check goes on
@@ -3637,21 +3643,31 @@ class DynamicPacketResolver:
                     ranked = sorted((other for other in candidates if other.id not in chosen_ids),
                                     key=lambda other: (tier(other), -competition[other.id], other.id))
                     reviewed_facts = [*selected, *ranked[:REVIEW_EVIDENCE_LIMIT]]
-                    self._strong_review(context, question=
-                        "Do these verified candidate facts contain any direct factual contradiction? "
-                        "Independent employment, education, project and skill claims may coexist; "
-                        "use their canonical group relations and retain explicit global counterclaims.",
-                        facts=[contextual(fact) for fact in reviewed_facts],
-                        purpose="evidence_consistency",
-                        scope={"selected_fact_ids": [fact.id for fact in selected],
-                               "competing_total": len(ranked), "limit": REVIEW_EVIDENCE_LIMIT})
-                    with self._lock:
-                        if len(self._consistency_reviews) >= 16:
-                            self._consistency_reviews.pop(next(iter(self._consistency_reviews)))
-                        self._consistency_reviews[revision] = confidence
+                    pending = {"facts": [contextual(fact) for fact in reviewed_facts], "revision": revision,
+                               "confidence": confidence,
+                               "scope": {"selected_fact_ids": [fact.id for fact in selected],
+                                         "competing_total": len(ranked), "limit": REVIEW_EVIDENCE_LIMIT}}
+                    if defer is not None:
+                        # The caller asks this review together with the story passages' own
+                        # (one call instead of two, round 6), or alone (_fact_review).
+                        defer.append(pending)
+                        return confidence
+                    self._fact_review(context, pending)
                     return confidence
                 raise AIHold("Relevant verified facts conflict with canonical evidence outside retrieval")
         return confidence
+
+    def _fact_review(self, context: PacketContext, pending: dict[str, Any]) -> None:
+        """The independent review of uncertain fact consistency, alone; cached per revision."""
+        self._strong_review(context, question=FACT_REVIEW_QUESTION, facts=pending["facts"],
+                            purpose="evidence_consistency", scope=pending["scope"])
+        self._cache_fact_review(pending)
+
+    def _cache_fact_review(self, pending: dict[str, Any]) -> None:
+        with self._lock:
+            if len(self._consistency_reviews) >= 16:
+                self._consistency_reviews.pop(next(iter(self._consistency_reviews)))
+            self._consistency_reviews[pending["revision"]] = pending["confidence"]
 
     def _strong_review(self, context: PacketContext, *, question: str,
                        facts: list[dict[str, Any]], purpose: Literal["evidence_consistency", "draft_grounding"],
@@ -3943,15 +3959,24 @@ class DynamicPacketResolver:
         if any(_conflicts(fact, all_verified) for fact in relevant):
             raise AIHold("Relevant verified facts conflict; the writer cannot choose which is true")
         dropped_facts: list[CandidateFact] = []
+        pending: list[dict[str, Any]] = []
         consistency_confidence = self._check_additive_consistency(context, relevant, allow_strong_review=True,
-                                                                  dropped=dropped_facts)
+                                                                  dropped=dropped_facts, defer=pending)
         dropped_chunks: list[dict[str, Any]] = []
         if story_chunks:
-            story_confidence, kept_chunks = self._story_consistency(context, story_chunks, field)
+            story_confidence, kept_chunks = self._story_consistency(context, story_chunks, field, pending=pending)
             kept_ids = {chunk["id"] for chunk in kept_chunks}
             dropped_chunks = [chunk for chunk in story_chunks if chunk["id"] not in kept_ids]
             story_chunks = kept_chunks
             consistency_confidence = min(consistency_confidence, story_confidence)
+        for review in pending:
+            outcome = review.get("outcome")
+            if outcome is None:
+                self._fact_review(context, review)  # no story review absorbed it
+            elif outcome[0] == "SUPPORTED":
+                self._cache_fact_review(review)
+            else:
+                raise AIHold(_review_hold(outcome[1], outcome[2]))
         relevant, story_chunks = self._drop_story_evidence(relevant, story_chunks, dropped_facts, dropped_chunks)
         if not relevant:
             raise AIHold("No usable verified evidence remains after dropping story evidence that "
@@ -4111,7 +4136,8 @@ class DynamicPacketResolver:
         return list(scores.values())
 
     def _story_consistency(self, context: PacketContext, story_chunks: list[dict[str, Any]],
-                           field: ApplicationField) -> tuple[float, list[dict[str, Any]]]:
+                           field: ApplicationField, pending: list[dict[str, Any]] | None = None,
+                           ) -> tuple[float, list[dict[str, Any]]]:
         """Story chunks that contradict a verified structured fact leave the field's
         evidence (traced as ``story_evidence_dropped``); the field holds only when the
         question asks about the contradicted point. The Jev verdicts share the per-runtime
@@ -4125,13 +4151,14 @@ class DynamicPacketResolver:
                 min_probability=MIN_PROBABILITY, cache=self._consistency_verdicts,
                 lock=self._lock, max_cache_entries=self.max_consistency_verdicts,
                 max_facts=self.max_facts, question=field.question_text,
-                review=lambda chunks, comparisons: self._story_review(chunks, comparisons))
+                review=lambda chunks, comparisons: self._story_review(chunks, comparisons, pending=pending))
         finally:
             if log is not None and log.turns is not None:
                 log.turns.release(log.turn)
 
     def _story_review(self, chunks: dict[str, dict[str, Any]],
-                      comparisons: dict[str, list[CandidateFact]]) -> set[str]:
+                      comparisons: dict[str, list[CandidateFact]],
+                      pending: list[dict[str, Any]] | None = None) -> set[str]:
         """One independent review for the story passages Jev scored between 0.05 and 0.95
         free of contradiction, with the verified facts each was compared with, in one
         request (round 6: uncertainty is not contradiction). Returns the keys of the
@@ -4145,23 +4172,32 @@ class DynamicPacketResolver:
         facts = {fact.id: fact for key in chunks for fact in comparisons[key]}
         stories = transient_story_facts(list(chunks.values()))
         story_ids = set(stories)
+        # A fact-consistency review the field still needs is asked in the same call (round 6:
+        # one evidence review per letter instead of two).
+        fact_review = next((item for item in pending or [] if item.get("outcome") is None), None)
         revision = _digest({"question": STORY_REVIEW_QUESTION,
                             "stories": [_fact_evidence(stories[identifier]) for identifier in sorted(stories)],
                             "facts": [_fact_evidence(facts[identifier]) for identifier in sorted(facts)]})
         with self._lock:
-            cached = self._story_reviews.get(revision)
+            cached = self._story_reviews.get(revision) if fact_review is None else None
         if cached is not None:
             self._trace({"stage": "story_review_cache", "story_ids": sorted(story_ids),
                          "contradicted_ids": sorted(cached), "status": "CACHED"})
             return {key for key, chunk in chunks.items() if chunk["id"] in cached}
+        question = STORY_REVIEW_QUESTION if fact_review is None else (
+            "Two checks in one review. First: " + FACT_REVIEW_QUESTION + " Second: " + STORY_REVIEW_QUESTION
+            + " For a passage that contradicts the facts, reference_ids name the passage; for facts that "
+            "contradict each other, they name those facts and no passage.")
+        payload = {identifier: _fact_evidence(fact) for identifier, fact in sorted(facts.items())}
+        if fact_review is not None:
+            payload |= {item["id"]: item for item in fact_review["facts"]}
+        payload |= {identifier: _fact_evidence(stories[identifier]) for identifier in sorted(stories)}
         trace = self._trace({"stage": "strong_review", "purpose": "evidence_consistency",
-            "question": STORY_REVIEW_QUESTION, "fact_ids": sorted(facts), "story_ids": sorted(story_ids),
-            "status": "REVIEWING"})
+            "question": question, "fact_ids": sorted(set(payload) - story_ids), "story_ids": sorted(story_ids),
+            "status": "REVIEWING", **({"merged_fact_review": fact_review["scope"]} if fact_review else {})})
         try:
-            result = review(question=STORY_REVIEW_QUESTION,
-                facts=[*(_fact_evidence(facts[identifier]) for identifier in sorted(facts)),
-                       *(_fact_evidence(stories[identifier]) for identifier in sorted(stories))],
-                job={}, job_evidence=None, sentences=None, purpose="evidence_consistency")
+            result = review(question=question, facts=list(payload.values()),
+                            job={}, job_evidence=None, sentences=None, purpose="evidence_consistency")
         except AIHold:
             trace["status"] = "REVIEW_HELD"
             raise
@@ -4170,6 +4206,12 @@ class DynamicPacketResolver:
         named = story_ids & set(result.reference_ids)
         found = (frozenset() if result.verdict == "SUPPORTED" else
                  frozenset(named) if result.verdict == "CONFLICT" and named else frozenset(story_ids))
+        if fact_review is not None:
+            # The facts are consistent unless the review found a contradiction naming no passage.
+            profile_ids = {item["id"] for item in fact_review["facts"]}
+            fact_ids = [rid for rid in result.reference_ids if rid in profile_ids]
+            fact_review["outcome"] = (("SUPPORTED",) if result.verdict == "SUPPORTED" or named
+                                      else ("HOLD", list(result.issues), fact_ids))
         with self._lock:
             if len(self._story_reviews) >= 64:
                 self._story_reviews.pop(next(iter(self._story_reviews)))
