@@ -58,6 +58,7 @@ from interviewmaxxing_generation.knowledge.stories import (
     resume_roles,
     story_index_receipt,
     story_source_of,
+    superseded_story_facts,
 )
 from interviewmaxxing_generation.knowledge.timeline import DERIVED_SOURCE, derive_experience_years
 from interviewmaxxing_selection.credentials import load_api_key
@@ -168,6 +169,9 @@ def main() -> int:
                                           model=decisions.model if decisions is not None else "",
                                           today=today)
         index = build_story_index(document, verified_at=now, links=links, source_id=args.source_id)
+        # Facts the person confirmed before their story's link changed: marked superseded in
+        # the confirm file for removal (the index never removes a confirmed fact itself).
+        superseded = superseded_story_facts(profile, index) if profile is not None else []
         # Years of experience come from the resume timeline alone (titles and self-dated
         # bullets), so the preview equals what the real run derives after the merge.
         derived = derive_experience_years(profile, today=today, verified_at=now) if profile is not None else []
@@ -181,6 +185,7 @@ def main() -> int:
             **story_index_receipt(index),
             "story_facts_unverified": sum(1 for fact in index.facts if not fact.is_verified),
             "derived_years_facts": _derived_counts(derived),
+            "superseded_confirmed_fact_ids": [row["id"] for row in superseded],
         }
         if decisions is not None:
             receipt["provider"] = decisions.budget.metadata()
@@ -223,6 +228,7 @@ def main() -> int:
             write_json_private(args.receipt, receipt)
         if args.facts_review is not None and review_markdown is not None:
             review = facts_review(index, candidate_id=args.candidate, roles=roles)
+            review["superseded"] = superseded
             review["derived_years_facts"] = [fact.model_dump(mode="json") for fact in derived]
             args.facts_review.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             write_json_private(args.facts_review, review)
@@ -230,7 +236,7 @@ def main() -> int:
             # The facts offered for confirmation, in the import's format: delete the rows
             # you do not confirm, then `scripts/rag_answers.py import-facts --file <it>`.
             confirm_path = args.facts_review.with_suffix(".confirm.json")
-            write_json_private(confirm_path, confirmable_facts([*index.facts, *derived]))
+            write_json_private(confirm_path, [*confirmable_facts([*index.facts, *derived]), *superseded])
             receipt["confirm_file"] = str(confirm_path)
         print(json.dumps(receipt, sort_keys=True, default=str))
         return 0

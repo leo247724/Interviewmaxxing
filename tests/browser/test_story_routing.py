@@ -1495,3 +1495,106 @@ def test_a_review_hold_names_the_fact_ids_to_correct_or_remove(candidate, mock_j
     assert "Two facts date the same role differently." in missing.prompt
     review = next(t for t in resolver.narrative_traces if t["stage"] == "strong_review")
     assert review["status"] == "CONFLICT" and review["reference_ids"] == ["fact.bakery", "fact.bakery_other", chunk["id"]]
+
+
+# --- round 5, addendum item 7: case-study questions answered from the question's own data ---------
+
+CASE_QUESTION = ("Calculate CPA and ROAS for each channel. Based on this information, respond to the above question - "
+                 "Part B: Universal Data Reading & Optimization Identification")
+CASE_TABLE = ("Channel | Spend | Conversions | Revenue\nSearch | $5,000 | 100 | $12,500\n"
+              "Social | $3,000 | 40 | $4,800\nDisplay | $2,000 | 10 | $1,500")  # fictional figures
+
+
+def case_context(candidate: CandidateProfile, job: JobRecord, *, section_context: list[str]) -> PacketContext:
+    ctx = context(candidate, job, question=CASE_QUESTION)
+    field_ = ctx.form.fields[0].model_copy(update={"section_context": section_context})
+    return replace(ctx, form=ctx.form.model_copy(update={"fields": [field_]}))
+
+
+def case_sentences(data_id: str, *, search_cpa: str = "$50") -> list[dict[str, Any]]:
+    lines = [f"Search CPA = $5,000 / 100 conversions = {search_cpa}.", "Search ROAS = $12,500 / $5,000 = 2.5.",
+             "Social CPA = $3,000 / 40 = $75.", "Social ROAS = $4,800 / $3,000 = 1.6.",
+             "Display CPA = $2,000 / 10 = $200.", "Display ROAS = $1,500 / $2,000 = 0.75.",
+             "Search has the lowest CPA and the highest ROAS, so the $2,000 on Display should move to Search."]
+    return [{"text": line, "job_evidence_ids": [data_id]} for line in lines]
+
+
+def test_case_study_wording_is_recognised() -> None:
+    from interviewmaxxing_browser.ai.case_analysis import case_analysis_question
+
+    for question in (CASE_QUESTION, "Using the table above, which channel should get more budget?",
+                     "Review the following data and identify the weakest campaign.", "Case study: compute ROAS per channel."):
+        assert case_analysis_question(question), question
+    for question in ("How do you calculate ROAS?", "Describe a campaign you led and what it achieved.", INTEREST):
+        assert not case_analysis_question(question), question
+
+
+def test_the_working_is_checked_in_code() -> None:
+    from interviewmaxxing_browser.ai.case_analysis import check_working
+
+    good = " ".join(s["text"] for s in case_sentences("form:x"))
+    assert check_working(good, CASE_TABLE) is None
+    assert check_working("Total spend = $5,000 + $3,000 + $2,000 = $10,000, so blended ROAS is "
+                         "(12,500 + 4,800 + 1,500) / 10,000 = 1.88, about 1.9.", CASE_TABLE) is None
+    assert "is wrong: it computes 50.00" in check_working("Search CPA = $5,000 / 100 = $55.", CASE_TABLE)  # type: ignore[operator]
+    assert "uses $6,000" in check_working("Search CPA = $6,000 / 100 = $60.", CASE_TABLE)  # type: ignore[operator]
+    assert "states $80" in check_working("Search CPA = $5,000 / 100 = $50 and will reach $80.", CASE_TABLE)  # type: ignore[operator]
+    assert check_working("Search conversion rate = 100 / 5,000 = 2%.", CASE_TABLE + "\nSearch clicks 5,000") is None
+
+
+def test_a_case_question_is_computed_from_its_own_data_and_cites_it(candidate, mock_job):
+    from interviewmaxxing_core import question_content_ref
+
+    ctx = case_context(candidate, mock_job, section_context=["Part B", CASE_TABLE])
+    data_id = question_content_ref(ctx.form.fields[0])
+    writer = Writer(case_sentences(data_id))
+    retriever = Retriever([candidate.facts[0]])
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)  # the candidate scope does not apply
+    packet, resolver, ctx = resolve(ctx, retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    [answer] = packet.answers
+    assert answer.provenance.source is AnswerSource.GENERATED_FROM_QUESTION
+    assert answer.provenance.reference_ids == [data_id] and "no candidate fact" in answer.provenance.note
+    [call] = writer.calls
+    assert call["purpose"] == "case_analysis" and call["facts"] == [] and call["voice_samples"] == []
+    assert [e["id"] for e in call["job_evidence"]] == [data_id] and CASE_TABLE in call["job_evidence"][0]["text"]
+    assert not retriever.calls  # the candidate's evidence is never retrieved for a case question
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")
+    assert trace["status"] == "READY" and trace["data_numbers"] == 9 and "Search" not in json.dumps(trace)
+    [grounding] = jev.grounding_requests()
+    assert grounding["state"]["purpose"] == "case_analysis" and set(grounding["questions"]) == {f"q{i}" for i in range(7)} | {"complete"}
+
+
+def test_a_case_question_without_its_table_holds_with_the_reason(candidate, mock_job):
+    from interviewmaxxing_browser.ai.providers import CASE_DATA_MISSING
+
+    writer = Writer(case_sentences("form:x"))
+    packet, resolver, ctx = resolve(case_context(candidate, mock_job, section_context=[]), Retriever([candidate.facts[0]]),
+                                    writer, Jev())
+    assert held(packet, ctx) and not writer.calls
+    [missing] = packet.missing_inputs
+    assert CASE_DATA_MISSING in missing.prompt and CASE_DATA_MISSING == "The table referenced is not in the recorded question"
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")["status"] == "DATA_MISSING"
+
+
+def test_wrong_working_gets_one_corrective_rewrite_then_holds(candidate, mock_job):
+    from interviewmaxxing_core import question_content_ref
+
+    ctx = case_context(candidate, mock_job, section_context=[CASE_TABLE])
+    data_id = question_content_ref(ctx.form.fields[0])
+    writer = DraftQueue(case_sentences(data_id, search_cpa="$55"), case_sentences(data_id))
+    packet, resolver, ctx = resolve(ctx, Retriever([candidate.facts[0]]), writer, Jev())
+    assert packet.is_complete and len(writer.calls) == 2
+    [issue] = writer.calls[1]["review_feedback"]
+    assert "is wrong: it computes 50.00" in issue and "show the working" in issue
+    writer = DraftQueue(case_sentences(data_id, search_cpa="$55"))
+    packet, resolver, ctx = resolve(case_context(candidate, mock_job, section_context=[CASE_TABLE]),
+                                    Retriever([candidate.facts[0]]), writer, Jev())
+    assert held(packet, ctx) and "working does not check out" in packet.missing_inputs[0].prompt
+    # A draft that cites a candidate fact is no case analysis.
+    cited = case_sentences(data_id)
+    cited[0] = {**cited[0], "fact_ids": ["fact.bakery"]}
+    packet, resolver, ctx = resolve(case_context(candidate, mock_job, section_context=[CASE_TABLE]),
+                                    Retriever([candidate.facts[0]]), Writer(cited), Jev())
+    assert held(packet, ctx)
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")["status"] == "CITATIONS_INVALID"

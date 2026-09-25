@@ -998,6 +998,29 @@ def _period_value(year: str, month: int | None) -> str:
     return f"{year}-{month:02d}" if month else year
 
 
+def periods_in(text: str, source: str) -> list[StatedPeriod]:
+    """The ranges a text states ("Aug 2019 - May 2020", "2023-10 to 2024-02", "Jun 2025 -
+    Present"), in order; a range whose end comes before its start is not a period."""
+    periods: list[StatedPeriod] = []
+    for match in _PERIOD_RANGE.finditer(text):
+        start = _period_value(match.group("start_year"), _month_of(
+            match.group("start_name"), match.group("start_number"), match.group("start_iso")))
+        end = None if match.group("open") else _period_value(match.group("end_year"), _month_of(
+            match.group("end_name"), match.group("end_number"), match.group("end_iso")))
+        first, last = _month_index(start, end=False), _month_index(end, end=True)
+        if end is not None and (first is None or last is None or last < first):
+            continue
+        periods.append(StatedPeriod(start, end, source))
+    return periods
+
+
+def periods_overlap(first: StatedPeriod, second: StatedPeriod, today: date) -> bool:
+    """Whether two stated periods share at least one month (an open one runs to today)."""
+    a_first, a_last = first.months(today)
+    b_first, b_last = second.months(today)
+    return a_first <= b_last and b_first <= a_last
+
+
 def stated_periods(story: Story) -> list[StatedPeriod]:
     """The periods the story states, its heading's first: month-year ranges ("Aug 2019 -
     May 2020", "Jun 2025 - Present") and year ranges ("2019 to 2023"); a heading without a
@@ -1006,16 +1029,7 @@ def stated_periods(story: Story) -> list[StatedPeriod]:
     a year in the body is never one by itself."""
     periods: list[StatedPeriod] = []
     for source, text in (("heading", story.title), ("body", story.body)):
-        found: list[StatedPeriod] = []
-        for match in _PERIOD_RANGE.finditer(text):
-            start = _period_value(match.group("start_year"), _month_of(
-                match.group("start_name"), match.group("start_number"), match.group("start_iso")))
-            end = None if match.group("open") else _period_value(match.group("end_year"), _month_of(
-                match.group("end_name"), match.group("end_number"), match.group("end_iso")))
-            first, last = _month_index(start, end=False), _month_index(end, end=True)
-            if end is not None and (first is None or last is None or last < first):
-                continue
-            found.append(StatedPeriod(start, end, source))
+        found = periods_in(text, source)
         if source == "heading" and not found:
             years = sorted({int(year) for year in _YEAR.findall(text)})
             if years and all(later - earlier <= 1 for earlier, later in pairwise(years)):
@@ -1504,10 +1518,70 @@ def story_source_of(fact: CandidateFact) -> str | None:
     the default source for a story fact that predates the line; None for other facts."""
     if not fact.source.startswith("story:"):
         return None
+    return _evidence_story_source(fact)
+
+
+def _evidence_story_source(fact: CandidateFact) -> str | None:
+    """The stories source a fact's evidence names, whatever its provenance now (a fact the
+    person confirmed keeps its evidence under ``user:`` provenance); None if not a story's."""
     for line in fact.evidence:
         if line.startswith("story_source: "):
             return line[len("story_source: "):]
-    return DEFAULT_STORY_SOURCE
+    return DEFAULT_STORY_SOURCE if fact.evidence and fact.evidence[0].startswith("Story ") else None
+
+
+_ROLE_ID_LINE = "resume_role_id: "
+_RESUME_COMPANY = re.compile(r"\bresume:\s*([^,;()]+?)\s*(?:,|\)|$)")
+
+
+def fact_self_contradictions(fact: CandidateFact, roles: Sequence[ResumeRole] = (),
+                             today: date | None = None) -> list[str]:
+    """Why a fact contradicts its own evidence, as reason codes (no values): the period its
+    evidence states (a story heading's "Aug 2019 - May 2020") shares no month with the
+    period its value states ("resume: Acme, 2023-10 to 2024-02"), or its evidence names an
+    employer (a linked resume role, a resume company its story heading names) other than
+    the one its value names. Such a fact came from a confirm file written before its
+    story's link was corrected; ``import-facts`` lists it and does not import it."""
+    today = today or date.today()
+    value = fact.value if isinstance(fact.value, str) else ""
+    reasons: list[str] = []
+    own = periods_in(value, "value")
+    stated = [period for line in fact.evidence for period in periods_in(line, "evidence")]
+    if own and stated and not periods_overlap(own[-1], stated[0], today):
+        reasons.append("evidence_period_contradicts_fact_period")
+    match = _RESUME_COMPANY.search(value)
+    if match:
+        company = match.group(1)
+        role_id = next((line[len(_ROLE_ID_LINE):] for line in fact.evidence if line.startswith(_ROLE_ID_LINE)), None)
+        linked = next((role for role in roles if role.id == role_id), None)
+        heading = fact.evidence[0] if fact.evidence and fact.evidence[0].startswith("Story ") else ""
+        named = [role for role in roles if heading and names_company([heading], role.company)]
+        if ((linked is not None and not names_company([company], linked.company))
+                or any(not names_company([company], role.company) for role in named)):
+            reasons.append("evidence_employer_contradicts_fact_employer")
+    return reasons
+
+
+def superseded_story_facts(profile: CandidateProfile, index: StoryIndex) -> list[dict[str, Any]]:
+    """Facts the person confirmed from this source's stories that the current index no
+    longer stands behind: the story's resume link changed since they were extracted, or the
+    story is no longer in the document. Rows for the next confirm file, marked
+    ``superseded`` with a reason code; ``import-facts`` lists them and never imports them,
+    and ``remove-facts`` removes them. Unconfirmed story facts need no row: a run replaces
+    them itself."""
+    links = {analysis.story_id: index.link_for(analysis.story_id) for analysis in index.analyses}
+    rows: list[dict[str, Any]] = []
+    for fact in profile.facts:
+        if (not fact.id.startswith("sf_") or not fact.is_verified or not fact.source.startswith("user:")
+                or _evidence_story_source(fact) != index.source_id):
+            continue
+        story_id = fact.id.split("_")[1]
+        recorded = next((line[len(_ROLE_ID_LINE):] for line in fact.evidence if line.startswith(_ROLE_ID_LINE)), None)
+        if story_id not in links:
+            rows.append({"id": fact.id, "superseded": True, "reason": "story_no_longer_in_document"})
+        elif recorded != (link.resume_role_id if (link := links[story_id]) else None):
+            rows.append({"id": fact.id, "superseded": True, "reason": "story_link_changed"})
+    return rows
 
 
 def facts_review(index: StoryIndex, *, candidate_id: str,
@@ -1629,6 +1703,16 @@ def facts_review_markdown(review: Mapping[str, Any],
         for fact in derived:
             basis = "; ".join(fact.evidence).replace("|", "/")
             lines.append(f"| `{fact.id}` | {fact.key} | {fact.value} | {fact.verification.status.value} | {basis} |")
+    superseded = review.get("superseded") or []
+    if superseded:
+        ids = ",".join(row["id"] for row in superseded)
+        lines += ["", "## Superseded confirmed facts", "",
+                  "You confirmed these facts before their story's resume link changed (or before the "
+                  "story left the document); the index no longer stands behind them. They are marked "
+                  "`superseded` in the `.confirm.json` (the import skips them). Remove them with "
+                  f"`uv run --no-sync python scripts/rag_answers.py remove-facts --ids {ids}` and then "
+                  "`index-profile`.", "", "| id | reason |", "|---|---|"]
+        lines += [f"| `{row['id']}` | {row['reason']} |" for row in superseded]
     lines.append("")
     return "\n".join(lines)
 
@@ -1673,6 +1757,7 @@ __all__ = [
     "duration_claims",
     "extract_story_facts",
     "fact_context",
+    "fact_self_contradictions",
     "facts_review",
     "facts_review_markdown",
     "find_skills",
@@ -1685,6 +1770,8 @@ __all__ = [
     "parse_chunk_header",
     "parse_stories",
     "period_overlaps_role",
+    "periods_in",
+    "periods_overlap",
     "read_document",
     "read_docx",
     "read_stories",
@@ -1700,6 +1787,7 @@ __all__ = [
     "story_index_receipt",
     "story_period",
     "story_source_of",
+    "superseded_story_facts",
     "team_sizes",
     "tenure_conflicts",
 ]

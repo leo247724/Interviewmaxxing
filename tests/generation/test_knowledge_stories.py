@@ -819,3 +819,75 @@ def test_a_heading_year_is_the_story_period_and_can_reject_a_link(tmp_path: Path
     # A year in the body is never a period by itself.
     body_only, _ = _story(tmp_path, PAIR_TITLE, RECRUITING + " In 2019 I also ran the email list.", name="body.md")
     assert st.story_period(body_only) is None and st.stated_years(body_only) == ["2019"]
+
+
+# --- round 5, addendum item 8: confirmed facts that contradict their own evidence -------------------
+
+
+def _confirmed(fact: object) -> object:
+    from interviewmaxxing_core import FactVerification, VerificationMethod, VerificationStatus
+
+    return fact.model_copy(update={"source": "user:confirmed fact import", "verification": FactVerification(  # type: ignore[attr-defined]
+        status=VerificationStatus.VERIFIED, method=VerificationMethod.USER_STATED, verified_at=NOW)})
+
+
+def test_a_fact_whose_evidence_dates_or_places_it_elsewhere_contradicts_itself(tmp_path: Path) -> None:
+    from interviewmaxxing_core import CandidateFact, FactVerification, VerificationStatus
+
+    roles = [st.ResumeRole("exp_harbor", "Harbor Growth Solutions", "Marketing Manager", "2023-10", "2024-02", False, ()),
+             st.ResumeRole("exp_links", "Linkforge", "SEO Project Manager", "2025-07", "2026-05", False, ())]
+
+    def fact(value: str, evidence: list[str]) -> CandidateFact:
+        return CandidateFact(id="sf_0123456789abcdef_000000000001", key="achievement", value=value, source="story:" + "1" * 64,
+                             verification=FactVerification(status=VerificationStatus.UNVERIFIED), evidence=evidence)
+
+    # The live shape: a confirm file written while the story was linked by a shared word.
+    stale = fact("I grew free athlete sign-ups by 40% in one season (youth sports recruiting network; resume: "
+                 "Harbor Growth Solutions, 2023-10 to 2024-02)",
+                 ["Story 05: Growth Marketing Specialist, Tidewater Recruiting (Aug 2019 - May 2020)",
+                  "period_source: resume_role", "story_source: candidate-stories-profile", "resume_role_id: exp_harbor"])
+    assert st.fact_self_contradictions(stale, roles, today=date(2026, 9, 25)) == ["evidence_period_contradicts_fact_period"]
+    # The same fact dated by its own story: nothing to object to.
+    fixed = fact("I grew free athlete sign-ups by 40% in one season (youth sports recruiting network, 2019-08 to 2020-05)",
+                 ["Story 05: Growth Marketing Specialist, Tidewater Recruiting (Aug 2019 - May 2020)",
+                  "period_source: story", "story_source: candidate-stories-profile"])
+    assert st.fact_self_contradictions(fixed, roles, today=date(2026, 9, 25)) == []
+    # Evidence that names another employer: the linked role, or a resume company the heading names.
+    linked_elsewhere = fact("I ran link-building audits (resume: Harbor Growth Solutions, 2023-10 to 2024-02)",
+                            ["Story 02: Audits", "period_source: resume_role", "resume_role_id: exp_links"])
+    assert st.fact_self_contradictions(linked_elsewhere, roles) == ["evidence_employer_contradicts_fact_employer"]
+    heading_elsewhere = fact("I ran link-building audits (resume: Harbor Growth Solutions, 2023-10 to 2024-02)",
+                             ["Story 02: SEO audits at Linkforge", "period_source: resume_role"])
+    assert st.fact_self_contradictions(heading_elsewhere, roles) == ["evidence_employer_contradicts_fact_employer"]
+    # A resume fact or a user statement without dates or links has nothing to contradict.
+    plain = fact("Managed a $40,000 monthly paid search budget.", ["Resume bullet"])
+    assert st.fact_self_contradictions(plain, roles) == []
+
+
+def test_confirmed_facts_of_a_story_whose_link_changed_are_superseded(tmp_path: Path) -> None:
+    from interviewmaxxing_core import CandidateProfile
+
+    story, _analysis = _story(tmp_path, f"{PAIR_TITLE} (Aug 2019 - May 2020)")
+    document = st.read_stories(tmp_path / "story.md")
+    wrong = st.StoryRoleLink(story.story_id, "exp_shop", PAIR_COMPANY, "Marketing Manager", "2023-10", "2024-02",
+                             False, "employer_name")
+    before = st.build_story_index(document, verified_at=NOW, links={story.story_id: wrong}, source_id="profile-src")
+    # Facts confirmed while the story still carried the wrong link record it in their evidence.
+    confirmed = [_confirmed(f.model_copy(update={"evidence": [*f.evidence, "resume_role_id: exp_shop"]}))
+                 for f in before.facts]
+    unconfirmed = before.facts[0].model_copy(update={"id": before.facts[0].id[:-1] + "f"})
+    gone = _confirmed(before.facts[0].model_copy(update={"id": "sf_ffffffffffffffff_000000000001"}))
+    other_source = _confirmed(before.facts[0].model_copy(update={
+        "id": before.facts[0].id[:-1] + "e", "evidence": [line.replace("profile-src", "docx") for line in before.facts[0].evidence]}))
+    fixture = Path(__file__).parents[1] / "fixtures" / "core" / "candidate_profile.json"
+    profile = CandidateProfile.model_validate(json.loads(fixture.read_text()))
+    profile = profile.model_copy(update={"facts": [*profile.facts, *confirmed, unconfirmed, gone, other_source]})
+    now_index = st.build_story_index(document, verified_at=NOW, links={story.story_id: wrong}, source_id="profile-src")
+    assert now_index.link_for(story.story_id) is None  # the heading period rejects the wrong link now
+    rows = st.superseded_story_facts(profile, now_index)
+    assert rows == [*({"id": f.id, "superseded": True, "reason": "story_link_changed"} for f in confirmed),
+                    {"id": gone.id, "superseded": True, "reason": "story_no_longer_in_document"}]
+    review = st.facts_review(now_index, candidate_id="default")
+    review["superseded"] = rows
+    markdown = st.facts_review_markdown(review)
+    assert "## Superseded confirmed facts" in markdown and "remove-facts --ids " + confirmed[0].id in markdown  # type: ignore[attr-defined]

@@ -1288,3 +1288,44 @@ def test_the_review_prompt_judges_grounding_and_consistency_only() -> None:
     provider = MockWriterTransport(review_result())
     writer(provider).review(question="Check", facts=FACTS, job={}, purpose="evidence_consistency")
     assert "career_motivation" not in provider.requests[0]["messages"][0]["content"]
+
+
+# --- WP12 round 5, addendum item 7: the case_analysis purpose ------------------------------------
+
+CASE_DATA = {"id": "form:" + "f" * 64, "source_url": "https://synthetic.test/apply", "source_version": "a" * 64,
+             "text": "Search | $5,000 | 100 | $12,500\nCalculate CPA and ROAS for each channel."}
+
+
+def test_a_case_analysis_computes_from_the_question_data_and_cites_no_fact() -> None:
+    from interviewmaxxing_browser.ai.providers import CASE_ANALYSIS_SYSTEM, CASE_DATA_MISSING
+
+    worked = ready({"text": "Search CPA = $5,000 / 100 = $50.", "job_evidence_ids": [CASE_DATA["id"]]},
+                   {"text": "Search ROAS = $12,500 / $5,000 = 2.5.", "job_evidence_ids": [CASE_DATA["id"]]})
+    provider = MockWriterTransport(worked)
+    instance = writer(provider)
+    draft = instance.write(question="Calculate CPA and ROAS for each channel.", facts=[], job=JOB,
+                           max_length=None, job_evidence=[CASE_DATA], purpose="case_analysis")
+    assert [s.text for s in draft.sentences] == ["Search CPA = $5,000 / 100 = $50.", "Search ROAS = $12,500 / $5,000 = 2.5."]
+    [request] = provider.requests
+    system = request["messages"][0]["content"]
+    assert system == CASE_ANALYSIS_SYSTEM and "show the working" in system and CASE_DATA_MISSING in system
+    assert "fact_ids stay empty" in system and FIT_GIVEN_RULE not in system
+    assert request["reasoning"] == {"max_tokens": REASONING_BUDGET_TOKENS["low"]}  # a bare writer keeps its effort
+    # No candidate facts, and the data as evidence: otherwise no request is made.
+    for facts, evidence in ((FACTS, [CASE_DATA]), ([], [])):
+        with pytest.raises(AIHold, match="computes from the question's data only"):
+            instance.write(question="Calculate CPA.", facts=facts, job=JOB, max_length=None,
+                           job_evidence=evidence, purpose="case_analysis")
+    assert len(provider.requests) == 1
+    # Every sentence cites the data and none cites a fact.
+    for bad in ({"text": "Search CPA is $50.", "job_evidence_ids": []},
+                {"text": "Search CPA is $50.", "job_evidence_ids": [CASE_DATA["id"]], "fact_ids": ["fact:campaigns"]}):
+        provider.draft = ready(bad)
+        with pytest.raises(AIHold):
+            instance.write(question="Calculate CPA.", facts=[], job=JOB, max_length=None,
+                           job_evidence=[CASE_DATA], purpose="case_analysis")
+    provider.draft = {"status": "NEEDS_INPUT", "sentences": [], "missing_information": [CASE_DATA_MISSING]}
+    with pytest.raises(AIHold) as held:
+        instance.write(question="Calculate CPA.", facts=[], job=JOB, max_length=None,
+                       job_evidence=[CASE_DATA], purpose="case_analysis")
+    assert list(held.value.missing_information) == [CASE_DATA_MISSING]

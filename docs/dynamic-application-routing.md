@@ -305,7 +305,7 @@ years fact stays verified; areas come from role titles or bullets that state the
 duration, never from a mention or a linked story ([rag-writing.md](rag-writing.md), Round
 4). Motivation narratives need the applicant's own reason, a cited story passage or the
 `career_motivation` statement, or hold before writing; a draft citing neither gets the one
-corrective rewrite (`MOTIVATION_UNCITED`). The consistency comparison set tiers same-key
+corrective rewrite (`MOTIVATION_UNCITED`; superseded in round 5, addendum 2). The consistency comparison set tiers same-key
 and global claims before the count-ranked rest (`tiered_first`), for the Jev check and the
 review. The humanizer keeps each sentence's citation set together (`REJECTED_MOVED_CITATION`)
 and every humanized draft gets the independent review. The form allowance is granted once
@@ -325,7 +325,15 @@ whole (L4). A draft that copies more than 12 consecutive words of the person's
 `career_motivation` gets the one corrective rewrite (`STATEMENT_QUOTED`; every
 deterministic finding of a draft goes into that one rewrite, `rejected_for`), and a
 humanized rewrite that does is rejected (`REJECTED_QUOTED_STATEMENT`). Story linking and
-dating changes are in [rag-writing.md](rag-writing.md), Round 5.
+dating changes are in [rag-writing.md](rag-writing.md), Round 5. Addenda: fit is given for every saved
+job, so cover letters, motivation and narrative answers build the case and never hedge or judge
+fit (`FIT_GIVEN_RULE`; a hedge, disclaimer or fit comment gets the one corrective rewrite,
+`FIT_HEDGED`); round 4's personal-reason demand is superseded (the alignment is the reason); the
+independent draft review judges grounding and consistency only; a review hold names the profile
+fact ids it referenced; and a WRITER question asking to calculate or analyse data given with it
+is answered under the purpose `case_analysis` from that data alone, working checked in code,
+provenance `GENERATED_FROM_QUESTION`, or held with "The table referenced is not in the recorded
+question" when the recording carries no data.
 
 ## Bounds and observations
 

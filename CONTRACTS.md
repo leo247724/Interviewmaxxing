@@ -146,6 +146,7 @@ All contracts derive from `Contract`: Pydantic v2, **frozen** (use `model_copy(u
 | --- | --- | --- |
 | `PROFILE_IDENTITY` | optional | only `PROFILE_IDENTITY_TYPES` (name, email, phone, address parts, country, location, LinkedIn/website/GitHub) |
 | `CANDIDATE_FACT`, `GENERATED_FROM_FACTS` | fact ids (required) | facts must exist and be **verified** |
+| `GENERATED_FROM_QUESTION` | exactly `[question_content_ref(field)]` (`form:<sha256>` of the question's wording and recorded `section_context`) | an answer computed from the data the question itself shows (a case-study question, WP12 round 5); it cites no candidate fact, and a changed recording is a different reference |
 | `SAVED_ANSWER` | saved-answer ids (required) | must `applies_to(job)`; its `semantic_type`, if set, must equal the answer's |
 | `RESUME` | exactly `[candidate.resume.id]` | the `FileValue` digest must equal the supplied resume's |
 | `USER_INPUT` | `UserInput.id` (required) | same question (scope, field id, fingerprint) and the same value the user gave |

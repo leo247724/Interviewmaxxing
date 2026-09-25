@@ -62,7 +62,9 @@ and cannot be sent directly to the browser as application packets.
 
 To add personal history later, supply an array of user-confirmed facts with `id`,
 `key`, `value` and optional `evidence`, then run `import-facts --file ...` followed
-by `index-profile`. Importing means the user confirmed the file; it does not infer
+by `index-profile`. The import lists and does not import a fact whose own evidence dates or
+places it elsewhere, and skips rows the story index marked `superseded`;
+`remove-facts --ids a,b` removes facts from the profile by id (then `index-profile`). Importing means the user confirmed the file; it does not infer
 verification from arbitrary scraped or model-generated text. Replace a fact by
 its stable ID when correcting it. For tone, `index-voice --file sample.txt` indexes
 a professional writing sample as style-only evidence. The initial writer uses
@@ -412,7 +414,7 @@ through the import above, with its basis in the evidence ("Glaze Agency: title, 
 months"; "Crumb & Co.: a bullet stating 36 months"). The numeric screener therefore
 answers "How many years of X" from a per-area fact only once the person confirmed it.
 
-**The applicant's own reason (M7).** A motivation narrative needs, besides the
+**The applicant's own reason (M7; superseded in round 5, addendum 2).** A motivation narrative needs, besides the
 alignment, the applicant's own reason: a retrieved story passage about this kind of work
 or the `career_motivation` statement. With neither, the field holds before any writer
 call ("Motivation answer needs the applicant's own reason: a story about this kind of
@@ -545,6 +547,62 @@ story fact again, and takes the cached review instead of a second one
 evidence. The story verdict cache (L4) stores a verdict, its score and its asks flag,
 only when two slots fit (`max_cache_entries` 0 and 1 cache nothing instead of failing) and
 counts it as cached only when both halves are present.
+
+**Addendum 2: fit is given, the writer builds the case.** The owner vets every saved job
+before it enters the pipeline, so every one fits by definition. For cover letters, motivation
+answers and narrative answers the writer prompt now says so (`FIT_GIVEN_RULE`): map the
+posting's requirements to the applicant's experience, concretely and affirmatively; never
+hedge ("while I have not…", "although my background is in…"), never add a disclaimer about a
+requirement the experience does not cover, never comment on fit; a requirement no fact or
+passage supports is simply not mentioned, and every claim still needs its citation. The
+resolver enforces it in code: a draft with a hedge, a disclaimer or a fit comment
+(`fit_hedges` in `ai/humanize.py`: concessions about the applicant, volunteered gaps,
+"a quick learner", "I would be a strong fit") gets the one corrective rewrite (draft trace
+`FIT_HEDGED`), and the no-slop pass lints the same patterns (`fit_hedge`). Round 4's M7 is
+superseded: a motivation answer's reason is the alignment between the posting and the
+applicant's experience, in the applicant's voice, restating `career_motivation` when it is
+set; no story passage or statement is required any more, and the field holds only when no
+fact relates to the posting at all. The cover-letter prompt no longer asks for missing
+experience; it returns `NEEDS_INPUT` only without a real job description or any related
+fact. The independent draft review judges grounding and consistency only: never fit,
+sufficiency of experience or coverage of the posting (a requirement the draft leaves out
+is not an issue; it no longer returns `INCOMPLETE`), and the Jev completeness check and the
+required details say the same for cover letters and motivation questions.
+
+**Addendum item 7: case-study questions.** "Calculate CPA and ROAS for each channel. Based on
+this information, respond to the above question" asks for a computation over data the form
+shows with the question, not for the applicant's history, and used to hold as "No verified
+fact or saved answer answers this question". A WRITER-routed text question whose wording
+asks to calculate, analyse or respond to given data (`case_analysis_question` in
+`ai/case_analysis.py`) is now admitted whatever its candidate source scope and answered under
+the writer purpose `case_analysis` (`CASE_ANALYSIS_SYSTEM`): from the question's recorded
+wording and `section_context` only (`data_evidence`, cited by `form:<sha256>`), computing every
+requested metric with its working shown ("Search CPA = $5,000 / 100 conversions = $50") and
+answering the follow-up from those results, citing no candidate fact and making no personal
+claim. The working is checked in code (`check_working`: each `… = c` computed correctly from
+numbers the data states or earlier results, no other number the data does not state; one
+corrective rewrite, then a hold), Jev grounds each sentence in the data and checks
+completeness (an uncertain score goes to the independent review), and the answer's
+provenance is the new `GENERATED_FROM_QUESTION` source (CONTRACTS.md), which packet
+validation re-derives from the inspected field. When the recording carries no data (fewer
+than four numbers) the field holds before any writer call with "The table referenced is not
+in the recorded question". Today the inspector records headings as `section_context`, not the
+table, text or image alt that precedes a question in its block: that part of item 7 belongs to
+WP1's `inspect.js` (requested through the lead); until it lands, case questions hold with that
+reason instead of the misleading "no verified fact".
+
+**Addendum item 8: confirmed facts that contradict their own evidence.** Three confirmed facts
+placed work from a story dated Aug 2019 - May 2020 at a resume role dated 2023-10 to 2024-02:
+they came from a confirm file written before the linking fix and imported afterwards.
+`import-facts` now lists and does not import a fact whose own evidence contradicts it
+(`fact_self_contradictions`: the period its evidence states, such as a story heading's range,
+shares no month with the period its value states, or its evidence links or names a resume
+employer other than the one its value names; reason codes only, no values); the index script
+marks the confirmed facts of a story whose resume link changed, or whose story left the
+document, as `superseded` rows in the next `.confirm.json` (`superseded_story_facts`; the review
+lists them with the removal command, the receipt their ids), which the import skips; and the
+independent review's hold message ends with the profile fact ids it referenced
+("… (facts: sf_…, sf_…)") so the person can remove them with `remove-facts`.
 
 **Re-indexing.** The candidate's current documents are unchanged by these rules when
 their stories state no heading period and their name links use a distinctive name; a
