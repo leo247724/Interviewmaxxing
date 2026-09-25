@@ -899,7 +899,8 @@ def test_motivation_narratives_state_alignment_and_cite_the_career_motivation_fa
     draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
     assert draft["attempts"] == []  # the double makes no provider call
     [details] = _required_details(ctx.form.fields[0], "motivation")
-    assert "alignment" in details and "cited story passage or the career_motivation statement" in details
+    assert "alignment" in details and "career_motivation statement restated when supplied" in details
+    assert "A personal reason beyond that" in details  # round 5 addendum 2: M7's demand is superseded
     # Without a statement the applicant's own account of the work gives the reason (round 4).
     writer = Writer([
         {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
@@ -990,37 +991,29 @@ def test_enumeration_questions_write_from_the_facts_at_hand_without_totality_wor
 # --- round 4: the applicant's own reason, tiered comparisons, reviewed rewrites, one allowance --
 
 
-def test_motivation_needs_a_cited_story_passage_or_the_career_motivation_statement(candidate, mock_job):
-    from interviewmaxxing_browser.ai.routing import MOTIVATION_MISSING_DETAIL
-
+def test_a_motivation_question_with_facts_but_no_statement_is_written_not_held(candidate, mock_job):
+    """Round 5, addendum 2 supersedes round 4's M7: the reason is the alignment between the
+    posting and the applicant's experience; neither a story passage nor a career_motivation
+    statement is required, and the field holds only when no fact relates to the posting."""
     jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
     aligned = [
         {"text": "The role owns paid search strategy and reports results to sales.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
         {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
          "fact_ids": ["fact.bakery"], "job_evidence_ids": [JOB_EVIDENCE["id"]]},
     ]
-    # No story passage and no statement: held before any writer call, naming what is missing.
     writer = Writer(aligned)
     packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
                                     Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
-    assert held(packet, ctx) and not writer.calls
-    [missing] = packet.missing_inputs
-    assert "career_motivation statement" in missing.prompt and "story about this kind of work" in MOTIVATION_MISSING_DETAIL
-    # A passage retrieved but not cited as the reason: one corrective rewrite, then the hold.
-    chunk = story_chunk()
+    assert packet.is_complete and ctx.problems(packet) == [] and len(writer.calls) == 1
+    assert writer.calls[0]["purpose"] == "motivation"
+    assert all(item["key"] not in ("career_motivation", "story") for item in writer.calls[0]["facts"])
+    assert next(t["status"] for t in resolver.narrative_traces if t["stage"] == "draft") == "READY"
+    assert packet.answers[0].provenance.reference_ids == ["fact.bakery"]
+    # Held only when nothing relates to the posting: retrieval found no fact at all.
     writer = Writer(aligned)
     packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
-                                    Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE]), writer, jev)
-    assert held(packet, ctx) and len(writer.calls) == 2
-    [issue] = writer.calls[1]["review_feedback"]
-    assert "story: passage" in issue and "career_motivation statement" in issue
-    assert next(t["status"] for t in resolver.narrative_traces if t["stage"] == "draft") == "MOTIVATION_UNCITED"
-    # The passage cited as the reason: complete on the first draft.
-    writer = Writer([*aligned, {"text": "I set up conversion tracking so the owner could see which campaigns paid off.",
-                                "fact_ids": [chunk["id"]]}])
-    packet, resolver, ctx = resolve(context(candidate, mock_job, question=INTEREST),
-                                    Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE]), writer, jev)
-    assert packet.is_complete and len(writer.calls) == 1
+                                    Retriever([], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
 
 
 def test_a_global_counterclaim_beyond_the_bound_is_still_compared(fictional_candidate, mock_job):
@@ -1355,18 +1348,18 @@ def test_a_draft_quoting_the_career_motivation_statement_is_rewritten(candidate,
 
 
 def test_one_corrective_rewrite_names_every_deterministic_finding(candidate, mock_job):
-    from interviewmaxxing_browser.ai.humanize import QUOTED_STATEMENT_FEEDBACK
+    from interviewmaxxing_browser.ai.humanize import FIT_HEDGE_FEEDBACK, QUOTED_STATEMENT_FEEDBACK
 
     jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
-    pasted_uncited = [*QUOTING[:2], {"text": CAREER_MOTIVATION, "fact_ids": ["fact.bakery"]}]
-    writer = DraftQueue(pasted_uncited, RESTATED)
+    hedged_and_pasted = [QUOTING[0], {**QUOTING[1], "text": "While I have not managed retail media, I managed paid "
+                                      "search for a regional bakery chain and grew online orders by 35%."}, QUOTING[2]]
+    writer = DraftQueue(hedged_and_pasted, RESTATED)
     packet, resolver, _ctx = resolve(context(with_career_motivation(candidate), mock_job, question=INTEREST),
                                      Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
     assert packet.is_complete
-    issues = writer.calls[1]["review_feedback"]
-    assert len(issues) == 2 and "story: passage" in issues[0] and issues[1] == QUOTED_STATEMENT_FEEDBACK
+    assert writer.calls[1]["review_feedback"] == [FIT_HEDGE_FEEDBACK, QUOTED_STATEMENT_FEEDBACK]
     draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
-    assert draft["status"] == "MOTIVATION_UNCITED" and draft["rejected_for"] == ["MOTIVATION_UNCITED", "STATEMENT_QUOTED"]
+    assert draft["status"] == "FIT_HEDGED" and draft["rejected_for"] == ["FIT_HEDGED", "STATEMENT_QUOTED"]
 
 
 def test_the_writer_prompt_restates_the_statement_and_varies_openers(candidate, mock_job):
@@ -1417,3 +1410,88 @@ def test_a_humanized_rewrite_that_pastes_the_statement_is_rejected(candidate, mo
     rules = transport.requests[1]["messages"][0]["content"]
     assert "quoted_statement finding" in rules and "In that same role" in rules
     assert CAREER_MOTIVATION not in json.dumps(trace)
+
+
+# --- round 5, addendum 2: fit is given; the writer builds the case; the review judges grounding --
+
+POSTING = {"id": "job:" + "d" * 64, "source_url": "https://synthetic.test/jobs/2", "source_version": "e" * 64,
+           "text": ("Own paid search strategy for enterprise brands and report results to the sales team. "
+                    "Requirements: hands-on Google Ads management, conversion tracking, and TikTok Ads experience.")}
+LETTER_OPENING = {"text": "Your team needs someone to own paid search strategy and report results to sales.",
+                  "job_evidence_ids": [POSTING["id"]], "paragraph": 0}
+LETTER_CASE = {"text": "At a regional bakery chain I managed paid search and grew online orders by 35%.",
+               "fact_ids": ["fact.bakery"], "job_evidence_ids": [POSTING["id"]], "paragraph": 1}
+LETTER_CLOSE = {"text": "I wrote weekly reports for two store managers.", "fact_ids": ["fact.reports"], "paragraph": 2}
+HEDGED_LETTER = [LETTER_OPENING, LETTER_CASE,
+                 {"text": "While I have not run TikTok Ads, I am a quick learner and would be a strong fit.",
+                  "job_evidence_ids": [POSTING["id"]], "paragraph": 2}, LETTER_CLOSE]
+CASE_LETTER = [LETTER_OPENING, LETTER_CASE, LETTER_CLOSE]
+
+
+def test_a_letter_leaves_out_a_requirement_no_fact_supports_without_a_hedge(candidate, mock_job):
+    from interviewmaxxing_browser.ai.humanize import FIT_HEDGE_FEEDBACK, fit_hedges
+
+    jev = Jev(semantic="COVER_LETTER")
+    writer = DraftQueue(HEDGED_LETTER, CASE_LETTER)
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question="Cover letter", semantic=SemanticType.COVER_LETTER),
+                                    Retriever(list(candidate.facts), job_evidence=[POSTING]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    first, second = writer.calls
+    assert first["purpose"] == "cover_letter" and second["review_feedback"] == [FIT_HEDGE_FEEDBACK]
+    text = packet.answers[0].value.text
+    assert "TikTok" not in text and fit_hedges(text) == []  # the unsupported requirement is simply left out
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert draft["status"] == "FIT_HEDGED" and draft["rejected_for"] == ["FIT_HEDGED"]
+    # A letter that makes the case from what the facts support is written on the first draft.
+    writer = DraftQueue(CASE_LETTER)
+    packet, _, ctx = resolve(context(candidate, mock_job, question="Cover letter", semantic=SemanticType.COVER_LETTER),
+                             Retriever(list(candidate.facts), job_evidence=[POSTING]), writer, jev)
+    assert packet.is_complete and len(writer.calls) == 1
+
+
+def test_fit_hedges_are_named_and_linted_and_ordinary_claims_are_not() -> None:
+    from interviewmaxxing_browser.ai.humanize import fit_hedges
+
+    for hedge in ("While I have not managed TikTok Ads, I ran paid social on Meta.",
+                  "Although my background is in paid search, I learned social quickly.",
+                  "I have limited experience with Amazon Ads.", "I'm a quick learner and eager to learn.",
+                  "I believe I would be a strong fit for this role.", "I've never run TV, but my digital work is deep.",
+                  "I don't have direct experience with retail media."):
+        assert fit_hedges(hedge), hedge
+        assert "fit_hedge" in {f.pattern for f in lint(hedge)}
+    for claim in ("While I was at Glaze Agency, I managed Google Ads for twelve clients.",
+                  "I trained a team with no prior experience in SEO to run audits.",
+                  "We hired a strong candidate for the analytics seat.", "I helped the client ramp up spend to $50,000.",
+                  "I do not rely on last-click attribution, but on incrementality tests."):
+        assert fit_hedges(claim) == [], claim
+
+
+@dataclass
+class ConflictingReviewer(Writer):
+    """A writer whose independent review finds a conflict and names the facts involved."""
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+    reference_ids: list[str] = field(default_factory=list)
+
+    def review(self, **kwargs: Any) -> Any:
+        self.reviews.append(kwargs)
+        return SimpleNamespace(verdict="CONFLICT", issues=["Two facts date the same role differently."],
+                               reference_ids=self.reference_ids)
+
+
+def test_a_review_hold_names_the_fact_ids_to_correct_or_remove(candidate, mock_job):
+    """Round 5, addendum item 8: the person removes confirmed facts that contradict their own
+    evidence by id, so the review's hold message names them (story and job ids stay out)."""
+    chunk = story_chunk()
+    other = fact(candidate, "Grew online orders by 20% for the regional bakery chain in 2024.", fid="fact.bakery_other",
+                 key="achievement")
+    profile = candidate.model_copy(update={"facts": [*candidate.facts, other]})
+    writer = ConflictingReviewer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}],
+                                 reference_ids=["fact.bakery", "fact.bakery_other", chunk["id"]])
+    jev = Jev(consistency=0.9)  # uncertain: the evidence goes to the independent review
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    [missing] = packet.missing_inputs
+    assert missing.prompt.endswith("(facts: fact.bakery, fact.bakery_other)") and chunk["id"] not in missing.prompt
+    assert "Two facts date the same role differently." in missing.prompt
+    review = next(t for t in resolver.narrative_traces if t["stage"] == "strong_review")
+    assert review["status"] == "CONFLICT" and review["reference_ids"] == ["fact.bakery", "fact.bakery_other", chunk["id"]]

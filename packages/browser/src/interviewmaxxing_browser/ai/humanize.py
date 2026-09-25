@@ -38,6 +38,39 @@ QUOTED_STATEMENT_FEEDBACK = (
     f"meaning and add no claim, but copy no run of more than {MAX_QUOTED_WORDS} consecutive words "
     "from it, and do not begin two consecutive sentences with the same phrase.")
 _WORD = re.compile("[a-z0-9]+(?:['\u2019][a-z]+)?")
+_NOT = r"(?:have\s+not|haven't|have\s+never|'ve\s+never|'ve\s+not|do\s+not|don't|am\s+not|'m\s+not)"
+_FIT_HEDGE = re.compile(
+    # A concession about the applicant: "while I have not ...", "although my background is in ...".
+    rf"\b(?:while|although|though|even\s+though|even\s+if|despite\s+the\s+fact\s+that)\s+(?:I\s*{_NOT}|"
+    r"I\s+(?:did\s+not|didn't|may\s+not|might\s+not|cannot|can't|lack)|"
+    r"my\s+(?:background|experience|expertise|career)\s+(?:is|has\s+been|was|lies|comes))\b"
+    # A lack the applicant volunteers: "I have not yet had the chance", "I have limited experience with".
+    rf"|\bI\s*{_NOT}\s+(?:yet\s+)?(?:had\s+the\s+(?:chance|opportunity)|worked\s+directly|"
+    r"directly\s+(?:managed|worked|run|owned)|had\s+(?:direct|hands-on)|have\s+(?:direct|hands-on|any))"
+    r"|\bI\s+(?:lack|am\s+new\s+to)\b|\bI'm\s+new\s+to\b"
+    r"|\b(?:I\s+have|I've|I\s+had|my)\s+(?:only\s+)?(?:limited|little|no)\s+(?:direct\s+|hands-on\s+|"
+    r"formal\s+|prior\s+)?(?:experience|exposure)\b"
+    r"|\bwhich\s+I\s*(?:have\s+not|haven't|have\s+never|'ve\s+never)\b"
+    # A disclaimer turned into a contrast: "I'm not a DSP specialist, but ...", "I've never run TV, but ...".
+    rf"|\bI\s*{_NOT}\s+(?:yet\s+)?(?:a|an|worked|run|ran|managed|used|led|owned|built|had|been|done)\b"
+    r"[^.!?]{0,80}?,\s*but\b"
+    # Compensation for a gap: "a quick learner", "eager to learn", "I can get up to speed".
+    r"|\b(?:quick|fast)\s+learner\b|\b(?:eager|willing|keen)\s+to\s+learn\b"
+    r"|\bI\s+(?:can|will|would|could)\s+(?:quickly\s+)?(?:get\s+up\s+to\s+speed|ramp\s+up|learn)\b"
+    # A comment on fit rather than the case: "I would be a strong fit", "well suited to this role".
+    r"|\b(?:I\s+am|I'm|I\s+would\s+be|I'd\s+be|I\s+believe\s+I\s+(?:am|would\s+be)|makes?\s+me)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?:strong|good|great|perfect|ideal|natural|excellent|right)\s+"
+    r"(?:fit|match|candidate)\b"
+    r"|\bfit\s+for\s+(?:this|the|your)\s+(?:role|position|team|job)\b"
+    r"|\bwell[-\s]suited\s+(?:for|to)\s+(?:this|the|your)\b",
+    re.IGNORECASE)
+"""Hedges, disclaimers and fit comments: the applicant already decided the role fits, so the
+writer builds the case and leaves out what the evidence does not support (round 5)."""
+FIT_HEDGE_FEEDBACK = (
+    "The applicant already decided this role fits. Remove every hedge, disclaimer and comment "
+    "on fit ('while I have not...', 'although my background is in...', 'limited experience "
+    "with...', 'a quick learner', 'a strong fit'): state the matching experience affirmatively "
+    "and leave out any requirement the supplied facts do not support.")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _NUMBER = re.compile(r"\d[\d,.]*")
 _KICKERS = re.compile(
@@ -138,6 +171,11 @@ def quotes_statement(text: str, statements: Sequence[str]) -> bool:
     return any(len(quoted_run(text, statement)) > MAX_QUOTED_WORDS for statement in statements)
 
 
+def fit_hedges(text: str) -> list[str]:
+    """The hedges, disclaimers and fit comments a draft contains (short excerpts)."""
+    return [match.group(0).strip()[:120] for match in _FIT_HEDGE.finditer(text)]
+
+
 def _openers(sentences: list[str]) -> list[str]:
     return [" ".join(_WORD.findall(sentence.casefold())[:3]) for sentence in sentences]
 
@@ -178,6 +216,9 @@ def lint(text: str, *, statements: Sequence[str] = ()) -> list[Finding]:
               if len(run) > MAX_QUOTED_WORDS]
     if quoted:
         findings.append(Finding("quoted_statement", len(quoted), tuple(run[:120] for run in quoted[:4])))
+    hedges = fit_hedges(text)
+    if hedges:
+        findings.append(Finding("fit_hedge", len(hedges), tuple(hedges[:4])))
     if sentences and _KICKERS.search(sentences[-1]):
         findings.append(Finding("fake_profundity", 1, (sentences[-1][:120],)))
     last_paragraph = text.strip().split("\n\n")[-1].strip()
@@ -256,7 +297,10 @@ _RULES = (
     "sentence openers: never begin two consecutive sentences with the same phrase (such as 'In "
     "that same role'). A quoted_statement finding is the applicant's own statement of what they "
     "look for, pasted verbatim: restate it in different words with the same meaning, copying no "
-    f"run of more than {MAX_QUOTED_WORDS} consecutive words, and keep its citation. Never "
+    f"run of more than {MAX_QUOTED_WORDS} consecutive words, and keep its citation. The "
+    "applicant already decided the role fits: cut hedges, disclaimers and comments on fit "
+    "(fit_hedge findings such as 'while I have not...', 'a quick learner', 'a strong fit') and "
+    "keep the affirmative claims; never add a claim to replace one. Never "
     "use these words: delve, foster, leverage, utilize, facilitate, empower, streamline, robust, "
     "cutting-edge, paradigm shift, game changer, tapestry, realm, beacon, multifaceted, "
     "meticulous, intricate, paramount, transformative, elevate, embark, supercharge, harness, "
@@ -424,7 +468,7 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
 
 
 __all__ = [
-    "HUMANIZE_PROMPT_VERSION", "MAX_QUOTED_WORDS", "MAX_REWRITES", "QUOTED_STATEMENT_FEEDBACK",
-    "Finding", "check_rewrite", "findings_summary", "humanize_draft", "lint", "quoted_run",
-    "quotes_statement", "rewrite_draft",
+    "FIT_HEDGE_FEEDBACK", "HUMANIZE_PROMPT_VERSION", "MAX_QUOTED_WORDS", "MAX_REWRITES",
+    "QUOTED_STATEMENT_FEEDBACK", "Finding", "check_rewrite", "findings_summary", "fit_hedges",
+    "humanize_draft", "lint", "quoted_run", "quotes_statement", "rewrite_draft",
 ]
