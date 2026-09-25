@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -23,6 +23,7 @@ import pytest
 from interviewmaxxing_browser import AmbiguousAction
 from interviewmaxxing_browser.ai import AIFormRouter, BoundedDecisions, DynamicPacketResolver
 from interviewmaxxing_candidate import LocalCandidateStore
+from interviewmaxxing_candidate.simple_answers import SimpleAnswers
 from interviewmaxxing_cli.batch import provider_cost
 from interviewmaxxing_cli.runner import (
     PROVIDER_EVENT,
@@ -1585,6 +1586,57 @@ def _stored_packet(paths, app_id: str, form: ApplicationForm,
                             candidate=candidate.model_copy(update={"id": app.candidate_id}),
                             user_inputs=store.get_user_inputs(app_id, form))
         return packet, ctx.problems(packet)
+
+
+ROUND_ROCK_METRO = ("Round Rock, Cedar Park, Leander, Pflugerville, Georgetown, Hutto, Kyle, Buda, "
+                    "San Marcos, Lakeway, Bee Cave, Dripping Springs")
+
+
+def _metro_candidate(candidate: CandidateProfile) -> CandidateProfile:
+    """Avery Example in Austin, TX with the fictional metro towns and a remote preference,
+    imported through the simple-answers map (round 13)."""
+    moved = _austin(candidate)
+    data = SimpleAnswers.from_identity(moved.identity).model_dump()
+    data.update(metro_area=ROUND_ROCK_METRO, work_arrangement_preference="remote")
+    imported = SimpleAnswers.model_validate(data).saved_answer_updates(
+        confirmed_at=datetime(2026, 9, 25, 12, tzinfo=UTC))
+    return moved.model_copy(update={"saved_answers": [*moved.saved_answers, *imported]})
+
+
+@pytest.mark.parametrize(("location", "expected"), [
+    ("Round Rock, TX (Hybrid)", "Hybrid"), ("Round Rock", "Hybrid"), ("Remote (US)", "Remote"),
+    (None, "Remote"),
+])
+def test_the_location_a_page_states_reaches_the_packet_and_the_metro_rule(
+    isolated_imx_home, fictional_candidate, location, expected
+):
+    """Round 14: the job's location the page states (its identity observation, from the
+    posting's JSON-LD ``jobLocation``) is bound to the job and reaches ``PacketContext.job``,
+    so a Round Rock hybrid posting's work-mode select takes Hybrid for a person whose metro
+    lists Round Rock. With no location the job reads as remote (round 13's rule). This is the
+    only path by which a location reaches the job today: the listing's own location never
+    does on the prepare-batch path (WP2 round 14 report, item 3)."""
+    identity = IDENTITY.model_copy(update={"location": location})
+    arrangement = ApplicationField(
+        id="arrangement", label="Which work arrangement do you prefer?", selector="#arrangement",
+        semantic_type=SemanticType.CUSTOM_SELECT, control_type=ControlType.SELECT, required=True,
+        options=[FieldOption(value=value, label=label) for value, label in
+                 (("remote", "Remote"), ("hybrid", "Hybrid"), ("onsite", "On-site"))])
+    form = _form().model_copy(update={"fields": [*_form().fields, arrangement]})
+    jev = ScriptedJev({0: "APPLICANT_CURRENT", 1: "EXPLICIT_ANSWER"}, {})
+    script = Script(pages=[_page(form, identity=identity)])
+    runner = _dynamic_runner(isolated_imx_home, _metro_candidate(fictional_candidate), script, jev)
+    result = asyncio.run(runner.apply(URL, candidate_id="c1"))
+    assert result.state is S.NEEDS_INPUT and result.missing_inputs == []
+    with _store(isolated_imx_home) as store:
+        job = store.get_job(store.get_application(result.application_id).job_id)
+        packet = store.latest_packet(result.application_id)
+    assert job.location == location
+    assert packet is not None
+    answer = packet.answer_for("arrangement")
+    assert answer is not None and answer.value.label == expected
+    assert answer.provenance.source is AnswerSource.SAVED_ANSWER
+    assert "metro" in (answer.provenance.note or "")
 
 
 def test_runner_fills_a_reworded_sponsorship_question_from_the_global_saved_answer(

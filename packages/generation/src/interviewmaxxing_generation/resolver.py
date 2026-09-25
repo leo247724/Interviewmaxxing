@@ -6,7 +6,8 @@ Each field of the inspected form step is resolved from, in order:
 2. a saved answer that applies to the job and was given for this exact question
    wording (job-scoped answers take precedence over global ones);
 3. for every type except ``EXPLICIT_ANSWER_REQUIRED``: the supplied resume, the
-   verified identity, or verified candidate facts;
+   verified identity, or verified candidate facts, a fact the person stated replacing a
+   derived one for the same key (``prefer_stated``);
 4. for free-text questions that are pure fact lookups ("What is your current job
    title?"): text assembled from verified facts.
 
@@ -25,7 +26,7 @@ protected attributes are never inferred.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -60,6 +61,7 @@ from interviewmaxxing_core import (
 
 from .contact import LOOKUP_TYPES, PhoneFormatError, international_phone, lookup_text
 from .questions import (
+    GENERIC_YEARS_KEYS,
     QuestionText,
     display_question,
     factual_template,
@@ -78,6 +80,39 @@ class PacketResolutionError(RuntimeError):
     def __init__(self, problems: Sequence[str]) -> None:
         self.problems = list(problems)
         super().__init__("resolved packet is invalid: " + "; ".join(self.problems))
+
+
+# --- stated and derived facts ---------------------------------------------------------
+
+USER_SOURCE = "user:"
+"""The source of a fact the person stated themselves ("user:simple-answers")."""
+DERIVED_SOURCE = "derived:"
+"""The source of a fact computed from other facts ("derived:experience_timeline")."""
+
+
+def stated_by_person(fact: CandidateFact) -> bool:
+    """A fact the person stated themselves (source ``user`` or ``user:…``)."""
+    return fact.source == "user" or fact.source.startswith(USER_SOURCE)
+
+
+def derived(fact: CandidateFact) -> bool:
+    """A fact computed from other facts (source ``derived`` or ``derived:…``)."""
+    return fact.source == "derived" or fact.source.startswith(DERIVED_SOURCE)
+
+
+def _key_group(key: str) -> str:
+    """Every spelling of the total years key is one key."""
+    return "years_experience" if key in GENERIC_YEARS_KEYS else key
+
+
+def prefer_stated(facts: Iterable[CandidateFact]) -> list[CandidateFact]:
+    """The facts without the derived ones whose key the person stated themselves: a
+    ``user:`` years total of 8 replaces a ``derived:`` total of 5, never averaged (round 11).
+    The factual pass reads the facts this way (round 14), and so does the routing
+    (``interviewmaxxing_browser.ai.routing._current_facts``)."""
+    facts = list(facts)
+    stated = {_key_group(f.key) for f in facts if stated_by_person(f)}
+    return [f for f in facts if not (derived(f) and _key_group(f.key) in stated)]
 
 
 # --- per-field outcomes --------------------------------------------------------------
@@ -152,7 +187,9 @@ class _FieldResolver:
     def __init__(self, context: PacketContext) -> None:
         self.context = context
         self.candidate = context.candidate
-        self.facts = context.candidate.verified_facts()
+        # A stated 8 years replaces a derived 5 before any lookup (round 14), so the two
+        # never disagree and the total is copied without a call.
+        self.facts = prefer_stated(context.candidate.verified_facts())
         latest: dict[str, UserInput] = {}
         for item in sorted(context.user_inputs, key=lambda u: u.provided_at):
             latest[item.field_id] = item

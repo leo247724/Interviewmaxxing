@@ -425,6 +425,22 @@ two scores is kept."""
 _ONSITE_WORDING = re.compile(r"\b(?:on-?\s?site|in-?\s?person|in-?\s?office|in the office)\b",
                              re.IGNORECASE)
 """An on-site (in-person, in-office) work question."""
+_ONSITE_ARRANGEMENT = re.compile(
+    r"\b(?:on-?\s?site|in-?\s?person|in-?\s?office|in (?:the|our|an?) office|"
+    r"hybrid\s+(?:role|position|job|schedule|work(?:ing)?|arrangement|model|environment|set-?up|basis)|"
+    r"(?:role|position|job)\s+is\s+(?:a\s+|fully\s+)?hybrid|work(?:ing)?\s+hybrid)\b", re.IGNORECASE)
+"""An on-site or hybrid way of working that a question names without a place (round 14):
+"work on-site three days a week", "This role is hybrid (3 days in the office)"."""
+_ONSITE_ACCEPTANCE = re.compile(
+    r"\b(?:able|willing|comfortable|open to|ok(?:ay)? with|fine with|happy to|prepared to|"
+    r"available to|agree|commit|accept|meet (?:this|the|these) requirements?|"
+    r"can you|could you|will you|would you)\b", re.IGNORECASE)
+"""The question asks whether the applicant can or will work that way."""
+_ONSITE_ELSEWHERE = re.compile(
+    r"\b(?:interview\w*|travel\w*|training|onboarding|orientation|events?|conferences?|"
+    r"off-?sites?|retreats?|meetings?|visits?|clients?|customers?)\b", re.IGNORECASE)
+"""On-site wording about something other than the regular way of working (an in-person
+interview, travel, onboarding, client sites): never the metro's to answer (round 14)."""
 _STATUS_OPTION = re.compile(
     r"\b(?:citizen\w*|green card|resident\w*|residence|visa|h-?1b|ead|opt|tn|asylee|asylum|"
     r"refugee|daca|tps)\b", re.IGNORECASE)
@@ -1016,6 +1032,16 @@ def _places(text: str, *, after_preposition: bool, at: bool = False) -> list[str
         if key and key not in _NOT_PLACES and us_state_code(key) is None:
             places.append(run)
     return places
+
+
+def _without_employer(text: str, company: str | None) -> str:
+    """``text`` without the employer's own name ("on-site at Mock Co's office"): a company
+    is not a place, even after "at" or "in" (round 14)."""
+    name = " ".join((company or "").split())
+    if not name:
+        return text
+    return re.sub(rf"(?<![\w-]){re.escape(name)}(?:['\u2019]s)?(?![\w-])", "the employer", text,
+                  flags=re.IGNORECASE)
 
 
 def _names_city(city: str | None, text: str) -> bool:
@@ -1969,7 +1995,7 @@ class DynamicPacketResolver:
     def _preference_copy(self, context: PacketContext, answer: PacketAnswer) -> bool:
         """An answer the factual pass copied from the work-arrangement preference onto a
         field the metro decides: a work-mode choice, an office list or an on-site question
-        naming a city (round 13)."""
+        naming a city (round 13) or no place (round 14)."""
         if answer.provenance.source is not AnswerSource.SAVED_ANSWER:
             return False
         saved = [context.candidate.find_saved_answer(ref) for ref in answer.provenance.reference_ids]
@@ -1977,8 +2003,10 @@ class DynamicPacketResolver:
                                 for a in saved):
             return False
         field = context.form.field(answer.field_id)
+        company = context.job.company
         return (self._is_work_location(field) or self._is_office_choice(field)
-                or self._is_onsite_city_question(field))
+                or self._is_onsite_city_question(field, company)
+                or self._is_onsite_question(field, company))
 
     def _conditional_follow_ups(self, context: PacketContext, packet: ApplicationPacket,
                                 report: FormRouteReport, *, governed_by: set[str] | None = None,
@@ -2119,10 +2147,18 @@ class DynamicPacketResolver:
                 # Round 10: a remote / hybrid / on-site choice, whatever its type, from the
                 # saved work-arrangement preference; the address never answers it.
                 return self._work_location(context, field, gate)
-            if not settled and not own and self._is_onsite_city_question(field):
+            if not settled and not own and self._is_onsite_city_question(field, context.job.company):
                 # Round 10 follow-up: "on-site in Austin" from the preference, the relocation
                 # answer and the verified city; never the residence screener.
                 return self._onsite_city(context, field)
+            if (not settled and not own and self._is_onsite_question(field, context.job.company)
+                    and (metro := self._metro(context)) is not None):
+                # Round 14: "Are you able to work on-site three days a week?" names no place,
+                # so the job's location decides; one the reading cannot place keeps the
+                # earlier route below (the saved preference as before).
+                decided, answer = self._metro_onsite(context, field, *metro, question="onsite")
+                if decided:
+                    return answer
             if not settled and not (legal and exact and not own):
                 # A question asking for the status itself ("Work authorization status") is
                 # derived from the status below, never mapped from its meaning.
@@ -3043,15 +3079,35 @@ class DynamicPacketResolver:
         return is_work_mode_choice(field) and _PRESENT_OR_PAST.search(field.label) is None
 
     @staticmethod
-    def _is_onsite_city_question(field: ApplicationField) -> bool:
-        """A yes/no question about working on-site (in person, in the office) in a named
-        city ("This role requires working on-site in Austin. Are you able to …?"), on a
-        field that is not an explicit-answer type."""
+    def _onsite_yes_no(field: ApplicationField) -> bool:
         return (field.control_type in (ControlType.SELECT, ControlType.RADIO)
                 and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
-                and _yes_no_pair(field)
+                and _yes_no_pair(field))
+
+    @classmethod
+    def _is_onsite_city_question(cls, field: ApplicationField, company: str | None = None) -> bool:
+        """A yes/no question about working on-site (in person, in the office) in a named
+        city ("This role requires working on-site in Austin. Are you able to …?"), on a
+        field that is not an explicit-answer type. The employer's own name is no city."""
+        return (cls._onsite_yes_no(field)
                 and _ONSITE_WORDING.search(field.question_text) is not None
-                and bool(_places(field.question_text, after_preposition=True, at=True)))
+                and bool(_places(_without_employer(field.question_text, company),
+                                 after_preposition=True, at=True)))
+
+    @classmethod
+    def _is_onsite_question(cls, field: ApplicationField, company: str | None = None) -> bool:
+        """A yes/no question whether the applicant can or will work on-site or hybrid that
+        names no place (round 14): "Are you able to work on-site three days a week?", "This
+        role is hybrid (3 days in the office). Are you comfortable with that?". Never one
+        about an interview, travel, onboarding or client sites, nor about the applicant's
+        current or earlier arrangement."""
+        text = field.question_text
+        return (cls._onsite_yes_no(field)
+                and _ONSITE_ARRANGEMENT.search(text) is not None
+                and _ONSITE_ACCEPTANCE.search(text) is not None
+                and _ONSITE_ELSEWHERE.search(text) is None
+                and _PRESENT_OR_PAST.search(text) is None
+                and not _places(_without_employer(text, company), after_preposition=True, at=True))
 
     def _onsite_city(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
         """An on-site-in-a-named-city question derived from ``work_arrangement_preference``
@@ -3169,23 +3225,27 @@ class DynamicPacketResolver:
     def _where(context: PacketContext, field: ApplicationField,
                metro: Metro) -> tuple[PlaceReading, str]:
         """Where the work is: the place the question names ("on-site at the Austin office"),
-        else the job's location; and which of the two said it."""
-        reading = read_place(field.question_text, metro,
-                             places=_places(field.question_text, after_preposition=True, at=True))
+        else the job's location; and which of the two said it. The employer's name, and the
+        person's own state or country, place nothing (round 14)."""
+        text = _without_employer(field.question_text, context.job.company)
+        reading = read_place(text, metro, places=_places(text, after_preposition=True, at=True),
+                             question=True)
         if reading.verdict is not MetroVerdict.UNKNOWN:
             return reading, "question"
         return job_place(context.job, metro), "job"
 
     def _metro_onsite(self, context: PacketContext, field: ApplicationField, metro: Metro,
-                      saved: SavedAnswer) -> tuple[bool, PacketAnswer | None]:
-        """An on-site question naming a city, by the person's metro (the owner's rule): work
-        in the metro is fine on-site or hybrid, whatever the job requires, so Yes; work
-        anywhere else (or a remote job) is No, unless the person's saved relocation answer
-        is Yes. Not decided (the preference decides) when neither the question nor the job's
-        location names a place the reading knows."""
+                      saved: SavedAnswer, *, question: str = "onsite_city",
+                      ) -> tuple[bool, PacketAnswer | None]:
+        """An on-site question, naming a city (``onsite_city``) or no place (``onsite``,
+        round 14), by the person's metro (the owner's rule): work in the metro is fine
+        on-site or hybrid, whatever the job requires, so Yes; work anywhere else (or a remote
+        job) is No, unless the person's saved relocation answer is Yes. Not decided (the
+        preference decides) when neither the question nor the job's location names a place
+        the reading knows."""
         reading, source = self._where(context, field, metro)
         trace: dict[str, Any] = {"stage": "work_arrangement", "field_id": field.id,
-            "field_fingerprint": field.fingerprint, "question": "onsite_city",
+            "field_fingerprint": field.fingerprint, "question": question,
             "metro": reading.verdict.value, "place_source": source, "place": reading.place,
             "reference_ids": [saved.id]}
         if reading.verdict is MetroVerdict.UNKNOWN:

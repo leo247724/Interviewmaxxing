@@ -93,6 +93,16 @@ def test_one_stated_total_drops_every_derived_spelling_of_the_total() -> None:
     assert ids(prefer_stated(iter(facts))) == ["derived_area", "stated"]
 
 
+def test_the_source_helpers_live_in_the_factual_resolver_and_are_re_exported() -> None:
+    # Round 14: moved below the browser package so the factual pass reads the facts the same
+    # way; the names in ai/experience.py are the same objects.
+    from interviewmaxxing_browser.ai import experience
+    from interviewmaxxing_generation import resolver
+
+    for name in ("prefer_stated", "stated_by_person", "derived", "USER_SOURCE", "DERIVED_SOURCE"):
+        assert getattr(experience, name) is getattr(resolver, name), name
+
+
 # --- years_requirement ------------------------------------------------------------------------
 
 @pytest.mark.parametrize("question,years,strict,area", [

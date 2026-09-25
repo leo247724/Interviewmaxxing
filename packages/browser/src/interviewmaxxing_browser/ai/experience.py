@@ -5,7 +5,9 @@ per area) settle several screener questions without a model call, and name the p
 a select-all question lists:
 
 - ``prefer_stated``: a fact the person stated (``user:`` source) replaces a derived one
-  (``derived:``) for the same key; the two are never averaged or compared;
+  (``derived:``) for the same key; the two are never averaged or compared. Since round 14
+  it lives in ``interviewmaxxing_generation.resolver``, below this package, so the factual
+  pass reads the facts the same way; the names are re-exported here unchanged;
 - ``years_requirement``: "at least 8 years", "5+ years", "3 or more years" and the area
   the wording names, if any ("… of total experience in direct response marketing");
 - ``area_facts``: the ``years_experience.<area>`` facts whose area the question names, by the
@@ -24,33 +26,14 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from interviewmaxxing_core import CandidateFact
-from interviewmaxxing_generation.questions import GENERIC_YEARS_KEYS, wording_key, years_fact_area
+from interviewmaxxing_generation.questions import wording_key, years_fact_area
+from interviewmaxxing_generation.resolver import DERIVED_SOURCE as DERIVED_SOURCE
+from interviewmaxxing_generation.resolver import USER_SOURCE as USER_SOURCE
+from interviewmaxxing_generation.resolver import derived as derived
+from interviewmaxxing_generation.resolver import prefer_stated as prefer_stated
+from interviewmaxxing_generation.resolver import stated_by_person as stated_by_person
 
-USER_SOURCE = "user:"
-DERIVED_SOURCE = "derived:"
 STORY_SOURCES = ("story:", "user:story")
-
-
-def stated_by_person(fact: CandidateFact) -> bool:
-    """A fact the person stated themselves (source ``user`` or ``user:…``)."""
-    return fact.source == "user" or fact.source.startswith(USER_SOURCE)
-
-
-def derived(fact: CandidateFact) -> bool:
-    return fact.source == "derived" or fact.source.startswith(DERIVED_SOURCE)
-
-
-def _key_group(key: str) -> str:
-    """Every spelling of the total years key is one key."""
-    return "years_experience" if key in GENERIC_YEARS_KEYS else key
-
-
-def prefer_stated(facts: Iterable[CandidateFact]) -> list[CandidateFact]:
-    """The facts without the derived ones whose key the person stated themselves: a
-    ``user:`` years total of 8 replaces a ``derived:`` total of 5, never averaged."""
-    facts = list(facts)
-    stated = {_key_group(f.key) for f in facts if stated_by_person(f)}
-    return [f for f in facts if not (derived(f) and _key_group(f.key) in stated)]
 
 
 def years_value(fact: CandidateFact) -> float | None:
