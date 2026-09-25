@@ -261,6 +261,21 @@ the lexical competition scan still covers the whole store, but Jev compares the 
 facts with the top 40 competing facts (`CONSISTENCY_COMPARISON_LIMIT`, one request; the
 `consistency` trace records `competing_total` and `compared`).
 
+**The resume is canonical: contradicted story evidence is dropped, not held.** At
+extraction, a linked story's sentence that claims a tenure or duration longer than the
+resume dates the role ("almost 2 years" against a 12-month role; `tenure_conflicts`,
+minimum months per phrase) yields no fact, like a sentence stating a year outside the
+role's dates, and the review file names the phrase and the tenure. At write time the
+story consistency check drops a chunk that contradicts a verified fact instead of
+holding the field, and the fact consistency check drops a story-derived selected fact
+whose verdict fails; both record `story_evidence_dropped` (ids, probabilities, the
+reason) and the narrative continues with the remaining evidence, which is also what the
+grounding, the independent review and the provenance note see. The field holds only when
+the question itself asks about the contradicted point (the same Jev request answers, per
+chunk, whether the question is about the role's dates, tenure or figures; `HELD` in the
+trace) or when no usable verified fact remains. A resume fact in conflict with another
+resume fact still holds as before.
+
 **Pruned years facts.** An area only a linked story names (never a resume role's title or
 bullets) becomes a `years_experience.<area>` fact only at two whole years
 (`MIN_STORY_AREA_YEARS`); an area the resume itself names needs one full year, as before.

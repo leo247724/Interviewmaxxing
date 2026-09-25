@@ -50,13 +50,15 @@ OTHER_FACT = "Wrote weekly reports for two store managers."
 
 def story_chunk(text: str = STORY_TEXT, *, title: str = "Paid search for a regional bakery chain",
                 employer: str | None = "regional bakery chain", period: str | None = "2024",
-                score: float = 0.03) -> dict[str, Any]:
+                score: float = 0.03, resume_role: str | None = None) -> dict[str, Any]:
     header = f"Story 01: {title}" + (f" | employer: {employer}" if employer else "") \
+        + (f" | resume role: {resume_role}" if resume_role else "") \
         + (f" | period: {period}" if period else "") + " | themes: budgets, results"
     body = header + "\n" + text
     return {"id": "story:" + hashlib.sha256(body.encode()).hexdigest(), "text": body,
             "story_id": "26787ad7044bdb88", "title": title, "employer": employer, "period": period,
-            "themes": ["budgets", "results"], "source_version": "c" * 64, "score": score, "rank": 1}
+            "resume_role": resume_role, "themes": ["budgets", "results"], "source_version": "c" * 64,
+            "score": score, "rank": 1}
 
 
 class Jev:
@@ -66,9 +68,9 @@ class Jev:
     def __init__(self, *, semantic: str = "CUSTOM_LONG_TEXT", support: Any = 1.0,
                  complete: float = 1.0, consistency: float = 1.0, story: float = 1.0,
                  scope: str = "HISTORICAL_OR_CONTEXTUAL", scope_probability: float = 1.0,
-                 link: tuple[str, float, float] | None = None) -> None:
+                 link: tuple[str, float, float] | None = None, story_asks: float = 0.0) -> None:
         self.semantic, self.support, self.complete = semantic, support, complete
-        self.consistency, self.story = consistency, story
+        self.consistency, self.story, self.story_asks = consistency, story, story_asks
         self.scope, self.scope_probability, self.link = scope, scope_probability, link
         self.requests: list[dict[str, Any]] = []
 
@@ -124,9 +126,12 @@ class Jev:
                     else:
                         score = self.support
                 elif "story_chunks" in state:
-                    score = self.story
+                    score = self.story_asks if name.startswith("asks_") else self.story
                 elif "canonical_alternatives" in state:
-                    score = self.consistency
+                    if isinstance(self.consistency, dict):
+                        score = self.consistency.get(state["selected_facts"][name]["id"], 1.0)
+                    else:
+                        score = self.consistency
                 else:
                     score = 1.0
                 answers[name] = {"type": "noul", "noul": score}
@@ -281,14 +286,21 @@ def test_story_consistency_compares_related_facts_and_a_contradiction_holds(cand
     assert "fact.florist" in compared and "sf_derived" not in compared and "fact.reports" not in compared
     trace = next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")
     assert trace["status"] == "CONSISTENT" and trace["story_ids"] == {"c0": chunk["id"]}
-    assert set(trace) == {"stage", "prompt_version", "story_ids", "comparison_ids", "probabilities", "cached", "status"}
+    assert set(trace) == {"stage", "prompt_version", "story_ids", "comparison_ids", "probabilities",
+                          "question_asks_about_it", "cached", "status"}
 
+    # A contradicted chunk leaves the evidence; the narrative writes from the rest.
     contradicted = Jev(story=0.2)
+    rest = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
     packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]),
-                                    Writer(writer.sentences), contradicted)
-    assert held(packet, ctx)
-    assert next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")["status"] == "HELD"
-    assert not contradicted.grounding_requests()
+                                    rest, contradicted)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")["status"] == "DROPPED"
+    dropped = next(t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped")
+    assert dropped["story_ids"] == [chunk["id"]] and dropped["fact_ids"] == [] and dropped["status"] == "CONTINUED"
+    assert dropped["probabilities"] == {chunk["id"]: 0.2} and "contradicts" in dropped["reason"]
+    assert not any(item["key"] == "story" for item in rest.calls[0]["facts"])
+    assert "story evidence" not in packet.answers[0].provenance.note
 
 
 def test_story_verdicts_are_cached_per_runtime(candidate, mock_job):
@@ -724,3 +736,90 @@ def test_the_evidence_review_gets_the_selected_and_most_competing_facts_never_th
     assert checks[0]["compared"] == CONSISTENCY_COMPARISON_LIMIT == len(checks[0]["canonical_alternative_ids"])
     consistency_requests = [r for r in jev.requests if "canonical_alternatives" in r["state"]]
     assert len(consistency_requests) == 1 and len(consistency_requests[0]["state"]["canonical_alternatives"]) == CONSISTENCY_COMPARISON_LIMIT
+
+
+# --- round 2b: the resume is canonical; contradicted story evidence is dropped, not held ----------
+
+
+TENURE_TEXT = ("I spent almost 2 years as the marketing manager of a regional bakery chain, managing a "
+               "$120,000 annual paid search budget, and I set up conversion tracking in Google Ads so "
+               "the owner could see which campaigns paid for themselves.")
+
+
+def _bakery_profile(candidate):
+    tenure = fact(candidate, "Marketing Manager | Crumb & Co. Bakeries | Apr 2023 to Mar 2024", fid="fact.tenure",
+                  key="employment")
+    return candidate.model_copy(update={"facts": [*candidate.facts, tenure]})
+
+
+def test_a_tenure_claim_contradicting_the_resume_is_dropped_and_the_narrative_still_writes(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    chunk = story_chunk(TENURE_TEXT, period="2023-04 to 2024-03", resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    writer = Writer([{"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
+                      "fact_ids": ["fact.bakery"]}])
+    jev = Jev(story=0.1)
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    dropped = next(t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped")
+    assert dropped["story_ids"] == [chunk["id"]] and dropped["status"] == "CONTINUED"
+    assert [item["id"] for item in writer.calls[0]["facts"]] == ["fact.bakery"]
+    [request] = jev.story_requests()
+    assert request["state"]["question"] == QUESTION and "asks_c0" in request["questions"]
+    # The grounding and the note see only what remains.
+    [grounding] = jev.grounding_requests()
+    assert chunk["id"] not in json.dumps(grounding["state"])
+    assert packet.answers[0].provenance.reference_ids == ["fact.bakery"]
+
+
+def test_a_question_about_the_contradicted_tenure_holds(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    chunk = story_chunk(TENURE_TEXT, period="2023-04 to 2024-03", resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    writer = Writer([{"text": "I held the role for almost two years.", "fact_ids": ["fact.bakery"]}])
+    jev = Jev(story=0.1, story_asks=1.0)
+    ctx = context(profile, mock_job, question="How long did you work at the regional bakery chain, and what did you achieve there?")
+    packet, resolver, ctx = resolve(ctx, Retriever([profile.facts[0]], [chunk]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    dropped = next(t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped")
+    assert dropped["status"] == "HELD" and dropped["story_ids"] == [chunk["id"]]
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "story_consistency")["question_asks_about_it"] == {"c0": 1.0}
+    # The same contradiction on a question about the work in general is dropped instead.
+    calm = Jev(story=0.1, story_asks=0.0)
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0]], [chunk]),
+                                    Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}]), calm)
+    assert packet.is_complete
+
+
+def test_a_story_fact_contradicting_the_resume_is_dropped_but_a_resume_conflict_still_holds(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    story_fact = fact(profile, "Over almost 2 years I grew online orders by 35% for the bakery chain (resume: Crumb & Co., 2023-04 to 2024-03)",
+                      fid="sf_story_tenure", key="achievement", source="story:" + "1" * 64)
+    profile = profile.model_copy(update={"facts": [*profile.facts, story_fact]})
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
+    jev = Jev(consistency={"sf_story_tenure": 0.2})
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0], story_fact]), writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    dropped = next(t for t in resolver.narrative_traces if t["stage"] == "story_evidence_dropped")
+    assert dropped["fact_ids"] == ["sf_story_tenure"] and dropped["story_ids"] == [] and dropped["status"] == "CONTINUED"
+    assert [item["id"] for item in writer.calls[0]["facts"]] == ["fact.bakery"]
+    check = next(t for t in resolver.narrative_traces if t["stage"] == "consistency")
+    assert check["dropped_story_fact_ids"] == ["sf_story_tenure"] and "sf_story_tenure" not in check["probabilities"].values()
+    # A resume fact in conflict is canonical evidence disagreeing with itself: still a hold.
+    jev = Jev(consistency={"fact.bakery": 0.2})
+    packet, resolver, ctx = resolve(context(profile, mock_job), Retriever([profile.facts[0], story_fact]),
+                                    Writer(writer.sentences), jev)
+    assert held(packet, ctx)
+    assert not any(t["stage"] == "story_evidence_dropped" for t in resolver.narrative_traces)
+
+
+def test_nothing_usable_left_holds(candidate, mock_job):
+    profile = _bakery_profile(candidate)
+    story_fact = fact(profile, "Over almost 2 years I grew online orders by 35% (resume: Crumb & Co., 2023-04 to 2024-03)",
+                      fid="sf_story_tenure", key="achievement", source="story:" + "1" * 64)
+    profile = profile.model_copy(update={"facts": [*profile.facts, story_fact]})
+    chunk = story_chunk(TENURE_TEXT, period="2023-04 to 2024-03", resume_role="Marketing Manager, Crumb & Co. Bakeries")
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["sf_story_tenure"]}])
+    jev = Jev(consistency={"sf_story_tenure": 0.2}, story=0.1)
+    packet, _resolver, ctx = resolve(context(profile, mock_job), Retriever([story_fact], [chunk]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    missing = next(m for m in packet.missing_inputs if m.field_id == "response")
+    assert "No usable verified evidence remains" in (missing.prompt or "")

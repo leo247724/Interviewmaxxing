@@ -18,7 +18,7 @@ import re
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -750,6 +750,73 @@ def resume_quantity_differences(story: Story, link: StoryRoleLink | None,
     return []
 
 
+_WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                 "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+_DURATION_CLAIM = re.compile(
+    r"\b(?:(?P<qual>over|more than|a little more than|almost|nearly|a little less than|just under|"
+    r"about|around|approximately|roughly|under|less than)\s+)?(?:(?P<n>\d+(?:\.\d+)?|"
+    + "|".join(_WORD_NUMBERS) + r")\+?|(?P<article>an?))\s*(?P<unit>years?|yrs?|months?)\b"
+    r"(?!\s*-?\s*old\b)", re.IGNORECASE)
+"""A duration the text states; an age ("a 26 year old") is not one."""
+
+
+def duration_claims(text: str) -> list[tuple[str, int]]:
+    """Durations a text states with the fewest months each could mean: "almost 2 years"
+    is at least 15, "over 3 years" at least 37, "2 years" at least 21, "6 months" at
+    least 5; "under a year" could be any length."""
+    claims = []
+    for match in _DURATION_CLAIM.finditer(text):
+        raw = (match.group("n") or "1").casefold()
+        unit, qual = match.group("unit").casefold(), (match.group("qual") or "").casefold()
+        number = _WORD_NUMBERS.get(raw) or float(raw)
+        months = number * 12 if unit.startswith(("year", "yr")) else number
+        years = unit.startswith(("year", "yr"))
+        if qual in ("over", "more than", "a little more than"):
+            minimum = months + 1
+        elif qual in ("almost", "nearly", "a little less than", "just under"):
+            minimum = months - (9 if years else 2)
+        elif qual in ("about", "around", "approximately", "roughly"):
+            minimum = months - (3 if years else 1)
+        elif qual in ("under", "less than"):
+            minimum = 0
+        else:
+            minimum = months - (3 if years else 1)
+        claims.append((match.group(0), max(int(minimum), 0)))
+    return claims
+
+
+def role_tenure_months(link: StoryRoleLink, today: date) -> int | None:
+    """The linked resume role's length in months (inclusive), an open role to today."""
+    start = re.match(r"^(\d{4})(?:-(\d{2}))?$", link.start or "")
+    if not start:
+        return None
+    first = int(start.group(1)) * 12 + int(start.group(2) or 1) - 1
+    if link.end:
+        end = re.match(r"^(\d{4})(?:-(\d{2}))?$", link.end)
+        if not end:
+            return None
+        last = int(end.group(1)) * 12 + int(end.group(2) or 12) - 1
+    elif link.current:
+        last = today.year * 12 + today.month - 1
+    else:
+        return None
+    return max(last - first + 1, 0)
+
+
+def tenure_conflicts(sentence: str, link: StoryRoleLink | None, today: date) -> list[dict[str, Any]]:
+    """Duration statements in a sentence that exceed the linked role's tenure: the story
+    cannot have spent "almost 2 years" in a role the resume dates to 12 months. Durations
+    shorter than the tenure fit inside it and never conflict."""
+    if link is None:
+        return []
+    tenure = role_tenure_months(link, today)
+    if tenure is None:
+        return []
+    return [{"phrase": phrase, "minimum_months": minimum, "tenure_months": tenure,
+             "resume_role_id": link.resume_role_id}
+            for phrase, minimum in duration_claims(sentence) if minimum > tenure + 1]
+
+
 def stated_years(story: Story) -> list[str]:
     return sorted(set(_YEAR.findall(story.body)))
 
@@ -1019,6 +1086,13 @@ def extract_story_facts(story: Story, analysis: StoryAnalysis, chunks: Sequence[
             skipped.append({"story": analysis.number, "reason": "stated_year_conflicts_with_resume_role",
                             "chars": len(sentence), "key": key})
             continue
+        if tenure_conflicts(sentence, link, verified_at.date()):
+            # The sentence claims a tenure or duration longer than the resume dates the
+            # role: the resume is canonical, so the sentence yields no fact and the review
+            # names it for the person.
+            skipped.append({"story": analysis.number, "reason": "stated_duration_conflicts_with_resume_role",
+                            "chars": len(sentence), "key": key})
+            continue
         value = sentence if not context else f"{sentence} ({context})"
         evidence = [label, *provenance_lines] + (["Tools: " + ", ".join(tools)] if tools else [])
         add(key, value, provenance(sentence), evidence)
@@ -1121,14 +1195,20 @@ def story_source_of(fact: CandidateFact) -> str | None:
 
 
 def facts_review(index: StoryIndex, *, candidate_id: str,
-                 roles: Sequence[ResumeRole] = ()) -> dict[str, Any]:
+                 roles: Sequence[ResumeRole] = (), today: date | None = None) -> dict[str, Any]:
     """The full fact list for the user's private review (contains story text)."""
     stories = []
     for story, a in zip(index.stories, index.analyses, strict=True):
         link = index.link_for(a.story_id)
         period, period_source, discrepancy = resolve_period(story, link)
         differences = resume_quantity_differences(story, link, roles)
+        durations = [conflict for sentence in story.sentences
+                     for conflict in tenure_conflicts(sentence, link, today or date.today())]
         notes = []
+        for conflict in durations:
+            notes.append(f"The story says \"{conflict['phrase']}\" (at least {conflict['minimum_months']} months) "
+                         f"but the linked resume role lasted {conflict['tenure_months']} months; the sentence "
+                         "yields no fact. Correct the story or the resume if one is wrong.")
         if discrepancy:
             notes.append("The story states a year outside the linked resume role's dates; the resume "
                          "dates were used and the sentence stating the year yields no fact. Correct "
@@ -1147,6 +1227,7 @@ def facts_review(index: StoryIndex, *, candidate_id: str,
                              "probability": link.probability} if link else None),
             "stated_year_outside_resume_role": discrepancy,
             "resume_differences": differences,
+            "duration_conflicts": durations,
             "note": " ".join(notes) if notes else None,
             "tools": list(a.tools), "skills": list(a.skills),
             "themes": list(a.themes), "outcomes": list(a.outcomes)})
@@ -1227,6 +1308,7 @@ __all__ = [
     "chunk_metadata",
     "chunk_story",
     "company_tokens",
+    "duration_claims",
     "extract_story_facts",
     "fact_context",
     "facts_review",
@@ -1245,9 +1327,11 @@ __all__ = [
     "resolve_period",
     "resume_quantity_differences",
     "resume_roles",
+    "role_tenure_months",
     "split_sentences",
     "stated_years",
     "story_index_receipt",
     "story_source_of",
     "team_sizes",
+    "tenure_conflicts",
 ]

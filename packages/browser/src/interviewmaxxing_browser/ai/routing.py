@@ -2626,7 +2626,8 @@ class DynamicPacketResolver:
         return score
 
     def _check_additive_consistency(self, context: PacketContext,
-                                    selected: list[CandidateFact], *, allow_strong_review: bool = False) -> float:
+                                    selected: list[CandidateFact], *, allow_strong_review: bool = False,
+                                    dropped: list[CandidateFact] | None = None) -> float:
         """Scoped bullets may coexist, but omitted contradictory claims still count.
 
         Keys are arbitrary: include all unscoped facts, same-group facts, global
@@ -2638,15 +2639,21 @@ class DynamicPacketResolver:
         """
         log = _FIELD_LOG.get()
         if log is None or log.turns is None:
-            return self._consistency(context, selected, allow_strong_review=allow_strong_review)
+            return self._consistency(context, selected, allow_strong_review=allow_strong_review,
+                                     dropped=dropped)
         log.turns.wait(log.turn)
         try:
-            return self._consistency(context, selected, allow_strong_review=allow_strong_review)
+            return self._consistency(context, selected, allow_strong_review=allow_strong_review,
+                                     dropped=dropped)
         finally:
             log.turns.release(log.turn)  # later fields need not wait for this one's writer
 
     def _consistency(self, context: PacketContext, selected: list[CandidateFact], *,
-                     allow_strong_review: bool) -> float:
+                     allow_strong_review: bool, dropped: list[CandidateFact] | None = None) -> float:
+        """``dropped``, when given, receives the story-derived selected facts whose Jev
+        verdict falls below the threshold instead of holding on them: the resume is
+        canonical, so a contradicted story fact leaves the evidence and the check goes on
+        with the rest. Canonical (resume) conflicts hold as before."""
         all_facts = {fact.id: fact for fact in context.candidate.verified_facts() if fact.value is not None}
         revision = _digest({"candidate_id": context.candidate.id,
                             "facts": [fact.model_dump(mode="json") for fact in all_facts.values()],
@@ -2697,8 +2704,9 @@ class DynamicPacketResolver:
         chunk_size = max(1, self.max_facts)
         for offset in range(0, len(others), chunk_size):
             chunk = others[offset:offset + chunk_size]
+            already_dropped = {fact.id for fact in (dropped or [])}
             relevant = {f"f{i}": fact for i, fact in enumerate(selected)
-                        if any(competing(fact, other) for other in chunk)}
+                        if fact.id not in already_dropped and any(competing(fact, other) for other in chunk)}
             comparisons = {key: [other for other in chunk if competing(fact, other)]
                            for key, fact in relevant.items()}
             verdict_keys = {key: _digest({"fact": contextual(fact), "prompt_version": PROMPT_VERSION,
@@ -2744,8 +2752,21 @@ class DynamicPacketResolver:
                             if len(self._consistency_verdicts) >= self.max_consistency_verdicts:
                                 self._consistency_verdicts.pop(next(iter(self._consistency_verdicts)))
                             self._consistency_verdicts[verdict_keys[key]] = scores[key]
+            dropped_now = []
+            if dropped is not None:
+                for key in list(scores):
+                    fact = relevant[key]
+                    if scores[key] < MIN_PROBABILITY and fact.source.startswith("story:"):
+                        dropped.append(fact)
+                        dropped_now.append((fact.id, scores.pop(key)))
+            if dropped_now:
+                self._trace({"stage": "story_evidence_dropped", "story_ids": [],
+                    "fact_ids": [fact_id for fact_id, _ in dropped_now],
+                    "reason": "contradicts verified facts about the same role",
+                    "probabilities": dict(dropped_now), "status": "CONTINUED"})
             self._trace({"stage": "consistency", "selected_fact_ids": {key: fact.id for key, fact in relevant.items()},
                 "canonical_alternative_ids": [fact.id for fact in chunk], "probabilities": scores,
+                "dropped_story_fact_ids": [fact_id for fact_id, _ in dropped_now],
                 "competing_total": competing_total, "compared": len(others),
                 "cached": sorted(set(relevant) - set(asking)),
                 "comparison_ids": {key: [fact.id for fact in facts] for key, facts in comparisons.items()},
@@ -3002,9 +3023,18 @@ class DynamicPacketResolver:
         all_verified = context.candidate.verified_facts()
         if any(_conflicts(fact, all_verified) for fact in relevant):
             raise AIHold("Relevant verified facts conflict; the writer cannot choose which is true")
-        consistency_confidence = self._check_additive_consistency(context, relevant, allow_strong_review=True)
+        dropped_facts: list[CandidateFact] = []
+        consistency_confidence = self._check_additive_consistency(context, relevant, allow_strong_review=True,
+                                                                  dropped=dropped_facts)
+        if dropped_facts:
+            gone = {fact.id for fact in dropped_facts}
+            relevant = [fact for fact in relevant if fact.id not in gone]
         if story_chunks:
-            consistency_confidence = min(consistency_confidence, self._story_consistency(context, story_chunks))
+            story_confidence, story_chunks = self._story_consistency(context, story_chunks, field)
+            consistency_confidence = min(consistency_confidence, story_confidence)
+        if not relevant:
+            raise AIHold("No usable verified evidence remains after dropping story evidence that "
+                         "contradicts the resume")
         if platform_question and not _platform_evidence_present(relevant):
             raise AIHold("Narrative needs explicit facts: " + ABM_MISSING_DETAIL)
         supplied = {f.id: f for f in relevant}
@@ -3035,9 +3065,12 @@ class DynamicPacketResolver:
                     "status": "ONE_REWRITE_ALLOWED"})
         raise AIHold("Narrative remains unresolved after one corrective rewrite")
 
-    def _story_consistency(self, context: PacketContext, story_chunks: list[dict[str, Any]]) -> float:
-        """A story chunk that contradicts a verified structured fact holds the field; the
-        Jev verdicts share the per-runtime consistency cache and enter in form order."""
+    def _story_consistency(self, context: PacketContext, story_chunks: list[dict[str, Any]],
+                           field: ApplicationField) -> tuple[float, list[dict[str, Any]]]:
+        """Story chunks that contradict a verified structured fact leave the field's
+        evidence (traced as ``story_evidence_dropped``); the field holds only when the
+        question asks about the contradicted point. The Jev verdicts share the per-runtime
+        consistency cache and enter in form order."""
         log = _FIELD_LOG.get()
         if log is not None and log.turns is not None:
             log.turns.wait(log.turn)
@@ -3046,7 +3079,7 @@ class DynamicPacketResolver:
                 decide=self.decisions.decide, trace=self._trace, model=self.decisions.model,
                 min_probability=MIN_PROBABILITY, cache=self._consistency_verdicts,
                 lock=self._lock, max_cache_entries=self.max_consistency_verdicts,
-                max_facts=self.max_facts)
+                max_facts=self.max_facts, question=field.question_text)
         finally:
             if log is not None and log.turns is not None:
                 log.turns.release(log.turn)
