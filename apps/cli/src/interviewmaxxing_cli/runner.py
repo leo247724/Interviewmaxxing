@@ -185,6 +185,10 @@ _TRACE_VALUE_KEYS = frozenset({
 })
 """Trace keys that carry fact values, generated prose, review text or typed text."""
 _TRACE_TEXT_LIMIT = 300
+_WRITER_STAGES = frozenset({"draft", "corrective_rewrite", "strong_review", "humanize", "narrative",
+                            "writer", "motivation_narrative"})
+"""Stages whose free-text reasons quote the writer's or reviewer's own words."""
+_RECORDED_MARK = "_recorded_by_runner"
 _QUOTED = re.compile(r"""(['"]).*?\1""")
 _UNQUOTED_VALUES = re.compile(
     r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"          # an email address
@@ -208,7 +212,12 @@ def project_trace(trace: dict[str, Any]) -> dict[str, Any]:
         text = value if isinstance(value, str) else str(value)
         return text if len(text) <= _TRACE_TEXT_LIMIT else text[:_TRACE_TEXT_LIMIT] + "…"
     cleaned = clean(trace)
-    return cleaned if isinstance(cleaned, dict) else {}
+    if not isinstance(cleaned, dict):
+        return {}
+    cleaned.pop(_RECORDED_MARK, None)
+    if cleaned.get("stage") in _WRITER_STAGES:
+        cleaned.pop("reason", None)  # writer-side reasons quote model text; statuses suffice
+    return cleaned
 
 
 def redact_detail(detail: str | None) -> str | None:
@@ -231,15 +240,14 @@ def _decision_projection(decision: Any) -> dict[str, Any]:
     return data
 
 
-def _traces_since(traces: list[dict[str, Any]], last_id: int | None) -> list[dict[str, Any]]:
-    """The traces appended after the one recorded last (matched by identity); all of them
-    when that trace is gone or nothing was recorded yet."""
-    if last_id is None:
-        return traces
-    for index in range(len(traces) - 1, -1, -1):
-        if id(traces[index]) == last_id:
-            return traces[index + 1:]
-    return traces
+def _traces_since(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The traces not yet recorded by this runner, marked once they are read. A mark on the
+    resolver's own dict outlives list truncation and cannot be confused by a reused object
+    address, unlike matching by identity."""
+    fresh = [trace for trace in traces if not trace.get(_RECORDED_MARK)]
+    for trace in fresh:
+        trace[_RECORDED_MARK] = True
+    return fresh
 RUN_LOCK_NAME = ".interviewmaxxing-run.lock"
 LATE_COST_WAIT_S = 10.0
 """How long a cancelled run waits for resolver work still running before its final cost."""
@@ -1139,9 +1147,7 @@ class _Run:
         report_for = getattr(router, "report_for", None)
         report = report_for(form) if callable(report_for) else None
         traces = list(getattr(resolver, "narrative_traces", None) or ())
-        new_traces = _traces_since(traces, getattr(self, "_last_trace_id", None))
-        if traces:
-            self._last_trace_id = id(traces[-1])
+        new_traces = _traces_since(traces)
         if report is None and not new_traces:
             return
         metadata: dict[str, Any] = {"form_step": form.step}

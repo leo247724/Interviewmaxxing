@@ -3,7 +3,7 @@ ids, stages, statuses, scores and page wording, never fact values, generated pro
 text or values read back from the page. The events table is append-only, so nothing may be
 persisted that would later need redacting."""
 
-from interviewmaxxing_cli.runner import project_trace, redact_detail
+from interviewmaxxing_cli.runner import _traces_since, project_trace, redact_detail
 
 
 def test_project_trace_drops_values_prose_and_review_text():
@@ -33,7 +33,9 @@ def test_project_trace_drops_values_prose_and_review_text():
     assert projected["reference_ids"] == ["fact_1"]
     assert projected["decisions"]["equivalent_0"]["choice"] == "o0"
     assert projected["question"] == "Tell us about a campaign you led"
-    assert len(projected["reason"]) <= 303 and projected["reason"].endswith("…")
+    assert "reason" not in projected  # writer-side reasons quote model text and are dropped
+    decision = project_trace({"stage": "option_equivalence", "reason": "x" * 1000})
+    assert len(decision["reason"]) <= 303 and decision["reason"].endswith("…")
     assert projected["nested"] == {"score": 0.5}
     assert "secret" not in repr(projected)
 
@@ -57,3 +59,19 @@ def test_redact_detail_keeps_the_shape_but_not_the_values():
     assert redact_detail("2 of 3 options matched") == "2 of 3 options matched"
     assert redact_detail(None) is None
     assert len(redact_detail("a" * 900) or "") <= 301  # the limit plus the ellipsis
+
+
+def test_project_trace_drops_writer_side_reasons_but_keeps_decision_reasons():
+    writer = project_trace({"stage": "draft", "status": "WRITER_HELD", "reason": "Narrative needs facts: …"})
+    assert "reason" not in writer and writer["status"] == "WRITER_HELD"
+    decision = project_trace({"stage": "referral_policy", "status": "HELD", "reason": "Jev MALFORMED_RESPONSE"})
+    assert decision["reason"] == "Jev MALFORMED_RESPONSE"
+
+
+def test_traces_since_records_each_trace_once_even_when_the_list_is_truncated():
+    traces = [{"stage": "a"}, {"stage": "b"}]
+    assert [t["stage"] for t in _traces_since(traces)] == ["a", "b"]
+    assert _traces_since(traces) == []
+    traces = [*traces[1:], {"stage": "c"}]           # the resolver dropped the oldest trace
+    assert [t["stage"] for t in _traces_since(traces)] == ["c"]
+    assert "_recorded_by_runner" not in project_trace(traces[-1])
