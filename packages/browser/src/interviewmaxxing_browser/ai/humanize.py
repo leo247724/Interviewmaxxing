@@ -31,13 +31,22 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .providers import AIHold, CallReceipt, NarrativeDraft, NarrativeWriter, _draft_schema
+from .providers import (
+    AIHold,
+    CallReceipt,
+    NarrativeDraft,
+    NarrativeWriter,
+    _draft_schema,
+    unalias_draft,
+    wire_aliases,
+)
 
 HUMANIZE_PROMPT_VERSION = "no-ai-slop-v3"
-MAX_REWRITES = 3
-"""One rewrite after grounding, then at most two more: for a residual lint finding, or
-after a rejected rewrite with the rejection's reason as feedback (round 6: a discarded
-rewrite is a defect, so the pass tries again rather than keeping the draft silently)."""
+MAX_REWRITES = 2
+"""One rewrite after grounding, then at most one more: for a residual lint finding, or after
+a rejected rewrite with the rejection's reason as feedback (round 6: a discarded rewrite is a
+defect, so the pass tries again rather than keeping the draft silently; two keep a cover
+letter near the lead's 15-call target)."""
 LENGTH_TOLERANCE = (0.6, 1.4)
 LETTER_WORDS = (280, 400)
 """A cover letter's length, the owner's rubric: 280-380 words, ceiling 400 (round 6)."""
@@ -612,6 +621,10 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
         raise AIHold("Narrative voice samples must be text")
     effort = writer.effort_for("humanize")
     reasoning, request_max_tokens = writer.narrative_budget("humanize")
+    cited = dict.fromkeys(i for s in draft.sentences for i in [*s.fact_ids, *s.job_evidence_ids])
+    aliases = wire_aliases([(i, "story" if i.startswith("story:") else "contact_links" if i.startswith("contact:")
+                             else "job" if i.startswith("job:") else "") for i in cited], [])
+    wire = unalias_draft(draft, {alias: identifier for identifier, alias in aliases.items()}) if aliases else draft
     payload = {
         "model": writer.model, "max_tokens": request_max_tokens,
         "reasoning": reasoning,
@@ -621,7 +634,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
             {"role": "user", "content": json.dumps({
                 "question": question, "purpose": purpose, "attempt": attempt,
                 "job": job, "max_length": max_length or 4000,
-                "draft": {"text": draft.text, "sentences": [s.model_dump() for s in draft.sentences]},
+                "draft": {"text": draft.text, "sentences": [s.model_dump() for s in wire.sentences]},
                 "findings": [{"pattern": f.pattern, "count": f.count, "spans": list(f.spans)}
                              for f in findings],
                 "voice_samples": voice_samples,
@@ -674,7 +687,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
         if choice.get("finish_reason") != "stop":
             status = "INCOMPLETE_RESPONSE"
             raise AIHold("Humanizer response was incomplete")
-        rewritten = NarrativeDraft.model_validate_json(choice["message"]["content"])
+        rewritten = unalias_draft(NarrativeDraft.model_validate_json(choice["message"]["content"]), aliases)
         status = "OK" if rewritten.status == "READY" else "NEEDS_INPUT"
         return rewritten
     except (TimeoutError, OSError):
@@ -706,7 +719,8 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
     ``check_rewrite`` or by the grounding is tried again with the reason as feedback, and
     a residual lint finding gets one more rewrite, within ``MAX_REWRITES``; whatever
     fails, the last draft that passed is kept and the trace names every discarded
-    attempt's reason (``discarded``), never silently. ``statements`` are the person's own
+    attempt's reason (``discarded``), never silently. A draft whose lint is clean is kept as
+    it is (``CLEAN``). ``statements`` are the person's own
     ``career_motivation`` words the evidence carries: a draft copying more than
     ``MAX_QUOTED_WORDS`` consecutive words of one is a finding to rewrite, and a rewrite
     that does is rejected (``REJECTED_QUOTED_STATEMENT``). Each accepted rewrite's and the
@@ -716,10 +730,16 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
     def findings_for(current: NarrativeDraft) -> list[Finding]:
         return lint(current.text, statements=statements, job_only=_job_only(current), company=company)
 
+    before = findings_for(draft)
     record = trace({"stage": "humanize", "question": question, "purpose": purpose,
                     "prompt_version": HUMANIZE_PROMPT_VERSION,
-                    "lint_before": findings_summary(findings_for(draft)),
+                    "lint_before": findings_summary(before),
                     "attempts": [], "discarded": [], "status": "PENDING"})
+    if not before:
+        # Nothing to fix: the owner's rubric accepts a draft whose lint is clean before the
+        # pass, and a rewrite of it would only spend a call, its grounding and its review.
+        record.update(status="CLEAN", lint_after=[], citations=citations(draft))
+        return draft
     current = draft
     rejected: str | None = None
     for attempt in range(1, MAX_REWRITES + 1):
