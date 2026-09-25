@@ -170,6 +170,34 @@ Structured draft-review `UNSUPPORTED` or `INCOMPLETE` results may receive one co
 
 Semantic classification and routing require confidence >= 0.90 and selected probability >= 0.95. These checks remain probabilistic; they are not proof that arbitrary prose is true. An uncertain prose responsibility can escalate to WRITER, but source/sufficiency/grounding gates still apply. Packet confidence is the conservative minimum of applicable model gates and support scores; it is not calibrated probability of truth. An unsupported sentence becomes a user-input hold, and all real work remains prepare-only for review.
 
+## Stories, effort and the no-slop rewrite (WP12)
+
+The candidate's own professional stories are a fourth knowledge kind next to facts, job
+descriptions and style samples ([rag-writing.md](rag-writing.md) describes indexing,
+chunking and fact extraction). For a WRITER-routed field the resolver's retrieval is
+marked `narrative`, and the store adds up to four story chunks ranked by the question,
+the job title and the description's key requirements; screeners, exact facts and bare
+identity fields never get them, and a retrieval that returns stories for a
+non-narrative field is rejected. Story chunks are validated like job evidence (content-
+hash ids `story:<sha256>`, unique, outside the fact and job namespaces, labelled with a
+title) and travel to the writer in the facts list under `key: story`, so a sentence
+cites them in `fact_ids` like a fact. Grounding treats a cited passage as that
+sentence's evidence: every claim still needs a citation that supports it, and an
+unsupported claim holds the field. A chunk that contradicts a verified structured fact
+holds before writing (`story_consistency`, cached per runtime). Provenance keeps citing
+verified fact ids only; the story ids go into the note, and traces carry ids and scores.
+
+Writer effort is per purpose (`--writer-effort`, default `high` for cover letters and
+narrative answers; reviews stay `low`), recorded in receipts and in the `provider.budget`
+event (`reasoning_effort` by purpose and `writer_effort` as configured). After a draft is
+grounded, the runtime rewrites it under the no-AI-slop rules and grounds the rewrite
+again, keeping the grounded draft whenever the rewrite drops a citation, adds a number,
+drifts in length or fails a check; a residual lint pattern allows one more rewrite. The
+pass adds one or two Opus calls and one or two Jev grounding calls per narrative field
+within the unchanged round-6 form budget; a call the budget refuses keeps the grounded
+draft rather than holding the field, so a form with several narratives may skip the
+rewrite on its later fields.
+
 ## Bounds and observations
 
 Production budgets scale with the form (round 6). Each resolved form gets 24 calls and USD 0.30, plus 8 calls and USD 0.15 per `WRITER`-routed field, on top of what the runtime already used, capped at 120 calls and USD 2.00 in total (`CallBudget(scales_with_form=True)`, set by `build_ai_runtime`). The runner's `provider.budget` event records the limits used. A budget without that flag keeps fixed limits, and its defaults share one per-runtime budget: 48 provider calls (raised from 32 when option-equivalence and lookup-suggestion decisions were added; each is one cheap Jev call), USD 0.50 of conservative reservations and 60,000 request bytes. Jev uses a 15-second timeout; the writer uses a 90-second timeout and at most 3,000 output tokens. Strong review allows at most 1,200 output tokens. Runtime embedding requests reserve and record costs in the same budget before HTTP. Each provider call has one attempt. The router batches the whole form (default 16, configurable 8/16/32 in the historical benchmark), recursively splits oversized requests without dropping context, and handles at most 100 fields, fact routing at most 40 verified facts per bounded comparison, and the writer at most eight relevant facts. Exceeding a bound holds; it never silently truncates candidate evidence or retries indefinitely.

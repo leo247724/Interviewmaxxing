@@ -278,7 +278,8 @@ def _dynamic_options(args: argparse.Namespace) -> Any:
                           ai_routing=args.ai_routing,
                           env_file=Path(args.env_file) if args.env_file else None,
                           writer_model=args.writer_model,
-                          rag_connection_file=Path(args.rag_connection_file) if args.rag_connection_file else None)
+                          rag_connection_file=Path(args.rag_connection_file) if args.rag_connection_file else None,
+                          writer_effort=args.writer_effort)
 
 
 def _runner(args: argparse.Namespace) -> LocalApplicationRunner:
@@ -582,6 +583,7 @@ RETRY_FLAGS: dict[str, str] = {
     "retry_retryable": "retry_retryable", "sync_closed": "sync_closed", "browser": "browser",
     "opencli_profile": "opencli_profile", "ai_routing": "ai_routing", "env_file": "env_file",
     "writer_model": "writer_model", "rag_connection_file": "rag_connection_file",
+    "writer_effort": "writer_effort",
 }
 """``prepare-batch`` flags (argparse dest -> ``BatchOptions`` name) that a retry takes from
 the retried batch's recorded run options unless they are given again."""
@@ -605,6 +607,7 @@ def _batch_flag_values(args: argparse.Namespace, paths: LocalPaths) -> dict[str,
         "env_file": Path(args.env_file) if args.env_file else None,
         "writer_model": args.writer_model,
         "rag_connection_file": Path(args.rag_connection_file) if args.rag_connection_file else None,
+        "writer_effort": args.writer_effort,
     }
 
 
@@ -817,6 +820,9 @@ def _dynamic_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--env-file", help="explicit OpenRouter credential env file for AI routing")
     p.add_argument("--writer-model", help="explicit narrative writer model ID for AI routing")
     p.add_argument("--rag-connection-file", help="absolute private JSON connection file for Supabase retrieval")
+    p.add_argument("--writer-effort", choices=["low", "medium", "high"],
+                   help="reasoning effort for cover letters and narrative answers (default high); "
+                        "reviews and short factual decisions stay low")
 
 
 def _int_range(low: int, high: int) -> Callable[[str], int]:

@@ -315,6 +315,10 @@ class NarrativeWriter:
     timeout_seconds: float = 90.0
     max_tokens: int = 3000
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    """Effort for reviews and, when ``narrative_effort`` is unset, for narratives."""
+    narrative_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    """Effort for cover letters, narrative answers and their humanizing rewrite; the
+    runtime factory sets it to high by default (``--writer-effort``)."""
 
     def __post_init__(self) -> None:
         if self.model != "anthropic/claude-opus-5.5":
@@ -322,11 +326,22 @@ class NarrativeWriter:
         if (not isinstance(self.reasoning_effort, str)
                 or self.reasoning_effort not in ("low", "medium", "high", "xhigh", "max")):
             raise ValueError("Writer reasoning effort must be low, medium, high, xhigh or max")
+        if self.narrative_effort is not None and (
+                not isinstance(self.narrative_effort, str)
+                or self.narrative_effort not in ("low", "medium", "high", "xhigh", "max")):
+            raise ValueError("Writer narrative effort must be low, medium, high, xhigh or max")
         if (isinstance(self.timeout_seconds, bool)
                 or not isinstance(self.timeout_seconds, (int, float))
                 or not 0 < self.timeout_seconds <= 120 or isinstance(self.max_tokens, bool)
                 or not isinstance(self.max_tokens, int) or not 1 <= self.max_tokens <= 4000):
             raise ValueError("Writer timeout or output limit exceeds policy")
+
+    def effort_for(self, purpose: str) -> Literal["low", "medium", "high", "xhigh", "max"]:
+        """Narratives (answer, cover letter, humanize) use the narrative effort when set;
+        reviews and everything else keep the base effort."""
+        if purpose in ("answer", "cover_letter", "humanize") and self.narrative_effort is not None:
+            return self.narrative_effort
+        return self.reasoning_effort
 
     def write(self, *, question: str, facts: list[dict[str, Any]], job: dict[str, str],
               max_length: int | None, job_evidence: list[dict[str, str]] | None = None,
@@ -335,6 +350,7 @@ class NarrativeWriter:
               review_feedback: list[str] | None = None) -> NarrativeDraft:
         if purpose not in ("answer", "cover_letter"):
             raise AIHold("Unsupported narrative purpose")
+        effort = self.effort_for(purpose)
         if (max_length is not None and (isinstance(max_length, bool)
                 or not isinstance(max_length, int) or max_length < 1)):
             raise AIHold("Narrative field length must be positive")
@@ -389,7 +405,7 @@ class NarrativeWriter:
         )
         payload = {
             "model": self.model, "max_tokens": self.max_tokens,
-            "reasoning": {"effort": self.reasoning_effort},
+            "reasoning": {"effort": effort},
             "provider": {"require_parameters": True, "allow_fallbacks": False},
             "messages": [
                 {"role": "system", "content": (
@@ -397,7 +413,12 @@ class NarrativeWriter:
                     "Every personal claim must cite its supporting verified candidate fact IDs "
                     "in fact_ids. Every employer or job claim must cite supporting job_evidence "
                     "IDs in job_evidence_ids. These are separate evidence namespaces. A sentence "
-                    "may cite both when connecting experience to a job priority. Job-only "
+                    "may cite both when connecting experience to a job priority. Entries in facts "
+                    "whose key is 'story' are passages from the applicant's own written account "
+                    "of their work: they support personal claims exactly like verified facts and "
+                    "are cited by their story: ids in fact_ids; keep each passage's employer and "
+                    "period attached to its own claims, and when a verified fact states the same "
+                    "thing, cite that fact id as well. Job-only "
                     "statements may have empty fact_ids. Plain opening or closing phrases such "
                     "as 'Thank you for considering my application.' may have no citations if "
                     "they make no claim about qualifications, personal intent or motivation. "
@@ -532,7 +553,7 @@ class NarrativeWriter:
         finally:
             self.budget.record(CallReceipt("narrative", self.model, resolved,
                 time.monotonic() - started, cost, reserve, status,
-                requested_reasoning_effort=self.reasoning_effort))
+                requested_reasoning_effort=effort))
 
     def review(self, *, question: str, facts: list[dict[str, Any]], job: dict[str, str],
                job_evidence: list[dict[str, str]] | None = None,
@@ -623,9 +644,10 @@ class NarrativeWriter:
             "Do not rewrite or repair the draft as part of the review. "
         )
         review_max_tokens = min(self.max_tokens, 1200)
+        effort = self.effort_for(purpose)
         payload = {
             "model": self.model, "max_tokens": review_max_tokens,
-            "reasoning": {"effort": self.reasoning_effort},
+            "reasoning": {"effort": effort},
             "provider": {"require_parameters": True, "allow_fallbacks": False},
             "messages": [
                 {"role": "system", "content": (
@@ -707,4 +729,4 @@ class NarrativeWriter:
         finally:
             self.budget.record(CallReceipt("opus_" + purpose, self.model, resolved,
                 time.monotonic() - started, cost, reserve, status,
-                requested_reasoning_effort=self.reasoning_effort))
+                requested_reasoning_effort=effort))

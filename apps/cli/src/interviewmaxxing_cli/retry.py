@@ -64,7 +64,7 @@ NEVER_RETRIED: tuple[str, ...] = ("prepared", "closed", "duplicate", "blocked")
 INHERITED: tuple[str, ...] = (
     "candidate_id", "workers", "per_job_timeout_s", "retry_retryable", "sync_closed",
     "browser", "opencli_profile", "ai_routing", "env_file", "writer_model",
-    "rag_connection_file",
+    "rag_connection_file", "writer_effort",
 )
 """``BatchOptions`` a retry takes from the original batch's ``run_options`` unless given
 again (``--max-prepared`` is the retry's own; the browser is always headless)."""

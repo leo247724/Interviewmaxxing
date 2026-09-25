@@ -473,6 +473,7 @@ class BatchOptions(Contract):
     env_file: Path | None = None
     writer_model: str | None = None
     rag_connection_file: Path | None = None
+    writer_effort: Literal["low", "medium", "high"] | None = None
     headless: bool = True
     command: list[str] = Field(default_factory=list)
     """argv prefix of the CLI; ``apply URL --json ...`` is appended. Empty means
@@ -491,7 +492,8 @@ class BatchOptions(Contract):
         return DynamicOptions(browser=self.browser, opencli_profile=self.opencli_profile,
                               ai_routing=self.ai_routing, env_file=self.env_file,
                               writer_model=self.writer_model,
-                              rag_connection_file=self.rag_connection_file)
+                              rag_connection_file=self.rag_connection_file,
+                              writer_effort=self.writer_effort)
 
     def check(self) -> None:
         """Raise ``ValueError`` for combinations that cannot work."""
@@ -522,6 +524,8 @@ class BatchOptions(Contract):
             argv += ["--writer-model", self.writer_model]
         if self.rag_connection_file is not None:
             argv += ["--rag-connection-file", str(self.rag_connection_file)]
+        if self.writer_effort is not None:
+            argv += ["--writer-effort", self.writer_effort]
         return argv
 
     def argv(self, url: str) -> list[str]:
@@ -551,6 +555,7 @@ class BatchOptions(Contract):
             writer_model=self.writer_model,
             rag_connection_file=(str(self.rag_connection_file)
                                  if self.rag_connection_file is not None else None),
+            writer_effort=self.writer_effort,
             headless=self.headless)
 
     def worker_browser_dir(self, slot: int) -> Path:
@@ -595,6 +600,7 @@ class BatchRunOptions(Contract):
     env_file: str | None = None
     writer_model: str | None = None
     rag_connection_file: str | None = None
+    writer_effort: Literal["low", "medium", "high"] | None = None
     headless: bool = True
 
 

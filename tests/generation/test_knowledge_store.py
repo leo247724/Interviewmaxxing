@@ -95,7 +95,7 @@ class MemoryPg:
                           and key[1] == "fact" and key[3] not in params[1]]
             elif "source_id <>" in sql:
                 doomed = [key for key in self.sources if key[0] == params[0]
-                          and key[1] == "job" and key[2] == params[1] and key[3] != params[2]]
+                          and key[1] == params[1] and key[2] == params[2] and key[3] != params[3]]
             else:
                 doomed = [tuple(params)] if tuple(params) in self.sources else []
             for key in doomed:
@@ -638,3 +638,136 @@ def test_concurrent_retrievals_each_open_their_own_connection(profile, mock_job)
     assert len({thread for thread, _ in connections}) == 3
     for thread, conn in connections:
         assert used[id(conn)] == {thread}  # used only on the thread that opened it
+
+
+# --- stories: the candidate's own account as a fourth kind ----------------------------------
+
+
+def _story_chunks(text_by_title=None):
+    from interviewmaxxing_generation.knowledge import stories as st
+
+    text_by_title = text_by_title or {
+        "Paid search for a bakery": (
+            "I managed a $120,000 paid search budget for a regional bakery chain in 2024 and grew "
+            "online orders by 35%. As the marketing manager I set up conversion tracking in Google "
+            "Ads. My team of 2 coordinators reported to me. I learned that clean tracking matters."),
+        "Building Ovenboard": (
+            "I built an internal reporting tool, Ovenboard, for the bakery chain. It ran on Node.js "
+            "and pulled Meta Ads spend into one dashboard, saving about 6 hours per week."),
+    }
+    runs = []
+    for number, (title, body) in enumerate(text_by_title.items(), 1):
+        runs += [st.Run(f"Stories 0{number} - {title}", True), st.Run(body, False)]
+    paragraphs = [st.Paragraph(tuple(runs))]
+    chunks = []
+    for story in st.parse_stories(paragraphs):
+        chunks += st.chunk_story(story, st.analyse_story(story))
+    return chunks
+
+
+def test_story_indexing_is_idempotent_and_one_document_is_current(knowledge, profile):
+    store, db, embedder = knowledge
+    chunks = _story_chunks()
+    version = "c" * 64
+    first = store.index_stories(profile.id, chunks, version=version)
+    assert first["source_count"] == 1 and first["chunk_count"] == len(chunks) >= 4
+    assert first["story_chunk_ids"] == [c.id for c in chunks]
+    assert len(embedder.calls) == 1 and embedder.calls[0] == [c.text for c in chunks]
+    second = store.index_stories(profile.id, chunks, version=version)
+    assert second["unchanged_source_count"] == 1 and [c for c in embedder.calls if c] == [embedder.calls[0]]
+    assert second["chunk_ids"] == first["chunk_ids"] and len(db.chunks) == len(chunks)
+    assert {key[1] for key in db.sources} == {"story"}
+    newer = store.index_stories(profile.id, chunks[:3], version="d" * 64)
+    assert newer["unchanged_source_count"] == 0 and len(db.chunks) == 3
+    assert len([c for c in embedder.calls if c]) == 2
+    other = store.index_stories(profile.id, chunks, version="e" * 64, source_id="second-document")
+    assert other["replaced_source_count"] == 1 and len(db.sources) == 1
+    kept = store.index_stories(profile.id, chunks[:2], version="f" * 64, source_id="third", replace_others=False)
+    assert kept["replaced_source_count"] == 0 and len(db.sources) == 2
+
+
+@pytest.mark.parametrize("change", ["id", "whitespace", "header", "oversized", "duplicate", "version"])
+def test_malformed_story_chunks_are_rejected_before_any_write(knowledge, profile, change):
+    from dataclasses import replace
+
+    store, db, embedder = knowledge
+    chunks = _story_chunks()
+    version = "c" * 64
+    if change == "id":
+        chunks[0] = replace(chunks[0], id="story:" + "0" * 64)
+    elif change == "whitespace":
+        chunks[0] = replace(chunks[0], text=chunks[0].text + " ")
+    elif change == "header":
+        body = "No header here. " + chunks[0].text.split("\n", 1)[1]
+        chunks[0] = replace(chunks[0], text=body, id="story:" + hashlib.sha256(body.encode()).hexdigest())
+    elif change == "oversized":
+        body = chunks[0].text + " x" * 900
+        chunks[0] = replace(chunks[0], text=body, id="story:" + hashlib.sha256(body.encode()).hexdigest())
+    elif change == "duplicate":
+        chunks.append(chunks[0])
+    else:
+        version = "not-a-digest"
+    with pytest.raises(KnowledgeError):
+        store.index_stories(profile.id, chunks, version=version)
+    assert not db.sources and not db.chunks and not embedder.calls
+
+
+def test_narrative_retrieval_returns_story_chunks_but_identity_fields_get_none(knowledge, profile, mock_job):
+    store, _, embedder = knowledge
+    chunks = _story_chunks()
+    store.index_candidate(profile)
+    store.index_stories(profile.id, chunks, version="c" * 64)
+    store.index_job(profile.id, mock_job, "Own paid search and report orders to the owner.",
+                    "https://example.invalid/job")
+    embedder.calls.clear()
+    result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True)
+    assert result.facts and result.job_evidence
+    assert 1 <= len(result.story_chunks) <= 4
+    assert len(embedder.calls) == 1 and len(embedder.calls[0]) == 2
+    assert embedder.calls[0][1].startswith("Question: Cover letter\nRole: ")
+    assert "Key requirements:\nOwn paid search and report orders to the owner." in embedder.calls[0][1]
+    for rank, chunk in enumerate(result.story_chunks, 1):
+        assert chunk["id"] == "story:" + hashlib.sha256(chunk["text"].encode()).hexdigest()
+        assert chunk["text"].startswith("Story 0") and chunk["source_version"] == "c" * 64
+        assert chunk["rank"] == rank and 0 < chunk["score"] <= 1
+        assert chunk["title"] and isinstance(chunk["themes"], list) and chunk["story_id"]
+    assert result.story_chunks[0]["employer"] in ("regional bakery chain", "bakery chain")
+    assert result.receipt["story_ids"] == [c["id"] for c in result.story_chunks]
+    assert set(result.receipt["story_scores"]) == set(result.receipt["story_ids"])
+    assert result.receipt["counts"]["story_chunks"] == len(result.story_chunks)
+    assert result.receipt["story_query_applied"] and result.receipt["stories_skipped_reason"] is None
+    # No explicit style samples: the candidate's own stories set the tone.
+    assert result.voice_samples == [c["text"] for c in result.story_chunks[:2]]
+    assert result.receipt["voice_from_stories"] is True
+    store.index_voice(profile.id, "My own voice sample.", "own-sample")
+    voiced = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True)
+    assert voiced.voice_samples == ["My own voice sample."] and not voiced.receipt["voice_from_stories"]
+    assert "story_relevance" in result.receipt["embedding_stages"][0]["query_stages"]
+    assert "c" * 64 in result.receipt["source_versions"]
+    for identity in ("First name", "Email Address", "Phone number*", "LinkedIn Profile URL", "City"):
+        embedder.calls.clear()
+        held = store.retrieve(candidate=profile, job=mock_job, query=identity, narrative=True)
+        assert held.story_chunks == [] and held.receipt["stories_skipped_reason"] == "identity_field"
+        assert len(embedder.calls[0]) == 1
+    plain = store.retrieve(candidate=profile, job=mock_job, query="Describe a campaign you led")
+    assert plain.story_chunks == [] and plain.receipt["stories_skipped_reason"] == "not_narrative"
+    assert plain.receipt["counts"]["story_chunks"] == 0 and not plain.receipt["story_query_applied"]
+
+
+def test_story_hits_are_validated_and_deduplicated(knowledge, profile, mock_job):
+    store, db, _ = knowledge
+    chunks = _story_chunks()
+    store.index_stories(profile.id, chunks, version="c" * 64)
+    genuine = next(row for row in db.chunks.values() if row["chunk_number"] == 1)
+    foreign = {**genuine, "candidate_id": "someone-else", "id": "story:foreign"}
+    unlabelled_body = "A chunk without its header line."
+    unlabelled = {**genuine, "id": "story:x", "body": unlabelled_body,
+                  "content_hash": hashlib.sha256(unlabelled_body.encode()).hexdigest()}
+    tampered = {**genuine, "id": "story:y", "body": genuine["body"] + " tampered"}
+    db.extra_hits = [foreign, unlabelled, tampered, dict(genuine)]
+    result = store.retrieve(candidate=profile, job=mock_job, query="Tell us about a campaign", narrative=True)
+    texts = [c["text"] for c in result.story_chunks]
+    assert genuine["body"] in texts and texts.count(genuine["body"]) == 1
+    assert unlabelled_body not in texts and not any("tampered" in t for t in texts)
+    assert result.receipt["rejected_count"] >= 3
+    assert len(result.story_chunks) <= 4

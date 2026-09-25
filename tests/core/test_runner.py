@@ -1751,7 +1751,9 @@ def test_a_prepared_run_records_its_provider_cost_once_and_reports_it(
 
     [event] = _provider_events(isolated_imx_home, result.application_id)
     usage = event.metadata
-    assert set(usage) == USAGE_KEYS | {"by_purpose", "limits"}
+    assert USAGE_KEYS | {"by_purpose", "limits", "reasoning_effort"} <= set(usage) \
+        <= USAGE_KEYS | {"by_purpose", "limits", "reasoning_effort", "writer_effort"}
+    assert usage["reasoning_effort"] == {}  # Jev decisions carry no reasoning effort
     # A fixed test budget keeps its limits; production budgets scale with the form (round 6).
     assert usage["limits"] == {"max_calls": 48, "max_usd": 0.5}
     assert usage["calls"] == len(receipts) and usage["unknown_cost_calls"] == 0

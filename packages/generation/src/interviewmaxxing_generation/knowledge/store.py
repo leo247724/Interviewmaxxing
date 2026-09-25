@@ -12,9 +12,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import re
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -33,11 +34,15 @@ from .embeddings import (
     KnowledgeError,
     validate_vector,
 )
+from .stories import DEFAULT_STORY_SOURCE, StoryChunk, parse_chunk_header
 
 MAX_RETRIEVAL_LIMIT = 20
 MAX_SOURCE_CHARS = 100_000
 CHUNK_CHARS = 1800
 MAX_SOURCE_CHUNKS = 64
+MAX_STORY_CHUNKS = 4
+"""Story chunks returned for one narrative retrieval (each about 120-300 words)."""
+MAX_REQUIREMENT_CHARS = 1500
 
 
 @dataclass(frozen=True)
@@ -46,11 +51,15 @@ class RetrievalResult:
     job_evidence: list[dict[str, str]] = field(default_factory=list)
     voice_samples: list[str] = field(default_factory=list)
     receipt: dict[str, Any] = field(default_factory=dict)
+    story_chunks: list[dict[str, Any]] = field(default_factory=list)
+    """Narrative evidence in the candidate's own words: ``id`` (``story:<content hash>``),
+    ``text``, ``story_id``, ``title``, ``employer``, ``period``, ``themes``,
+    ``source_version``, ``score`` and ``rank``. Empty unless ``narrative`` retrieval."""
 
 
 class KnowledgeRetriever(Protocol):
     def retrieve(self, *, candidate: CandidateProfile, job: JobRecord,
-                 query: str, limit: int = 8) -> RetrievalResult: ...
+                 query: str, limit: int = 8, narrative: bool = False) -> RetrievalResult: ...
 
 
 def _hash(value: str) -> str:
@@ -136,6 +145,7 @@ _RESULT_COLUMNS = (
     "id", "candidate_id", "kind", "job_scope", "source_id", "source_version",
     "chunk_number", "body", "content_hash", "source_url", "indexed_job_id",
 )
+_STORY_RESULT_COLUMNS = (*_RESULT_COLUMNS, "score")
 
 _SNAPSHOT_SQL = """
 SELECT s.source_id, s.source_version,
@@ -196,6 +206,51 @@ def _cover_letter_request(query: str) -> bool:
                             normalized))
 
 
+_IDENTITY_QUERY = re.compile(
+    r"^(?:your\s+)?(?:(?:first|last|full|preferred|given|family|legal)\s+)?names?$"
+    r"|^(?:your\s+)?(?:e-?mail|email\s+address|e-?mail\s+address)$"
+    r"|^(?:your\s+)?(?:mobile|cell|phone|telephone|contact)(?:\s+(?:phone\s+)?number)?$"
+    r"|^(?:your\s+)?(?:linkedin|github|website|portfolio)(?:\s+(?:profile|url|link))*$"
+    r"|^(?:your\s+)?(?:street\s+)?address(?:\s+line\s*\d)?$|^(?:city|state|region|province|country|"
+    r"zip(?:\s*code)?|postal\s*code|location|date\s+of\s+birth|pronouns)$")
+_REQUIREMENT_CUE = re.compile(
+    r"\b(?:experience|years?|manage|managing|own|owning|lead|leading|build|building|drive|driving|"
+    r"responsib|require|must|you will|you'll|you are|proven|track record|hands-on|expertise|"
+    r"skills?|ability|strong|deep|familiar)\b", re.IGNORECASE)
+
+
+def _identity_query(query: str) -> bool:
+    """A bare identity or contact wording; such a field never gets story evidence."""
+    normalized = re.sub(r"[\s*:?.!]+$", "", query.strip().lower())
+    normalized = re.sub(r"\s*\((?:optional|required)\)$", "", normalized)
+    return bool(_IDENTITY_QUERY.match(normalized))
+
+
+def _key_requirements(evidence: list[dict[str, str]]) -> str:
+    """Requirement-like sentences of the scoped job description, bounded."""
+    lines: list[str] = []
+    size = 0
+    for item in evidence:
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+|(?<=[a-z])\s*[\u2022\u00b7\-\u2013]\s+(?=[A-Z])", item["text"]):
+            sentence = " ".join(sentence.split())
+            if len(sentence) < 20 or not _REQUIREMENT_CUE.search(sentence):
+                continue
+            if size + len(sentence) + 1 > MAX_REQUIREMENT_CHARS:
+                return "\n".join(lines)
+            lines.append(sentence)
+            size += len(sentence) + 1
+    if not lines:
+        return "\n".join(item["text"] for item in evidence)[:MAX_REQUIREMENT_CHARS]
+    return "\n".join(lines)
+
+
+def _story_relevance_query(query: str, job: JobRecord, evidence: list[dict[str, str]]) -> str:
+    """Rank stories by the question, the job title and the description's key requirements."""
+    combined = (f"Question: {query}\nRole: {job.title or ''}\nCompany: {job.company or ''}\n"
+                "Key requirements:\n" + _key_requirements(evidence))
+    return combined.encode("utf-8")[:MAX_INPUT_BYTES - 1].decode("utf-8", errors="ignore")
+
+
 def _lexical_query(query: str) -> str:
     """Recall individual terms instead of requiring every word of a question.
 
@@ -240,6 +295,13 @@ WHERE v.id IS NOT NULL OR l.id IS NOT NULL
 ORDER BY (coalesce(1.0 / (60 + v.rank), 0) + coalesce(1.0 / (60 + l.rank), 0)) DESC, d.id
 LIMIT %s
 """
+
+# The same hybrid ranking, returning its reciprocal-rank-fusion score for story traces.
+_RETRIEVE_SCORED_SQL = _RETRIEVE_SQL.replace(
+    "d.chunk_number, d.body, d.content_hash, d.source_url, d.indexed_job_id\n",
+    "d.chunk_number, d.body, d.content_hash, d.source_url, d.indexed_job_id,\n"
+    "       (coalesce(1.0 / (60 + v.rank), 0) + coalesce(1.0 / (60 + l.rank), 0)) AS score\n")
+assert _RETRIEVE_SCORED_SQL != _RETRIEVE_SQL
 
 
 class PgKnowledgeStore:
@@ -301,8 +363,38 @@ class PgKnowledgeStore:
         source = _Source("voice", "", source_id, _json_hash([source_id, text]), _chunks(text))
         return self._index(candidate_id, [source])
 
+    def index_stories(self, candidate_id: str, chunks: Sequence[StoryChunk], *,
+                      version: str, source_id: str = DEFAULT_STORY_SOURCE,
+                      replace_others: bool = True) -> dict[str, Any]:
+        """Index one document's story chunks as the candidate's current stories source.
+
+        ``version`` is the document's content hash; an unchanged document needs no new
+        embeddings, a changed one replaces the source, and by default any other stories
+        source of the candidate is removed so one document is current. Chunk ids are
+        content hashes (``story:<sha256 of the chunk text>``) and are what retrieval
+        returns, so fact provenance stays stable across re-indexing.
+        """
+        if not source_id.strip():
+            raise KnowledgeError("A stories source ID is required")
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9a-f]{64}", version):
+            raise KnowledgeError("A stories source version must be a SHA-256 hex digest")
+        if not chunks or len(chunks) > MAX_SOURCE_CHUNKS:
+            raise KnowledgeError("Story chunks are missing or exceed the chunk limit")
+        seen: set[str] = set()
+        for chunk in chunks:
+            if (not isinstance(chunk, StoryChunk) or not chunk.text.strip()
+                    or len(chunk.text) > CHUNK_CHARS or chunk.text != chunk.text.strip()
+                    or chunk.id != "story:" + _hash(chunk.text) or chunk.id in seen
+                    or parse_chunk_header(chunk.text) is None):
+                raise KnowledgeError("A story chunk is malformed, oversized, duplicated or unlabelled")
+            seen.add(chunk.id)
+        source = _Source("story", "", source_id, version, [chunk.text for chunk in chunks])
+        receipt = self._index(candidate_id, [source], replace_others=replace_others)
+        receipt["story_chunk_ids"] = [chunk.id for chunk in chunks]
+        return receipt
+
     def _index(self, candidate_id: str, sources: list[_Source], *,
-               revoke_facts: bool = False) -> dict[str, Any]:
+               revoke_facts: bool = False, replace_others: bool = True) -> dict[str, Any]:
         started = time.monotonic()
         if sum(len(source.chunks) for source in sources) > MAX_EMBEDDING_INPUTS:
             raise KnowledgeError("Knowledge operation exceeds its chunk limit")
@@ -327,10 +419,10 @@ class PgKnowledgeStore:
                       AND NOT (source_id = ANY(%s::text[]))""",
                                (candidate_id, [s.source_id for s in sources]))
                 revoked_count = max(cursor.rowcount, 0)
-            elif kind == "job":
+            elif kind in ("job", "story") and replace_others:
                 cursor.execute("""DELETE FROM imx_knowledge.sources
-                    WHERE candidate_id = %s AND kind = 'job' AND job_scope = %s
-                      AND source_id <> %s""", (candidate_id, scope, sources[0].source_id))
+                    WHERE candidate_id = %s AND kind = %s AND job_scope = %s
+                      AND source_id <> %s""", (candidate_id, kind, scope, sources[0].source_id))
                 replaced_source_count = max(cursor.rowcount, 0)
             for source in sources:
                 key = (candidate_id, source.kind, source.job_scope, source.source_id)
@@ -378,11 +470,11 @@ class PgKnowledgeStore:
         return result
 
     @staticmethod
-    def _scoped_hits(cursor: Any, candidate_id: str, kind: str,
-                     scope: str) -> list[dict[str, Any]]:
+    def _scoped_hits(cursor: Any, candidate_id: str, kind: str, scope: str,
+                     columns: tuple[str, ...] = _RESULT_COLUMNS) -> list[dict[str, Any]]:
         hits = []
         for raw in cursor.fetchall():
-            row = dict(raw) if isinstance(raw, Mapping) else dict(zip(_RESULT_COLUMNS, raw, strict=True))
+            row = dict(raw) if isinstance(raw, Mapping) else dict(zip(columns, raw, strict=True))
             # Do not let an incorrect connection, query, or injected row put
             # another candidate/job's text into either embeddings or output.
             if (row.get("candidate_id") != candidate_id or row.get("kind") != kind
@@ -421,14 +513,18 @@ class PgKnowledgeStore:
         return jobs, rejected
 
     def retrieve(self, *, candidate: CandidateProfile, job: JobRecord,
-                 query: str, limit: int = 8) -> RetrievalResult:
-        """Return up to limit facts, min(limit, 4) job chunks and two style chunks.
+                 query: str, limit: int = 8, narrative: bool = False) -> RetrievalResult:
+        """Return up to limit facts, min(limit, 4) job chunks and two style chunks, plus
+        up to four story chunks for a narrative field.
 
         Index hits must still match the supplied current canonical profile. A
         stale index therefore cannot restore a revoked or changed candidate claim.
         Job text supplies relevance for cover letters. Specific questions alone
         rank their candidate evidence, with the scoped JD returned separately for
-        tailoring. Each retrieval uses one embedding request.
+        tailoring. Stories are ranked by the question, the job title and the
+        description's key requirements, only when the caller marks the field as
+        narrative (a WRITER-routed question or cover letter) and the question is not
+        a bare identity field. Each retrieval uses one embedding request.
         """
         if type(limit) is not int or not 1 <= limit <= MAX_RETRIEVAL_LIMIT:
             raise KnowledgeError("Retrieval limit must be between 1 and 20")
@@ -443,10 +539,15 @@ class PgKnowledgeStore:
             fact_queries = [("job_context", context_query, 1.0)]
         else:
             fact_queries = [("question", query, 1.0)]
-        embedded = self._embed([text for _, text, _ in fact_queries])
+        identity_field = _identity_query(query)
+        story_query = (_story_relevance_query(query, job, jobs)
+                       if narrative and not identity_field else None)
+        embedded = self._embed([text for _, text, _ in fact_queries]
+                               + ([story_query] if story_query else []))
         pool_limit = min(limit * 4, 80)
         current = {f.id: f for f in candidate.verified_facts()}
         hits: list[dict[str, Any]] = []
+        story_hits: list[dict[str, Any]] = []
         with self._transaction(candidate.id) as cursor:
             if jobs:
                 current_sources = self._snapshot(cursor, candidate.id, "job", scope)
@@ -462,12 +563,41 @@ class PgKnowledgeStore:
                                               lexical_query, lexical_query,
                                               pool_limit, pool_limit))
                 hits.extend(self._scoped_hits(cursor, candidate.id, kind, ""))
+            if story_query:
+                story_lexical = _lexical_query(story_query)
+                cursor.execute(_RETRIEVE_SCORED_SQL, (candidate.id, "story", "", EMBEDDING_MODEL,
+                                                     json.dumps(embedded.vectors[1]), pool_limit,
+                                                     story_lexical, story_lexical,
+                                                     pool_limit, pool_limit))
+                story_hits = self._scoped_hits(cursor, candidate.id, "story", "",
+                                               _STORY_RESULT_COLUMNS)
 
         facts: list[CandidateFact] = []
         voices: list[str] = []
+        stories: list[dict[str, Any]] = []
         seen_facts: set[str] = set()
         seen_voices: set[str] = set()
+        seen_stories: set[str] = set()
         versions = {j["source_version"] for j in jobs}
+        for rank, hit in enumerate(story_hits, 1):
+            header = parse_chunk_header(hit["body"]) if _valid_hit_body(hit) else None
+            if header is None:
+                rejected += 1
+                continue
+            if hit["content_hash"] in seen_stories or len(stories) >= MAX_STORY_CHUNKS:
+                continue
+            score = hit.get("score")
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+                score = 1.0 / (60 + rank)  # a driver without the fused score: its rank
+            stories.append({"id": "story:" + hit["content_hash"], "text": hit["body"],
+                            "story_id": header["story_id"], "title": header["title"],
+                            "employer": header["employer"] or header["project"],
+                            "period": header["period"], "themes": list(header["themes"]),
+                            "source_version": hit["source_version"], "score": float(score),
+                            "rank": rank})
+            seen_stories.add(hit["content_hash"])
+            versions.add(hit["source_version"])
+        voice_from_stories = False
         for hit in hits:
             if not _valid_hit_body(hit):
                 rejected += 1
@@ -498,6 +628,11 @@ class PgKnowledgeStore:
                     voices.append(body)
                     seen_voices.add(hit["content_hash"])
                     versions.add(version)
+        if not voices and stories:
+            # The candidate's stories are their own writing: without explicit style
+            # samples, the two best story chunks set the tone (style only, as ever).
+            voices = [story["text"] for story in stories[:2]]
+            voice_from_stories = True
 
         return RetrievalResult(facts, jobs, voices, {
             "status": "retrieved", "backend": "pgvector-hybrid",
@@ -511,10 +646,19 @@ class PgKnowledgeStore:
             "job_context_applied": bool(jobs), "job_context_duration_ms": job_context_ms,
             "candidate_ranking_uses_job_context": fact_queries[0][0] == "job_context",
             "job_evidence_ids": [j["id"] for j in jobs], "source_versions": sorted(versions),
-            "counts": {"facts": len(facts), "job_evidence": len(jobs), "voice_samples": len(voices)},
+            "story_ids": [s["id"] for s in stories],
+            "story_scores": {s["id"]: s["score"] for s in stories},
+            "story_query_applied": story_query is not None, "voice_from_stories": voice_from_stories,
+            "story_query_sha256": _hash(story_query) if story_query else None,
+            "story_query_bytes": len(story_query.encode("utf-8")) if story_query else 0,
+            "stories_skipped_reason": ("identity_field" if narrative and identity_field
+                                       else None if narrative else "not_narrative"),
+            "counts": {"facts": len(facts), "job_evidence": len(jobs), "voice_samples": len(voices),
+                       "story_chunks": len(stories)},
             "rejected_count": rejected, "embedding": embedded.receipt,
             "embedding_stages": [{"stage": "candidate_relevance",
-                                   "query_stages": [stage for stage, _, _ in fact_queries],
+                                   "query_stages": [stage for stage, _, _ in fact_queries]
+                                   + (["story_relevance"] if story_query else []),
                                    "receipt": embedded.receipt}],
             "duration_ms": round((time.monotonic() - started) * 1000, 3),
-        })
+        }, stories)

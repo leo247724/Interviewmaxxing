@@ -21,12 +21,19 @@ class DynamicOptions:
     env_file: Path | None = None
     writer_model: str | None = None
     rag_connection_file: Path | None = None
+    writer_effort: Literal["low", "medium", "high"] | None = None
+    """Reasoning effort for cover letters and narrative answers; None means the
+    runtime default (high). Reviews and short factual decisions stay low."""
 
     def validate(self) -> None:
         if self.rag_connection_file is not None and (
             not self.ai_routing or not self.rag_connection_file.is_absolute()
         ):
             raise ValueError("--rag-connection-file requires --ai-routing and an absolute path")
+        if self.writer_effort is not None and not self.ai_routing:
+            raise ValueError("--writer-effort requires --ai-routing")
+        if self.writer_effort is not None and self.writer_effort not in ("low", "medium", "high"):
+            raise ValueError("--writer-effort must be low, medium or high")
         if self.opencli_profile and self.browser != "opencli":
             raise ValueError("--opencli-profile requires --browser opencli")
         if self.ai_routing and (self.env_file is None or not self.writer_model):
@@ -49,10 +56,11 @@ def runtime_components(options: DynamicOptions) -> tuple[PlaywrightSessionFactor
         try:
             if options.rag_connection_file is not None:
                 annotator, resolver = build_ai_runtime(env_file=options.env_file,
-                    writer_model=options.writer_model, rag_connection_file=options.rag_connection_file)
+                    writer_model=options.writer_model, rag_connection_file=options.rag_connection_file,
+                    writer_effort=options.writer_effort)
             else:
                 annotator, resolver = build_ai_runtime(env_file=options.env_file,
-                    writer_model=options.writer_model)
+                    writer_model=options.writer_model, writer_effort=options.writer_effort)
         except CredentialError as exc:
             raise ValueError(f"AI credentials unavailable: {exc}") from None
     if options.browser == "opencli":

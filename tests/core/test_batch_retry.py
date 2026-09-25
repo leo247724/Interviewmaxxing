@@ -69,7 +69,7 @@ WRITER = "anthropic/claude-opus-5.5"
 CLI_DEFAULTS: dict[str, Any] = {
     "candidate_id": "default", "workers": 1, "per_job_timeout_s": 900.0, "retry_retryable": 1,
     "sync_closed": True, "browser": "playwright", "opencli_profile": None, "ai_routing": False,
-    "env_file": None, "writer_model": None, "rag_connection_file": None,
+    "env_file": None, "writer_model": None, "rag_connection_file": None, "writer_effort": None,
 }
 """What ``prepare-batch`` gives when no run flag is passed."""
 

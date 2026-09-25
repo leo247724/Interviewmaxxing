@@ -76,14 +76,24 @@ from .classification import (
     FormRouteReport,
     SourceScope,
 )
+from .humanize import humanize_draft
 from .providers import (
     AIHold,
     BoundedDecisions,
     CallBudget,
     CallReceipt,
+    NarrativeDraft,
     NarrativeWriter,
     buffered_receipts,
     flush_receipts,
+)
+from .stories import (
+    story_consistency,
+    story_evidence,
+    story_note,
+    story_trace,
+    transient_story_facts,
+    validate_story_chunks,
 )
 
 if TYPE_CHECKING:
@@ -872,6 +882,10 @@ class DynamicPacketResolver:
     max_concurrency: int = 3
     """Fields resolved at once within one form (each phase), bounding provider calls,
     rate limits and memory; 1 resolves them one after another."""
+    humanize: bool = False
+    """Rewrite a grounded narrative under the no-AI-slop rules and ground it again; a
+    failed rewrite keeps the draft that passed (``ai.humanize``). Off for a bare resolver;
+    ``build_ai_runtime`` turns it on for the CLI and service runtimes."""
     _suggestion_decisions: dict[str, dict[str, Any]] = dataclass_field(
         default_factory=dict, init=False, repr=False)
     _lock: threading.RLock = dataclass_field(default_factory=threading.RLock, init=False, repr=False)
@@ -900,6 +914,7 @@ class DynamicPacketResolver:
 
         total = empty()
         by_purpose: dict[str, dict[str, Any]] = {}
+        efforts: dict[str, str] = {}
         for receipt in self.decisions.budget.receipts[since:]:
             for bucket in (total, by_purpose.setdefault(receipt.purpose, empty())):
                 bucket["calls"] += 1
@@ -908,12 +923,20 @@ class DynamicPacketResolver:
                     bucket["unknown_cost_calls"] += 1
                 else:
                     bucket["known_cost_usd"] += receipt.cost_usd
+            if receipt.requested_reasoning_effort is not None:
+                efforts.setdefault(receipt.purpose, receipt.requested_reasoning_effort)
         for bucket in (total, *by_purpose.values()):
             bucket["known_cost_usd"] = round(bucket["known_cost_usd"], 6)
             bucket["latency_seconds"] = round(bucket["latency_seconds"], 3)
         budget = self.decisions.budget
-        return total | {"by_purpose": dict(sorted(by_purpose.items())),
-                        "limits": {"max_calls": budget.max_calls, "max_usd": budget.max_usd}}
+        usage = total | {"by_purpose": dict(sorted(by_purpose.items())),
+                         "limits": {"max_calls": budget.max_calls, "max_usd": budget.max_usd},
+                         "reasoning_effort": dict(sorted(efforts.items()))}
+        effort_for = getattr(self.writer, "effort_for", None)
+        if callable(effort_for):  # the configured efforts, whether or not they were used
+            usage["writer_effort"] = {"narrative": effort_for("answer"),
+                                      "review": effort_for("draft_grounding")}
+        return usage
 
     async def resolve(self, context: PacketContext) -> ApplicationPacket:
         assert self.router is not None
@@ -2746,11 +2769,15 @@ class DynamicPacketResolver:
             raise AIHold("The field requires a writer rather than exact fact copying")
         return answer.model_copy(update={"confidence": min(answer.confidence, self._gate_confidence(gate))})
 
-    def _retrieve(self, context: PacketContext, field: ApplicationField) -> RetrievalResult:
+    def _retrieve(self, context: PacketContext, field: ApplicationField, *,
+                  narrative: bool = False) -> RetrievalResult:
+        """Verified facts, scoped job evidence and style samples for one field; a
+        narrative field (a WRITER-routed question or cover letter) also gets story
+        chunks, the candidate's own account, validated here and traced by id and score."""
         assert self.retriever is not None
         try:
             result = self.retriever.retrieve(candidate=context.candidate, job=context.job,
-                query=field.question_text, limit=self.max_relevant_facts)
+                query=field.question_text, limit=self.max_relevant_facts, narrative=narrative)
         except Exception:
             # Provider/database errors can contain credentials or source material.
             # A configured index failing is never permission to use another source.
@@ -2788,9 +2815,15 @@ class DynamicPacketResolver:
             job_ids.add(evidence["id"])
         if any(not isinstance(sample, str) for sample in result.voice_samples):
             raise AIHold("Knowledge retrieval returned invalid voice samples")
+        stories = validate_story_chunks(getattr(result, "story_chunks", None),
+                                        reserved_ids=set(canonical) | job_ids)
+        if stories and not narrative:
+            raise AIHold("Knowledge retrieval returned story evidence for a non-narrative field")
         receipt = {"status": "OK", "query_sha256": _digest(field.question_text),
             "fact_ids": [f.id for f in facts], "job_evidence_ids": sorted(job_ids),
-            "source_versions": sorted({e["source_version"] for e in result.job_evidence}),
+            "source_versions": sorted({e["source_version"] for e in result.job_evidence}
+                                      | {s["source_version"] for s in stories}),
+            "narrative": narrative, **story_trace(stories),
             "receipt_sha256": _digest(result.receipt), **_retrieval_metrics(result.receipt)}
         log = _FIELD_LOG.get()
         if log is not None:  # a concurrently resolved field: emitted in form order later
@@ -2877,10 +2910,14 @@ class DynamicPacketResolver:
             raise AIHold("Narrative cannot fill this control")
         job_evidence: list[dict[str, str]] = []
         voice_samples: list[str] = []
+        story_chunks: list[dict[str, Any]] = []
         if self.retriever is not None:
-            retrieved = retrieved or self._retrieve(context, field)
+            retrieved = retrieved or self._retrieve(context, field, narrative=True)
             facts = retrieved.facts
             job_evidence, voice_samples = retrieved.job_evidence, retrieved.voice_samples
+            canonical_ids = {f.id for f in context.candidate.verified_facts()}
+            story_chunks = validate_story_chunks(getattr(retrieved, "story_chunks", None),
+                reserved_ids=canonical_ids | {e["id"] for e in job_evidence})
         else:
             facts = [f for f in context.candidate.verified_facts() if f.value is not None]
             if len(facts) > self.max_facts:
@@ -2917,6 +2954,8 @@ class DynamicPacketResolver:
         if any(_conflicts(fact, all_verified) for fact in relevant):
             raise AIHold("Relevant verified facts conflict; the writer cannot choose which is true")
         consistency_confidence = self._check_additive_consistency(context, relevant, allow_strong_review=True)
+        if story_chunks:
+            consistency_confidence = min(consistency_confidence, self._story_consistency(context, story_chunks))
         if platform_question and not _platform_evidence_present(relevant):
             raise AIHold("Narrative needs explicit facts: " + ABM_MISSING_DETAIL)
         supplied = {f.id: f for f in relevant}
@@ -2926,13 +2965,14 @@ class DynamicPacketResolver:
             if links := _experience_context(context, fact, set(supplied)):
                 item["experience_context"] = links
             writer_facts.append(item)
+        writer_facts.extend(story_evidence(story_chunks))
         feedback: list[str] | None = None
         for attempt in range(2):
             try:
                 return self._write_narrative(context, field, purpose=purpose, relevant=relevant,
                     writer_facts=writer_facts, job_evidence=job_evidence, voice_samples=voice_samples,
                     consistency_confidence=consistency_confidence, relevance_scores=relevance_scores,
-                    review_feedback=feedback, rewrite_attempt=attempt)
+                    review_feedback=feedback, rewrite_attempt=attempt, story_chunks=story_chunks)
             except _CorrectableDraftRejection as exc:
                 if attempt == 1:
                     raise
@@ -2946,22 +2986,41 @@ class DynamicPacketResolver:
                     "status": "ONE_REWRITE_ALLOWED"})
         raise AIHold("Narrative remains unresolved after one corrective rewrite")
 
+    def _story_consistency(self, context: PacketContext, story_chunks: list[dict[str, Any]]) -> float:
+        """A story chunk that contradicts a verified structured fact holds the field; the
+        Jev verdicts share the per-runtime consistency cache and enter in form order."""
+        log = _FIELD_LOG.get()
+        if log is not None and log.turns is not None:
+            log.turns.wait(log.turn)
+        try:
+            return story_consistency(context=context, chunks=story_chunks,
+                decide=self.decisions.decide, trace=self._trace, model=self.decisions.model,
+                min_probability=MIN_PROBABILITY, cache=self._consistency_verdicts,
+                lock=self._lock, max_cache_entries=self.max_consistency_verdicts,
+                max_facts=self.max_facts)
+        finally:
+            if log is not None and log.turns is not None:
+                log.turns.release(log.turn)
+
     def _write_narrative(self, context: PacketContext, field: ApplicationField, *,
                          purpose: Literal["answer", "cover_letter"], relevant: list[CandidateFact],
                          writer_facts: list[dict[str, Any]], job_evidence: list[dict[str, str]],
                          voice_samples: list[str], consistency_confidence: float,
                          relevance_scores: list[float], review_feedback: list[str] | None,
-                         rewrite_attempt: int) -> PacketAnswer:
+                         rewrite_attempt: int,
+                         story_chunks: list[dict[str, Any]] | None = None) -> PacketAnswer:
         assert self.writer is not None
-        supplied = {fact.id: fact for fact in relevant}
-        platform_question = _abm_platform_question(field.question_text)
+        story_chunks = story_chunks or []
+        stories = transient_story_facts(story_chunks)
+        supplied = {fact.id: fact for fact in relevant} | stories
         trace = self._trace({"stage": "draft", "question": field.question_text, "purpose": purpose,
             "facts": [_fact_evidence(fact) for fact in relevant],
-            "job_evidence_ids": [evidence["id"] for evidence in job_evidence], "status": "WRITING",
+            "job_evidence_ids": [evidence["id"] for evidence in job_evidence],
+            **story_trace(story_chunks), "status": "WRITING",
             "rewrite_attempt": rewrite_attempt, "review_feedback": review_feedback or []})
+        job = {"title": context.job.title or "", "company": context.job.company or ""}
         try:
-            draft = self.writer.write(question=field.question_text, facts=writer_facts,
-                job={"title": context.job.title or "", "company": context.job.company or ""},
+            draft = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
                 max_length=field.max_length, job_evidence=job_evidence,
                 voice_samples=voice_samples, purpose=purpose, review_feedback=review_feedback)
         except AIHold as exc:
@@ -2973,10 +3032,62 @@ class DynamicPacketResolver:
         if draft.status != "READY":
             raise AIHold("Narrative needs explicit facts for a required part of the question: "
                          + "; ".join(draft.missing_information))
+        supplied_job = {e["id"]: e for e in job_evidence}
+        evidence = [*relevant, *stories.values()]
+        scores = self._ground_draft(context, field, draft, purpose=purpose, supplied=supplied,
+            supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=trace,
+            rewrite_attempt=rewrite_attempt)
+        if self.humanize and isinstance(self.writer, NarrativeWriter):
+            def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
+                self._check_additive_consistency(context, relevant)  # cached; same evidence
+                self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
+                    supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence,
+                    trace=entry, rewrite_attempt=rewrite_attempt)
+
+            draft = humanize_draft(self.writer, question=field.question_text, purpose=purpose,
+                draft=draft, job=job, voice_samples=voice_samples, max_length=field.max_length,
+                supplied_ids=set(supplied), job_ids=set(supplied_job), ground=ground_again,
+                trace=self._trace)
+        value = TextValue(text=draft.text)
+        from interviewmaxxing_core import answer_problems
+        if answer_problems(field, value):
+            raise AIHold("Narrative does not fit the current field")
+        cited = list(dict.fromkeys(fid for s in draft.sentences for fid in s.fact_ids))
+        refs = [fid for fid in cited if fid not in stories]
+        story_refs = [fid for fid in cited if fid in stories]
+        if not refs:
+            raise AIHold("Narrative must cite relevant verified candidate facts")
+        job_refs = list(dict.fromkeys(eid for s in draft.sentences for eid in s.job_evidence_ids))
+        note = "Opus draft with per-sentence citations and question completeness checked by Jev"
+        if consistency_confidence < MIN_PROBABILITY:
+            note += "; independent Opus review confirmed evidence consistency"
+        if scores["strong"]:
+            note += "; independent Opus review confirmed uncertain grounding/completeness"
+        if job_refs:
+            note += "; job context (not candidate facts): " + json.dumps([
+                {"id": eid, "source_version": supplied_job[eid]["source_version"]} for eid in job_refs],
+                sort_keys=True)
+        if story_refs:
+            note += story_note(story_chunks, story_refs)
+        trace["status"] = "READY"
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
+            value=value, confidence=min([consistency_confidence, *scores["grounding"], *relevance_scores]),
+            provenance=Provenance(source=AnswerSource.GENERATED_FROM_FACTS,
+                reference_ids=refs, note=note))
+
+    def _ground_draft(self, context: PacketContext, field: ApplicationField, draft: NarrativeDraft, *,
+                      purpose: Literal["answer", "cover_letter"], supplied: dict[str, CandidateFact],
+                      supplied_job: dict[str, dict[str, str]], evidence: list[CandidateFact],
+                      job_evidence: list[dict[str, str]], trace: dict[str, Any],
+                      rewrite_attempt: int) -> dict[str, Any]:
+        """Citations, per-sentence grounding and question completeness by Jev, then the
+        independent Opus review when a score is uncertain; a failure holds. Returns the
+        grounding scores and whether the strong review ran. ``supplied`` may include
+        story passages (unverified stand-ins) next to the verified facts."""
+        platform_question = _abm_platform_question(field.question_text)
         if any(set(s.fact_ids) - supplied.keys() for s in draft.sentences):
             trace["status"] = "CITATIONS_INVALID"
             raise AIHold("Narrative cites unknown or irrelevant facts")
-        supplied_job = {e["id"]: e for e in job_evidence}
         if any(set(s.job_evidence_ids) - supplied_job.keys() for s in draft.sentences):
             trace["status"] = "CITATIONS_INVALID"
             raise AIHold("Narrative cites unknown or irrelevant job evidence")
@@ -3036,33 +3147,12 @@ class DynamicPacketResolver:
             try:
                 self._strong_review(context, question=field.question_text,
                     facts=[_fact_evidence(fact) | {"experience_context": _experience_context(context, fact, set(supplied))}
-                           for fact in relevant], job_evidence=job_evidence,
+                           for fact in evidence], job_evidence=job_evidence,
                     sentences=draft.sentences, purpose="draft_grounding")
             except _CorrectableDraftRejection as exc:
                 trace.update(status="REVIEW_REJECTED", review_verdict=exc.verdict, review_issues=list(exc.issues))
                 raise
             trace["independent_review"] = "SUPPORTED"
-        value = TextValue(text=draft.text)
-        from interviewmaxxing_core import answer_problems
-        if answer_problems(field, value):
-            raise AIHold("Narrative does not fit the current field")
-        refs = list(dict.fromkeys(fid for s in draft.sentences for fid in s.fact_ids))
-        if not refs:
-            raise AIHold("Narrative must cite relevant verified candidate facts")
-        job_refs = list(dict.fromkeys(eid for s in draft.sentences for eid in s.job_evidence_ids))
-        note = "Opus draft with per-sentence citations and question completeness checked by Jev"
-        if consistency_confidence < MIN_PROBABILITY:
-            note += "; independent Opus review confirmed evidence consistency"
-        if strong_grounding:
-            note += "; independent Opus review confirmed uncertain grounding/completeness"
-        if job_refs:
-            note += "; job context (not candidate facts): " + json.dumps([
-                {"id": eid, "source_version": supplied_job[eid]["source_version"]} for eid in job_refs],
-                sort_keys=True)
-        trace["status"] = "READY"
-        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
-            value=value, confidence=min(
-                [consistency_confidence] + [a.noul for a in verification.answers.values() if isinstance(a, NoulAnswer)] +
-                relevance_scores),
-            provenance=Provenance(source=AnswerSource.GENERATED_FROM_FACTS,
-                reference_ids=refs, note=note))
+        trace["status"] = "GROUNDED"
+        return {"grounding": [a.noul for a in verification.answers.values() if isinstance(a, NoulAnswer)],
+                "strong": strong_grounding}
