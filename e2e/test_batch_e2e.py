@@ -183,10 +183,31 @@ def test_retry_after_answering_each_shared_question_once(ats: MockServer, cli: C
     assert early["retry"]["selected"] == 1 and early["totals"] == {"needs_input": 1}
     assert early["retry"]["holds_cleared"] == 0
 
-    # The person answers each shared question once, with the exact lines ``holds`` gave.
-    for group, value in ((work_auth, "wa_authorized"), (sponsorship, "no_sponsorship")):
-        answered = cli(*shlex.split(group["answer"].replace("VALUE", value))[1:])
-        assert answered.code == 0, answered.stderr
+    # The person answers one shared question with the exact line ``holds`` gave, and the
+    # other through the answer sheet (one entry per distinct question, filled in once).
+    answered = cli(*shlex.split(work_auth["answer"].replace("VALUE", "wa_authorized"))[1:])
+    assert answered.code == 0, answered.stderr
+    sheet_path = tmp_path / "sheet.json"
+    written = cli("holds", "--sheet", str(sheet_path))
+    assert written.code == 0, written.stderr
+    assert stat.S_IMODE(sheet_path.stat().st_mode) == 0o600
+    assert Q_SPONSORSHIP not in written.stdout and "wrote " in written.stdout
+    sheet = json.loads(sheet_path.read_text())
+    by_wording = {" ".join(q["question"].split()): q for q in sheet["questions"]}
+    assert " ".join(Q_WORK_AUTH.split()) not in by_wording  # answered above: no longer open
+    entry = by_wording[Q_SPONSORSHIP]
+    assert (entry["applications"], entry["reuse"], entry["answer"]) == (3, "global", None)
+    assert len(entry["fields"]) == 3 and entry["control_type"] in ("SELECT", "RADIO")
+    assert {o["value"] for o in entry["options"]} >= {"no_sponsorship"}
+    entry["answer"] = "no_sponsorship"
+    sheet_path.write_text(json.dumps(sheet))
+    applied = cli("answer", "--sheet", str(sheet_path), "--batch-id", "loop")
+    assert applied.code == 0, applied.stderr
+    assert "saved 3 answer(s) for 3 application(s)" in applied.stdout
+    assert applied.stdout.rstrip().endswith("prepare-batch --retry loop")
+    assert "no_sponsorship" not in applied.stdout
+    again = cli("answer", "--sheet", str(sheet_path), "--batch-id", "loop")
+    assert again.code == 0 and "saved 0 answer(s) for 0 application(s)" in again.stdout
     after = cli("holds", "--json")
     assert (after.json()["answered"], after.json()["held"]) == (2, 1)
     assert set(_groups(after)) == {Q_NOTICE, *(q for q in groups if q not in (

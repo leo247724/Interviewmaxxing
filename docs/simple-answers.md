@@ -281,6 +281,13 @@ Other protected attributes, salary, consent and narratives
 keep their scoped saved-answer / user-input route. No values are inferred from
 these defaults. A job-search salary floor is not an answer to desired salary.
 
+The reusable keys stay the first choice for questions that recur across employers: one
+imported value answers every form that asks the same thing, whatever the wording, and it
+is verified once. The answer sheet of a batch
+([mass-preparation.md](mass-preparation.md), "One sitting: the answer sheet") is for the
+long tail a batch surfaces, the personal or one-off questions no key covers; when a
+question keeps coming back, add its key here rather than answering it sheet after sheet.
+
 ## `career_motivation`: what you look for in a role
 
 `career_motivation` is the one key that is not an answer to a form question. Write two or

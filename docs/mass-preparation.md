@@ -7,7 +7,8 @@ restriction and the evidence apply unchanged. The harness adds bounded parallel
 workers, a resumable ledger, a readiness summary and links from the Saved pipeline
 cards to the resulting applications. It does not add a way to submit.
 `interviewmaxxing batch-report` summarizes one or more batch ledgers afterwards,
-`interviewmaxxing holds` lists every open question once with the line that answers it,
+`interviewmaxxing holds` lists every open question once with the line that answers it
+(or, with `--sheet`, writes them all to one answer sheet that `answer --sheet` applies),
 and `prepare-batch --retry` runs the held and failed applications of a batch again.
 
 The loop at scale:
@@ -15,11 +16,16 @@ The loop at scale:
 ```sh
 interviewmaxxing prepare-batch --inventory inventory.json --workers 3 --batch-id big1
 interviewmaxxing batch-report big1          # outcomes, backends, questions, fill failures
-interviewmaxxing holds                      # each open question once, with its answer line
-interviewmaxxing answer APP --set FIELD=VALUE --reuse global   # once per question
+interviewmaxxing holds --sheet sheet.json   # each open question once, as a sheet to fill in
+$EDITOR sheet.json                          # set "answer" where you can
+interviewmaxxing answer --sheet sheet.json  # applies each answer to every application asking it
 interviewmaxxing prepare-batch --retry big1 # the held and failed ones again, same settings
 interviewmaxxing batch-report big1 big1-retry-20260924T210507Z
 ```
+
+For a handful of questions, `interviewmaxxing holds` without `--sheet` prints one
+`answer APP --set FIELD=VALUE --reuse global` line per question instead (see
+[Open holds](#open-holds-interviewmaxxing-holds)).
 
 ## What it does and does not do
 
@@ -434,6 +440,92 @@ never prints a stored answer value: saved answers are read only for their questi
 scope, type and date. `--json` prints the same report (`HoldsReport`; it names no
 database path). Lines include `--home DIR` when it was given.
 
+## One sitting: the answer sheet
+
+After a large batch most open questions are legitimately personal or one-off (the AI
+tools you used, a favourite restaurant, how familiar you are with the company, whether
+you are comfortable leading client conversations, a government official in the family,
+a non-compete you signed). One `answer` line per question, with a `status APP` for each
+to see its options, does not scale to a hundred of them. The answer sheet puts every
+distinct open question, with its options, into one private file that you fill in once:
+
+```sh
+interviewmaxxing [--home DIR] holds [--candidate ID] --sheet FILE [--force]
+$EDITOR FILE
+interviewmaxxing [--home DIR] answer --sheet FILE [--batch-id ID]
+interviewmaxxing prepare-batch --retry BATCH_ID
+```
+
+`holds --sheet FILE` groups the open holds exactly as `holds` does (same candidate, same
+wording key, holds answered since their stop left out) and writes them as JSON, owner-only
+(`0600`), refusing to replace an existing file unless `--force` (a sheet may hold answers
+you typed). It prints counts only: how many questions, how many with a proposal, how many
+browser actions and held applications, and the `answer --sheet` line to run next. The
+file has:
+
+- `questions`: one entry per distinct question, most applications first:
+  - `question`: the complete wording as first recorded (not cut).
+  - `semantic_type` (the most frequent known type, or null), `control_type`, `reason`
+    and `backends`, as in `holds`.
+  - `options`: the usable options as recorded on the first application (`value` and
+    `label`, placeholders and disabled options left out). When another application
+    recorded different options for the same wording (referral sources differ by
+    employer), `options_by_application` lists that application's options.
+  - `applications` and `fields`: how many applications ask it, and the field id of the
+    question on each (`{"app_...": "field_id"}`).
+  - `reuse`: `"global"` by default; change it to `"job"` (saved for each application's
+    job) or `"application"` (these applications only, nothing saved for reuse).
+  - `answer`: `null`. Put your answer here: text; an option's value or label (case and
+    spacing ignored); several separated by `;` (or a JSON list) for a multi-select or
+    checkbox group; `yes` or `no` (or `true`/`false`) for a checkbox. A required
+    checkbox is only accepted checked, as with `answer`.
+  - `proposal` and `proposal_basis`, only when one of the applications' recorded routing
+    traces (`routing.trace`, the projection `events APP --verbose` shows) names a
+    candidate the resolver found but did not place because it scored below its gate: a
+    saved answer whose reworded wording scored below the gate (`question_equivalence`;
+    the proposal is that saved answer's value, `reference_ids` its ids), a work
+    authorization or sponsorship option derived from the stated status below the gate
+    (`status_derivation`), an exact saved answer mapped onto an option below the gate
+    (`option_equivalence`), a fact screener's best option (`fact_screener`) or an
+    undecided yes/no screener leaning one way (`experience_screener`). The basis gives
+    the `stage`, the decision's `score` (its probability) and `confidence`, the trace
+    `status`, the `application_id` whose trace it was and `"confirmed": false`. A
+    proposal is exactly that: nothing applies it unless you copy it into `answer`. The
+    latest trace of each stage counts, stages in the order above, the person's own saved
+    answers before anything derived from facts.
+- `actions`: the holds that need the browser (sign-in, CAPTCHA, an unsupported control,
+  a file), each with its wording, reason and one `resume APP --act` line per
+  application.
+- `held` and `open_holds`: the counts behind the entries; `candidate_id`, `generated_at`,
+  `version` and a `note` recalling the rules.
+
+`answer --sheet FILE` (no `APPLICATION_ID`, `--set` or `--answers`) reads the sheet back
+and applies every entry whose `answer` is not null to each application in its `fields`,
+through the same path as `answer APP --set FIELD=VALUE --reuse SCOPE`: the value is
+checked against the question as recorded on that application (its options, its control),
+saved as the application's own user input, and, for `global` or `job`, saved for reuse
+with that scope. A hold answered since its application stopped (by `answer`, by an earlier
+sheet, or by a saved answer for its wording) is left as it is, so applying the same sheet
+twice changes nothing the second time, and a sheet generated after the answers were saved
+no longer lists them. It prints counts and wordings, never a value: entries answered,
+answers saved and applications concerned, holds already answered, and for each entry
+not applied somewhere its wording, why and how many applications (`invalid`: the answer
+is not one of that application's recorded options or has the wrong shape, so that entry
+is skipped there and the rest are applied; `not open`: the field is not a recorded
+question of the application's current stop; `not waiting`: the application is no longer
+NEEDS_INPUT; `not found`; `busy`: another run holds it). The last line is the
+`prepare-batch --retry BATCH_ID` to run next: `--batch-id` when given, else the batch
+under `$IMX_HOME/batches` whose ledger was written last (when that is itself a retry, the
+batch it retried, whose ledger lists every application of the run), else a `resume APP`
+hint. Exit status: `0` when the sheet was applied (also when nothing was left to apply),
+`1` without a state database, `2` for a sheet that does not validate (the message names
+the entry and field, never a value) or for a `--sheet` combined with an application id.
+
+The sheet is the one place your typed values live outside the profile and the state
+database: keep it out of source control and delete it once applied. Reusable keys
+([simple-answers.md](simple-answers.md)) stay the first choice for questions that recur
+across employers; the sheet is for the long tail a batch surfaces.
+
 ## Batch report
 
 ```sh
@@ -587,7 +679,10 @@ Verification: `tests/core/test_batch.py` runs the harness offline against a fake
 failures, backend readiness, several batches and `--since`, the JSON schema);
 `tests/core/test_batch_retry.py` covers `--retry` against a store-backed fake of
 `apply` and `resume`; `tests/core/test_batch_holds.py` covers `holds`, including
-running one generated `answer` line; `tests/core/test_batch_privacy.py` covers the
+running one generated `answer` line; `tests/core/test_answer_sheet.py` covers
+`holds --sheet` and `answer --sheet` (the entries and actions, the file mode, proposals
+from below-gate traces and that they are never applied, validation failures reported by
+wording, idempotence and the retry line); `tests/core/test_batch_privacy.py` covers the
 masked failure details, what `events`, `status --json` and `holds --json` print, and the
 unreadable submission lines; `tests/core/test_batch_hardening.py` covers the
 directory modes, the single state connection, rows sharing a URL, runs stopped
@@ -597,9 +692,10 @@ the workers' lock, timeout escalation and escaped table cells;
 links a batch writes and shows its Closed moves; `e2e/test_batch_e2e.py` runs the
 harness with three workers, real headless Chromium and the fictional candidate
 against the localhost mock ATS, then the loop (`holds`, a default retry that runs nothing
-before any answer, an `--all` retry that skips explicit-only holds, one `answer` line per
-shared question, a retry that prepares them, a combined report), and checks that the
-server received no submission.
+before any answer, an `--all` retry that skips explicit-only holds, one shared question
+answered with its `answer` line and the other through `holds --sheet` and `answer --sheet`,
+a retry that prepares them, a combined report), and checks that the server received no
+submission.
 
 ## Submitting what you approved
 
