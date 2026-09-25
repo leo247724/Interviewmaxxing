@@ -126,9 +126,9 @@ class FieldRouteDecision(BaseModel):
     """A required resume upload the page also parses to autofill other fields. It is
     still the approved attachment: the browser uploads it first and re-inspects."""
     demoted_from: SemanticType | None = None
-    """CONSENT or ATTESTATION (from the inspector or Jev) on a yes/no question with no
-    consent or attestation wording that Jev reads as one literal fact about the applicant:
-    the field is an ordinary CUSTOM_BOOLEAN instead."""
+    """The reading a yes/no question lost to CUSTOM_BOOLEAN: CONSENT or ATTESTATION (from the
+    inspector or Jev) with no consent or attestation wording, or a YEARS_EXPERIENCE count on
+    Yes/No options ("Do you have 5+ years of … experience?" asks whether a minimum is met)."""
     source_requirement: str = "explicit matching user answer or verified applicable source"
     reason: str = ""
 
@@ -294,9 +294,15 @@ _DOCUMENT_POOL = frozenset({DocumentPurpose.APPLICATION_ATTACHMENT.value,
                             DocumentPurpose.AUTOFILL_PARSER.value})
 """A required resume is the approved attachment whether the page attaches or parses it."""
 _CONSENT_TYPES = (SemanticType.CONSENT, SemanticType.ATTESTATION)
-_BOOLEAN_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value, *(t.value for t in _CONSENT_TYPES)})
+_BOOLEAN_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value, *(t.value for t in _CONSENT_TYPES),
+                           SemanticType.CUSTOM_SELECT.value})
 """On a yes/no question without consent or attestation wording, consent and attestation
-readings are custom-boolean readings."""
+readings are custom-boolean readings, and so is the custom select reading of its Yes/No
+options (the control's shape)."""
+_EXPERIENCE_POOL = _BOOLEAN_POOL | {SemanticType.YEARS_EXPERIENCE.value, SemanticType.UNKNOWN.value}
+"""On a yes/no question whose own wording asks about experience, a years count reading and
+a reading that names nothing are custom-boolean readings too: the Yes/No options cannot take
+a count (round 6: "Do you have 5+ years of hands-on paid media experience …" read 0.62)."""
 _APPLICANT_SCOPES = frozenset({SourceScope.APPLICANT_CURRENT.value,
                                SourceScope.HISTORICAL_OR_CONTEXTUAL.value})
 """Source readings about the applicant's own facts, current or past; a consent, a decision
@@ -381,10 +387,12 @@ def _quantity_text(fld: ApplicationField) -> bool:
             and _URL_WORDING.search(nearby) is None)
 
 
-def _consent_wording(fld: ApplicationField) -> bool:
+def _consent_wording(fld: ApplicationField, *, sections: bool = True) -> bool:
     """Consent or attestation wording anywhere the applicant reads it for this field: the
-    label, help text, placeholder, section headings or option labels."""
-    parts = [fld.label, fld.help_text or "", fld.placeholder or "", *fld.section_context,
+    label, help text, placeholder, option labels and (unless ``sections`` is off) the
+    section headings above it."""
+    parts = [fld.label, fld.help_text or "", fld.placeholder or "",
+             *(fld.section_context if sections else ()),
              *(option.label for option in fld.options or [])]
     return any(_CONSENT_WORDING.search(part) for part in parts)
 
@@ -719,16 +727,27 @@ class AIFormRouter:
                         and self._pooled(applicability, _APPLICANT_SCOPES))
         # A yes/no question whose wording asks about the applicant's own experience ("Do
         # you have experience working at a digital marketing agency?") is an experience
-        # screener whatever Jev's route or source reading: never a consent.
-        experience_yes_no = (yes_no and not _consent_wording(fld)
+        # screener whatever Jev's route or source reading: never a consent. Only its own
+        # wording and options count: consent wording in the section headings above it
+        # (Greenhouse, round 6) does not make the question a consent.
+        experience_yes_no = (yes_no and not _consent_wording(fld, sections=False)
                              and _EXPERIENCE_WORDING.search(fld.question_text) is not None)
         if (plain_yes_no or experience_yes_no) and meaning in _CONSENT_TYPES:
             demoted_from, meaning = meaning, SemanticType.CUSTOM_BOOLEAN
+        elif experience_yes_no and meaning is SemanticType.YEARS_EXPERIENCE:
+            # "Do you have 5+ years of … experience?" on Yes/No options asks whether a minimum
+            # is met; the experience screener answers it from the years facts.
+            demoted_from, meaning = meaning, SemanticType.CUSTOM_BOOLEAN
         elif ((plain_yes_no or experience_yes_no) and meaning is SemanticType.UNKNOWN
-                and semantic is not None and self._pooled(semantic, _BOOLEAN_POOL)):
-            # The same question split between CONSENT and CUSTOM_BOOLEAN is one reading.
+                and semantic is not None
+                and self._pooled(semantic, _EXPERIENCE_POOL if experience_yes_no else _BOOLEAN_POOL)):
+            # The same question split between CONSENT (or, on an experience question, a years
+            # count) and the custom yes/no readings is one reading.
+            pool = _EXPERIENCE_POOL if experience_yes_no else _BOOLEAN_POOL
             leading = SemanticType(semantic.choice)
-            demoted_from = leading if leading in _CONSENT_TYPES else None
+            demoted_from = (leading if leading in (*_CONSENT_TYPES, SemanticType.YEARS_EXPERIENCE)
+                            else None)
+            semantic_pool = _pool_share(semantic, pool)
             meaning = SemanticType.CUSTOM_BOOLEAN
         if meaning in _CONSENT_TYPES:
             route, reason = FieldRoute.HUMAN_INPUT, "Requires an explicit scoped personal answer"
