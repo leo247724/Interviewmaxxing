@@ -164,6 +164,12 @@ from .packets import (
     answer_problems,
     provenance_problems,
 )
+from .preferences import (
+    WORK_LOCATION_PREFERENCE_QUESTION,
+    is_work_mode_choice,
+    names_work_mode,
+    stated_work_location_preference,
+)
 from .store import (
     ApplicationStore,
     ApprovedStep,
@@ -200,6 +206,7 @@ __all__ = [
     "WORK_AUTHORIZATION_IMPLICATIONS",
     "WORK_AUTHORIZATION_STATUSES",
     "WORK_AUTHORIZATION_STATUS_QUESTION",
+    "WORK_LOCATION_PREFERENCE_QUESTION",
     "ATSAdapter",
     "AnswerReuse",
     "AnswerScope",
@@ -319,8 +326,10 @@ __all__ = [
     "can_transition",
     "employer_job_key",
     "is_pay_period_choice",
+    "is_work_mode_choice",
     "listing_id_for",
     "meets_floor",
+    "names_work_mode",
     "new_id",
     "normalize_application_url",
     "normalize_text",
@@ -330,5 +339,6 @@ __all__ = [
     "sha256_file",
     "snapshot_hash",
     "stated_status",
+    "stated_work_location_preference",
     "utc_now",
 ]

@@ -2502,18 +2502,21 @@ def text_field(label: str, semantic: SemanticType) -> ApplicationField:
 
 
 @pytest.mark.parametrize("label", [
-    "What is your desired base salary?",
-    "What are your target compensation expectations (base and/or OTE, if applicable)?",
+    "What salary are you looking for in this role?",
+    "How much would you like to earn in this position (base and/or OTE, if applicable)?",
 ])
 def test_a_typed_salary_question_is_offered_only_the_saved_salary_answer(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
 ) -> None:
+    # Round 10 moved base, annual, expected and target wordings to a deterministic rule
+    # (the round-10 section below); these wordings still take the wording decision.
     salary = global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
                            semantic=SemanticType.SALARY_EXPECTATION)
     provider = WordingPick("desired salary")
     candidate = with_saved(fictional_candidate, salary, *UNTYPED_NOISE)
-    packet, _, _ = resolve_choice(provider, candidate, mock_job,
-                                  text_field(label, SemanticType.SALARY_EXPECTATION))
+    packet, _, resolver = resolve_choice(provider, candidate, mock_job,
+                                         text_field(label, SemanticType.SALARY_EXPECTATION))
+    assert not stage_traces(resolver, "salary_wording")
     [wording] = provider.asked("wording")
     assert list(wording["state"]["saved_questions"]) == ["q0"]  # the untyped answers stay out
     assert wording["state"]["prompt_version"] == CHOICE_PROMPT_VERSION
@@ -2758,10 +2761,10 @@ def test_an_untyped_pick_below_the_gate_is_confirmed_on_its_own(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
     confirm: tuple[str, float], answered: bool,
 ) -> None:
-    # The live travel pick: the right one of 17 untyped answers at 0.92.
+    # A travel pick among 17 untyped answers below the round-10 untyped gate (0.90).
     travel = global_answer("sa.travel", "How much are you willing to travel for work?",
                            "Up to 10% of the time")
-    provider = ConfirmingProvider("travel", pick=0.92, confirm=confirm,
+    provider = ConfirmingProvider("travel", pick=0.88, confirm=confirm,
                                   picks={"equivalent_0": ("o1", 0.98)})
     field = choice_field(TRAVEL, SemanticType.CUSTOM_SELECT, *TRAVEL_OPTIONS, control=ControlType.SELECT)
     packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, travel, *UNTYPED_NOISE),
@@ -2787,7 +2790,7 @@ def test_an_untyped_pick_that_passes_the_standard_gate_needs_no_confirmation(
                                          mock_job, field)
     assert len(provider.asked("wording")) == 1
     [trace] = stage_traces(resolver, "question_equivalence")
-    assert (trace["gate"], trace["status"]) == ("standard", "MAPPED")
+    assert (trace["gate"], trace["status"]) == ("untyped", "MAPPED")  # round 10: 0.90 / 0.85
     assert [a.value.label for a in packet.answers] == ["Up to 10%"]
 
 
@@ -3234,11 +3237,10 @@ VETERAN_OPTIONS = ("I am a protected veteran", "I am not a protected veteran", "
 STANDARD_GATE = {  # field, its one same-type saved answer (the fixture's own for the first two), value
     "work_authorization": (status_field("Are you currently eligible to work in the United States?",
                                         SemanticType.WORK_AUTHORIZATION), None, "Yes"),
+    # Round 10: EEO answers map by type (no wording decision) and base, annual, expected
+    # and target salary wordings are deterministic; the wordings here stay on the decision.
     "sponsorship": (status_field(REWORDED_SPONSORSHIP, SemanticType.SPONSORSHIP), None, "No"),
-    "veteran": (status_field("Veteran status", SemanticType.EEO_VETERAN_STATUS, *VETERAN_OPTIONS),
-                global_answer("sa.veteran", "Are you a protected veteran?", VETERAN_OPTIONS[1],
-                              semantic=SemanticType.EEO_VETERAN_STATUS), VETERAN_OPTIONS[1]),
-    "salary": (text_field("What are your salary expectations?", SemanticType.SALARY_EXPECTATION),
+    "salary": (text_field("What salary are you looking for?", SemanticType.SALARY_EXPECTATION),
                global_answer("sa.salary", "What is your desired salary?", "USD 95,000 per year",
                              semantic=SemanticType.SALARY_EXPECTATION), "USD 95,000 per year"),
     "relocation": (status_field("Would you consider relocating for this role?", SemanticType.RELOCATION),
@@ -3312,21 +3314,24 @@ def test_the_low_stakes_types_alone_pass_the_type_anchored_gate(
 VETERAN_QUESTION = "Do you identify as a protected veteran?"
 
 
-@pytest.mark.parametrize("field,semantic,confirmed", [
-    (status_field(VETERAN_QUESTION, SemanticType.EEO_VETERAN_STATUS), "CUSTOM_SELECT", False),
-    (text_field("Earliest Start Date?", SemanticType.START_DATE), "CUSTOM_SELECT", False),
-    (status_field(VETERAN_QUESTION, SemanticType.CUSTOM_SELECT), "CUSTOM_SELECT", True),
-    (status_field(VETERAN_QUESTION, SemanticType.CUSTOM_BOOLEAN), "CUSTOM_BOOLEAN", True),
+@pytest.mark.parametrize("field,semantic,gate,confirmed", [
+    (status_field(VETERAN_QUESTION, SemanticType.EEO_VETERAN_STATUS), "CUSTOM_SELECT", "standard", False),
+    (text_field("Earliest Start Date?", SemanticType.START_DATE), "CUSTOM_SELECT", "untyped", False),
+    (status_field(VETERAN_QUESTION, SemanticType.CUSTOM_SELECT), "CUSTOM_SELECT", "confirmed", True),
+    (status_field(VETERAN_QUESTION, SemanticType.CUSTOM_BOOLEAN), "CUSTOM_BOOLEAN", "confirmed", True),
 ])
 def test_only_a_custom_field_gets_the_single_candidate_confirmation(
     fictional_candidate: CandidateProfile, mock_job: JobRecord, field: ApplicationField,
-    semantic: str, confirmed: bool,
+    semantic: str, gate: str, confirmed: bool,
 ) -> None:
+    # The pick (0.88) is below every gate: the explicit veteran type keeps 0.95, the typed
+    # start date takes the round-10 untyped gate (0.90) without a confirmation, and only a
+    # custom field gets the single-candidate confirmation.
     untyped = (global_answer("sa.veteran_untyped", "Are you a protected veteran?", "No"),
                global_answer("sa.start_untyped", "What is your earliest start date?", "2026-10-15"))
     start = field.semantic_type is SemanticType.START_DATE
     provider = ConfirmingProvider("earliest start date" if start else "protected veteran",
-                                  pick=0.92, confirm=("q0", 0.95))
+                                  pick=0.88, confirm=("q0", 0.95))
     provider.semantic = semantic
     packet, ctx, resolver = resolve_choice(
         provider, with_saved(fictional_candidate, *untyped, *UNTYPED_NOISE), mock_job, field)
@@ -3336,10 +3341,10 @@ def test_only_a_custom_field_gets_the_single_candidate_confirmation(
     assert ("question_confirmation" in purposes(resolver)) is confirmed
     assert len(provider.asked("wording")) == (2 if confirmed else 1)
     if confirmed:
-        assert (trace["gate"], trace["status"]) == ("confirmed", "MAPPED")
+        assert (trace["gate"], trace["status"]) == (gate, "MAPPED")
         assert [shown(a) for a in packet.answers] == ["No"]
     else:
-        assert (trace["gate"], trace["status"]) == ("standard", "BELOW_GATE")
+        assert (trace["gate"], trace["status"]) == (gate, "BELOW_GATE")
         assert packet.answers == []
 
 
@@ -3889,3 +3894,757 @@ def test_the_choice_screeners_retrieve_with_their_option_labels() -> None:
     wide = choice_field("Which tools?", SemanticType.CUSTOM_MULTISELECT, *[f"Tool {i}" for i in range(60)],
                         control=ControlType.MULTISELECT)
     assert DynamicPacketResolver._screener_query(wide).count("Tool") == 40
+
+
+# --- round 10: the answers the person just imported reach the forms ---------------------------
+
+from interviewmaxxing_browser.ai.routing import (  # noqa: E402
+    UNTYPED_CONFIDENCE,
+    UNTYPED_PROBABILITY,
+)
+from interviewmaxxing_browser.ai.salary import (  # noqa: E402
+    parse_salary,
+    range_options,
+    salary_range,
+    salary_wording,
+)
+from interviewmaxxing_core import WORK_LOCATION_PREFERENCE_QUESTION  # noqa: E402
+
+DESIRED_SALARY = "What is your desired salary?"
+SALARY_BANDS = ("Under $20,000",
+                *(f"${low:,} - ${low + 9_999:,}" for low in range(20_000, 1_190_000, 10_000)),
+                "$1,190,000 and above")
+"""A live-shaped range select (Lovevery: 119 options), fictional bounds."""
+assert len(SALARY_BANDS) == 119
+
+
+def saved_salary(value: str = "USD 95,000 per year", *, answer_id: str = "sa.salary",
+                 scope: AnswerScope = AnswerScope.GLOBAL, job: JobRecord | None = None,
+                 confirmed_at: str = "2026-09-02T12:00:00Z") -> SavedAnswer:
+    return SavedAnswer(id=answer_id, scope=scope, semantic_type=SemanticType.SALARY_EXPECTATION,
+                       question=DESIRED_SALARY, value=value, confirmed_at=confirmed_at,
+                       job_identity_key=job.identity_key if job else None)
+
+
+def range_select(label: str, *options: str, semantic: SemanticType = SemanticType.SALARY_EXPECTATION,
+                 field_id: str = "range", **updates: Any) -> ApplicationField:
+    field = choice_field(label, semantic, *(options or SALARY_BANDS), control=ControlType.SELECT,
+                         field_id=field_id)
+    return field.model_copy(update=updates) if updates else field
+
+
+# 1. Salary range selects: arithmetic, never a call.
+
+def test_the_live_range_select_takes_the_one_band_containing_the_saved_salary(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Lovevery: question equivalence MAPPED (0.96), then option equivalence o0 at 0.58 held the
+    # 119-option select. Now the band is chosen by its bounds and the saved unit (annual, read
+    # from the bounds' magnitude); Jev is not asked about the options.
+    provider = WordingPick("desired salary", {"equivalent_0": ("o0", 0.58)})
+    field = range_select("What salary range are you targeting?")
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(),
+                                                              *UNTYPED_NOISE), mock_job, field)
+    assert not provider.asked("equivalent_0") and not stage_traces(resolver, "option_equivalence")
+    [answer] = packet.answers
+    assert answer.value.label == "$90,000 - $99,999"
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.salary"])
+    assert (answer.provenance.note or "").endswith(
+        "; the one range containing the saved amount (no model call)")
+    [trace] = stage_traces(resolver, "salary_range")
+    assert (trace["status"], trace["unit_source"], trace["range_count"]) == ("MAPPED", "magnitude", 119)
+    assert trace["choice"] == "o8" and "95" not in json.dumps(trace)  # never the amount
+    [wording] = stage_traces(resolver, "question_equivalence")
+    assert wording["status"] == "MAPPED"
+
+
+def test_a_range_select_with_the_exact_desired_salary_wording_needs_no_call_at_all(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.58)})
+    field = range_select("Desired salary")  # a listed wording of the saved question
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary()),
+                                         mock_job, field)
+    assert [r for r in provider.requests if "equivalent_0" in r["questions"]] == []
+    assert not provider.asked("wording")
+    [answer] = packet.answers
+    assert answer.value.label == "$90,000 - $99,999"
+    assert stage_traces(resolver, "salary_range")[0]["status"] == "MAPPED"
+
+
+@pytest.mark.parametrize("value,options,label,status,unit_source", [
+    ("$45/hr", SALARY_BANDS, "Salary range", "UNIT_MISMATCH", "magnitude"),  # hourly vs annual
+    ("95,000", SALARY_BANDS, "Salary range", "NO_UNIT", None),  # the saved value states no unit
+    ("USD 70,000 per year", ("$60,000 - $70,000", "$70,000 - $80,000"), "Salary range",
+     "AMBIGUOUS", "magnitude"),  # a shared boundary
+    ("USD 5,000,000 per year", SALARY_BANDS[:-1], "Salary range", "NOT_CONTAINED", "magnitude"),
+    ("USD 95,000 per year", ("$40 - $45 per hour", "$45 - $50 per hour"), "Pay range",
+     "UNIT_MISMATCH", "options"),  # the options state their unit
+    ("USD 95,000 per year", ("$5,000 - $7,999", "$8,000 - $9,999"), "Salary range",
+     "UNIT_UNSTATED", None),  # monthly-looking bounds: nothing states the unit
+    ("USD 95,000 per year", ("€80,000 - €89,999", "€90,000 - €99,999"), "Salary range",
+     "CURRENCY_MISMATCH", "magnitude"),
+    ("USD 95,000 per year", ("$8,000 - $9,999", "$10,000 - $11,999"), "Monthly pay range",
+     "UNIT_MISMATCH", "wording"),  # the field's wording states the unit
+    ("$8,500 per month", ("$8,000 - $9,999", "$10,000 - $11,999"), "Monthly pay range",
+     "MAPPED", "wording"),
+    ("$45/hr", ("$40 - $45", "$46 - $50"), "Hourly pay range", "MAPPED", "wording"),
+    ("$45/hr", ("Under $30", "$30 - $50", "$50+"), "Rate", "MAPPED", "magnitude"),
+])
+def test_a_range_select_holds_without_a_containing_band_in_the_saved_unit(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, value: str,
+    options: tuple[str, ...], label: str, status: str, unit_source: str | None,
+) -> None:
+    provider = WordingPick("desired salary", {"equivalent_0": ("o0", 0.99)})
+    field = range_select(label, *options)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, field)
+    assert not provider.asked("equivalent_0")  # settled either way: never a Jev option pick
+    [trace] = stage_traces(resolver, "salary_range")
+    assert (trace["status"], trace.get("unit_source")) == (status, unit_source)
+    if status == "MAPPED":
+        [answer] = packet.answers
+        chosen, saved = salary_range(answer.value.label), parse_salary(value)
+        assert chosen is not None and saved is not None and chosen.contains(saved.amount)
+    else:
+        assert packet.answers == []
+        [missing] = packet.missing_inputs
+        assert missing.field_id == "range" and "95,000" not in json.dumps(trace)
+
+
+def test_a_custom_typed_years_select_is_not_read_as_a_salary_range(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Ranges without a currency on a field that is not a salary keep Jev's option equivalence.
+    years = global_answer("sa.years", "How many years of marketing experience do you have?", "7")
+    provider = WordingPick("years of marketing", {"equivalent_0": ("o1", 0.98)})
+    field = range_select("Years of experience in marketing", "1-3 years", "4-7 years", "8+ years",
+                         semantic=SemanticType.CUSTOM_SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, years, *UNTYPED_NOISE),
+                                         mock_job, field)
+    assert provider.asked("equivalent_0") and not stage_traces(resolver, "salary_range")
+    assert [a.value.label for a in packet.answers] == ["4-7 years"]
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("$50,000 - $59,999", (50_000.0, 59_999.0, None, "USD")),
+    ("$200K and above", (200_000.0, float("inf"), None, "USD")),
+    ("$200,000+", (200_000.0, float("inf"), None, "USD")),
+    ("Under $20,000", (float("-inf"), 20_000.0, None, "USD")),
+    ("Less than 30k", (float("-inf"), 30_000.0, None, None)),
+    ("Between $50k and $60k per year", (50_000.0, 60_000.0, "year", "USD")),
+    ("$20 - $25 per hour", (20.0, 25.0, "hour", "USD")),
+    ("€80,000 \u2013 €89,999", (80_000.0, 89_999.0, None, "EUR")),  # an en dash
+    ("USD 95,000", (95_000.0, 95_000.0, None, "USD")),
+    ("5-10 years", None),  # a years range is not a salary range
+    ("Google Analytics 4", None),
+    ("Prefer not to say", None),
+    ("$50,000 - $60,000 base plus bonus", None),
+])
+def test_salary_range_reads_the_bounds_a_range_option_states(
+    label: str, expected: tuple[float, float, str | None, str | None] | None,
+) -> None:
+    bounds = salary_range(label)
+    assert (bounds is None) is (expected is None)
+    if bounds is not None and expected is not None:
+        assert (bounds.low, bounds.high, bounds.period, bounds.currency) == expected
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("USD 95,000 per year", (95_000.0, "year", "USD", True)),
+    ("$45/hr", (45.0, "hour", "USD", True)),
+    ("95k annually", (95_000.0, "year", None, True)),
+    ("95,000", (95_000.0, None, None, True)),
+    ("€7,500 a month", (7_500.0, "month", "EUR", True)),
+    ("$150,000 OTE", (150_000.0, None, "USD", False)),
+    ("$120,000 base + bonus", None),  # "+" states no one amount
+    ("$90,000 - $100,000", None),
+    ("about $95,000", None),
+    ("2026", None),  # a bare year
+    ("negotiable", None),
+])
+def test_parse_salary_reads_one_exact_amount_with_its_unit(
+    value: str, expected: tuple[float, str | None, str | None, bool] | None,
+) -> None:
+    parsed = parse_salary(value)
+    assert (parsed is None) is (expected is None)
+    if parsed is not None and expected is not None:
+        assert (parsed.amount, parsed.period, parsed.currency, parsed.base) == expected
+
+
+def test_range_options_allow_non_answers_beside_the_bands() -> None:
+    options = [FieldOption(value=f"v{i}", label=label)
+               for i, label in enumerate(("Under $20,000", "$20,000 - $29,999", "Prefer not to say"))]
+    assert [o.label for o, _ in range_options(options)] == ["Under $20,000", "$20,000 - $29,999"]
+    assert range_options(options[:1]) == []  # one band is not a range select
+    assert range_options([*options, FieldOption(value="v9", label="Somewhere in the middle")]) == []
+
+
+# The pay-period select labelled by the block heading ("Desired Salary").
+
+def test_a_period_select_labelled_desired_salary_takes_the_saved_unit_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Lovevery: the sibling select's label came from the block heading, so it matched the saved
+    # question exactly and Jev mapped "USD 95,000 per year" onto "Yearly" at 0.86 (below the
+    # gate). A select whose enabled options are all pay periods is a pay-period choice
+    # whatever its label.
+    salary, period = salary_form("Desired Salary")
+    provider = ChoiceProvider({"equivalent_0": ("o3", 0.86)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary()),
+                                         mock_job, salary, period)
+    assert not provider.asked("equivalent_0") and not stage_traces(resolver, "option_equivalence")
+    assert not stage_traces(resolver, "exact_saved_answer")
+    chosen = next(a for a in packet.answers if a.field_id == "period")
+    assert (chosen.value.label, chosen.provenance.reference_ids) == ("Yearly", ["sa.salary"])
+    [trace] = stage_traces(resolver, "salary_period")
+    assert trace["status"] == "ANSWERED"
+    assert next(a for a in packet.answers if a.field_id == "salary").value.text == "USD 95,000 per year"
+
+
+def test_a_period_select_with_an_unrelated_label_is_still_the_pay_period(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    salary, period = salary_form("How would you like your compensation expressed?")
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary("$45/hr")),
+                                         mock_job, salary, period)
+    assert next(a for a in packet.answers if a.field_id == "period").value.label == "Hourly"
+    assert stage_traces(resolver, "salary_period")[0]["status"] == "ANSWERED"
+
+
+# 2. Base, annual, expected and target salary wordings from the desired salary.
+
+@pytest.mark.parametrize("label,help_text,value,expected", [
+    ("What is your desired base salary?", None, "USD 95,000 per year", "USD 95,000 per year"),
+    ("Expected annual salary (USD)", None, "USD 95,000 per year", "USD 95,000 per year"),
+    ("Target base salary", "Please enter a single figure.", "$95,000/yr", "$95,000/yr"),
+    ("Base salary expectations", None, "95k annually", "95k annually"),
+    ("What are your salary expectations?", None, "USD 95,000 per year", "USD 95,000 per year"),
+    ("What is your desired salary?\nCompensation", None, "95,000", "95,000"),  # no unit named: as saved
+    ("Desired monthly salary", None, "$8,000 per month", "$8,000 per month"),
+    ("Expected hourly pay", None, "$45/hr", "$45/hr"),
+])
+def test_a_base_salary_wording_is_answered_from_the_desired_salary_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+    help_text: str | None, value: str, expected: str,
+) -> None:
+    # Lovevery: "What is your desired base salary?" was NONE (0.96) against the saved "What is
+    # your desired salary?". A plain desired salary states a base figure.
+    provider = ChoiceProvider({"wording": ("NONE", 0.96)})
+    field = text_field(label, SemanticType.SALARY_EXPECTATION).model_copy(update={"help_text": help_text})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value),
+                                                              *UNTYPED_NOISE), mock_job, field)
+    assert not provider.asked("wording") and not stage_traces(resolver, "question_equivalence")
+    [answer] = packet.answers
+    assert answer.value.text == expected
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.salary"])
+    assert "a plain desired salary states the base figure" in (answer.provenance.note or "")
+    [trace] = stage_traces(resolver, "salary_wording")
+    assert (trace["wording"], trace["status"]) == ("PLAIN", "MAPPED")
+    assert value not in json.dumps(trace)
+
+
+@pytest.mark.parametrize("label,value,status", [
+    ("What are your target compensation expectations (base and/or OTE, if applicable)?",
+     "USD 95,000 per year", "COMPENSATION_CLAUSE"),
+    ("Total compensation expectations", "USD 95,000 per year", "COMPENSATION_CLAUSE"),
+    ("Desired base salary and bonus", "USD 95,000 per year", "COMPENSATION_CLAUSE"),
+    ("What is your desired base salary?", "$150,000 OTE", "SAVED_NOT_BASE"),
+    ("Desired monthly salary", "USD 95,000 per year", "UNIT_MISMATCH"),
+    ("Expected hourly rate", "USD 95,000 per year", "UNIT_MISMATCH"),
+    ("Expected annual salary", "$45/hr", "UNIT_MISMATCH"),
+    ("Expected annual salary", "95,000", "UNIT_MISMATCH"),  # the saved value states no unit
+    ("Expected annual salary (EUR)", "USD 95,000 per year", "CURRENCY_MISMATCH"),
+])
+def test_a_compensation_or_other_unit_wording_holds_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, value: str, status: str,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    field = text_field(label, SemanticType.SALARY_EXPECTATION)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, field)
+    assert not provider.asked("wording") and packet.answers == []
+    [missing] = packet.missing_inputs
+    assert missing.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED
+    [trace] = stage_traces(resolver, "salary_wording")
+    assert trace["status"] == status and value not in json.dumps(trace)
+
+
+@pytest.mark.parametrize("label", [
+    "What is your current salary?",
+    "What is your minimum salary requirement?",
+    "What is your desired salary range?",
+    "What salary are you looking for?",
+])
+def test_other_salary_wordings_keep_the_wording_decision(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str,
+) -> None:
+    provider = ChoiceProvider({"wording": ("NONE", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary()),
+                                         mock_job, text_field(label, SemanticType.SALARY_EXPECTATION))
+    assert provider.asked("wording") and packet.answers == []
+    assert not stage_traces(resolver, "salary_wording")
+    assert stage_traces(resolver, "question_equivalence")[0]["gate"] == "standard"
+
+
+@pytest.mark.parametrize("label,value,expected,status", [
+    ("Desired base salary", "USD 95,000 per year", "95000", "MAPPED"),
+    ("Expected hourly rate", "$45/hr", "45", "MAPPED"),
+    ("Expected hourly rate", "$45.50 per hour", "45.5", "MAPPED"),
+    ("Desired base salary", "$45/hr", None, "NUMBER_UNIT_UNSTATED"),  # a bare number reads annual
+    ("Desired base salary", "95,000", None, "NUMBER_UNIT_UNSTATED"),
+])
+def test_a_numeric_salary_input_takes_the_bare_amount_only_in_the_stated_unit(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, value: str,
+    expected: str | None, status: str,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    field = text_field(label, SemanticType.SALARY_EXPECTATION).model_copy(update={"input_type": "number"})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(value)),
+                                         mock_job, field)
+    assert not provider.asked("wording")
+    assert [a.value.text for a in packet.answers] == ([expected] if expected else [])
+    assert stage_traces(resolver, "salary_wording")[0]["status"] == status
+
+
+def test_a_job_scoped_salary_answer_for_this_job_comes_before_the_global_one(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    scoped = saved_salary("USD 120,000 per year", answer_id="sa.salary_job", scope=AnswerScope.JOB,
+                          job=mock_job, confirmed_at="2026-08-01T12:00:00Z")
+    provider = ChoiceProvider({"wording": ("q0", 0.99)})
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, saved_salary(), scoped),
+                                  mock_job, text_field("Desired base salary", SemanticType.SALARY_EXPECTATION))
+    [answer] = packet.answers
+    assert (answer.value.text, answer.provenance.reference_ids) == ("USD 120,000 per year", ["sa.salary_job"])
+
+
+def test_a_base_salary_wording_on_a_range_select_takes_the_containing_band(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": ("o0", 0.99)})
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, saved_salary()),
+                                         mock_job, range_select("Expected annual base salary"))
+    assert not provider.requests[1:]  # only the classification: no wording, no option pick
+    [answer] = packet.answers
+    assert answer.value.label == "$90,000 - $99,999"
+    assert stage_traces(resolver, "salary_wording")[0]["status"] == "MAPPED"
+    assert stage_traces(resolver, "salary_range")[0]["unit_source"] == "wording"
+
+
+@pytest.mark.parametrize("question,kind", [
+    ("What is your desired base salary?", "PLAIN"),
+    ("Salary expectations", "PLAIN"),
+    ("Expected annual compensation", "PLAIN"),
+    ("Target base salary (USD)", "PLAIN"),
+    ("Desired pay", "PLAIN"),
+    ("Desired base salary and bonus", "COMPENSATION_CLAUSE"),
+    ("Target OTE", "OTHER"),  # no plain-salary noun
+    ("Expected total compensation", "COMPENSATION_CLAUSE"),
+    ("What is your current base salary?", "OTHER"),
+    ("Desired salary range", "OTHER"),
+    ("Why do you deserve this salary?", "OTHER"),
+    ("Where are you based?", "OTHER"),
+])
+def test_salary_wording_classifies_the_live_wordings(question: str, kind: str) -> None:
+    assert salary_wording(question).value == kind
+
+
+# 3. EEO answers map by type, not by wording.
+
+RACE_HELP = ("For government reporting purposes, we ask candidates to respond to the below "
+             "self-identification survey. Hispanic or Latino: a person of Cuban, Mexican, Puerto "
+             "Rican, South or Central American, or other Spanish culture or origin. White (Not "
+             "Hispanic or Latino): a person having origins in any of the original peoples of "
+             "Europe, the Middle East, or North Africa.")
+LIVE_RACE_OPTIONS = ("Hispanic or Latino", "White (Not Hispanic or Latino)",
+                     "Black or African American (Not Hispanic or Latino)",
+                     "Asian (Not Hispanic or Latino)", "Two or More Races (Not Hispanic or Latino)",
+                     "Decline To Self Identify")
+VETERAN_HELP = ("If you believe you belong to any of the categories of protected veterans listed "
+                "below, please indicate by making the appropriate selection.")
+LIVE_VETERAN_OPTIONS = ("I identify as one or more of the classifications of a protected veteran",
+                        "I am not a protected veteran", "I don't wish to answer")
+DISABILITY_OPTIONS = ("Yes, I have a disability, or have had one in the past",
+                      "No, I do not have a disability and have not had one in the past",
+                      "I do not want to answer")
+RACE_ANSWER = global_answer("sa.race", "Race/Ethnicity", "White", semantic=SemanticType.EEO_RACE_ETHNICITY)
+HISPANIC_ANSWER = global_answer("sa.hispanic", "Are you Hispanic/Latino?", "No",
+                                semantic=SemanticType.EEO_RACE_ETHNICITY)
+VETERAN_ANSWER = global_answer("sa.veteran", "Veteran Status", "I am not a protected veteran",
+                               semantic=SemanticType.EEO_VETERAN_STATUS)
+DISABILITY_ANSWER = global_answer("sa.disability", "Disability Status",
+                                  "No, I do not have a disability",
+                                  semantic=SemanticType.EEO_DISABILITY_STATUS)
+
+
+def eeo_field(label: str, semantic: SemanticType, *options: str, help_text: str | None = None,
+              required: bool = True) -> ApplicationField:
+    return choice_field(label, semantic, *options, control=ControlType.SELECT,
+                        required=required).model_copy(update={"help_text": help_text})
+
+
+def test_the_live_race_question_takes_the_race_answer_by_type(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # "Race / For government reporting purposes …": two same-type candidates and a wording
+    # decision at 0.77 to 0.78. The type carries the question; the wording only picks the
+    # sub-answer (the help text mentions Hispanic or Latino, the label asks for race).
+    provider = ChoiceProvider({"wording": ("q0", 0.78), "equivalent_0": ("o1", 0.97)})
+    field = eeo_field("Race", SemanticType.EEO_RACE_ETHNICITY, *LIVE_RACE_OPTIONS, help_text=RACE_HELP)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, RACE_ANSWER,
+                                                              HISPANIC_ANSWER, *UNTYPED_NOISE),
+                                         mock_job, field)
+    assert not provider.asked("wording") and not stage_traces(resolver, "question_equivalence")
+    [request] = provider.asked("equivalent_0")
+    assert request["state"]["stored_answers"] == {"equivalent_0": "White"}
+    [answer] = packet.answers
+    assert answer.value.label == "White (Not Hispanic or Latino)"
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.race"])
+    assert "the field's type carries the question (no wording decision)" in (answer.provenance.note or "")
+    assert answer.confidence == pytest.approx(0.97)
+    [trace] = stage_traces(resolver, "eeo_answer")
+    assert (trace["sub_answer"], trace["status"], trace["reference_ids"]) == (
+        "race_ethnicity", "MAPPED", ["sa.race"])
+    assert set(trace["candidate_ids"]) == {"sa.race", "sa.hispanic"}
+    assert "White" not in json.dumps(resolver.narrative_traces)
+
+
+@pytest.mark.parametrize("label,help_text", [
+    ("Are you Hispanic or Latino?", None),
+    ("Hispanic/Latino", "Voluntary self-identification"),
+    ("Ethnicity: Hispanic or Latino?", None),  # names race wording: the race answer
+])
+def test_a_hispanic_latino_question_takes_the_hispanic_sub_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, help_text: str | None,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q1", 0.78), "equivalent_0": ("NONE", 0.99)})
+    field = eeo_field(label, SemanticType.EEO_RACE_ETHNICITY, "Yes", "No", "Decline to answer",
+                      help_text=help_text)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, RACE_ANSWER,
+                                                              HISPANIC_ANSWER), mock_job, field)
+    assert not provider.asked("wording")
+    [trace] = stage_traces(resolver, "eeo_answer")
+    if label.startswith("Ethnicity"):  # the race answer ("White") fits no Yes/No option: held
+        assert (trace["sub_answer"], trace["status"]) == ("race_ethnicity", "VALUE_DOES_NOT_FIT")
+        assert provider.asked("equivalent_0") and packet.answers == []
+        return
+    assert not provider.asked("equivalent_0")  # "No" is an option: no call
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == ("No", ["sa.hispanic"])
+    assert (trace["sub_answer"], trace["status"]) == ("hispanic_latino", "MAPPED")
+
+
+def test_a_combined_race_ethnicity_question_takes_the_race_answer(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o3", 0.96)})
+    field = eeo_field("Race / Ethnicity (voluntary)", SemanticType.EEO_RACE_ETHNICITY, *RACE_OPTIONS)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, RACE_ANSWER,
+                                                              HISPANIC_ANSWER), mock_job, field)
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == ("White", ["sa.race"])
+    assert not provider.asked("equivalent_0")  # exact option
+    assert stage_traces(resolver, "eeo_answer")[0]["sub_answer"] == "race_ethnicity"
+
+
+def test_a_missing_sub_answer_holds_the_race_question_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": ("o1", 0.99)})
+    field = eeo_field("Are you Hispanic or Latino?", SemanticType.EEO_RACE_ETHNICITY, "Yes", "No")
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, RACE_ANSWER),
+                                         mock_job, field)
+    assert len(provider.requests) == 1 and packet.answers == []  # only the classification
+    [trace] = stage_traces(resolver, "eeo_answer")
+    assert (trace["sub_answer"], trace["status"]) == ("hispanic_latino", "SUB_ANSWER_MISSING")
+    [missing] = packet.missing_inputs
+    assert missing.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED
+
+
+def test_the_live_veteran_question_takes_the_veteran_answer_without_any_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # "Veteran Status / If you believe you belong to …" hit 0.92 / 0.84 on the wording gate.
+    provider = ChoiceProvider({"wording": ("q0", 0.84)})
+    field = eeo_field("Veteran Status", SemanticType.EEO_VETERAN_STATUS, *LIVE_VETERAN_OPTIONS,
+                      help_text=VETERAN_HELP)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, VETERAN_ANSWER,
+                                                              *UNTYPED_NOISE), mock_job, field)
+    assert len(provider.requests) == 1
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == (
+        "I am not a protected veteran", ["sa.veteran"])
+    assert stage_traces(resolver, "eeo_answer")[0]["status"] == "MAPPED"
+
+
+@pytest.mark.parametrize("probability,mapped", [(0.97, True), (0.94, False)])
+def test_gender_and_disability_answers_map_by_type_through_option_equivalence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, probability: float, mapped: bool,
+) -> None:
+    gender = global_answer("sa.gender", "Gender", "Male", semantic=SemanticType.EEO_GENDER)
+    provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": ("o1", probability)})
+    fields = [eeo_field("What is your gender identity?", SemanticType.EEO_GENDER, "Woman", "Man",
+                        "Non-binary", "Decline to self-identify", required=False),
+              eeo_field("Voluntary Self-Identification of Disability", SemanticType.EEO_DISABILITY_STATUS,
+                        *DISABILITY_OPTIONS, help_text="Please check one of the boxes below.").model_copy(
+                  update={"id": "disability", "selector": "#disability"})]
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, gender,
+                                                              DISABILITY_ANSWER), mock_job, *fields)
+    assert not provider.asked("wording") and len(provider.asked("equivalent_0")) == 2
+    labels = {a.field_id: a.value.label for a in packet.answers}
+    assert labels == ({"answer": "Man", "disability": DISABILITY_OPTIONS[1]} if mapped else {})
+    traces = {t["field_id"]: t["status"] for t in stage_traces(resolver, "eeo_answer")}
+    assert traces == {"answer": "MAPPED" if mapped else "VALUE_DOES_NOT_FIT",
+                      "disability": "MAPPED" if mapped else "VALUE_DOES_NOT_FIT"}
+    assert not stage_traces(resolver, "question_equivalence")  # settled either way
+    assert {t["status"] for t in stage_traces(resolver, "option_equivalence")} == (
+        {"MAPPED"} if mapped else {"BELOW_GATE"})
+
+
+def test_conflicting_same_type_eeo_answers_hold_the_field(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    other = VETERAN_ANSWER.model_copy(update={"id": "sa.veteran2", "question": "Protected veteran status",
+                                              "value": "I am a protected veteran"})
+    provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": ("o1", 0.99)})
+    field = eeo_field("Protected veteran self-identification", SemanticType.EEO_VETERAN_STATUS,
+                      *LIVE_VETERAN_OPTIONS)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, VETERAN_ANSWER, other),
+                                         mock_job, field)
+    assert len(provider.requests) == 1 and packet.answers == []
+    [trace] = stage_traces(resolver, "eeo_answer")
+    assert trace["status"] == "CONFLICT" and set(trace["reference_ids"]) == {"sa.veteran", "sa.veteran2"}
+
+
+def test_a_newer_eeo_answer_wins_and_a_job_scoped_one_comes_first(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    newer = global_answer("sa.veteran_new", "Veteran Status", "I don't wish to answer",
+                          semantic=SemanticType.EEO_VETERAN_STATUS, confirmed_at="2026-09-20T12:00:00Z")
+    scoped = SavedAnswer(id="sa.veteran_job", scope=AnswerScope.JOB, job_identity_key=mock_job.identity_key,
+                         semantic_type=SemanticType.EEO_VETERAN_STATUS, question="Veteran status at Mock Co",
+                         value="I am not a protected veteran", confirmed_at="2026-08-01T12:00:00Z")
+    field = eeo_field("Protected veteran self-identification", SemanticType.EEO_VETERAN_STATUS,
+                      *LIVE_VETERAN_OPTIONS)
+    packet, _, _ = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, VETERAN_ANSWER, newer),
+                                  mock_job, field)
+    assert [(a.value.label, a.provenance.reference_ids) for a in packet.answers] == [
+        ("I don't wish to answer", ["sa.veteran_new"])]
+    packet, _, _ = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, VETERAN_ANSWER, newer,
+                                                               scoped), mock_job, field)
+    assert [(a.value.label, a.provenance.reference_ids) for a in packet.answers] == [
+        ("I am not a protected veteran", ["sa.veteran_job"])]
+
+
+def test_without_a_same_type_answer_an_eeo_field_keeps_the_wording_path(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    untyped = global_answer("sa.veteran_untyped", "Are you a protected veteran?", "No")
+    provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": ("o1", 0.99)})
+    field = eeo_field("Veteran status", SemanticType.EEO_VETERAN_STATUS, *LIVE_VETERAN_OPTIONS)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, untyped), mock_job, field)
+    assert stage_traces(resolver, "eeo_answer")[0]["status"] == "NONE"
+    assert provider.asked("wording")
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["gate"], trace["status"]) == ("standard", "MAPPED")
+    assert [a.value.label for a in packet.answers] == ["I am not a protected veteran"]
+
+
+def test_the_persons_own_eeo_answer_to_this_wording_comes_before_the_type(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    own = global_answer("sa.veteran_own", VETERAN_QUESTION, "I don't wish to answer",
+                        semantic=SemanticType.EEO_VETERAN_STATUS, confirmed_at="2026-08-01T12:00:00Z")
+    field = eeo_field(VETERAN_QUESTION, SemanticType.EEO_VETERAN_STATUS, *LIVE_VETERAN_OPTIONS)
+    packet, _, resolver = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, VETERAN_ANSWER, own),
+                                         mock_job, field)
+    assert [(a.value.label, a.provenance.reference_ids) for a in packet.answers] == [
+        ("I don't wish to answer", ["sa.veteran_own"])]
+    assert not stage_traces(resolver, "eeo_answer")
+
+
+def test_the_round_9_rule_for_work_authorization_and_sponsorship_is_untouched(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from interviewmaxxing_browser.ai.routing import EEO_TYPES
+
+    assert {SemanticType.EEO_GENDER, SemanticType.EEO_VETERAN_STATUS,
+                         SemanticType.EEO_DISABILITY_STATUS, SemanticType.EEO_RACE_ETHNICITY} == EEO_TYPES
+    assert not EEO_TYPES & {SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP}
+    provider = ChoiceProvider({"wording": ("q0", 0.94)})
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job,
+                                         status_field(REWORDED_SPONSORSHIP, SemanticType.SPONSORSHIP))
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["gate"], trace["status"]) == ("standard", "BELOW_GATE") and packet.answers == []
+    assert not stage_traces(resolver, "eeo_answer")
+
+
+# 4. Untyped reusable answers: a pick at 0.90 / 0.85 on a field whose type is not explicit.
+
+@pytest.mark.parametrize("probability,confidence,answered", [
+    (0.93, 0.97, True),   # the live travel pick (q8 of 17)
+    (0.90, 0.85, True),   # exactly at the gate
+    (0.89, 0.97, False),
+    (0.90, 0.84, False),
+])
+def test_an_untyped_pick_on_a_custom_field_passes_at_the_untyped_gate(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+    probability: float, confidence: float, answered: bool,
+) -> None:
+    assert (UNTYPED_PROBABILITY, UNTYPED_CONFIDENCE) == (0.90, 0.85)
+    class WordingOnlyConfidence(ConfirmingProvider):
+        def __call__(self, url: str, headers: Any, body: bytes, timeout: float) -> HttpResponse:
+            self.confidence = confidence if "wording" in json.loads(body)["questions"] else 0.97
+            return super().__call__(url, headers, body, timeout)
+
+    travel = global_answer("sa.travel", "How much are you willing to travel for work?",
+                           "Up to 10% of the time")
+    provider = WordingOnlyConfidence("travel", pick=probability, confirm=("q0", 0.79),
+                                     picks={"equivalent_0": ("o1", 0.98)})
+    field = choice_field(TRAVEL, SemanticType.CUSTOM_SELECT, *TRAVEL_OPTIONS, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, travel, *UNTYPED_NOISE),
+                                         mock_job, field)
+    [trace] = stage_traces(resolver, "question_equivalence")
+    if answered:
+        assert (trace["gate"], trace["status"]) == ("untyped", "MAPPED")
+        assert len(provider.asked("wording")) == 1  # no confirmation needed
+        [answer] = packet.answers
+        assert answer.value.label == "Up to 10%"
+        assert answer.confidence == pytest.approx(min(probability, confidence))
+    else:  # below the untyped gate: the confirmation still runs, and hedges here
+        assert (trace["gate"], trace["status"]) == ("confirmed", "BELOW_GATE")
+        assert len(provider.asked("wording")) == 2 and packet.answers == []
+
+
+def test_an_untyped_pick_on_an_explicit_field_keeps_the_standard_gate(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # No typed salary answer: the untyped answers are offered, and the explicit type keeps 0.95.
+    untyped_salary = global_answer("sa.salary_untyped", "What is your desired salary?", "USD 95,000 per year")
+    provider = ConfirmingProvider("desired salary", pick=0.93, confirm=("q0", 0.99))
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, untyped_salary,
+                                                              *UNTYPED_NOISE), mock_job,
+                                         text_field("What salary are you looking for?",
+                                                    SemanticType.SALARY_EXPECTATION))
+    [trace] = stage_traces(resolver, "question_equivalence")
+    assert (trace["gate"], trace["status"]) == ("standard", "BELOW_GATE")
+    assert len(provider.asked("wording")) == 1 and packet.answers == []
+
+
+# 5. The work-location preference.
+
+UPSTART_LABEL = "Location Preference"
+UPSTART_OPTIONS = ("Remote", "Hybrid", "On-site")
+PREFERENCE = global_answer("sa.work_location", WORK_LOCATION_PREFERENCE_QUESTION, "Remote")
+
+
+def test_the_live_location_preference_select_takes_the_saved_preference(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Upstart: typed LOCATION, so the residence screener read it and held. A single choice
+    # among work modes is the work-location preference whatever its type.
+    provider = ChoiceProvider({"residence": ("UNKNOWN", 0.99), "wording": ("NONE", 0.99)},
+                              semantic="LOCATION")
+    field = choice_field(UPSTART_LABEL, SemanticType.LOCATION, *UPSTART_OPTIONS, control=ControlType.SELECT)
+    packet, ctx, resolver = resolve_choice(provider, with_saved(fictional_candidate, PREFERENCE,
+                                                                *UNTYPED_NOISE), mock_job, field)
+    assert ctx.form.fields[0].semantic_type is SemanticType.LOCATION
+    assert len(provider.requests) == 1  # "Remote" is an option: no call, and no residence screener
+    assert not stage_traces(resolver, "residence_screener")
+    [answer] = packet.answers
+    assert (answer.value.label, answer.semantic_type) == ("Remote", SemanticType.LOCATION)
+    assert (answer.provenance.source, answer.provenance.reference_ids) == (
+        AnswerSource.SAVED_ANSWER, ["sa.work_location"])
+    assert "saved work-location preference" in (answer.provenance.note or "")
+    [trace] = stage_traces(resolver, "work_location_preference")
+    assert (trace["status"], trace["option_count"]) == ("MAPPED", 3)
+    assert "Remote" not in json.dumps(trace)
+
+
+@pytest.mark.parametrize("semantic", ["CUSTOM_SELECT", "LOCATION"])
+def test_a_work_mode_select_with_its_own_wording_maps_the_preference_through_option_equivalence(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, semantic: str,
+) -> None:
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.97), "wording": ("NONE", 0.99)}, semantic=semantic)
+    field = choice_field("Which work arrangement do you prefer?", SemanticType[semantic],
+                         "Fully remote", "Hybrid (2-3 days in office)", "In-office", "No preference",
+                         control=ControlType.RADIO)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, PREFERENCE,
+                                                              *UNTYPED_NOISE), mock_job, field)
+    assert not provider.asked("wording")
+    [request] = provider.asked("equivalent_0")
+    assert request["state"]["stored_answers"] == {"equivalent_0": "Remote"}
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == ("Fully remote", ["sa.work_location"])
+    assert stage_traces(resolver, "work_location_preference")[0]["status"] == "MAPPED"
+
+
+def test_without_a_saved_preference_a_work_mode_select_holds_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    provider = ChoiceProvider({"residence": ("o0", 0.99), "wording": ("q0", 0.99)}, semantic="LOCATION")
+    field = choice_field(UPSTART_LABEL, SemanticType.LOCATION, *UPSTART_OPTIONS, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, *UNTYPED_NOISE),
+                                         mock_job, field)
+    assert packet.answers == []  # the address never answers it, and nothing asks Jev about it
+    assert not any(name in request["questions"] for request in provider.requests
+                   for name in ("residence", "equivalent_0", "wording"))
+    assert not stage_traces(resolver, "residence_screener")
+    assert stage_traces(resolver, "work_location_preference")[0]["status"] == "NONE"
+    [missing] = packet.missing_inputs
+    assert missing.field_id == "answer"
+
+
+@pytest.mark.parametrize("label,options", [
+    ("Location Preference", ("Remote", "Austin, TX")),  # a place is not a work mode
+    ("What is your current work arrangement?", UPSTART_OPTIONS),  # a fact, not a preference
+    ("Location Preference", ("Remote",)),  # one option is no choice
+])
+def test_only_a_preference_among_work_modes_takes_the_saved_preference(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, label: str, options: tuple[str, ...],
+) -> None:
+    provider = ChoiceProvider({"residence": ("NOT_RESIDENCE", 0.99), "wording": ("NONE", 0.99),
+                               "equivalent_0": ("NONE", 0.99)}, semantic="CUSTOM_SELECT")
+    field = choice_field(label, SemanticType.CUSTOM_SELECT, *options, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(provider, with_saved(fictional_candidate, PREFERENCE), mock_job, field)
+    assert not stage_traces(resolver, "work_location_preference") and packet.answers == []
+
+
+def test_the_persons_own_answer_to_the_preference_wording_comes_first(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    own = global_answer("sa.own_pref", UPSTART_LABEL, "Hybrid", confirmed_at="2026-08-01T12:00:00Z")
+    field = choice_field(UPSTART_LABEL, SemanticType.CUSTOM_SELECT, *UPSTART_OPTIONS, control=ControlType.SELECT)
+    packet, _, resolver = resolve_choice(ChoiceProvider(), with_saved(fictional_candidate, PREFERENCE, own),
+                                         mock_job, field)
+    assert [(a.value.label, a.provenance.reference_ids) for a in packet.answers] == [("Hybrid", ["sa.own_pref"])]
+    assert not stage_traces(resolver, "work_location_preference")
+
+
+def test_the_imported_preference_answers_the_live_select(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_candidate.simple_answers import SimpleAnswers
+
+    data = SimpleAnswers.from_identity(fictional_candidate.identity).model_dump()
+    data["work_location_preference"] = "Remote or hybrid"
+    updates = SimpleAnswers.model_validate(data).saved_answer_updates(
+        confirmed_at=datetime(2026, 9, 25, tzinfo=UTC))
+    [saved] = updates
+    assert (saved.semantic_type, saved.question) == (None, WORK_LOCATION_PREFERENCE_QUESTION)
+    assert UPSTART_LABEL in saved.match_phrases
+    provider = ChoiceProvider({"equivalent_0": ("o0", 0.96)}, semantic="LOCATION")
+    field = choice_field("Preferred work arrangement", SemanticType.LOCATION, *UPSTART_OPTIONS,
+                         control=ControlType.SELECT)
+    packet, _, _ = resolve_choice(provider, with_saved(fictional_candidate, saved), mock_job, field)
+    [answer] = packet.answers
+    assert (answer.value.label, answer.provenance.reference_ids) == ("Remote", [saved.id])
+    [request] = provider.asked("equivalent_0")
+    assert request["state"]["stored_answers"] == {"equivalent_0": "Remote or hybrid"}

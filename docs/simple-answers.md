@@ -6,7 +6,7 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-thirty-nine explicit reusable answers, stored through the existing saved-answer system,
+forty explicit reusable answers, stored through the existing saved-answer system,
 and one statement key, `career_motivation`, stored as a verified fact (below).
 Each starts as `null`; nothing is filled in for you.
 
@@ -65,6 +65,7 @@ Each starts as `null`; nothing is filled in for you.
 | `consent_to_contact` | The employer may contact me about this application. |
 | `consent_reference_checks` | The employer may contact the references I provide. |
 | `consent_background_check` | I consent to a background check, subject to applicable law. |
+| `work_location_preference` | Location Preference / Preferred work arrangement (remote, hybrid or on-site) |
 
 Full name is derived from first and last name. Location is derived from city,
 state and country, omitting unanswered components. The selected resume already
@@ -107,7 +108,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The thirty-nine additional reusable-answer keys and `career_motivation`
+contact value. The forty additional reusable-answer keys and `career_motivation`
 may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
@@ -119,7 +120,7 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the thirty-nine additional keys become explicitly
+Nonblank values for the forty additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
@@ -128,7 +129,8 @@ referral, age, work-authorization and Hispanic/Latino answers also accept `"Yes"
 employee, relocation, other positions and references. So do government official,
 non-compete, AI tools and the five statements. Desired salary, English
 proficiency, time zones, travel, earliest start date, race/ethnicity, disability status,
-pronouns, familiarity with the company and county are free text in your words.
+pronouns, familiarity with the company, county and the work-location preference are free
+text in your words.
 
 `work_authorization_status` takes exactly one of these codes:
 - `us_citizen`: I am a U.S. citizen.
@@ -162,6 +164,30 @@ authorization from the stated status". What each code settles:
 
 A question that asks for the status itself in a text box ("Work authorization status") gets
 the code's wording in your words ("U.S. citizen"), never the code.
+
+`work_location_preference` (round 10) is your work-arrangement preference in your words:
+"Remote", "Hybrid", "On-site", "Remote or hybrid". A single-choice select whose options are all
+work modes (remote, hybrid, on-site, in-office, work from home …) takes it whatever the site
+typed the field as, so Upstart's "Location Preference" select is no longer read as your
+address. The value is placed on the exact option when one names it, otherwise Jev maps it
+onto the site's option wording ("Fully remote", "Hybrid (2-3 days in office)") at the usual
+gate. A question about your current or previous arrangement is not a preference and stays
+unanswered. Without the key the select is held for you; the verified address never answers
+it.
+
+`desired_salary` (round 10) states one amount with its unit and, ideally, its currency:
+"USD 95,000 per year", "$45/hr", "95k annually". Three readings need no model decision
+([dynamic-application-routing.md](dynamic-application-routing.md), "Round 10"):
+- a base, annual, expected or target salary wording ("What is your desired base salary?",
+  "Expected annual salary (USD)") gets the value as saved, because a plain desired salary
+  states a base figure; a question that names a unit or currency the value does not carry
+  holds, and so does an OTE, total-compensation, bonus or equity wording, or a saved value
+  that names OTE, total or bonus itself;
+- a select of salary ranges takes the one range whose bounds contain the amount in the same
+  unit, and holds when none does, when two share the boundary, when the unit or currency
+  differs, or when nothing states which unit the ranges are in;
+- a select whose options are all pay periods (Hourly / Monthly / Yearly) takes the unit the
+  value states, whatever the select's label.
 
 `authorized_to_work_us` and `requires_visa_sponsorship` stay your own answers. Case, dashes
 and spaces do not matter, and "H-1B" is `h1b`. A status that contradicts one of them fails
