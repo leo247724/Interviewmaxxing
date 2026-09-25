@@ -573,9 +573,13 @@ _DATE_RANGE = re.compile(
 """A date range in a letter's body ("from 2022 to 2023", "March 2024 to May 2025", "2022-23"):
 the rubric gives an employer one date where it first appears (round 6, the judge's fourth fix)."""
 DATE_RANGE_FEEDBACK = (
-    "Give each employer one date where it first appears: the year the work happened ('in 2023') or "
-    "'since <Month YYYY>' for current work. No date range ('from 2022 to 2023', 'March 2024 to May "
-    "2025'), and no date repeated for an employer already dated.")
+    "Date each employer once, where it first appears: current work 'since <Month YYYY>', past work "
+    "by when it started ('starting in 2024') or not at all. No date range ('from 2022 to 2023', "
+    "'March 2024 to May 2025'), and never one year for work that spanned more.")
+IMPROVEMENT_LENGTH_FEEDBACK = (
+    "Keep the letter at 280-380 words in its paragraphs: where you cut a sentence, tell more of the "
+    "proof's own story from its passage (the constraint, the fight, what changed) instead of adding "
+    "other work.")
 FACTS_UNCITED_FEEDBACK = (
     "Cite at least one verified fact (an entry not keyed story or contact_links) for the claims it "
     "states: a passage's claim that a verified fact also states cites both.")
@@ -4363,7 +4367,8 @@ class DynamicPacketResolver:
                 assert self.writer is not None
                 improved = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
                     max_length=field.max_length, job_evidence=job_evidence, voice_samples=voice_samples,
-                    purpose=purpose, review_feedback=issues, guidance=[], on_attempt=attempts.append)
+                    purpose=purpose, review_feedback=[*issues[:7], IMPROVEMENT_LENGTH_FEEDBACK], guidance=[],
+                    on_attempt=attempts.append)
                 if improved.status != "READY":
                     raise AIHold("The rubric rewrite needs input")
                 failed = findings_of(improved)

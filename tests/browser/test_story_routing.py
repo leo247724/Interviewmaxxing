@@ -1890,7 +1890,10 @@ def test_the_rubric_review_improves_a_grounded_letter_and_never_costs_it(candida
     # which is checked and grounded like the first, then graded again.
     writer = LetterWriter([letter, improved], rubric=["FAIL", "PASS"])
     packet, resolver, _ = resolve(letter_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
-    assert packet.is_complete and len(writer.calls) == 2 and writer.calls[1]["review_feedback"] == [issue]
+    from interviewmaxxing_browser.ai.routing import IMPROVEMENT_LENGTH_FEEDBACK
+
+    assert packet.is_complete and len(writer.calls) == 2
+    assert writer.calls[1]["review_feedback"] == [issue, IMPROVEMENT_LENGTH_FEEDBACK]
     assert packet.answers[0].value.text == text(improved)
     assert "rubric review passed" in packet.answers[0].provenance.note
     [draft] = [t for t in resolver.narrative_traces if t["stage"] == "draft"]

@@ -724,6 +724,14 @@ verdicts are cached by sentence text and citations. A review cut at its output l
 once with twice the allowance. Retrieval lists the long-form candidate stories
 (`candidate-stories`) ahead of LinkedIn and site bullets for the proof.
 
+**After batch 2.** The company paragraph ties the fact to the proof's own work and brings in
+no other employer (batch 2 first held all three letters on "one proof"); the proof is a passage
+that states a result, built back from that result; a date range of any kind is a corrective
+finding (`DATE_RANGE`), and so is a letter citing only passages and links (`FACTS_UNCITED`); the
+writer adds no bridging or interpreting sentence and names the role as the posting does. A
+second rubric improvement runs only when the first cut the open issues, and a letter that will
+hold skips the no-slop pass. The local draft tool reserves up to 80 calls / USD 5.00.
+
 **The owner's voice** (addendum 3). Three posts he wrote in 2017 are indexed as voice samples
 (`index-voice`, style only); a letter gets the two most relevant passages (`voice_samples`), for
 the writer and the no-slop rewrite alike, never as evidence (they reach neither Jev nor the
