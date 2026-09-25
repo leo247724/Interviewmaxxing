@@ -3,14 +3,20 @@
 ``apply`` runs the whole supplied-URL flow through ``LocalApplicationRunner``: it
 records the request, inspects the live form in a real browser, answers from the
 verified profile, stops with a recorded NEEDS_INPUT result when a required answer
-is missing, submits once and reports SUBMITTED only when the site's confirmation
-tied to the job was observed.
+is missing, and stops at the final review step without submitting (prepare-only).
+
+Submitting is a separate, explicit path (``docs/submission.md``): ``approve APP``
+records the user's approval of the prepared packet, and ``submit APP --yes`` (only with
+``IMX_ALLOW_SUBMISSION=1``) authorizes it and submits exactly the approved packet,
+reporting SUBMITTED only when the site's confirmation tied to the job was observed.
+``submit-approved`` does the same for many approved applications.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import os
 import signal
@@ -27,17 +33,24 @@ from interviewmaxxing_browser.driver import DriverError
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_core import (
     AnswerReuse,
+    AnswerValue,
     Application,
     ApplicationState,
     ApplicationStore,
     ApplyOutcome,
+    BooleanValue,
+    ChoiceValue,
     ClaimUnavailable,
+    FileValue,
     InvalidApplicationUrl,
     LocalPaths,
     MissingInput,
     MissingReason,
+    MultiChoiceValue,
     Receipt,
     StoreError,
+    SubmissionBlocked,
+    TextValue,
     UserInput,
     UserInteraction,
     normalize_application_url,
@@ -46,9 +59,14 @@ from interviewmaxxing_core import (
 from .answers import AnswerError, describe, user_input_for
 from .interaction import TerminalInteraction
 from .runner import (
+    ALLOW_SUBMISSION_ENV,
+    BUSY_MESSAGE,
+    CLAIMED_MESSAGE,
+    NOT_AUTHORIZED_MESSAGE,
     LocalApplicationRunner,
     NoninteractiveInteraction,
     create_runner,
+    create_submission_runner,
     pending_inputs,
 )
 
@@ -72,13 +90,18 @@ Prepare job applications you choose, using your verified profile and resume.
 
 Runs stop at the final review step without submitting. You are asked for missing
 required information or for actions such as sign-in or CAPTCHA. Resuming a
-preparation-only application keeps submission disabled.
+preparation-only application keeps submission disabled. Nothing is submitted until
+you approve a prepared application and run `submit APP --yes` with
+IMX_ALLOW_SUBMISSION=1; it then submits exactly what you approved.
 """
 EPILOG = """\
 typical flow:
   interviewmaxxing apply URL                 run; stops with questions if any
   interviewmaxxing answer APP --set F=V ...  answer the recorded questions
   interviewmaxxing resume APP                continue from the site
+  interviewmaxxing approve APP               approve the prepared answers you reviewed
+  IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit APP --yes
+                                             submit exactly what you approved
   interviewmaxxing reconcile APP             re-check an uncertain submission
 
 many jobs (preparation only):
@@ -94,6 +117,7 @@ local data (never in source control):
   IMX_ARTIFACTS_DIR  confirmation evidence             ($IMX_HOME/artifacts)
   IMX_BROWSER_DIR    persistent browser profile        ($IMX_HOME/browser)
   IMX_CANDIDATE_ID   candidate used by apply           (default)
+  IMX_ALLOW_SUBMISSION  must be 1 for submit / submit-approved (never read by apply)
 
 exit status: 0 submitted/ok, 1 error, 2 usage, 3 not submitted (input needed or
 stopped), 4 blocked by state, 5 submission uncertain, 130 interrupted
@@ -193,7 +217,8 @@ def _preparation_lines(state: ApplicationState, events: Sequence[Any],
 def _review_steps(application_id: str, artifacts_dir: Path) -> list[str]:
     return [f"review the filled form evidence under {artifacts_dir / application_id}/",
             f"{PROG} events {application_id}   (preparation.ready records the final step)",
-            f"{PROG} resume {application_id}   (re-prepares from the site; submission stays disabled)"]
+            f"{PROG} resume {application_id}   (re-prepares from the site; submission stays disabled)",
+            f"{PROG} approve {application_id}   (approve these answers; nothing is submitted yet)"]
 
 
 def _print_receipt(receipt: Receipt) -> None:
@@ -389,6 +414,242 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return EXIT_UNCERTAIN if outcome.state is S.SUBMISSION_UNKNOWN else EXIT_BLOCKED
 
 
+# --- approval and submission ------------------------------------------------------
+
+
+SUBMISSION_DISABLED = f"""\
+Submission is disabled; nothing was submitted.
+To submit applications you prepared, reviewed and approved (`{PROG} approve APP`),
+enable submission for this command only:
+  {ALLOW_SUBMISSION_ENV}=1 {PROG} submit APP --yes
+Each application is then submitted exactly as approved; a form that changed since is
+not submitted. See docs/submission.md."""
+
+
+def _approver() -> str:
+    try:
+        return f"cli:{getpass.getuser()}"
+    except Exception:  # no login name in this environment
+        return "cli"
+
+
+def _value_text(value: AnswerValue) -> str:
+    if isinstance(value, TextValue):
+        text = " ".join(value.text.split())
+    elif isinstance(value, ChoiceValue):
+        text = value.label
+    elif isinstance(value, MultiChoiceValue):
+        text = "; ".join(c.label for c in value.choices)
+    elif isinstance(value, BooleanValue):
+        text = "yes" if value.checked else "no"
+    elif isinstance(value, FileValue):
+        text = f"file {value.artifact.filename}"
+    else:  # pragma: no cover - the union is exhaustive
+        text = str(value)
+    return text if len(text) <= 100 else text[:99] + "…"
+
+
+def _submission_gate(args: argparse.Namespace, command: str) -> int | None:
+    """EXIT_BLOCKED (with instructions) unless IMX_ALLOW_SUBMISSION=1 and --yes.
+    ``command``: the command line to show, without ``--yes``."""
+    if os.environ.get(ALLOW_SUBMISSION_ENV) != "1":
+        print(SUBMISSION_DISABLED.replace(f"{PROG} submit APP --yes", f"{PROG} {command} --yes"),
+              file=sys.stderr)
+        return EXIT_BLOCKED
+    if not args.yes:
+        print(f"Refusing to submit without --yes; nothing was submitted. Add --yes to confirm "
+              f"that `{PROG} {command}` may submit what you approved.", file=sys.stderr)
+        return EXIT_BLOCKED
+    return None
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    paths = _paths(args)
+    store = _open_existing(paths)
+    if store is None:
+        print("No state database.", file=sys.stderr)
+        return EXIT_ERROR
+    with store:
+        app = store.get_application(args.application_id)
+        packet_id = args.packet or store.prepared_packet(app.id)
+        if packet_id is None:
+            print(f"{app.id} is {app.state.value} and is not stopped at a completed preparation, "
+                  f"so there is nothing to approve. Prepare it (`{PROG} resume {app.id}`) and "
+                  "review it first.", file=sys.stderr)
+            return EXIT_BLOCKED
+        try:
+            claim = store.claim(app.id, _owner())
+        except ClaimUnavailable:
+            print("Another run is working on this application; try again shortly.",
+                  file=sys.stderr)
+            return EXIT_BLOCKED
+        try:
+            approval = store.approve_submission(claim, packet_id=packet_id, approver=_approver())
+        except SubmissionBlocked as exc:
+            print(f"Not approved: {exc}.", file=sys.stderr)
+            return EXIT_BLOCKED
+        finally:
+            store.release(claim)
+        packets = [store.get_packet(step.packet_id) for step in approval.steps]
+    if args.json:
+        print(_dump(approval))
+        return EXIT_OK
+    answers = sum(len(p.answers) for p in packets)
+    print(f"approved:    {approval.application_id}")
+    print(f"packet:      {approval.packet_id} ({answers} answer(s) on {len(packets)} step(s))")
+    print(f"approver:    {approval.approver} at {_fmt_time(approval.approved_at)}")
+    for packet in packets:
+        for answer in packet.answers:
+            print(f"  step {packet.form_step + 1}  {answer.field_id}: {_value_text(answer.value)} "
+                  f"({answer.provenance.source.value.lower()})")
+    print("\nNothing was submitted. Approving records your review; submission stays disabled.")
+    print(f"next:        {ALLOW_SUBMISSION_ENV}=1 {PROG} submit {approval.application_id} --yes")
+    return EXIT_OK
+
+
+def _submission_runner(args: argparse.Namespace) -> LocalApplicationRunner:
+    kwargs: dict[str, Any] = {}
+    if args.ai_routing or args.browser != "playwright":
+        kwargs["dynamic_options"] = _dynamic_options(args)
+    return create_submission_runner(
+        _paths(args), headless=args.headless,
+        interaction=NoninteractiveInteraction(allow_browser_action=args.act), **kwargs)
+
+
+def _refused(app: Application, message: str, *, as_json: bool, code: int = EXIT_BLOCKED) -> int:
+    if as_json:
+        print(_dump(ApplyOutcome(application_id=app.id, state=app.state, message=message)))
+    else:
+        print(message, file=sys.stderr)
+    return code
+
+
+def cmd_submit(args: argparse.Namespace) -> int:
+    gate = _submission_gate(args, f"submit {args.application_id}")
+    if gate is not None:
+        return gate
+    paths = _paths(args)
+    store = _open_existing(paths)
+    if store is None:
+        print("No state database.", file=sys.stderr)
+        return EXIT_ERROR
+    with store:
+        app = store.get_application(args.application_id)
+        if app.state in (S.SUBMITTED, S.SUBMITTING, S.SUBMISSION_UNKNOWN):
+            return _refused(app, f"Not submitted: {app.id} is {_state_label(app)}; it is never "
+                                 "submitted again.", as_json=args.json,
+                            code=EXIT_UNCERTAIN if app.state is S.SUBMISSION_UNKNOWN else EXIT_BLOCKED)
+        if store.approved_packet(app.id) is None:
+            return _refused(app, f"Not submitted: {app.id} has no valid approval. Prepare it, "
+                                 f"review it and approve it (`{PROG} approve {app.id}`) first.",
+                            as_json=args.json)
+        try:
+            claim = store.claim(app.id, _owner())
+        except ClaimUnavailable:
+            return _refused(app, "Not submitted: another run is working on this application; "
+                                 "try again shortly.", as_json=args.json)
+        try:
+            store.authorize_submission(claim)
+        except SubmissionBlocked as exc:
+            return _refused(app, f"Not submitted: {exc}.", as_json=args.json)
+        finally:
+            store.release(claim)
+    runner = _submission_runner(args)
+    try:
+        outcome = _run(lambda: runner.submit(app.id))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        return _interrupted(paths, app.id)
+    _print_outcome(outcome, as_json=args.json)
+    if outcome.message.startswith((NOT_AUTHORIZED_MESSAGE, BUSY_MESSAGE, CLAIMED_MESSAGE)):
+        return EXIT_BLOCKED  # nothing was run
+    return _exit_code(outcome)
+
+
+def cmd_submit_approved(args: argparse.Namespace) -> int:
+    """Submit every approved application of one prepare batch (or all of them) through
+    ``submit`` subprocesses; see ``interviewmaxxing_cli.batch.run_submissions``."""
+    from pydantic import ValidationError
+
+    from .batch import (
+        SubmissionEntry,
+        SubmitBatchOptions,
+        approved_targets,
+        default_submission_batch_id,
+        format_submission,
+        render_submissions_markdown,
+        run_submissions,
+    )
+
+    scope = f"--batch {args.batch}" if args.batch else "--all-approved"
+    gate = _submission_gate(args, f"submit-approved {scope} --slots {args.slots}")
+    if gate is not None:
+        return gate
+    paths = _paths(args)
+    candidate_id = args.candidate or paths.candidate_id
+    try:
+        targets = approved_targets(paths, candidate_id, source_batch=args.batch)
+        options = SubmitBatchOptions(
+            paths=paths, candidate_id=candidate_id,
+            batch_id=args.batch_id or args.batch or default_submission_batch_id(),
+            workers=args.slots, per_job_timeout_s=args.per_job_timeout,
+            browser=args.browser, opencli_profile=args.opencli_profile,
+            ai_routing=args.ai_routing, env_file=Path(args.env_file) if args.env_file else None,
+            writer_model=args.writer_model,
+            rag_connection_file=Path(args.rag_connection_file) if args.rag_connection_file else None,
+        )
+    except ValidationError as exc:
+        problems = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
+        print(f"error: {problems}", file=sys.stderr)
+        return EXIT_USAGE
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    progress = sys.stderr if args.json else sys.stdout
+    if not targets:
+        scope = f"batch {args.batch}" if args.batch else "the store"
+        print(f"No approved application to submit in {scope}; nothing was submitted.",
+              file=progress)
+        if args.json:
+            print("null")
+        return EXIT_OK
+
+    def show(entry: SubmissionEntry) -> None:
+        print(format_submission(entry), file=progress, flush=True)
+
+    async def submissions() -> Any:
+        task = asyncio.current_task()
+        assert task is not None
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        try:
+            return await run_submissions(options, targets, source_batch=args.batch, on_entry=show)
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+    print(f"submitting {len(targets)} approved application(s) with {options.workers} slot(s); "
+          f"ledger in {options.batch_dir}", file=progress, flush=True)
+    try:
+        with asyncio.Runner() as runner:
+            summary = runner.run(submissions())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print(f"Interrupted. Finished submissions are in {options.batch_dir}; an interrupted "
+              "submit is recorded as uncertain and never repeated.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    if args.json:
+        print(_dump(summary))
+    else:
+        print()
+        print(render_submissions_markdown(summary), end="")
+    if summary.totals.get("uncertain"):
+        return EXIT_UNCERTAIN
+    if any(summary.totals.get(k) for k in ("blocked", "needs_input", "error")):
+        return EXIT_INCOMPLETE
+    return EXIT_OK
+
+
 def _raw_answers(args: argparse.Namespace) -> dict[str, Any]:
     raw: dict[str, Any] = {}
     if args.answers:
@@ -495,9 +756,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         events = store.list_events(app.id)
         waiting = pending_inputs(store, app.id)
         if args.json:
+            approval = store.submission_approval(app.id)
             print(_dump({"application": app, "job": job, "attempts": attempts,
                          "pending_inputs": waiting, "packet": store.latest_packet(app.id),
-                         "requests": store.list_requests(app.id)}))
+                         "requests": store.list_requests(app.id),
+                         "approval": approval.model_dump(mode="json") if approval else None}))
             return EXIT_OK
         print(f"application:  {app.id}")
         print(f"state:        {_state_label(app)}")
@@ -525,6 +788,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         prepared = _preparation_lines(app.state, events, waiting)
         for line in prepared:
             print(line)
+        approval = store.submission_approval(app.id)
+        if approval is not None and app.state not in (S.SUBMITTED, S.SUBMITTING,
+                                                      S.SUBMISSION_UNKNOWN):
+            print(f"approved:     packet {approval.packet_id} by {approval.approver} at "
+                  f"{_fmt_time(approval.approved_at)}; nothing is submitted until "
+                  f"`{ALLOW_SUBMISSION_ENV}=1 {PROG} submit {app.id} --yes`")
         print(f"events:       {len(events)} ({PROG} events {app.id})")
         steps = (_review_steps(app.id, paths.artifacts_dir) if prepared
                  else _next_steps(ApplyOutcome(application_id=app.id, state=app.state,
@@ -1034,6 +1303,73 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
     p.add_argument("application_id", metavar="APPLICATION_ID")
     _run_options(p, interactive=False)
     p.set_defaults(func=cmd_reconcile)
+
+    p = sub.add_parser(
+        "approve",
+        help="approve the prepared answers of an application you reviewed (submits nothing)",
+        description="Record your approval of the packet a prepare-only run stopped with at the "
+        "final review step (default: the prepared packet). Only an application stopped right "
+        "after its preparation can be approved. Approving submits nothing and keeps submission "
+        "disabled; `submit APP --yes` later submits exactly what you approved. A new "
+        "preparation or a form that changed withdraws the approval.",
+    )
+    p.add_argument("application_id", metavar="APPLICATION_ID")
+    p.add_argument("--packet", metavar="PACKET_ID",
+                   help="the prepared packet to approve (default: the latest prepared packet)")
+    p.add_argument("--json", action="store_true", help="print the approval as JSON")
+    p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser(
+        "submit",
+        help="submit exactly what you approved (needs IMX_ALLOW_SUBMISSION=1 and --yes)",
+        description="Submit an approved application: authorize its approved packet, open and "
+        "inspect the site again, fill every step from the approved packets (nothing is "
+        "re-resolved or regenerated) and submit once. A form that no longer matches the "
+        "approval (new, missing or changed question, options, required flag, a value that "
+        "does not read back) stops as NEEDS_INPUT before submitting and withdraws the "
+        "approval. Refuses (exit 4) unless IMX_ALLOW_SUBMISSION=1, --yes and a valid approval. "
+        "Exit status: 0 submitted, 3 not submitted, 4 blocked, 5 uncertain.",
+    )
+    p.add_argument("application_id", metavar="APPLICATION_ID")
+    p.add_argument("--yes", action="store_true",
+                   help="confirm that this application may be submitted as approved")
+    p.add_argument("--act", action="store_true",
+                   help="you will sign in, solve a CAPTCHA or set custom controls in the visible "
+                        "browser window when asked")
+    _run_options(p, interactive=False)
+    p.set_defaults(func=cmd_submit)
+
+    p = sub.add_parser(
+        "submit-approved",
+        help="submit every approved application of a batch, or all approved ones",
+        description="Run `submit APP --yes` for every approved application that nothing was "
+        "submitted for yet: those of one prepare batch (--batch) or every approved one "
+        "(--all-approved), at most --slots at a time, each slot with its own browser profile. "
+        "Each result is appended to $IMX_HOME/batches/<id>/ledger.jsonl (outcome submitted, "
+        "uncertain, blocked, needs_input or error, with the receipt id); the id is --batch-id, "
+        "else the --batch id, else approved-<UTC time>. Needs IMX_ALLOW_SUBMISSION=1 and --yes. "
+        "Exit status: 0 all submitted (or nothing to submit), 3 some not submitted, "
+        "5 some uncertain, 4 refused.",
+    )
+    scope = p.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--batch", metavar="BATCH_ID",
+                       help="the prepare batch whose approved applications to submit")
+    scope.add_argument("--all-approved", action="store_true",
+                       help="every approved application of the candidate")
+    p.add_argument("--slots", type=_int_range(1, 8), default=1, metavar="N",
+                   help="concurrent submissions, each in its own browser profile (1..8)")
+    p.add_argument("--yes", action="store_true",
+                   help="confirm that the approved applications may be submitted as approved")
+    p.add_argument("--batch-id", metavar="ID",
+                   help="ledger to record the submissions in (default: the --batch id, else "
+                        "approved-<UTC time>); reuse it to continue")
+    p.add_argument("--per-job-timeout", type=float, default=900.0, metavar="SECONDS",
+                   help="stop a submission that runs longer than this (default 900); an "
+                        "interrupted submit is recorded as uncertain")
+    p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
+    _dynamic_flags(p)
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
+    p.set_defaults(func=cmd_submit_approved)
 
     p = sub.add_parser("status", help="list applications or show one in detail")
     p.add_argument("application_id", nargs="?", metavar="APPLICATION_ID")

@@ -150,7 +150,9 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
     """Select the applications of ``batch_id``'s ledger to run again (see the module
     docstring), in ledger order. Raises ``ValueError`` for a batch id that is not a
     plain name or an outcome that is never retried, and ``FileNotFoundError`` for a
-    batch without a ledger. Reads only; creates nothing."""
+    batch without a ledger. An application with a valid approval (a submission run of it
+    stopped) is left to ``submit-approved``: preparing it again would withdraw the
+    approval. Reads only; creates nothing."""
     unknown = sorted(set(outcomes) - set(RETRY_OUTCOMES))
     if unknown:
         raise ValueError(f"cannot retry {', '.join(unknown)}; choose from "
@@ -192,6 +194,9 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
             current = current_outcome(app, events)
             if current in NEVER_RETRIED:
                 skipped[current] += 1
+                continue
+            if store.submission_approval(app.id) is not None:
+                skipped["approved (left to submit-approved)"] += 1
                 continue
             if current not in wanted:
                 skipped[f"not selected ({current})"] += 1

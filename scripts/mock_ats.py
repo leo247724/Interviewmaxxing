@@ -314,6 +314,14 @@ FAA_CERTIFICATE = Field(
     True,
     _options(("faa_yes", "Yes"), ("faa_no", "No")),
 )
+TRAVEL_REQUIREMENT = Field(
+    "travel_willingness",
+    "Are you willing to travel to client sites up to 25% of the time?",
+    "radio",
+    True,
+    _options(("travel_yes", "Yes"), ("travel_no", "No")),
+)
+"""The required question the ``changed-after-prepare`` form gains from its second load on."""
 ATTEST_ACCURACY = Field(
     "attest_accuracy",
     "I certify that the information in this application is true and complete "
@@ -729,6 +737,10 @@ class Job:
     """Jobvite: the apply URL shows a "Data Consent" page (choose a location of residence
     and language, then "I Accept") until the consent is accepted; accepting posts it back to
     the apply URL, which records it and returns the form."""
+    added_on_reload: Field | None = None
+    """A question the (single-step) form gains from the second load of its application
+    page on: the server counts ``GET /jobs/<job>/apply`` per job (``/__test__/reset``
+    clears the count), and renders and validates the changed form after the first."""
 
     @property
     def multistep(self) -> bool:
@@ -765,6 +777,7 @@ class Job:
             "validity": self.validity,
             "fixture_identity": self.fixture_identity,
             "data_consent": self.data_consent,
+            "added_on_reload": self.added_on_reload.describe() if self.added_on_reload else None,
             "multistep": self.multistep,
             "steps": [
                 {"title": s.title, "fields": [f.describe() for f in s.fields]}
@@ -1191,6 +1204,19 @@ JOBS: dict[str, Job] = {
             _single(FIRST_NAME, LAST_NAME, EMAIL, WHY_BRAMBLEWAY),
         ),
         Job(
+            "changed-after-prepare",
+            "BWA-DS-128",
+            "Decision Scientist",
+            "Data",
+            "Denver, CO (Hybrid)",
+            "The core questions on the first load of the application page; from the second "
+            "load on the form also asks a new required question (willing to travel), so an "
+            "application prepared on the first load no longer matches when it is opened "
+            "again. The server renders and validates whichever form it served last.",
+            _single(*CORE_FIELDS),
+            added_on_reload=TRAVEL_REQUIREMENT,
+        ),
+        Job(
             MODAL_WIZARD,
             "BWA-LI-130",
             "Growth Marketing Lead",
@@ -1303,6 +1329,7 @@ class Store:
             "drafts": {},
             "captchas": {},
             "sessions": {},
+            "loads": {},
             "alerts": [],
         }
 
@@ -1321,6 +1348,18 @@ class Store:
                 path.unlink()
             self.data = self._empty()
             self._save()
+
+    # application page loads (a form that changes after its first load)
+    def count_load(self, job_id: str) -> int:
+        with self.lock:
+            loads = self.data.setdefault("loads", {})
+            loads[job_id] = loads.get(job_id, 0) + 1
+            self._save()
+            return int(loads[job_id])
+
+    def loads(self, job_id: str) -> int:
+        with self.lock:
+            return int(self.data.get("loads", {}).get(job_id, 0))
 
     # uploads
     def store_upload(self, upload: Upload) -> dict[str, Any]:
@@ -1746,8 +1785,8 @@ def city_matches(query: str, city: str) -> bool:
     return all(any(v.startswith(w) for v in vocabulary) for w in wanted)
 
 
-def _extra_fields(job: Job, form: dict[str, list[str]]) -> dict[str, Any]:
-    declared = {f.name for f in job.fields} | INTERNAL_FIELDS
+def _extra_fields(fields: tuple[Field, ...], form: dict[str, list[str]]) -> dict[str, Any]:
+    declared = {f.name for f in fields} | INTERNAL_FIELDS
     return {
         name: vals if len(vals) > 1 else vals[0]
         for name, vals in form.items()
@@ -5090,11 +5129,19 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_html(HTTPStatus.OK, page(job.title, body, head))
 
+    def _fields(self, job: Job) -> tuple[Field, ...]:
+        """The single-step form's questions as the server currently serves them."""
+        if job.added_on_reload is not None and self.store.loads(job.slug) > 1:
+            return (*job.fields, job.added_on_reload)
+        return job.fields
+
     def get_apply(self, slug: str) -> None:
         job = self._job(slug)
         if job.requires_signin and not self._signed_in():
             self._redirect_to_login(job)
             return
+        if job.added_on_reload is not None:
+            self.store.count_load(job.slug)
         if job.data_consent and not self._data_consented():
             self._render_data_consent(job)
             return
@@ -5139,8 +5186,9 @@ class Handler(BaseHTTPRequestHandler):
         prior = self.store.get_upload((form.get("resume_upload_id") or [""])[0])
         if prior:
             retained["resume"] = prior
+        fields = self._fields(job)
         values, files, errors = validate(
-            job.fields, form, uploads, retained, strict_phone=job.strict_phone
+            fields, form, uploads, retained, strict_phone=job.strict_phone
         )
         if (job.slug == STEPPER_AMBIGUOUS and values.get(JZ_RESUME_TEXT.name)
                 and errors.get(JZ_RESUME.name) == _required_message(JZ_RESUME)):
@@ -5175,7 +5223,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        record = self.store.add_submission(job, values, _extra_fields(job, form), files_meta)
+        record = self.store.add_submission(job, values, _extra_fields(fields, form), files_meta)
         if job.generic_thanks:
             # Accepted and counted; the page proves nothing about which application.
             body = "<h1>Thank you!</h1><p>We appreciate your interest.</p>"
@@ -5225,13 +5273,14 @@ class Handler(BaseHTTPRequestHandler):
         status: HTTPStatus,
     ) -> tuple[str, str, str]:
         """(title, main body, head extra) of a single-page application form."""
-        entries = _summary_entries(job.fields, errors)
+        fields = self._fields(job)  # the fields the server serves now (a reload may add one)
+        entries = _summary_entries(fields, errors)
         if captcha_error:
             entries.append(("f-captcha_answer", "Characters shown in the image", captcha_error))
         if errors.get(CAPTCHA_WIDGET_FIELD):
             entries.append((CAPTCHA_WIDGET_FIELD, "CAPTCHA", errors[CAPTCHA_WIDGET_FIELD]))
         fields_html = _field_layout(job, [
-            (f, render_field(f, values, errors.get(f.name), retained.get(f.name))) for f in job.fields
+            (f, render_field(f, values, errors.get(f.name), retained.get(f.name))) for f in fields
         ])
         if job.captcha:
             fields_html += render_captcha(self.store.new_captcha(), captcha_error)
@@ -5257,7 +5306,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             submit = '<button type="submit">Submit application</button>'
-            if any(f.uploader == "greenhouse-async" for f in job.fields):
+            if any(f.uploader == "greenhouse-async" for f in fields):
                 # Re-rendered once the upload completes, one level up (see ghUpload).
                 submit = f'<div class="form-actions"><div class="actions-row">{submit}</div></div>'
             form_html = (
@@ -5267,7 +5316,7 @@ class Handler(BaseHTTPRequestHandler):
                 + fields_html
                 + submit + "</form>"
             )
-        widgets = any(f.scripted for f in job.fields)
+        widgets = any(f.scripted for f in fields)
         if widgets:
             form_html += f"<script>{WIDGETS_JS}</script>"
         if job.formless:
@@ -5979,7 +6028,8 @@ class Handler(BaseHTTPRequestHandler):
             retained[EA_RESUME.name] = {"source": "saved_resume", "filename": choice, "details": offered[choice]}
         elif not attached and choice:
             choice_error = "Select one of your saved resumes or upload a resume."
-        values, files, errors = validate(job.fields, form, uploads, retained)
+        fields = self._fields(job)
+        values, files, errors = validate(fields, form, uploads, retained)
         if choice_error:
             errors[EA_RESUME.name] = choice_error
         elif attached and EA_RESUME.name not in errors:
@@ -5995,7 +6045,7 @@ class Handler(BaseHTTPRequestHandler):
             self.store.add_rejection(job, errors)
             self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"accepted": False, "errors": errors})
             return
-        extra = {k: v for k, v in _extra_fields(job, form).items() if k != "resume_choice"}
+        extra = {k: v for k, v in _extra_fields(fields, form).items() if k != "resume_choice"}
         record = self.store.add_submission(job, values, extra, self._store_files(files))
         self._send_json(HTTPStatus.OK, {
             "accepted": True, "submission_id": record["submission_id"],

@@ -587,6 +587,7 @@ def test_list_batches_and_empty_reports_create_nothing(tmp_path):
         "provider_cost_usd": None, "provider_calls": 0, "provider_cost_rows": 0,
         "cost_per_prepared_usd": None, "since": None, "questions": [], "fill_failures": [],
         "backends": [], "ledger_lines_ignored": 0,
+        "submissions": None,
     }
     assert f"No batch ledgers under {batches_dir}." in text
 
