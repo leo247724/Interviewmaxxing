@@ -42,11 +42,28 @@ MAX_STORIES = 64
 DEFAULT_STORY_SOURCE = "candidate-stories"
 """The one current stories source of a candidate; a new document version replaces it."""
 STORY_CHUNK_ID = re.compile(r"^story:[0-9a-f]{64}$")
+MAX_TITLE_CHARS = 400
+"""A story heading longer than this is a paragraph marked as a heading, not a title."""
 _COMPANY_GENERIC_WORDS = frozenset({
     "inc", "llc", "ltd", "corp", "co", "company", "corporation", "consulting", "solutions",
     "group", "agency", "agencies", "law", "firm", "the", "and", "of", "marketing", "media",
     "digital", "partners", "services", "labs", "studio", "global", "international", "holdings",
-    "limited", "plc", "gmbh", "team", "office", "practice", "clinic", "shop", "store"})
+    "limited", "plc", "gmbh", "team", "office", "practice", "clinic", "shop", "store",
+    # Common business words that name no one employer on their own (WP12 round 5): a story
+    # about "Growth Marketing" is not about "Shop Growth Solutions".
+    "growth", "consultants", "consultancy", "strategies", "strategy", "creative", "creatives",
+    "advertising", "ads", "ventures", "capital", "systems", "technologies", "technology", "tech",
+    "brands", "brand", "network", "networks", "enterprise", "enterprises", "industries",
+    "associates", "management", "analytics", "data", "commerce", "ecommerce", "online", "web",
+    "interactive", "communications", "performance", "sales", "works", "collective", "lab",
+    "studios", "hub", "center", "centre", "national", "united", "american", "america", "usa",
+    "social", "search", "content", "design", "development", "software", "cloud", "financial",
+    "insurance", "legal", "attorneys", "lawyers", "medical", "health", "healthcare", "real",
+    "estate", "realty", "llp", "pllc"})
+_LEGAL_SUFFIXES = frozenset({"inc", "llc", "ltd", "corp", "co", "company", "corporation", "limited",
+                             "plc", "gmbh", "llp", "pllc", "lp", "pc", "sa", "ag", "bv", "pty"})
+"""Trailing words a story may leave out of a company's full name ("Acme Growth" for
+"Acme Growth, Inc.")."""
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _HEADING = re.compile(r"^\s*(?:stor(?:y|ies))\s*#?\s*(\d{1,3})\s*[-\u2013\u2014:.]\s*(.+?)\s*$",
@@ -107,6 +124,19 @@ _ANY_PERSON = re.compile(r"\b(?:I|I've|I'd|I'm|my|me|myself|we|we've|our|us)\b",
 """First person singular or plural: what the analysis reads as the story's actions."""
 _PLURAL_PERSON = re.compile(r"\b(?:we|we've|our|us)\b", re.IGNORECASE)
 _YEAR_RANGE = re.compile(r"\b((?:19|20)\d{2})\s*(?:-|\u2013|\u2014|to|through|until|and)\s*((?:19|20)\d{2})\b")
+_MONTH_NUMBERS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8,
+                  "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+_MONTH_NAME = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+               r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?")
+_PERIOD_RANGE = re.compile(
+    rf"(?<![\w/-])(?:(?P<start_name>{_MONTH_NAME})\s+|(?P<start_number>0?[1-9]|1[0-2])/)?"
+    r"(?P<start_year>(?:19|20)\d{2})(?:-(?P<start_iso>0[1-9]|1[0-2])(?!\d))?"
+    r"\s*(?:-|\u2013|\u2014|to|through|until|till|thru)\s*"
+    rf"(?:(?:(?P<end_name>{_MONTH_NAME})\s+|(?P<end_number>0?[1-9]|1[0-2])/)?"
+    r"(?P<end_year>(?:19|20)\d{2})(?:-(?P<end_iso>0[1-9]|1[0-2])(?!\d))?"
+    r"|(?P<open>present|current|now|today))(?![\w/])", re.IGNORECASE)
+"""A stated period: "Aug 2019 - May 2020", "Jun 2025 - Present", "08/2019 to 05/2020",
+"2019-08 to 2020-05" or "2019 to 2023"; a single year or a year list is not a period."""
 _LEADING_VERB = re.compile(
     r"^(?:[A-Z][a-z]+ed|Led|Ran|Built|Grew|Drove|Oversaw|Won|Set|Took|Wrote|Spent|Cut|Made)\b")
 _OWN_SUBJECT = re.compile(r"^(?:the|this|our)\s+(?:software|product|agent|system|tool)\b", re.IGNORECASE)
@@ -311,6 +341,8 @@ class Run:
 class Paragraph:
     runs: tuple[Run, ...]
     heading: bool = False
+    boundary: bool = False
+    """A Markdown H1 or H2: it starts a story whatever its wording, numbered or not."""
 
 
 @dataclass(frozen=True)
@@ -440,9 +472,15 @@ class StoryIndex:
     links: Mapping[str, StoryRoleLink] | None = None
     """Resume role links by story id (``resolve_period`` dates the facts and headers)."""
     source_id: str = DEFAULT_STORY_SOURCE
+    link_mismatches: Mapping[str, dict[str, Any]] | None = None
+    """Proposed links the story's own stated period contradicts, by story id: not used,
+    reported in the review (``link_period_mismatch``)."""
 
     def link_for(self, story_id: str) -> StoryRoleLink | None:
         return (self.links or {}).get(story_id)
+
+    def mismatch_for(self, story_id: str) -> dict[str, Any] | None:
+        return (self.link_mismatches or {}).get(story_id)
 
 
 def _normalize(text: str) -> str:
@@ -510,14 +548,27 @@ def read_docx(path: Path) -> list[Paragraph]:
 _MARKDOWN_HEADING = re.compile(
     r"^\s*(?:#{1,6}\s*|\*\*)?\s*(stor(?:y|ies)\s*#?\s*\d{1,3}\s*[-\u2013\u2014:.]\s*.+?)\s*(?:\*\*)?\s*$",
     re.IGNORECASE)
+_ATX_HEADING = re.compile(r"^(#{1,6})(?:\s+(.*?))?(?:\s+#+)?\s*$")
+"""A Markdown heading line: hashes, then a space ("#hashtag" is text, not a heading)."""
+_SETEXT_UNDERLINE = re.compile(r"^(?:={3,}|-{3,})$")
+_THEMATIC_BREAK = re.compile(r"^(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$")
 TEXT_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
+
+
+def _heading_text(text: str) -> str:
+    """A heading's words without surrounding emphasis marks ("**Title**", "_Title_")."""
+    text = text.strip()
+    while len(text) > 2 and text[0] == text[-1] and text[0] in "*_":
+        text = text[1:-1].strip()
+    return text
 
 
 def read_text_document(path: Path) -> list[Paragraph]:
     """Paragraphs of a plain-text or Markdown stories file: a line reading "Stories NN -
     title" (Markdown marks allowed) or any other heading line is a heading paragraph;
-    the lines up to the next blank line form one body paragraph. The words are not
-    changed."""
+    the lines up to the next blank line form one body paragraph. An H1 or H2 (``#``,
+    ``##`` or a setext underline) is a story boundary: it starts a story whatever its
+    wording, like a heading of any level in a .docx. The words are not changed."""
     try:
         if path.stat().st_size > MAX_DOCX_BYTES:
             raise StoryParseError("The stories file exceeds its size limit")
@@ -532,18 +583,29 @@ def read_text_document(path: Path) -> list[Paragraph]:
             paragraphs.append(Paragraph((Run(" ".join(block), False),)))
             block.clear()
 
+    def heading(text: str, *, level: int | None) -> None:
+        flush()
+        numbered = _MARKDOWN_HEADING.match(text)
+        words = numbered.group(1) if numbered else _heading_text(text)
+        if words:
+            paragraphs.append(Paragraph((Run(words, bool(numbered)),), heading=True,
+                                        boundary=level is not None and level <= 2))
+
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             flush()
             continue
-        match = _MARKDOWN_HEADING.match(stripped)
-        if match:
-            flush()
-            paragraphs.append(Paragraph((Run(match.group(1), True),), heading=True))
-        elif stripped.startswith("#"):
-            flush()
-            paragraphs.append(Paragraph((Run(stripped.lstrip("#").strip(), False),), heading=True))
+        atx = _ATX_HEADING.match(stripped)
+        if _SETEXT_UNDERLINE.match(stripped) and len(block) == 1:
+            title = block.pop()  # "Title" underlined with === (H1) or --- (H2)
+            heading(title, level=1 if stripped.startswith("=") else 2)
+        elif _THEMATIC_BREAK.match(stripped) or _SETEXT_UNDERLINE.match(stripped):
+            flush()  # a separator line, not text
+        elif atx:
+            heading(atx.group(2) or "", level=len(atx.group(1)))
+        elif _MARKDOWN_HEADING.match(stripped):
+            heading(stripped, level=None)  # "**Stories NN - title**" or a bare numbered line
         else:
             block.append(stripped)
     flush()
@@ -564,36 +626,50 @@ def split_sentences(text: str) -> list[str]:
     return [_normalize(part) for part in _SENTENCE_BOUNDARY.split(text) if part and part.strip()]
 
 
+@dataclass(frozen=True)
+class _Segment:
+    text: str
+    emphasis: bool
+    heading: bool = False
+    boundary: bool = False
+
+
 def parse_stories(paragraphs: Sequence[Paragraph]) -> list[Story]:
     """Stories start at a bold or heading segment reading "Story NN - title". A
     document without such headings falls back to short bold or heading lines that end
-    without a period. Each story's body is everything up to the next heading."""
-    segments: list[tuple[str, bool]] = []
+    without a period. A Markdown H1 or H2 (``Paragraph.boundary``) always starts a story,
+    numbered or not, however long its wording (up to ``MAX_TITLE_CHARS``). Each story's
+    body is everything up to the next heading. A heading with no text under it that is
+    followed directly by another heading is a section title (a document title over H2
+    stories), not a story; any other heading without text is an error."""
+    segments: list[_Segment] = []
     for paragraph in paragraphs:
         if paragraph.heading:
             text = "".join(run.text for run in paragraph.runs)
             if text.strip():
-                segments.append((text, True))
+                segments.append(_Segment(text, True, heading=True, boundary=paragraph.boundary))
         else:
             for bold, group in itertools.groupby(paragraph.runs, key=lambda run: run.bold):
                 text = "".join(run.text for run in group)
                 if text.strip():
-                    segments.append((text, bold))
-        segments.append(("\n", False))
-    numbered = any(emphasis and _HEADING.match(text) for text, emphasis in segments)
+                    segments.append(_Segment(text, bold))
+        segments.append(_Segment("\n", False))
+    numbered = any(segment.emphasis and _HEADING.match(segment.text) for segment in segments)
 
     def is_title(index: int) -> tuple[int | None, str] | None:
-        text, emphasis = segments[index]
-        if not emphasis:
+        segment = segments[index]
+        if not segment.emphasis:
             return None
+        cleaned = _normalize(segment.text)
+        match = _HEADING.match(cleaned)
+        if segment.boundary:
+            return (int(match.group(1)), match.group(2)) if match else (None, cleaned)
         if numbered:
-            match = _HEADING.match(_normalize(text))
             return (int(match.group(1)), match.group(2)) if match else None
-        cleaned = _normalize(text)
-        previous = next((segments[i][0] for i in range(index - 1, -1, -1)
-                         if segments[i][0].strip()), "")
+        previous = next((segments[i].text for i in range(index - 1, -1, -1)
+                         if segments[i].text.strip()), "")
         starts_line = (index == 0 or not previous or previous.rstrip().endswith((".", "!", "?"))
-                       or segments[index - 1][0] == "\n")
+                       or segments[index - 1].text == "\n")
         if starts_line and 0 < len(cleaned) <= 120 and not cleaned.endswith((".", "!", "?", ":")):
             return None, cleaned
         return None
@@ -601,26 +677,34 @@ def parse_stories(paragraphs: Sequence[Paragraph]) -> list[Story]:
     stories: list[Story] = []
     title: str | None = None
     number: int | None = None
+    from_heading = False
     body: list[str] = []
 
-    def flush() -> None:
+    def flush(*, next_title: bool) -> None:
         if title is None:
             return
         sentences = tuple(split_sentences("".join(body)))
         if not sentences:
+            if from_heading and next_title:
+                return  # a section title directly over the next heading
             raise StoryParseError("A story heading has no story text under it")
+        if len(_normalize(title)) > MAX_TITLE_CHARS:
+            raise StoryParseError("A story heading exceeds its length bound")
+        # A chunk header separates its fields with "|": a title keeps the same words with
+        # "/" there, so the story, its chunks and its facts share one title and story id.
         stories.append(Story(number if number is not None else len(stories) + 1,
-                             _normalize(title), sentences))
+                             _clean_field(title), sentences))
 
-    for index, (text, _) in enumerate(segments):
+    for index, segment in enumerate(segments):
         found = is_title(index)
         if found is not None:
-            flush()
+            flush(next_title=True)
             number, title = found
+            from_heading = segment.heading
             body = []
         elif title is not None:
-            body.append(text)
-    flush()
+            body.append(segment.text)
+    flush(next_title=False)
     if not stories:
         raise StoryParseError("No story headings were found in the document")
     if len(stories) > MAX_STORIES:
@@ -655,11 +739,17 @@ def find_themes(text: str, *, outcomes: bool) -> list[str]:
     return themes
 
 
-def _period(text: str) -> str | None:
-    years = sorted(set(_YEAR.findall(text)))
-    if years:
-        return years[0] if len(years) == 1 else f"{years[0]}\u2013{years[-1]}"
-    duration = _DURATION.search(text)
+def _period(story: Story) -> str | None:
+    """What the story states about its own time: the range in its heading or its body's
+    one range, else its one year or adjacent or ranged years, else a duration phrase
+    ("almost 2 years"). Years stated apart date nothing (round 4, L8)."""
+    own = dating_period(story)
+    if own is not None:
+        return own.label
+    span = stated_year_span(story)
+    if span is not None:
+        return span
+    duration = _DURATION.search(story.body)
     return _normalize(duration.group(0)) if duration else None
 
 
@@ -689,7 +779,7 @@ def analyse_story(story: Story) -> StoryAnalysis:
     tools = find_tools(body)
     return StoryAnalysis(
         story_id=story.story_id, number=story.number, title=story.title, employer=employer,
-        project=project, role=role, period=_period(body), situation=tuple(situation),
+        project=project, role=role, period=_period(story), situation=tuple(situation),
         actions=tuple(actions), outcomes=tuple(outcomes), tools=tuple(tools),
         skills=tuple(find_skills(body)), themes=tuple(find_themes(body, outcomes=bool(outcomes))))
 
@@ -715,14 +805,38 @@ def company_tokens(company: str) -> set[str]:
     return {w for w in words if w not in _COMPANY_GENERIC_WORDS}
 
 
+def company_words(company: str) -> list[str]:
+    """A company's full name as words, without the trailing legal suffixes a story may omit."""
+    words = re.findall(r"[a-z0-9]+", company.casefold())
+    while len(words) > 1 and words[-1] in _LEGAL_SUFFIXES:
+        words.pop()
+    return words
+
+
+def _contains_words(words: Sequence[str], phrase: Sequence[str]) -> bool:
+    size = len(phrase)
+    return size > 0 and any(list(words[i:i + size]) == list(phrase) for i in range(len(words) - size + 1))
+
+
+def names_company(texts: Sequence[str], company: str) -> bool:
+    """Whether the texts name the company distinctively: every distinctive word of its
+    name (``company_tokens``), or its full name as consecutive words. A single common
+    word ("Growth", "Solutions", "Marketing", "Law", "Group", "Inc") never names a
+    company, and a name made only of such words needs its full name."""
+    pieces = [re.findall(r"[a-z0-9]+", text.casefold()) for text in texts if text]
+    tokens = company_tokens(company)
+    if tokens and tokens <= {word for words in pieces for word in words}:
+        return True
+    phrase = company_words(company)
+    return any(_contains_words(words, phrase) for words in pieces)
+
+
 def match_role_by_name(story: Story, analysis: StoryAnalysis,
                        roles: Sequence[ResumeRole]) -> StoryRoleLink | None:
-    """The one resume role whose distinctive company token the story names (in its
-    text, employer phrase or product name); several or none match: no link."""
-    haystack = " ".join([story.body, analysis.employer or "", analysis.project or "",
-                         analysis.title]).casefold()
-    words = set(re.findall(r"[a-z0-9]+", haystack))
-    matches = [role for role in roles if company_tokens(role.company) & words]
+    """The one resume role whose company the story names distinctively (``names_company``
+    over its heading, text, employer phrase and product name); several or none: no link."""
+    texts = [analysis.title, story.body, analysis.employer or "", analysis.project or ""]
+    matches = [role for role in roles if names_company(texts, role.company)]
     if len(matches) != 1:
         return None
     role = matches[0]
@@ -824,15 +938,121 @@ def tenure_conflicts(sentence: str, link: StoryRoleLink | None, today: date) -> 
             for phrase, minimum in duration_claims(sentence) if minimum > tenure + 1]
 
 
+def _stated_text(story: Story) -> str:
+    """The heading and the body: a story often dates itself in its heading
+    ("Growth Marketing Specialist, Acme (Aug 2019 - May 2020)")."""
+    return story.title + "\n" + story.body
+
+
 def stated_years(story: Story) -> list[str]:
-    return sorted(set(_YEAR.findall(story.body)))
+    """Every year the story states, in its heading or its body."""
+    return sorted(set(_YEAR.findall(_stated_text(story))))
+
+
+@dataclass(frozen=True)
+class StatedPeriod:
+    """A period the story states for itself: a month-year or year range, "Present" open."""
+    start: str
+    """``YYYY-MM`` when a month is stated, else ``YYYY``."""
+    end: str | None
+    """``YYYY-MM`` or ``YYYY``; None when the period is open ("Present")."""
+    source: str
+    """``heading`` or ``body``."""
+
+    @property
+    def label(self) -> str:
+        """``2019-08 to 2020-05``, ``2025-06 to present``; a years-only range keeps the
+        ``2019\u20132023`` form of earlier rounds."""
+        if self.end is None:
+            return f"{self.start} to present"
+        if "-" not in self.start and "-" not in self.end:
+            return self.start if self.start == self.end else f"{self.start}\u2013{self.end}"
+        return f"{self.start} to {self.end}"
+
+    def months(self, today: date) -> tuple[int, int]:
+        """Inclusive month indices; an open period runs to ``today``."""
+        first = _month_index(self.start, end=False)
+        last = _month_index(self.end, end=True) if self.end else today.year * 12 + today.month - 1
+        assert first is not None and last is not None
+        return first, last
+
+
+def _month_index(value: str | None, *, end: bool) -> int | None:
+    """``YYYY-MM`` or ``YYYY`` as a month index; a bare year starts in January and ends
+    in December."""
+    match = re.match(r"^(\d{4})(?:-(\d{2}))?$", value or "")
+    if not match:
+        return None
+    return int(match.group(1)) * 12 + (int(match.group(2)) if match.group(2) else (12 if end else 1)) - 1
+
+
+def _month_of(name: str | None, number: str | None, iso: str | None) -> int | None:
+    if name:
+        return _MONTH_NUMBERS[name.casefold()[:3]]
+    if number or iso:
+        return int(number or iso or "0")
+    return None
+
+
+def _period_value(year: str, month: int | None) -> str:
+    return f"{year}-{month:02d}" if month else year
+
+
+def stated_periods(story: Story) -> list[StatedPeriod]:
+    """The periods the story states, its heading's first: month-year ranges ("Aug 2019 -
+    May 2020", "Jun 2025 - Present") and year ranges ("2019 to 2023"); a heading without a
+    range that names one year, or adjacent years, states that year or span ("Growth
+    Marketer, Acme (2019)"). A range whose end comes before its start is not a period, and
+    a year in the body is never one by itself."""
+    periods: list[StatedPeriod] = []
+    for source, text in (("heading", story.title), ("body", story.body)):
+        found: list[StatedPeriod] = []
+        for match in _PERIOD_RANGE.finditer(text):
+            start = _period_value(match.group("start_year"), _month_of(
+                match.group("start_name"), match.group("start_number"), match.group("start_iso")))
+            end = None if match.group("open") else _period_value(match.group("end_year"), _month_of(
+                match.group("end_name"), match.group("end_number"), match.group("end_iso")))
+            first, last = _month_index(start, end=False), _month_index(end, end=True)
+            if end is not None and (first is None or last is None or last < first):
+                continue
+            found.append(StatedPeriod(start, end, source))
+        if source == "heading" and not found:
+            years = sorted({int(year) for year in _YEAR.findall(text)})
+            if years and all(later - earlier <= 1 for earlier, later in pairwise(years)):
+                found.append(StatedPeriod(str(years[0]), str(years[-1]), source))
+        for period in found:
+            if all((p.start, p.end) != (period.start, period.end) for p in periods):
+                periods.append(period)
+    return periods
+
+
+def story_period(story: Story) -> StatedPeriod | None:
+    """The period the story states for itself: the range, year or adjacent years in its
+    heading ("Growth Marketing Specialist, Acme (Aug 2019 - May 2020)"), where a story or a
+    profile entry states its dates. It is the period that can reject a resume role link
+    (``link_period_mismatch``); a range in the body may date only a part of the work (a
+    pilot, the years before), so it never does."""
+    heading = [period for period in stated_periods(story) if period.source == "heading"]
+    return heading[0] if heading else None
+
+
+def dating_period(story: Story) -> StatedPeriod | None:
+    """The period an unlinked story's facts and headers carry when it states one: its
+    heading's range (``story_period``), else the one range its body states. Several
+    different ranges in the body date parts of the story, not the whole of it: none."""
+    own = story_period(story)
+    if own is not None:
+        return own
+    periods = stated_periods(story)
+    return periods[0] if len(periods) == 1 else None
 
 
 def stated_year_span(story: Story) -> str | None:
     """The years an unlinked story's facts may carry: its one stated year; the span of
     its stated years when they are adjacent (2022, 2023, 2024) or the story states an
     explicit range ("2019 to 2023", "2019\u20132023"); otherwise none, because years
-    stated apart ("in 2019 ... by 2023") do not date every sentence in between."""
+    stated apart ("in 2019 ... by 2023") do not date every sentence in between. The
+    heading counts like the body."""
     years = stated_years(story)
     if not years:
         return None
@@ -840,10 +1060,46 @@ def stated_year_span(story: Story) -> str | None:
         return years[0]
     ordered = [int(year) for year in years]
     adjacent = all(later - earlier <= 1 for earlier, later in pairwise(ordered))
-    explicit = any(int(match.group(1)) <= int(match.group(2)) for match in _YEAR_RANGE.finditer(story.body))
+    explicit = any(int(match.group(1)) <= int(match.group(2))
+                   for match in _YEAR_RANGE.finditer(_stated_text(story)))
     if adjacent or explicit:
         return f"{years[0]}\u2013{years[-1]}"
     return None
+
+
+def period_overlaps_role(period: StatedPeriod, link: StoryRoleLink, today: date) -> bool | None:
+    """Whether a stated period shares at least one month with the linked resume role's
+    dates; None when the role is undated. An open role runs to today, a role with an
+    unknown end is never ruled out by its end."""
+    role_first = _month_index(link.start, end=False)
+    if role_first is None:
+        return None
+    if link.end:
+        role_last = _month_index(link.end, end=True)
+        if role_last is None:
+            return None
+    else:
+        role_last = today.year * 12 + today.month - 1 if link.current else 10 ** 6
+    first, last = period.months(today)
+    return first <= role_last and role_first <= last
+
+
+def link_period_mismatch(story: Story, link: StoryRoleLink | None, today: date) -> dict[str, Any] | None:
+    """A link the story's own stated period contradicts: the story's heading states its
+    period (``story_period``) and it shares no month with the linked role's dates. Such a
+    story is not that role's account; it stays unlinked and keeps its stated period. A
+    year the body mentions is not a period, and a range in the body may date only a part
+    of the work: neither rejects a link (round 2: the resume dates win and a sentence
+    stating a year outside them yields no fact)."""
+    if link is None:
+        return None
+    period = story_period(story)
+    if period is None or period_overlaps_role(period, link, today) is not False:
+        return None
+    return {"story_id": link.story_id, "resume_role_id": link.resume_role_id, "method": link.method,
+            "company": link.company, "title": link.title, "role_period": link.period,
+            "stated_period": period.label, "stated_in": period.source,
+            "reason": "stated_period_outside_resume_role"}
 
 
 def resolve_period(story: Story, link: StoryRoleLink | None) -> tuple[str | None, str, bool]:
@@ -851,13 +1107,18 @@ def resolve_period(story: Story, link: StoryRoleLink | None) -> tuple[str | None
     the story states a year outside the linked role's dates.
 
     A linked story carries the resume role's dates (the canonical profile is
-    authoritative); an unlinked story carries its one stated year, or the span of
+    authoritative); an unlinked story carries the period it states (``dating_period``: its
+    heading's range, else its body's one range), else its one stated year or the span of
     adjacent or explicitly ranged years (``stated_year_span``); otherwise none. Never a
-    default year."""
+    default year. ``build_story_index`` never passes a link whose role the story's own
+    period contradicts (``link_period_mismatch``)."""
     years = stated_years(story)
     if link is not None and link.period:
         discrepancy = any(not link.contains_year(year) for year in years)
         return link.period, "resume_role", discrepancy
+    own = dating_period(story)
+    if own is not None:
+        return own.label, "story", False
     span = stated_year_span(story)
     if span is not None:
         return span, "story", False
@@ -1152,15 +1413,26 @@ def build_story_index(source: Path | StoryDocument, *, verified_at: datetime,
                       links: Mapping[str, StoryRoleLink] | None = None,
                       source_id: str = DEFAULT_STORY_SOURCE) -> StoryIndex:
     """Stories, analyses, chunks and facts of one document; no text leaves in receipts.
-    ``links`` (by story id) date the linked stories' chunks and facts with the resume;
+    ``links`` (by story id) date the linked stories' chunks and facts with the resume,
+    except a link the story's own stated period contradicts: that story stays unlinked,
+    keeps its stated period and the mismatch is recorded for the review
+    (``link_period_mismatch``; ``verified_at`` is today for an open period or role).
     ``source_id`` names the stories source the facts belong to (``story_source``)."""
     document = read_stories(source) if isinstance(source, Path) else source
     chunks: list[StoryChunk] = []
     facts: list[CandidateFact] = []
     skipped: list[dict[str, Any]] = []
     seen: set[str] = set()
+    kept: dict[str, StoryRoleLink] = {}
+    mismatches: dict[str, dict[str, Any]] = {}
     for story, analysis in zip(document.stories, document.analyses, strict=True):
         link = (links or {}).get(analysis.story_id)
+        mismatch = link_period_mismatch(story, link, verified_at.date())
+        if mismatch is not None:
+            mismatches[analysis.story_id] = mismatch
+            link = None
+        elif link is not None:
+            kept[analysis.story_id] = link
         story_chunks = chunk_story(story, analysis, link)
         story_facts, story_skipped = extract_story_facts(story, analysis, story_chunks,
                                                          verified_at=verified_at, link=link,
@@ -1171,7 +1443,7 @@ def build_story_index(source: Path | StoryDocument, *, verified_at: datetime,
         skipped.extend(story_skipped)
     return StoryIndex(document.file_sha256, document.file_bytes, document.stories,
                       document.analyses, tuple(chunks), tuple(facts), tuple(skipped),
-                      dict(links or {}), source_id)
+                      kept, source_id, mismatches)
 
 
 def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
@@ -1184,8 +1456,10 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
     story_rows = []
     for story, analysis in zip(index.stories, index.analyses, strict=True):
         link = index.link_for(analysis.story_id)
+        mismatch = index.mismatch_for(analysis.story_id)
         period, period_source, discrepancy = resolve_period(story, link)
         discrepancies += int(discrepancy)
+        own = dating_period(story)
         fact_count = sum(1 for f in index.facts if f.id.startswith(f"sf_{analysis.story_id}_"))
         periods[period_source] = periods.get(period_source, 0) + fact_count
         story_rows.append({
@@ -1196,11 +1470,14 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
             "fact_count": fact_count,
             "has_employer": analysis.employer is not None, "has_project": analysis.project is not None,
             "has_role": analysis.role is not None,
-            "stated_year_count": len(stated_years(story)), "period_source": period_source,
+            "stated_year_count": len(stated_years(story)),
+            "stated_period_in": own.source if own else None, "period_source": period_source,
             "period_set": period is not None, "stated_year_outside_resume_role": discrepancy,
             "link": ({"method": link.method, "resume_role_id": link.resume_role_id,
                       "confidence": link.confidence, "probability": link.probability}
                      if link else None),
+            "link_rejected": ({"method": mismatch["method"], "resume_role_id": mismatch["resume_role_id"],
+                               "reason": mismatch["reason"]} if mismatch else None),
             "situation_count": len(analysis.situation), "action_count": len(analysis.actions),
             "outcome_count": len(analysis.outcomes), "tool_count": len(analysis.tools),
             "skill_count": len(analysis.skills), "themes": list(analysis.themes),
@@ -1212,6 +1489,7 @@ def story_index_receipt(index: StoryIndex) -> dict[str, Any]:
         "facts_by_period_source": dict(sorted(periods.items())),
         "stated_year_discrepancies": discrepancies,
         "linked_stories": sum(1 for row in story_rows if row["link"]),
+        "link_period_mismatches": sum(1 for row in story_rows if row["link_rejected"]),
         "chunk_count": len(index.chunks),
         "chunk_ids": [chunk.id for chunk in index.chunks],
         "chunk_words": [chunk.word_count for chunk in index.chunks],
@@ -1238,11 +1516,19 @@ def facts_review(index: StoryIndex, *, candidate_id: str,
     stories = []
     for story, a in zip(index.stories, index.analyses, strict=True):
         link = index.link_for(a.story_id)
+        mismatch = index.mismatch_for(a.story_id)
         period, period_source, discrepancy = resolve_period(story, link)
+        own = dating_period(story)
         differences = resume_quantity_differences(story, link, roles)
         durations = [conflict for sentence in story.sentences
                      for conflict in tenure_conflicts(sentence, link, today or date.today())]
         notes = []
+        if mismatch is not None:
+            notes.append(f"The story states {mismatch['stated_period']} (in its {mismatch['stated_in']}), "
+                         f"which does not overlap the resume role it was matched to "
+                         f"({mismatch['title']} at {mismatch['company']}, {mismatch['role_period']}, "
+                         f"by {mismatch['method']}); it was not linked and carries its stated period. "
+                         "Correct the story or the resume if one is wrong.")
         for conflict in durations:
             notes.append(f"The story says \"{conflict['phrase']}\" (at least {conflict['minimum_months']} months) "
                          f"but the linked resume role lasted {conflict['tenure_months']} months; the sentence "
@@ -1258,11 +1544,15 @@ def facts_review(index: StoryIndex, *, candidate_id: str,
         stories.append({
             "number": a.number, "story_id": a.story_id, "title": a.title,
             "employer": a.employer, "project": a.project, "role": a.role,
-            "stated_years": stated_years(story), "period": period, "period_source": period_source,
+            "stated_years": stated_years(story),
+            "stated_period": ({"label": own.label, "start": own.start, "end": own.end, "in": own.source}
+                              if own else None),
+            "period": period, "period_source": period_source,
             "resume_role": ({"id": link.resume_role_id, "company": link.company, "title": link.title,
                              "start": link.start, "end": link.end, "current": link.current,
                              "method": link.method, "confidence": link.confidence,
                              "probability": link.probability} if link else None),
+            "link_rejected": dict(mismatch) if mismatch else None,
             "stated_year_outside_resume_role": discrepancy,
             "resume_differences": differences,
             "duration_conflicts": durations,
@@ -1304,6 +1594,14 @@ def facts_review_markdown(review: Mapping[str, Any],
         lines.append(f"- employer/project: {story['employer'] or story['project'] or 'not stated'}"
                      f"; role: {story['role'] or 'not stated'}; years the story states: "
                      f"{', '.join(story['stated_years']) or 'none'}")
+        if story.get("stated_period"):
+            lines.append(f"- period the story states: {story['stated_period']['label']} "
+                         f"(in its {story['stated_period']['in']})")
+        if story.get("link_rejected"):
+            rejected = story["link_rejected"]
+            lines.append(f"- not linked: {rejected['title']} at {rejected['company']}, "
+                         f"{rejected['role_period']} (proposed by {rejected['method']}) does not overlap "
+                         f"{rejected['stated_period']}")
         if role:
             lines.append(f"- resume role: {role['title']} at {role['company']}, "
                          f"{role['start'] or '?'} to {role['end'] or ('present' if role['current'] else '?')}"
@@ -1349,11 +1647,13 @@ __all__ = [
     "DEFAULT_STORY_SOURCE",
     "MAX_CHUNK_CHARS",
     "MAX_CHUNK_WORDS",
+    "MAX_TITLE_CHARS",
     "MIN_CHUNK_WORDS",
     "STORY_CHUNK_ID",
     "Paragraph",
     "ResumeRole",
     "Run",
+    "StatedPeriod",
     "Story",
     "StoryAnalysis",
     "StoryChunk",
@@ -1367,7 +1667,9 @@ __all__ = [
     "chunk_metadata",
     "chunk_story",
     "company_tokens",
+    "company_words",
     "confirmable_facts",
+    "dating_period",
     "duration_claims",
     "extract_story_facts",
     "fact_context",
@@ -1376,10 +1678,13 @@ __all__ = [
     "find_skills",
     "find_themes",
     "find_tools",
+    "link_period_mismatch",
     "match_role_by_name",
+    "names_company",
     "numbers_in",
     "parse_chunk_header",
     "parse_stories",
+    "period_overlaps_role",
     "read_document",
     "read_docx",
     "read_stories",
@@ -1389,9 +1694,11 @@ __all__ = [
     "resume_roles",
     "role_tenure_months",
     "split_sentences",
+    "stated_periods",
     "stated_year_span",
     "stated_years",
     "story_index_receipt",
+    "story_period",
     "story_source_of",
     "team_sizes",
     "tenure_conflicts",

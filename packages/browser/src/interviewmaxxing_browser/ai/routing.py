@@ -87,7 +87,7 @@ from .classification import (
     SourceScope,
 )
 from .classification import RESIDENCE_TYPES as RESIDENCE_SEMANTICS
-from .humanize import humanize_draft
+from .humanize import QUOTED_STATEMENT_FEEDBACK, humanize_draft, quotes_statement
 from .providers import (
     AIHold,
     BoundedDecisions,
@@ -115,6 +115,7 @@ from .salary import (
 )
 from .start_dates import bucket_choice, days_from_today, in_words, option_bucket
 from .stories import (
+    shares_story_evidence,
     story_consistency,
     story_evidence,
     story_note,
@@ -3350,14 +3351,21 @@ class DynamicPacketResolver:
         """``dropped``, when given, receives the story-derived selected facts whose Jev
         verdict falls below the threshold instead of holding on them: the resume is
         canonical, so a contradicted story fact leaves the evidence and the check goes on
-        with the rest. Canonical (resume) conflicts hold as before."""
+        with the rest. Canonical (resume) conflicts hold as before.
+
+        A strong review cached for the candidate revision answers a later field without
+        any comparison, except when the field selected a story fact and can drop it: then
+        the comparisons run (their Jev verdicts are cached, so a story fact dropped for an
+        earlier field is dropped again without a new request) and the cached review stands
+        in for a second review (review pass 5, M2)."""
         all_facts = {fact.id: fact for fact in context.candidate.verified_facts() if fact.value is not None}
         revision = _digest({"candidate_id": context.candidate.id,
                             "facts": [fact.model_dump(mode="json") for fact in all_facts.values()],
                             "experience": [group.model_dump(mode="json") for group in context.candidate.experience]})
         with self._lock:
             reviewed = self._consistency_reviews.get(revision) if allow_strong_review else None
-        if reviewed is not None:
+        story_selected = dropped is not None and any(fact.source.startswith("story:") for fact in selected)
+        if reviewed is not None and not story_selected:
             self._trace({"stage": "consistency_cache", "candidate_revision": revision,
                          "status": "SUPPORTED", "jev_minimum": reviewed})
             return reviewed
@@ -3479,6 +3487,13 @@ class DynamicPacketResolver:
                 "status": "CONSISTENT" if min(scores.values(), default=1.0) >= MIN_PROBABILITY else "HELD"})
             confidence = min([confidence, *scores.values()])
             if confidence < MIN_PROBABILITY:
+                if allow_strong_review and confidence > 1 - MIN_PROBABILITY and reviewed is not None:
+                    # This revision's evidence was already reviewed; the story facts this
+                    # field could drop are dropped above.
+                    self._trace({"stage": "consistency_cache", "candidate_revision": revision,
+                                 "status": "SUPPORTED", "jev_minimum": reviewed,
+                                 "dropped_story_fact_ids": [fact.id for fact in dropped or []]})
+                    return confidence
                 if allow_strong_review and confidence > 1 - MIN_PROBABILITY:
                     # The selected facts and the canonical facts competing with the most of
                     # them, never the whole fact store: bounded evidence, bounded request.
@@ -3749,12 +3764,14 @@ class DynamicPacketResolver:
         dropped_facts: list[CandidateFact] = []
         consistency_confidence = self._check_additive_consistency(context, relevant, allow_strong_review=True,
                                                                   dropped=dropped_facts)
-        if dropped_facts:
-            gone = {fact.id for fact in dropped_facts}
-            relevant = [fact for fact in relevant if fact.id not in gone]
+        dropped_chunks: list[dict[str, Any]] = []
         if story_chunks:
-            story_confidence, story_chunks = self._story_consistency(context, story_chunks, field)
+            story_confidence, kept_chunks = self._story_consistency(context, story_chunks, field)
+            kept_ids = {chunk["id"] for chunk in kept_chunks}
+            dropped_chunks = [chunk for chunk in story_chunks if chunk["id"] not in kept_ids]
+            story_chunks = kept_chunks
             consistency_confidence = min(consistency_confidence, story_confidence)
+        relevant, story_chunks = self._drop_story_evidence(relevant, story_chunks, dropped_facts, dropped_chunks)
         if not relevant:
             raise AIHold("No usable verified evidence remains after dropping story evidence that "
                          "contradicts the resume")
@@ -3791,6 +3808,36 @@ class DynamicPacketResolver:
                     "rewrite_attempt": 1, "review_verdict": exc.verdict, "review_issues": feedback,
                     "status": "ONE_REWRITE_ALLOWED"})
         raise AIHold("Narrative remains unresolved after one corrective rewrite")
+
+    def _drop_story_evidence(self, relevant: list[CandidateFact], story_chunks: list[dict[str, Any]],
+                             dropped_facts: list[CandidateFact], dropped_chunks: list[dict[str, Any]],
+                             ) -> tuple[list[CandidateFact], list[dict[str, Any]]]:
+        """One story sentence is one piece of evidence, judged twice (as a chunk against
+        its related facts, as a fact against its competitors): a dropped chunk takes the
+        story facts extracted from it or stating its sentences, and a dropped story fact
+        takes the chunks that carry its sentence (``shares_story_evidence``; review pass 5,
+        M1). The propagated ids are traced under ``story_evidence_dropped``; the field
+        goes on with what remains."""
+        gone = {fact.id for fact in dropped_facts}
+        relevant = [fact for fact in relevant if fact.id not in gone]
+        facts_out = [fact for fact in relevant
+                     if any(shares_story_evidence(fact, chunk) for chunk in dropped_chunks)]
+        chunks_out = [chunk for chunk in story_chunks
+                      if any(shares_story_evidence(fact, chunk) for fact in dropped_facts)]
+        if not facts_out and not chunks_out:
+            return relevant, story_chunks
+        self._trace({"stage": "story_evidence_dropped",
+            "story_ids": [chunk["id"] for chunk in chunks_out], "fact_ids": [fact.id for fact in facts_out],
+            "reason": "carries the same story sentence as dropped evidence that contradicts verified facts",
+            "propagated_from": {
+                "story_ids": [chunk["id"] for chunk in dropped_chunks
+                              if any(shares_story_evidence(fact, chunk) for fact in facts_out)],
+                "fact_ids": [fact.id for fact in dropped_facts
+                             if any(shares_story_evidence(fact, chunk) for chunk in chunks_out)]},
+            "status": "CONTINUED"})
+        out_facts, out_chunks = {fact.id for fact in facts_out}, {chunk["id"] for chunk in chunks_out}
+        return ([fact for fact in relevant if fact.id not in out_facts],
+                [chunk for chunk in story_chunks if chunk["id"] not in out_chunks])
 
     def _story_consistency(self, context: PacketContext, story_chunks: list[dict[str, Any]],
                            field: ApplicationField) -> tuple[float, list[dict[str, Any]]]:
@@ -3847,23 +3894,35 @@ class DynamicPacketResolver:
                          + "; ".join(draft.missing_information))
         supplied_job = {e["id"]: e for e in job_evidence}
         evidence = [*relevant, *stories.values()]
+        # The person's own statement of what they look for is restated, never pasted.
+        statements = [fact.value for fact in relevant
+                      if fact.key == "career_motivation" and isinstance(fact.value, str) and fact.value.strip()]
+        rejections: list[tuple[str, str]] = []
         if purpose == "motivation" and not any(
                 fid in stories or supplied[fid].key == "career_motivation"
                 for s in draft.sentences for fid in s.fact_ids):
             # Alignment alone is the job's case, not the applicant's reason: one rewrite
             # to cite the story passage or the statement that states it, else the hold.
-            trace["status"] = "MOTIVATION_UNCITED"
-            raise _CorrectableDraftRejection("UNSUPPORTED", [
+            rejections.append(("MOTIVATION_UNCITED",
                 "The sentence giving the reason for interest must cite the applicant's own account "
                 "of this kind of work (a story: passage) or the career_motivation statement; the "
-                "alignment with the job's requirements is not by itself the applicant's reason."])
+                "alignment with the job's requirements is not by itself the applicant's reason."))
+        if quotes_statement(draft.text, statements):
+            # The humanizer's lexical check on the writer's own draft: pasted verbatim into
+            # every "why us" answer, the statement reads as boilerplate (round 5).
+            rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
         if enumeration and _TOTALITY_WORDS.search(draft.text) and not any(
                 re.search(r"\btotal\b", str(fact.value), re.IGNORECASE) for fact in relevant):
             # A total the facts do not state: one corrective rewrite, like a review finding.
-            trace["status"] = "TOTALITY_REJECTED"
-            raise _CorrectableDraftRejection("UNSUPPORTED", [
+            rejections.append(("TOTALITY_REJECTED",
                 "Remove totality words (all, every, only, in total, total across roles, altogether): "
-                "the supplied facts state no total; present the items they state."])
+                "the supplied facts state no total; present the items they state."))
+        if rejections:
+            # Every deterministic finding in one corrective rewrite, so fixing one cannot
+            # leave another for the second draft to fail on.
+            trace["status"] = rejections[0][0]
+            trace["rejected_for"] = [status for status, _ in rejections]
+            raise _CorrectableDraftRejection("UNSUPPORTED", [issue for _, issue in rejections])
         scores = self._ground_draft(context, field, draft, purpose=purpose, supplied=supplied,
             supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=trace,
             rewrite_attempt=rewrite_attempt)
@@ -3879,7 +3938,7 @@ class DynamicPacketResolver:
             draft = humanize_draft(self.writer, question=field.question_text, purpose=purpose,
                 draft=draft, job=job, voice_samples=voice_samples, max_length=field.max_length,
                 supplied_ids=set(supplied), job_ids=set(supplied_job), ground=ground_again,
-                trace=self._trace)
+                trace=self._trace, statements=statements)
         value = TextValue(text=draft.text)
         from interviewmaxxing_core import answer_problems
         if answer_problems(field, value):
