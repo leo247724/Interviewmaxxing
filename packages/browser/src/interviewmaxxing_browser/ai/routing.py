@@ -110,6 +110,10 @@ REVIEW_EVIDENCE_LIMIT = 24
 """Canonical facts, beyond the selected ones, handed to the independent evidence review:
 the ones competing with the most selected facts. The review's record cap (128) is never
 reached, so it cannot hold a field by itself."""
+CONSISTENCY_COMPARISON_LIMIT = 40
+"""Canonical facts compared with a field's selected facts by Jev: the ones competing with
+the most selected facts, in one request; a large profile no longer sends every competing
+fact of the store. The lexical competition scan still covers the whole store."""
 PROFILE_URL_IDENTITY = frozenset({SemanticType.LINKEDIN, SemanticType.GITHUB, SemanticType.WEBSITE})
 TIMEFRAME_INSENSITIVE_IDENTITY = PROFILE_URL_IDENTITY | {
     SemanticType.EMAIL, SemanticType.PHONE, SemanticType.FIRST_NAME, SemanticType.LAST_NAME,
@@ -2678,7 +2682,11 @@ class DynamicPacketResolver:
             if subjects[first.id] and subjects[second.id]:
                 return False  # named, and about different subjects
             return bool(kinds[first.id] & kinds[second.id])
-        others = [fact for fact in all_facts.values() if any(competing(chosen, fact) for chosen in selected)]
+        chosen_ids = {fact.id for fact in selected}
+        candidates = [fact for fact in all_facts.values() if any(competing(chosen, fact) for chosen in selected)]
+        competition = {fact.id: sum(competing(chosen, fact) for chosen in selected) for fact in candidates}
+        others = sorted(candidates, key=lambda fact: (-competition[fact.id], fact.id))[:CONSISTENCY_COMPARISON_LIMIT]
+        competing_total = sum(1 for fact in candidates if fact.id not in chosen_ids)
         confidence = 1.0
         def contextual(fact: CandidateFact) -> dict[str, Any]:
             links = _experience_context(context, fact, set(all_facts))
@@ -2738,6 +2746,7 @@ class DynamicPacketResolver:
                             self._consistency_verdicts[verdict_keys[key]] = scores[key]
             self._trace({"stage": "consistency", "selected_fact_ids": {key: fact.id for key, fact in relevant.items()},
                 "canonical_alternative_ids": [fact.id for fact in chunk], "probabilities": scores,
+                "competing_total": competing_total, "compared": len(others),
                 "cached": sorted(set(relevant) - set(asking)),
                 "comparison_ids": {key: [fact.id for fact in facts] for key, facts in comparisons.items()},
                 "status": "CONSISTENT" if min(scores.values(), default=1.0) >= MIN_PROBABILITY else "HELD"})
@@ -2746,11 +2755,8 @@ class DynamicPacketResolver:
                 if allow_strong_review and confidence > 1 - MIN_PROBABILITY:
                     # The selected facts and the canonical facts competing with the most of
                     # them, never the whole fact store: bounded evidence, bounded request.
-                    chosen_ids = {fact.id for fact in selected}
-                    competing_count = {other.id: sum(competing(chosen, other) for chosen in selected)
-                                       for other in others}
-                    ranked = sorted((other for other in others if other.id not in chosen_ids),
-                                    key=lambda other: (-competing_count[other.id], other.id))
+                    ranked = sorted((other for other in candidates if other.id not in chosen_ids),
+                                    key=lambda other: (-competition[other.id], other.id))
                     reviewed_facts = [*selected, *ranked[:REVIEW_EVIDENCE_LIMIT]]
                     self._strong_review(context, question=
                         "Do these verified candidate facts contain any direct factual contradiction? "

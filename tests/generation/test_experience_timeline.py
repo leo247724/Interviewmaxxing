@@ -122,3 +122,21 @@ def test_story_facts_in_the_profile_add_areas_to_their_linked_role(fictional_can
     profile = profile.model_copy(update={"facts": [*profile.facts, story_fact]})
     facts = {fact.key: fact.value for fact in tl.derive_experience_years(profile, today=TODAY, verified_at=NOW)}
     assert facts["years_experience.looker_studio"] == 2 and facts["years_experience.call_tracking"] == 2
+
+
+def test_story_only_areas_need_two_years_but_resume_named_areas_need_one(fictional_candidate: CandidateProfile) -> None:
+    profile = with_roles(fictional_candidate, [
+        ("r1", "Glaze Agency", "PPC Specialist", "2021-01", "2022-12", False, "Ran campaigns."),
+        ("r2", "Quill Press", "SEO Editor", "2025-01", "2025-12", False, "Wrote SEO briefs in Ahrefs."),
+    ])
+    link = StoryRoleLink("story2", "r2", "Quill Press", "SEO Editor", "2025-01", "2025-12", False, "jev_match", 0.95, 0.98)
+    facts = {fact.key: fact.value for fact in tl.derive_experience_years(
+        profile, today=TODAY, verified_at=NOW, story_links={"story2": link},
+        story_areas={"story2": ["Calendly", "Slack", "SEO"]})}
+    assert facts["years_experience.seo"] == 1 and facts["years_experience.ahrefs"] == 1  # the resume names them
+    assert facts["years_experience.ppc"] == 2
+    assert "years_experience.calendly" not in facts and "years_experience.slack" not in facts  # story-only, one year
+    long_link = StoryRoleLink("story1", "r1", "Glaze Agency", "PPC Specialist", "2021-01", "2022-12", False, "jev_match", 0.95, 0.98)
+    facts = {fact.key: fact.value for fact in tl.derive_experience_years(
+        profile, today=TODAY, verified_at=NOW, story_links={"story1": long_link}, story_areas={"story1": ["Calendly"]})}
+    assert facts["years_experience.calendly"] == 2 and tl.MIN_STORY_AREA_YEARS == 2

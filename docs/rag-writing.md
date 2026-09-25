@@ -256,7 +256,15 @@ compete with the most of them, at most 24 (`REVIEW_EVIDENCE_LIMIT`; the `strong_
 trace records the selected ids, the competing total and the limit). With a hundred-fact
 profile the review's 128-record cap is never
 reached, so the cap cannot hold a field by itself; the writer still sees at most eight
-relevant facts and four story chunks.
+relevant facts and four story chunks. The Jev consistency check is bounded the same way:
+the lexical competition scan still covers the whole store, but Jev compares the selected
+facts with the top 40 competing facts (`CONSISTENCY_COMPARISON_LIMIT`, one request; the
+`consistency` trace records `competing_total` and `compared`).
+
+**Pruned years facts.** An area only a linked story names (never a resume role's title or
+bullets) becomes a `years_experience.<area>` fact only at two whole years
+(`MIN_STORY_AREA_YEARS`); an area the resume itself names needs one full year, as before.
+A single tool a story mentions for one year no longer adds a fact.
 
 **Motivation questions.** A WRITER-routed text question whose wording asks about the
 applicant's interest, motivation or fit ("What interests you about Acme?", "Why do you
