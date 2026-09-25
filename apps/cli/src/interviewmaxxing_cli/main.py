@@ -733,7 +733,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         if args.json:
             print("[]")
         else:
-            print(f"No applications yet (no state database at {paths.state_db}).")
+            print(f"No applications yet (no state database; `{PROG} paths` shows where it "
+                  "is kept).")
         return EXIT_OK if args.application_id is None else EXIT_ERROR
     with store:
         if args.application_id is None:
@@ -757,11 +758,22 @@ def cmd_status(args: argparse.Namespace) -> int:
         events = store.list_events(app.id)
         waiting = pending_inputs(store, app.id)
         if args.json:
+            from .redaction import public_value
+
+            # Form step URLs carry per-session draft tokens: page addresses only. The job's
+            # and requests' application URLs are the person's own and stay as given.
             approval = store.submission_approval(app.id)
-            print(_dump({"application": app, "job": job, "attempts": attempts,
-                         "pending_inputs": waiting, "packet": store.latest_packet(app.id),
-                         "requests": store.list_requests(app.id),
-                         "approval": approval.model_dump(mode="json") if approval else None}))
+            packet = store.latest_packet(app.id)
+            data = json.loads(_dump({"application": app, "job": job,
+                                     "requests": store.list_requests(app.id)}))
+            data |= public_value({
+                "attempts": [a.model_dump(mode="json") for a in attempts],
+                "pending_inputs": [m.model_dump(mode="json") for m in waiting],
+                "packet": packet.model_dump(mode="json") if packet else None,
+                "approval": approval.model_dump(mode="json") if approval else None})
+            print(json.dumps({k: data[k] for k in ("application", "job", "attempts",
+                                                   "pending_inputs", "packet", "requests",
+                                                   "approval")}, indent=2))
             return EXIT_OK
         print(f"application:  {app.id}")
         print(f"state:        {_state_label(app)}")
@@ -805,13 +817,20 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_events(args: argparse.Namespace) -> int:
+    """The event history, with metadata as ``redaction.public_metadata`` prints it: form
+    URLs as page addresses, and questions' prompts and candidates, lookup suggestions and
+    chosen labels, and routing traces only with ``--verbose``."""
+    from .redaction import public_metadata
+
     store = _open_existing(_paths(args))
     if store is None:
         print("No state database.", file=sys.stderr)
         return EXIT_ERROR
     with store:
         store.get_application(args.application_id)
-        events = store.list_events(args.application_id)
+        events = [e.model_copy(update={"metadata": public_metadata(
+            e.event, e.metadata, verbose=args.verbose)})
+            for e in store.list_events(args.application_id)]
         if args.json:
             print(_dump(events))
             return EXIT_OK
@@ -943,8 +962,9 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
     never submits."""
     if args.retry is not None:
         return _retry_batch(args)
-    if args.outcomes is not None or args.include_explicit:
-        print("error: --outcomes and --include-explicit apply to --retry", file=sys.stderr)
+    if args.outcomes is not None or args.include_explicit or args.rerun_all:
+        print("error: --outcomes, --include-explicit and --all apply to --retry",
+              file=sys.stderr)
         return EXIT_USAGE
     from pydantic import ValidationError
 
@@ -997,7 +1017,7 @@ def _retry_batch(args: argparse.Namespace) -> int:
             explicit=getattr(args, "explicit", set()), max_prepared=args.max_prepared)
         plan = plan_retry(paths, args.retry, candidate_id=options.candidate_id,
                           outcomes=args.outcomes or RETRY_OUTCOMES,
-                          include_explicit=args.include_explicit,
+                          include_explicit=args.include_explicit, rerun_all=args.rerun_all,
                           backends=_csv(args.backends), limit=args.limit)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1188,9 +1208,10 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
         "no longer accepts applications moves its Saved card to Closed with a dated note. "
         "No card is created or moved to Applied. Summarize ledgers with `batch-report`. "
         "With --retry BATCH_ID instead of --inventory, the applications of that batch that "
-        "are held or failed now are continued with `resume` as a new batch, with the "
-        "original batch's worker count, timeout and runtime flags unless given again; "
-        "prepared and closed applications are never run again.",
+        "failed, or are held with a question answered since they stopped (--all: every "
+        "held one), are continued with `resume` as a new batch, with the original batch's "
+        "worker count, timeout and runtime flags unless given again; prepared and closed "
+        "applications are never run again.",
     )
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--inventory", metavar="FILE",
@@ -1202,6 +1223,10 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
                    help="with --retry: which applications, by where they stand now: "
                         "needs_input, failed_retryable, unknown (a run recorded no outcome), "
                         "error (no application recorded); default all four")
+    p.add_argument("--all", dest="rerun_all", action="store_true",
+                   help="with --retry: also run held applications with nothing answered "
+                        "since they stopped (after a fix); by default only those with an "
+                        "answered question run again, with every failed or unknown one")
     p.add_argument("--include-explicit", action="store_true",
                    help="with --retry: also run applications whose open questions all need "
                         "your explicit answer (skipped by default)")
@@ -1383,9 +1408,16 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("events", help="show an application's event history")
+    p = sub.add_parser(
+        "events", help="show an application's event history",
+        description="Print the application's events. Form URLs are shown as page addresses "
+        "(scheme, host and path: sites put draft tokens in the rest). The prompts, answer "
+        "candidates and lookup suggestions of recorded questions, chosen lookup labels and "
+        "routing traces can quote your own values and are shown only with --verbose.")
     p.add_argument("application_id", metavar="APPLICATION_ID")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--verbose", action="store_true",
+                   help="also show prompts, candidates, suggestions, chosen labels and traces")
     p.set_defaults(func=cmd_events)
 
     p = sub.add_parser("receipt", help="show the submission receipt of a confirmed application")

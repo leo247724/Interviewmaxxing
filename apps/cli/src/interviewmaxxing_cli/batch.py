@@ -636,14 +636,18 @@ class RetryStats(Contract):
     outcomes: list[str] = Field(default_factory=list)
     """The outcomes selected (``--outcomes``)."""
     include_explicit: bool = False
+    rerun_all: bool = False
+    """``--all``: held applications ran again even with nothing answered since they
+    stopped."""
     considered: int = Field(default=0, ge=0)
     """Listings in that ledger (after ``--backends``)."""
     selected: int = Field(default=0, ge=0)
     """Listings chosen to run again (after ``--limit``)."""
     skipped: dict[str, int] = Field(default_factory=dict)
     """Why the others were not: ``prepared``, ``closed``, ``duplicate``, ``blocked``,
-    ``not selected (<outcome>)``, ``explicit answers only``, ``application not found``,
-    ``same application as another listing``, ``over --limit``."""
+    ``not selected (<outcome>)``, ``nothing answered since the stop``, ``explicit
+    answers only``, ``application not found``, ``same application as another listing``,
+    ``over --limit``."""
     retried: int = Field(default=0, ge=0)
     """Listings of this batch with a finished retry line (each at its latest line)."""
     prepared: int = Field(default=0, ge=0)
@@ -884,6 +888,7 @@ def render_retry_markdown(retry: RetryStats) -> list[str]:
     lines = [f"## Retry of {retry.retry_of}", "",
              f"- selected {retry.selected} of {retry.considered} listing(s) "
              f"(outcomes: {', '.join(retry.outcomes) or '-'}"
+             + ("; every held one (--all)" if retry.rerun_all else "")
              + ("; explicit-only holds included" if retry.include_explicit else "") + ")",
              f"- skipped: {skipped or 'none'}",
              f"- retried: {retry.retried}; now prepared: {retry.prepared}",
@@ -1547,11 +1552,15 @@ class SubmissionEntry(Contract):
     duration_s: float = Field(ge=0.0)
 
 
-def read_submission_lines(path: Path) -> tuple[list[SubmissionEntry], int]:
-    """Every readable submission line of a ledger in file order, and the number of
-    submission lines (``kind: "submission"``) that could not be read (a hand edit, or a
-    line written by a newer version). Prepare lines are skipped; a line that is not JSON
-    at all is counted by ``read_ledger_lines``."""
+def read_submission_lines(path: Path, *, count_unparsed: bool = True
+                          ) -> tuple[list[SubmissionEntry], int]:
+    """Every readable submission line of a ledger, in file order, and the number of
+    lines that could not be read: lines marked ``kind: "submission"`` that do not
+    validate (a hand edit, a newer version) and, with ``count_unparsed``, lines that are
+    not a JSON object at all (cut short by a crash; they may have been either kind).
+    Prepare lines are ``read_ledger_lines``'s and are neither. An unread submission line
+    matters: its application looks unsubmitted to a rerun (the store still refuses a
+    second submit)."""
     if not path.exists():
         return [], 0
     entries: list[SubmissionEntry] = []
@@ -1561,9 +1570,18 @@ def read_submission_lines(path: Path) -> tuple[list[SubmissionEntry], int]:
             continue
         try:
             entries.append(SubmissionEntry.model_validate_json(line))
+            continue
         except ValidationError:
-            if _is_submission_line(line):
-                ignored += 1
+            pass
+        try:
+            data = json.loads(line)
+        except ValueError:
+            ignored += count_unparsed
+            continue
+        if not isinstance(data, dict):
+            ignored += count_unparsed
+        elif data.get("kind") == "submission":
+            ignored += 1
     return entries, ignored
 
 
@@ -1759,9 +1777,8 @@ class SubmissionSummary(Contract):
     receipts: list[SubmissionReceiptRow] = Field(default_factory=list)
     ledger_path: str
     ledger_lines_ignored: int = Field(default=0, ge=0)
-    """Submission lines of this ledger that could not be read (their applications look
-    unrecorded, so a rerun may launch them again; the store still refuses a second
-    submission)."""
+    """Unreadable lines of this ledger (``read_submission_lines``); their applications
+    count as not submitted by this ledger."""
 
 
 def latest_submissions(entries: Iterable[SubmissionEntry]) -> dict[str, SubmissionEntry]:
@@ -1791,8 +1808,7 @@ def summarize_submissions(batch_id: str, entries: Sequence[SubmissionEntry], *,
                                        confirmation_reference=e.confirmation_reference,
                                        company=e.company, title=e.title)
                   for e in latest.values() if e.outcome == "submitted"],
-        ledger_path=str(ledger_path),
-        ledger_lines_ignored=ledger_lines_ignored,
+        ledger_path=str(ledger_path), ledger_lines_ignored=ledger_lines_ignored,
     )
 
 
@@ -1884,9 +1900,10 @@ def render_submissions_markdown(summary: SubmissionSummary) -> str:
         f"- finished: {_iso(summary.finished_at)}",
         f"- approved applications selected{source}: {summary.targets}; submitted this run: "
         f"{summary.launched}; already settled in this ledger: {summary.skipped_settled}",
+        *([f"- unreadable ledger lines ignored: {summary.ledger_lines_ignored} (their "
+           "applications count as not submitted by this ledger; the store still refuses a "
+           "second submit)"] if summary.ledger_lines_ignored else []),
         "- only approved applications were submitted, each exactly as approved",
-        *([f"- unreadable submission lines ignored: {summary.ledger_lines_ignored}"]
-          if summary.ledger_lines_ignored else []),
         "",
         "| outcome | count |",
         "| --- | --- |",
@@ -1980,7 +1997,8 @@ class SubmissionReport(Contract):
     application_ids: dict[str, list[str]] = Field(default_factory=dict)
     receipts: list[SubmissionReceiptRow] = Field(default_factory=list)
     lines_ignored: int = Field(default=0, ge=0)
-    """Submission lines that could not be read."""
+    """Lines marked as submissions that could not be read; lines that are not JSON at all
+    are in ``BatchReport.ledger_lines_ignored``."""
 
 
 class BatchReport(Contract):
@@ -2306,12 +2324,10 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
     costed = list(costed_rows.values())
     total_cost = round(sum(e.provider_cost_usd or 0.0 for e in costed), 6) if costed else None
     prepared_rows = totals["prepared"]
-    submission_lines = {batch_id: read_submission_lines(root / batch_id / LEDGER_NAME)
-                        for batch_id in ids}
+    submission_reads = [read_submission_lines(root / batch_id / LEDGER_NAME,
+                                              count_unparsed=False) for batch_id in ids]
     submitted = latest_submissions(sorted(
-        (s for entries, _ in submission_lines.values() for s in entries),
-        key=lambda s: s.finished_at))
-    submissions_ignored = sum(count for _, count in submission_lines.values())
+        (s for lines, _ in submission_reads for s in lines), key=lambda s: s.finished_at))
     submission_totals: Counter[str] = Counter(s.outcome for s in submitted.values())
     submission_ids: dict[str, list[str]] = defaultdict(list)
     for sub in submitted.values():
@@ -2325,8 +2341,8 @@ def build_report(paths: LocalPaths, batch_ids: Sequence[str] | None = None, *,
                                            confirmation_reference=e.confirmation_reference,
                                            company=e.company, title=e.title)
                       for e in submitted.values() if e.outcome == "submitted"],
-            lines_ignored=submissions_ignored,
-        ) if submitted or submissions_ignored else None,
+            lines_ignored=sum(ignored for _, ignored in submission_reads),
+        ) if submitted or any(ignored for _, ignored in submission_reads) else None,
         provider_cost_usd=total_cost,
         provider_calls=sum(e.provider_calls or 0 for e in costed),
         provider_cost_rows=len(costed),
@@ -2394,6 +2410,9 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
         "already_recorded)",
         *([f"- unreadable ledger lines ignored: {report.ledger_lines_ignored}"]
           if report.ledger_lines_ignored else []),
+        *([f"- unreadable submission lines ignored: {submissions.lines_ignored} (their "
+           "applications count as not submitted here)"]
+          if submissions is not None and submissions.lines_ignored else []),
         "- nothing was submitted (preparation only)" if not reached else
         f"- {reached} approved application(s) submitted or possibly submitted (see "
         "Submissions); everything else was prepared only",
@@ -2407,8 +2426,6 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
     lines.append(f"| **all** | {sum(report.totals.values())} |")
     if submissions is not None:
         lines += ["", "## Submissions", "",
-                  *([f"Unreadable submission lines ignored: {submissions.lines_ignored}.", ""]
-                    if submissions.lines_ignored else []),
                   f"Approved applications submitted with submit-approved: {submissions.applications} "
                   "(each once, at its latest submission).", "",
                   "| outcome | count |", "| --- | --- |"]

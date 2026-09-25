@@ -466,11 +466,14 @@ def test_unreadable_submission_lines_are_counted_and_shown(paths, fake, tmp_path
     summary = asyncio.run(run_submissions(_options(paths, fake), approved_targets(
         paths, "default", source_batch="b1"), source_batch="b1"))
 
-    assert read_submission_lines(ledger)[1] == 1  # the submission line that is not readable
+    # The run counts both: the unreadable submission line and the truncated line, which
+    # may have been a submission too. The report splits them (below).
+    assert read_submission_lines(ledger)[1] == 2
+    assert read_submission_lines(ledger, count_unparsed=False)[1] == 1
     assert read_ledger_lines(ledger)[1] == 1  # the line that is not JSON at all
-    assert summary.ledger_lines_ignored == 1
-    assert "- unreadable submission lines ignored: 1" in render_submissions_markdown(summary)
+    assert summary.ledger_lines_ignored == 2
+    assert "- unreadable ledger lines ignored: 2" in render_submissions_markdown(summary)
     report = build_report(paths, ["b1"])
     assert report.submissions is not None and report.submissions.lines_ignored == 1
     assert report.ledger_lines_ignored == 1
-    assert "Unreadable submission lines ignored: 1." in render_report_markdown(report)
+    assert "- unreadable submission lines ignored: 1" in render_report_markdown(report)

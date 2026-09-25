@@ -10,10 +10,12 @@ are selected by where they stand now in the application store
 * ``--outcomes`` picks among ``needs_input``, ``failed_retryable``, ``unknown`` (a run
   started and recorded no outcome: it timed out or crashed) and ``error`` (the job
   never recorded an application); all four by default.
+* A ``needs_input`` application runs again only when something changed for it: at
+  least one of its holds was answered after it stopped, on it or with a saved answer for
+  its wording (``triage.recorded_holds``). ``--all`` runs every held one (after a fix).
+  ``failed_retryable``, ``unknown`` and ``error`` applications always run again.
 * A ``needs_input`` application whose open holds are all EXPLICIT_ANSWER_REQUIRED is
-  skipped unless ``--include-explicit``: only the person can answer those. A hold the
-  person answered after the application stopped, on it or with a saved answer for its
-  wording, is no longer open (``triage.recorded_holds``).
+  skipped unless ``--include-explicit``: only the person can answer those.
 
 Each selected application is continued with ``interviewmaxxing resume APP --json`` (an
 ``error`` row without an application runs ``apply URL`` again) by ``batch.run_batch``:
@@ -145,7 +147,7 @@ def _row(entry: LedgerEntry, application_id: str | None) -> BatchRow:
 
 def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                outcomes: Collection[str] = RETRY_OUTCOMES, include_explicit: bool = False,
-               backends: Collection[str] | None = None,
+               rerun_all: bool = False, backends: Collection[str] | None = None,
                limit: int | None = None) -> RetryPlan:
     """Select the applications of ``batch_id``'s ledger to run again (see the module
     docstring), in ledger order. Raises ``ValueError`` for a batch id that is not a
@@ -202,6 +204,9 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                 skipped[f"not selected ({current})"] += 1
                 continue
             holds = recorded_holds(store, app, events, saved, store.get_job(app.job_id))
+            if current == "needs_input" and not rerun_all and not holds.answered:
+                skipped["nothing answered since the stop"] += 1
+                continue
             if (not include_explicit and holds.open and all(
                     m.reason is MissingReason.EXPLICIT_ANSWER_REQUIRED for m in holds.open)):
                 skipped["explicit answers only"] += 1
@@ -217,7 +222,8 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
         skipped["over --limit"] += len(items) - limit
         items = items[:max(limit, 0)]
     stats = RetryStats(retry_of=batch_id, outcomes=[o for o in RETRY_OUTCOMES if o in wanted],
-                       include_explicit=include_explicit, considered=considered,
+                       include_explicit=include_explicit, rerun_all=rerun_all,
+                       considered=considered,
                        selected=len(items), skipped=dict(skipped.most_common()),
                        ledger_lines_ignored=ignored)
     return RetryPlan(retry_of=batch_id, items=tuple(items), stats=stats)

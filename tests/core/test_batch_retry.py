@@ -247,7 +247,14 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
         sync_closed=True, browser="playwright", ai_routing=True,
         env_file="/private/fictional.env", writer_model=WRITER)
 
-    plan = plan_retry(paths, "b1", candidate_id="default")
+    # By default a held application runs again only once something was answered for it;
+    # failed, unknown and error ones always do.
+    default = plan_retry(paths, "b1", candidate_id="default")
+    assert {i.row.listing_id for i in default.items} == {
+        "lst_flaky", "lst_crash", "lst_garbage", "lst_noform"}
+    assert default.stats.skipped == {"prepared": 1, "closed": 1,
+                                     "nothing answered since the stop": 2}
+    plan = plan_retry(paths, "b1", candidate_id="default", rerun_all=True)  # after a fix
     assert {i.row.listing_id: (i.previous_outcome, i.row.application_id is not None,
                                len(i.holds_before)) for i in plan.items} == {
         "lst_held": ("needs_input", True, 2), "lst_flaky": ("failed_retryable", True, 0),
@@ -258,7 +265,7 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
 
     monkeypatch.setenv("FAKE_RESUME", json.dumps(
         {"held": "prepared", "flaky": "prepared", "crash": "start"}))
-    summary, entries = retry(fake, paths)
+    summary, entries = retry(fake, paths, rerun_all=True)
     by_id = {e.listing_id: e for e in entries}
     assert {k: (e.previous_outcome, e.outcome, e.holds_before, e.holds_cleared)
             for k, e in by_id.items()} == {
@@ -296,7 +303,7 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
     assert stats is not None and stats.retry_of == "b1"
     assert stats.model_dump() == {
         "retry_of": "b1", "outcomes": list(RETRY_OUTCOMES), "include_explicit": False,
-        "considered": 8, "selected": 5,
+        "rerun_all": True, "considered": 8, "selected": 5,
         "skipped": {"prepared": 1, "closed": 1, "explicit answers only": 1},
         "retried": 5, "prepared": 3, "holds_before": 2, "holds_cleared": 2, "holds_open": 1,
         "transitions": {"needs_input": {"prepared": 1},
@@ -312,18 +319,22 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
     assert "- retried: 5; now prepared: 3" in text
     assert "| was | prepared | needs_input | failed_retryable |" in text
 
-    # Retrying again finds the prepared ones settled; what is still held or failing runs.
+    # Retrying again finds the prepared ones settled; what still fails runs, and what is
+    # held with nothing answered since does not (unless --all).
     again = plan_retry(paths, "b1", candidate_id="default")
     assert {i.row.listing_id: i.previous_outcome for i in again.items} == {
-        "lst_crash": "needs_input", "lst_noform": "failed_retryable"}
-    assert again.stats.skipped == {"prepared": 4, "closed": 1, "explicit answers only": 1}
+        "lst_noform": "failed_retryable"}
+    assert again.stats.skipped == {"prepared": 4, "closed": 1,
+                                   "nothing answered since the stop": 2}
+    forced = plan_retry(paths, "b1", candidate_id="default", rerun_all=True)
+    assert {i.row.listing_id for i in forced.items} == {"lst_crash", "lst_noform"}
 
 
 @pytest.mark.slow
 def test_holds_cleared_follow_the_question_wording(fake, paths, monkeypatch):
     first_batch(fake, paths, ["held", "prepared"])
     monkeypatch.setenv("FAKE_RESUME", json.dumps({"held": "notice"}))
-    summary, [entry] = retry(fake, paths)
+    summary, [entry] = retry(fake, paths, rerun_all=True)
     assert (entry.previous_outcome, entry.outcome, entry.holds_before, entry.holds_cleared) == \
         ("needs_input", "needs_input", 2, 1)  # sponsorship cleared, notice period still asked
     assert [m.label for m in entry.missing_items] == [NOTICE]
@@ -331,7 +342,7 @@ def test_holds_cleared_follow_the_question_wording(fake, paths, monkeypatch):
     assert (summary.retry.holds_before, summary.retry.holds_cleared,
             summary.retry.holds_open) == (2, 1, 1)
     # Running the retry batch again continues it: the held row is settled there.
-    rerun, entries = retry(fake, paths)
+    rerun, entries = retry(fake, paths, rerun_all=True)
     assert entries == [] and rerun.launched == 0 and rerun.skipped_settled == 1
     assert rerun.retry is not None and rerun.retry.holds_cleared == 1
 
@@ -444,7 +455,10 @@ def test_selection_reads_where_each_application_stands_now(paths):
         line("l-lever", "needs_input", "lever", lever, backend="lever"),
         line("l-failing", "failed_retryable", "failing", failing, minute=1),  # latest line
     )
-    plan = plan_retry(paths, "b1", candidate_id="default")
+    default = plan_retry(paths, "b1", candidate_id="default")
+    assert [i.row.listing_id for i in default.items] == ["l-failing", "l-halfway"]
+    assert default.stats.skipped["nothing answered since the stop"] == 2
+    plan = plan_retry(paths, "b1", candidate_id="default", rerun_all=True)
     assert {i.row.listing_id: (i.previous_outcome, i.row.application_id)
             for i in plan.items} == {
         "l-failing": ("failed_retryable", failing), "l-recorded": ("needs_input", recorded),
@@ -459,11 +473,12 @@ def test_selection_reads_where_each_application_stands_now(paths):
     assert only.stats.skipped["not selected (unknown)"] == 1
     assert only.stats.outcomes == ["failed_retryable"]
 
-    lever_only = plan_retry(paths, "b1", candidate_id="default", backends={"lever"})
+    lever_only = plan_retry(paths, "b1", candidate_id="default", backends={"lever"},
+                            rerun_all=True)
     assert [i.row.listing_id for i in lever_only.items] == ["l-lever"]
     assert lever_only.stats.considered == 1 and lever_only.stats.skipped == {}
 
-    capped = plan_retry(paths, "b1", candidate_id="default", limit=1)
+    capped = plan_retry(paths, "b1", candidate_id="default", limit=1, rerun_all=True)
     assert len(capped.items) == 1 and capped.stats.skipped["over --limit"] == 3
 
     # Another candidate has none of these applications: only the row that never recorded
@@ -479,7 +494,7 @@ def test_selection_skips_a_second_listing_of_the_same_application(paths):
                                                     MissingReason.NO_ANSWER)])
     write_ledger(paths, line("l-first", "needs_input", "shared", app),
                  line("l-alias", "already_recorded", "shared", app, minute=1))
-    plan = plan_retry(paths, "b1", candidate_id="default")
+    plan = plan_retry(paths, "b1", candidate_id="default", rerun_all=True)
     assert [i.row.listing_id for i in plan.items] == ["l-first"]
     assert plan.stats.skipped == {"same application as another listing": 1}
 
@@ -528,21 +543,25 @@ def test_explicit_only_holds_are_skipped_until_answered_after_the_stop(paths):
         return [i.row.listing_id for i in plan_retry(paths, "b1", candidate_id="default",
                                                       **kwargs).items]
 
-    assert selected() == []
+    assert selected() == [] and selected(include_explicit=True) == []  # nothing answered
     assert plan_retry(paths, "b1", candidate_id="default").stats.skipped == {
+        "nothing answered since the stop": 1}
+    assert plan_retry(paths, "b1", candidate_id="default", rerun_all=True).stats.skipped == {
         "explicit answers only": 1}
-    assert selected(include_explicit=True) == ["l-explicit"]
+    assert selected(include_explicit=True, rerun_all=True) == ["l-explicit"]
 
     # An answer that already existed when the application stopped did not help it then.
     candidates.save_answer("default", saved(SPONSOR, when=datetime(2026, 1, 1, tzinfo=UTC)))
-    assert selected() == []
+    assert selected() == [] and selected(rerun_all=True) == []
     # The person answers the salary on this application: the sponsorship is still open.
     with ApplicationStore.open(paths.state_db) as store:
         claim = store.claim(app, "test")
         store.save_user_inputs(claim, [UserInput.answering(explicit_holds(url)[1],
                                                            TextValue(text="fictional"))])
         store.release(claim)
-    assert selected() == []
+    assert selected() == []  # something answered, but only explicit questions are open
+    assert plan_retry(paths, "b1", candidate_id="default").stats.skipped == {
+        "explicit answers only": 1}
     # ... and saves a global answer for the sponsorship wording (any spelling of it).
     later = datetime.now(UTC) + timedelta(minutes=1)
     candidates.save_answer("default", saved(SPONSOR.upper().rstrip("?"), when=later,
@@ -551,13 +570,21 @@ def test_explicit_only_holds_are_skipped_until_answered_after_the_stop(paths):
     assert [(i.row.listing_id, len(i.holds_before)) for i in plan.items] == [("l-explicit", 2)]
 
 
-def test_a_mixed_hold_is_retried(paths):
+def test_a_mixed_hold_runs_again_with_all_or_once_something_is_answered(paths):
     url = f"{ORIGIN}/mixed"
     app = stored(paths, "mixed", "held", [*explicit_holds(url),
                                           question(url, "start", START, MissingReason.NO_ANSWER)])
     write_ledger(paths, line("l-mixed", "needs_input", "mixed", app))
-    assert [i.row.listing_id for i in plan_retry(paths, "b1", candidate_id="default").items] == \
-        ["l-mixed"]
+    assert plan_retry(paths, "b1", candidate_id="default").items == ()
+    forced = plan_retry(paths, "b1", candidate_id="default", rerun_all=True)
+    assert [i.row.listing_id for i in forced.items] == ["l-mixed"] and forced.stats.rerun_all
+    with ApplicationStore.open(paths.state_db) as store:  # the person answers the salary
+        claim = store.claim(app, "test")
+        store.save_user_inputs(claim, [UserInput.answering(explicit_holds(url)[1],
+                                                           TextValue(text="fictional"))])
+        store.release(claim)
+    [again] = plan_retry(paths, "b1", candidate_id="default").items  # still a mixed hold
+    assert (again.row.listing_id, len(again.holds_before)) == ("l-mixed", 3)
 
 
 # --- options and ids ---------------------------------------------------------------------------
@@ -651,7 +678,7 @@ def test_prepare_batch_retry_command(fake, tmp_path, monkeypatch, capsys):
     log_start = len(calls(tmp_path))
 
     monkeypatch.setenv("FAKE_RESUME", json.dumps({"held": "notice", "flaky": "prepared"}))
-    assert main([*base, "--retry", "b1", "--batch-id", "r1", "--json"]) == EXIT_OK
+    assert main([*base, "--retry", "b1", "--batch-id", "r1", "--all", "--json"]) == EXIT_OK
     out, err = capsys.readouterr()
     summary = json.loads(out)
     assert summary["batch_id"] == "r1" and summary["totals"] == {"prepared": 1,
@@ -660,7 +687,7 @@ def test_prepare_batch_retry_command(fake, tmp_path, monkeypatch, capsys):
     assert (retry_stats["retry_of"], retry_stats["selected"], retry_stats["holds_before"],
             retry_stats["holds_cleared"], retry_stats["holds_open"]) == ("b1", 2, 2, 1, 1)
     assert retry_stats["skipped"] == {"prepared": 1, "explicit answers only": 1}
-    assert summary["run_options"]["workers"] == 2  # inherited from b1
+    assert summary["run_options"]["workers"] == 2 and retry_stats["rerun_all"]  # from b1
     assert "retry of b1, 2 of 4 listing(s) selected" in err and "notice period" not in err
     workers = home / "browser-workers"
     assert {c["env"]["IMX_BROWSER_DIR"] for c in calls(tmp_path)[log_start:]} <= {
@@ -670,7 +697,7 @@ def test_prepare_batch_retry_command(fake, tmp_path, monkeypatch, capsys):
     # A flag given again replaces the recorded one (--workers 1 here), even at its default.
     log_start = len(calls(tmp_path))
     assert main([*base, "--retry", "b1", "--batch-id", "r2", "--workers", "1",
-                 "--include-explicit"]) == EXIT_OK
+                 "--include-explicit", "--all"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "# Batch r2" in out and "## Retry of b1" in out
     assert {c["env"]["IMX_BROWSER_DIR"] for c in calls(tmp_path)[log_start:]} == {
@@ -684,6 +711,11 @@ def test_prepare_batch_retry_command(fake, tmp_path, monkeypatch, capsys):
     nothing = json.loads(capsys.readouterr().out)
     assert nothing["launched"] == 0 and nothing["batch_id"].startswith("b1-retry-")
     assert nothing["retry"]["skipped"] == {"prepared": 2, "not selected (needs_input)": 2}
+    # Without --all, held applications with nothing answered since they stopped wait.
+    assert main([*base, "--retry", "b1", "--batch-id", "r3", "--json"]) == EXIT_OK
+    idle = json.loads(capsys.readouterr().out)
+    assert idle["launched"] == 0 and idle["retry"]["skipped"] == {
+        "prepared": 2, "nothing answered since the stop": 2}
 
     # Usage and missing batches.
     assert main([*base, "--retry", "nope"]) == EXIT_ERROR
@@ -692,7 +724,8 @@ def test_prepare_batch_retry_command(fake, tmp_path, monkeypatch, capsys):
                 ["--retry", "b1", "--statuses", "blocked"],
                 ["--retry", "b1", "--include-existing"],
                 ["--inventory", str(inventory), "--outcomes", "needs_input"],
-                ["--inventory", str(inventory), "--include-explicit"]):
+                ["--inventory", str(inventory), "--include-explicit"],
+                ["--inventory", str(inventory), "--all"]):
         assert main([*base, *bad]) == EXIT_USAGE, bad
         assert capsys.readouterr().err.strip()
 
@@ -709,7 +742,7 @@ def test_retry_of_a_batch_without_recorded_run_options_uses_the_given_flags(
     assert (read_summary(paths, "b1") or pytest.fail("unreadable")).run_options is None
     log_start = len(calls(tmp_path))
     assert main(["--home", str(paths.home), "prepare-batch", "--retry", "b1", "--workers", "2",
-                 "--batch-id", "r1", "--json"]) == EXIT_OK
+                 "--batch-id", "r1", "--all", "--json"]) == EXIT_OK
     out, err = capsys.readouterr()
     assert "recorded no run options" in err
     assert json.loads(out)["run_options"]["workers"] == 2

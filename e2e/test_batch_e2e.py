@@ -171,10 +171,14 @@ def test_retry_after_answering_each_shared_question_once(ats: MockServer, cli: C
         "median_duration_s": report["backends"][0]["median_duration_s"],
         "provider_cost_usd": None}]
 
-    # Before any answer only the application with a question it could still answer is
-    # retried; the two held on explicit questions alone are skipped.
-    early = _summary(cli("prepare-batch", "--retry", "loop", "--batch-id", "loop-r1", "--json",
-                         timeout=600))
+    # Nothing is answered yet, so a default retry runs nothing. After a fix, --all runs the
+    # held applications again, except the two held on explicit questions alone.
+    idle = _summary(cli("prepare-batch", "--retry", "loop", "--batch-id", "loop-r0", "--json",
+                        timeout=600))
+    assert idle["launched"] == 0
+    assert idle["retry"]["skipped"] == {"nothing answered since the stop": 3}
+    early = _summary(cli("prepare-batch", "--retry", "loop", "--batch-id", "loop-r1", "--all",
+                         "--json", timeout=600))
     assert early["retry"]["skipped"] == {"explicit answers only": 2}
     assert early["retry"]["selected"] == 1 and early["totals"] == {"needs_input": 1}
     assert early["retry"]["holds_cleared"] == 0
