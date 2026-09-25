@@ -96,6 +96,7 @@ from .aria import (
     fill_lookup,
     fill_phone,
 )
+from .captcha import CAPTCHA_DETECT, CaptchaAttempt, CaptchaSolver, parse_detection
 from .driver import (
     _FILE_DIGEST,
     DEEP_QUERY,
@@ -415,6 +416,9 @@ _RETYPE_MAX_CHARS = 200
 text is entered again as one input event)."""
 _STEP_WAIT_S = 3.0
 """How long a clicked Next may take to replace a step rendered in place (a dialog)."""
+_CAPTCHA_PASS_S = 10.0
+"""How long a CAPTCHA page whose callback was called may take to lead on (a callback
+that first posts the token and then navigates)."""
 _KEPT_TEXT = "already shows this value; left as it is"
 """A pre-filled text that says the answer already: nothing is written, so the sweep
 after the fill does not write it again either."""
@@ -3034,6 +3038,85 @@ class GenericApplicationBrowser:
             # A wait for the person to operate the form never opens a menu, not even here.
             inspection = (await self._model(evidence="after-user-action", probe=False)).inspection
         return self._continuing_posting(inspection)
+
+    async def solve_captcha(self, solver: CaptchaSolver, *, call_callback: bool
+                            ) -> tuple[CaptchaAttempt, str, PageInspection | None]:
+        """Solve the CAPTCHA widget on the page through ``solver`` (2Captcha, within its
+        spend cap) and put the token into the page. Returns the attempt (never the token),
+        the page URL it was solved for, and, when the page no longer asks for it, the page
+        as it now reads (a CAPTCHA page in front of the form leads to the form, read as
+        ``open`` reads a page).
+
+        ``call_callback`` also calls the widget's callback: only for a CAPTCHA page in front
+        of the form, and only when that page has nothing to fill (a CAPTCHA page that also
+        holds a form is left to the person). With an application form on the page the token
+        only goes into the widget's response field, because a callback may send the form;
+        the form is then sent, if ever, by the gated submit. Nothing is clicked. A session
+        that cannot write to the page (OpenCLI) or a widget whose token only its callback
+        hands over (an invisible reCAPTCHA bound to the submit button) is never solved:
+        2Captcha is not asked and nothing is spent."""
+        try:  # read-only (on OpenCLI's allowlist too)
+            page_url, widgets = parse_detection(await self.driver.evaluate(CAPTCHA_DETECT))
+        except DriverError:
+            return (CaptchaAttempt("unsupported", detail="the page could not be read for a CAPTCHA widget"),
+                    self.driver.url, None)
+        target = next((w for w in widgets if not w.answered), None)
+        if target is None:
+            return (CaptchaAttempt("unsupported", detail="no unsolved reCAPTCHA, hCaptcha or Turnstile "
+                                   "widget with a site key on the page"), page_url, None)
+        if not getattr(self.driver, "injects_captcha_tokens", False):
+            return (CaptchaAttempt("unsupported", target.kind, detail="this browser session cannot put a "
+                                   "CAPTCHA token into the page"), page_url, None)
+        if target.submit_bound and not call_callback:
+            return (CaptchaAttempt("unsupported", target.kind,
+                                   detail="an invisible reCAPTCHA bound to the submit button hands its token "
+                                          "over only through its callback, which sends the form"), page_url, None)
+        if call_callback:
+            # A callback may send a form on its page: it is called only where the page has
+            # nothing to fill. Without it the token would not be handed over, so nothing is
+            # spent on such a page.
+            here = await self._model(probe=False)
+            if here.inspection.form is not None or here.candidate_fields or any(here.fillable_counts.values()):
+                return (CaptchaAttempt("unsupported", target.kind,
+                                       detail="the CAPTCHA page also holds a form that the widget's callback "
+                                              "could send"), page_url, None)
+        attempt, token = await solver.token(target, page_url or self.driver.url)
+        if token is None:
+            return attempt, page_url, None
+        inject = getattr(self.driver, "inject_captcha_token", None)
+        try:
+            put = await inject(target.kind, token, callback=target.callback,
+                               call_callback=call_callback) if callable(inject) else {}
+        except DriverError:
+            return replace(attempt, outcome="not_accepted", detail="the token could not be put into the page"), \
+                page_url, None
+        await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
+        if put.get("navigated") or call_callback:
+            # The page a CAPTCHA page leads to, once ready: a callback may post the token
+            # first and navigate only after the site's answer.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _CAPTCHA_PASS_S
+            model = await self._await_ready()
+            while self._captcha_ahead(model) and loop.time() < deadline:
+                await asyncio.sleep(_READY_POLL_S)
+                await self.driver.settle(min(self.settle_timeout_s, _READY_SETTLE_S))
+                model = await self._await_ready()
+            refused = self._captcha_ahead(model)
+        else:
+            model = await self._model(probe=False)
+            refused = model.inspection.kind is PageKind.CAPTCHA or (
+                model.captcha.present and not model.captcha.solved)
+        if refused:
+            return replace(attempt, outcome="not_accepted", detail="the page still asks for the CAPTCHA"), \
+                page_url, None
+        return attempt, page_url, self._continuing_posting(model.inspection)
+
+    @staticmethod
+    def _captcha_ahead(model: PageModel) -> bool:
+        """A CAPTCHA page that has not led on: still one, or (its widget now holding our
+        token) a page of no kind that still shows the widget."""
+        kind = model.inspection.kind
+        return kind is PageKind.CAPTCHA or (kind is PageKind.UNKNOWN and model.captcha.present)
 
     def _continuing_posting(self, inspection: PageInspection) -> PageInspection:
         """A form the user reached by passing a page in front of it (a sign-in wall,

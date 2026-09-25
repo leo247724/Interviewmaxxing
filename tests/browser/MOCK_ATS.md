@@ -77,6 +77,9 @@ required flag and option `value`/`label` pairs, and each job's flags (such as
 | `custom-control` | Operations Analyst (BWA-OPS-110) | Adds a required "Preferred office" ARIA combobox: a `div role="combobox"` with a listbox, backed by a hidden input, and deliberately not a native control. It also has a disabled "Employee referral code" field and a visually hidden honeypot (`website_hp`, inside `aria-hidden` and off-screen). Any honeypot value is rejected. |
 | `vague-confirmation` | QA Engineer (BWA-QA-111) | The POST is recorded and counted, but the response is a bare "Thank you!" page that names no job and no reference. The status page shows the real reference right away. |
 | `captcha-widget` | Frontend Platform Engineer (BWA-FE-112) | The `standard` form plus an invisible reCAPTCHA-style badge: a `.g-recaptcha[data-sitekey]` container, a small badge iframe (`/captcha/widget.html`, `title="reCAPTCHA"`) and a hidden, required `g-recaptcha-response` textarea with a hidden label. Nothing is solved on the page. The POST is accepted only when `g-recaptcha-response` is non-empty; otherwise it is a 422 re-render with "Please complete the CAPTCHA." A test stands in for the widget by setting the textarea's value (for example `page.evaluate`). The token is never recorded in `fields` or `extra_fields`. |
+| `captcha-gate` | Security Operations Analyst (BWA-CG-141) | A "Verify you are human" page with a solvable CAPTCHA widget (`?kind=`) in front of the core form; the widget's callback posts its token and the right one opens the form. See [Solvable CAPTCHA widgets](#solvable-captcha-widgets-round-14). |
+| `captcha-form` | Platform Security Engineer (BWA-CF-142) | The core form with a solvable CAPTCHA widget (`?kind=`); the POST is accepted only with that widget's expected token. See [Solvable CAPTCHA widgets](#solvable-captcha-widgets-round-14). |
+| `captcha-steps` | Detection Engineer (BWA-CS-143) | Contact information with a reCAPTCHA v2 checkbox, then the resume, then a review page; the first step's POST requires the checkbox's expected token. See [Solvable CAPTCHA widgets](#solvable-captcha-widgets-round-14). |
 | `spa-loading` | Data Platform Engineer (BWA-DE-113) | The GET shows only `<p aria-busy="true">Fetching application form</p>`; page script injects the `standard` form from a `<template>` 1.5 s after load (no network). A 422 re-render after a POST shows the form immediately. |
 | `cookie-banner` | Analytics Platform Engineer (BWA-AE-114) | The `standard` form under a full-viewport modal `role="dialog"` ("This website uses cookies") with `type="button"` buttons "Cookies settings", "Accept all" and "Decline all". While it is shown, `main` is `inert` and `aria-hidden`, so the form's controls are neither visible to an inspector nor clickable. Accept or Decline removes the dialog, restores `main` and sets the `bwa_consent` cookie (`accepted`/`declined`, one day); later visits with that cookie show no banner. "Cookies settings" does nothing. |
 | `react-select` | Growth Marketing Manager (BWA-GH-120) | Greenhouse-style: the `standard` questions, with work authorization (`question_6001`, Yes/No), visa sponsorship (`question_6002`, Yes/No), "How did you hear about us?" (`question_6003`: LinkedIn, Indeed, Company website, Referral, Other) and a phone "Country" (`question_6004`, 31 options such as "United States +1"; "Canada +1" shares its dial code) as React-select replicas instead of native controls. Each is an editable `input.select__input[role=combobox][aria-autocomplete=list][aria-haspopup=true][aria-expanded=false]` with `aria-labelledby="<id>-label"`, a `<label for>`, and **no `aria-controls` while closed**. A click toggles the menu (a click on an open one closes it); `question_6003` also opens on focus. The open menu is a portal `div.select__menu` appended to `document.body` holding `div#react-select-<id>-listbox[role=listbox]` with `div#react-select-<id>-option-<i>[role=option]` (ids per open; the chosen one has `aria-selected=true` and the class `select__option--is-selected`); the input then has `aria-expanded=true`, `aria-controls` and `aria-activedescendant`. Typing filters, ArrowDown/Up move, Enter or a click selects (Tab selects too), Escape closes; a blur closes. Like react-select, when `navigator.userAgent` matches `/Mac|iPhone|iPad/` the options carry no `aria-selected` and `aria-activedescendant` stays empty; the selected class remains. The chosen value shows in `div.select__single-value` (the dial-code select shows only the dial code: "+1" for both "United States +1" and "Canada +1"); with no value a `div.select__placeholder` "Select..." is the input's `aria-describedby`. |
@@ -382,6 +385,49 @@ sets `open` to false.
 
 Client-side routes answer the browser's Back button with a reload of the URL. Tests assert that nothing was
 subscribed (`alert_count` stays 0) when a runtime applies without typing into the alert email.
+
+### Solvable CAPTCHA widgets (round 14)
+
+`captcha-gate`, `captcha-form` and `captcha-steps` carry the widgets a runtime solves
+through 2Captcha (`tests/browser/test_captcha_round14.py`). The site keys are fictional
+and nothing reaches Google, hCaptcha or Cloudflare: the vendors' scripts and badge frames
+are local stubs under `GET /fixture/<path>`, in the vendors' URL shapes so a detector reads
+the site key from them (`/fixture/recaptcha/api.js?render=<key>`,
+`/fixture/recaptcha/api2/anchor?k=<key>&size=normal|invisible`,
+`/fixture/hcaptcha.com/checkbox.html#frame=checkbox&sitekey=<key>`,
+`/fixture/challenges.cloudflare.com/turnstile/<key>/normal`). The stub `api.js` defines a
+`grecaptcha` whose `execute` resolves to a token no server accepts. The only accepted
+token is `fixture-solved:<site key>` (`captcha_expected_token(kind)`), which is what the
+tests' fake 2Captcha transport returns for a task's `websiteKey`.
+
+`?kind=` picks the widget (`SOLVABLE_CAPTCHAS`; default `recaptcha-v2`):
+
+| `kind` | Site key | On the page |
+| --- | --- | --- |
+| `recaptcha-v2` | `6LfixtureV2CheckboxKeyAAAAAAAAAAAAAAAAAAAAA` | `.g-recaptcha[data-sitekey]`, a hidden `g-recaptcha-response` textarea, the badge iframe. |
+| `recaptcha-v2-invisible` | `6LfixtureV2InvisibleKeyAAAAAAAAAAAAAAAAAAAA` | The same with `data-size="invisible"`. |
+| `recaptcha-v3` | `6LfixtureV3ScoreKeyAAAAAAAAAAAAAAAAAAAAAAAAA` | No widget: `api.js?render=<key>`, a hidden `g-recaptcha-response` input and the badge; on submit with the field empty, the form's script asks `grecaptcha.execute(key, {action: 'apply'})` for a token. `captcha-form` only. |
+| `recaptcha-v2-submit` | `6LfixtureV2SubmitKeyAAAAAAAAAAAAAAAAAAAAAAA` | An invisible reCAPTCHA bound to the submit button (`button.g-recaptcha[data-sitekey][data-callback="bwaSubmitWithToken"]`): its callback writes the token and sends the form. `captcha-form` only. |
+| `hcaptcha` | `10000000-ffff-ffff-ffff-00000000f1x7` | `.h-captcha[data-sitekey]`, a hidden `h-captcha-response` textarea, the badge iframe. |
+| `turnstile` | `0x4AAAAAAAFixtureTurnstile01` | `.cf-turnstile[data-sitekey]`, a hidden `cf-turnstile-response` input, the badge iframe. |
+
+- **`captcha-gate`** (the four widget kinds with a container): `/jobs/captcha-gate/apply`
+  shows "Verify you are human" with the widget, whose `data-callback="bwaCaptchaPassed"`
+  posts `{kind, token}` to `POST /jobs/captcha-gate/captcha-verify`. The expected token
+  answers 200 and sets the cookie `bwa_captcha_gate=<kind>` (HttpOnly, an hour), anything
+  else 400; after a 200 the page reloads into the core form (`?delay_ms=<ms>`, at most
+  9000, delays the reload). A browser profile that passed one kind's gate goes straight to
+  the form for that kind; the other kinds still show their gate. The callback sets
+  `window.__bwaCallbackCalled = true` first. `?form=email` adds a small form (an "Email"
+  input and a "Continue" button) to the gate page: a CAPTCHA page whose callback could
+  send a form.
+- **`captcha-form`**: the core form with the widget and a hidden `captcha_kind`. The POST
+  is accepted only when the widget's response field holds the expected token; otherwise
+  it is a 422 re-render with "Please complete the CAPTCHA." on that field.
+- **`captcha-steps`**: step 1 carries a `recaptcha-v2` checkbox; its POST needs the
+  expected token in `g-recaptcha-response`, else a 422 on that field.
+- The response fields and `captcha_kind` are never recorded in `fields` or
+  `extra_fields`.
 
 ### Shared behavior
 

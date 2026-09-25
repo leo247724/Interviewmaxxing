@@ -506,6 +506,10 @@ class BatchOptions(Contract):
     writer_model: str | None = None
     rag_connection_file: Path | None = None
     writer_effort: Literal["low", "medium", "high"] | None = None
+    captcha_solver: Literal["off", "2captcha"] = "off"
+    """``--captcha-solver``: every job of the batch gets it, with the batch's spend ledger."""
+    captcha_budget_usd: float = Field(default=2.0, ge=0, le=100)
+    """The CAPTCHA spend cap shared by the whole batch (``CAPTCHA_SPEND_FILE``)."""
     headless: bool = True
     command: list[str] = Field(default_factory=list)
     """argv prefix of the CLI; ``apply URL --json ...`` is appended. Empty means
@@ -558,6 +562,11 @@ class BatchOptions(Contract):
             argv += ["--rag-connection-file", str(self.rag_connection_file)]
         if self.writer_effort is not None:
             argv += ["--writer-effort", self.writer_effort]
+        if self.captcha_solver != "off":
+            # One ledger in the batch directory: the cap holds for the batch, not per job.
+            argv += ["--captcha-solver", self.captcha_solver,
+                     "--captcha-budget-usd", str(self.captcha_budget_usd),
+                     "--captcha-spend-file", str(self.batch_dir / CAPTCHA_SPEND_FILE)]
         return argv
 
     def argv(self, url: str) -> list[str]:
@@ -588,6 +597,7 @@ class BatchOptions(Contract):
             rag_connection_file=(str(self.rag_connection_file)
                                  if self.rag_connection_file is not None else None),
             writer_effort=self.writer_effort,
+            captcha_solver=self.captcha_solver, captcha_budget_usd=self.captcha_budget_usd,
             headless=self.headless)
 
     def worker_browser_dir(self, slot: int) -> Path:
@@ -595,8 +605,15 @@ class BatchOptions(Contract):
 
     def environment(self, slot: int) -> dict[str, str]:
         """The parent environment minus every ``IMX_*`` variable, then this batch's
-        paths and the slot's own browser directory."""
+        paths and the slot's own browser directory. With the CAPTCHA solver on, the env
+        file named by ``IMX_OPENROUTER_ENV_FILE`` stays named: ``TWOCAPTCHA_API_KEY`` is
+        looked for there when the batch has no ``--env-file``."""
         env = {k: v for k, v in os.environ.items() if not k.startswith("IMX_")}
+        if self.captcha_solver != "off":
+            from interviewmaxxing_selection.credentials import ENV_FILE_VARIABLE
+
+            if os.environ.get(ENV_FILE_VARIABLE):
+                env[ENV_FILE_VARIABLE] = os.environ[ENV_FILE_VARIABLE]
         env["IMX_HOME"] = str(self.paths.home)
         env["IMX_CANDIDATE_ID"] = self.candidate_id
         env["IMX_PROFILE_DIR"] = str(self.paths.profile_dir)
@@ -633,6 +650,8 @@ class BatchRunOptions(Contract):
     writer_model: str | None = None
     rag_connection_file: str | None = None
     writer_effort: Literal["low", "medium", "high"] | None = None
+    captcha_solver: Literal["off", "2captcha"] = "off"
+    captcha_budget_usd: float = 2.0
     headless: bool = True
 
 
@@ -1255,7 +1274,11 @@ def _entry(options: BatchOptions, row: BatchRow, *, attempt: int, slot: int | No
 
 
 PROVIDER_EVENT = "provider.budget"
-"""The runner's per-run provider usage event (``interviewmaxxing_cli.runner``)."""
+"""The runner's per-run provider usage event (``interviewmaxxing_cli.runner``); CAPTCHA
+solves are counted in it too (purpose ``captcha``)."""
+CAPTCHA_SPEND_FILE = "captcha-spend.jsonl"
+"""The batch's CAPTCHA spend ledger (``captcha.CaptchaBudget``): every job appends its
+reservations and costs under a lock, so ``--captcha-budget-usd`` caps the whole batch."""
 
 
 def _provider_cost_in(store: ApplicationStore | None,

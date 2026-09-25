@@ -349,6 +349,8 @@ class PlaywrightDriver:
 
     attaches_files = True
     """Playwright sets a file input's files directly."""
+    injects_captcha_tokens = True
+    """Playwright can put a solved CAPTCHA's token into the page (``inject_captcha_token``)."""
 
     def __init__(
         self,
@@ -441,6 +443,27 @@ class PlaywrightDriver:
             if _context_lost(exc):
                 raise PageContextLost(f"page context unavailable: {exc}") from exc
             raise DriverError(f"page read failed: {exc}") from exc
+
+    async def inject_captcha_token(self, kind: str, token: str, *, callback: str = "",
+                                   call_callback: bool = False) -> dict[str, int]:
+        """Put a solved CAPTCHA's token into the widget's response fields and, with
+        ``call_callback``, call the widget's callback with it (``captcha.CAPTCHA_INJECT``).
+        The only page script that writes; it clicks nothing. A callback that navigates is
+        reported as ``navigated``. Errors never carry the token."""
+        from .captcha import CAPTCHA_INJECT
+
+        before = self._doc_mark()
+        try:
+            result = await self._scope.evaluate(CAPTCHA_INJECT, {
+                "kind": kind, "token": token, "callback": callback, "call_callback": call_callback})
+        except PlaywrightError as exc:
+            if before != self._doc_mark() or _context_lost(exc):
+                return {"fields": 0, "called": 0, "navigated": 1}
+            raise DriverError("could not put the CAPTCHA token into the page") from None
+        if not isinstance(result, dict):
+            return {"fields": 0, "called": 0, "navigated": int(before != self._doc_mark())}
+        return {"fields": int(result.get("fields") or 0), "called": int(result.get("called") or 0),
+                "navigated": int(before != self._doc_mark())}
 
     def _doc_mark(self) -> tuple[int, int]:
         return (self._navigations, self._loads)
