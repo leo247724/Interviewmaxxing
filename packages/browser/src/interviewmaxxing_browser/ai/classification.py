@@ -105,8 +105,10 @@ class FieldRouteDecision(BaseModel):
     semantic_pool_share: float | None = Field(default=None, ge=0, le=1)
     """Jev's semantic mass on the pool that can decide a field's meaning, when Jev classified
     it: on a single-choice control the residence types together (with CUSTOM_BOOLEAN on
-    Yes/No options while they outweigh it), on a text box whose label asks for an address
-    ADDRESS and LOCATION. The pooled gate reads this share."""
+    Yes/No options while they outweigh it), or the leading legal type (work authorization or
+    sponsorship) with the CUSTOM_BOOLEAN and CUSTOM_SELECT shapes while it outweighs both the
+    shapes and the residence types; on a text box whose label asks for an address ADDRESS
+    and LOCATION. The pooled gate reads this share."""
     narrative_probability: float | None = Field(default=None, ge=0, le=1)
     narrative_confidence: float | None = Field(default=None, ge=0, le=1)
     narrative_probabilities: dict[str, float] = Field(default_factory=dict)
@@ -251,9 +253,43 @@ split among them is one reading (ties go to the first in this order)."""
 _RESIDENCE_POOL = frozenset(t.value for t in RESIDENCE_TYPES)
 _SHAPE_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value})
 """On Yes/No options, the reading that only restates the control's yes/no shape."""
+LEGAL_TYPES: tuple[SemanticType, ...] = (SemanticType.WORK_AUTHORIZATION, SemanticType.SPONSORSHIP)
+"""Types the resolver derives from the stated work authorization status. On a single-choice
+control each pools with the choice shapes on its own (round 5): a split between the two is
+two different legal answers, never one reading."""
+_CHOICE_SHAPE_POOL = frozenset({SemanticType.CUSTOM_BOOLEAN.value, SemanticType.CUSTOM_SELECT.value})
+"""On a select or radio, the readings that only restate the control's shape: a yes/no or
+a pick among the offered options, whatever the question asks."""
 _ADDRESS_POOL = frozenset({SemanticType.ADDRESS.value, SemanticType.LOCATION.value})
 """On a text box whose label asks for an address, the location reading is the address."""
 _ADDRESS_LABEL = re.compile(r"\baddress\b", re.IGNORECASE)
+_CUSTOM_POOL = frozenset(t.value for t in CUSTOM_TYPES)
+"""The readings that name no category: on a field the heuristics typed custom, together
+they say the field is what its control is (round 5 retry: a time-zone select-all, a
+"County" box and a familiarity select-all each came out UNKNOWN and lost their saved
+answers)."""
+_PROFILE_URL_POOL = frozenset({SemanticType.WEBSITE.value, SemanticType.LINKEDIN.value,
+                               SemanticType.GITHUB.value, SemanticType.CUSTOM_TEXT.value})
+"""On a text box that asks for a quantity, a profile-URL reading is a custom-text reading:
+"What is the largest overall annual ad spend you have personally overseen …" read WEBSITE."""
+QUANTITY_QUESTION = re.compile(
+    r"^(?:how many|how much|how large|how big|what number|what percentage|what amount|"
+    r"what (?:is|was|were) (?:the |your )?(?:largest|highest|biggest|greatest|total|average|"
+    r"typical|maximum|minimum|annual|monthly|number|amount|size)\b)")
+"""A short numeric question about the applicant's own experience (its wording key): a
+count, an amount, a percentage or the largest, highest or average figure they handled."""
+_URL_WORDING = re.compile(
+    r"\b(?:url|link|website|web site|site|portfolio|profile|blog|homepage|http|www)\b",
+    re.IGNORECASE)
+_EXPERIENCE_WORDING = re.compile(
+    r"\bexperience[ds]?\b|\bhave you (?:ever |previously |personally )?(?:worked|used|managed|"
+    r"led|run|built|held|owned|overseen|handled|been employed|been responsible)\b|"
+    r"\b(?:worked|working) (?:in|at|with|for|on)\b|\byears? of\b|\bproficien|\bfamiliar with\b|"
+    r"\bhands-on\b|\bbackground in\b|\bskilled in\b|\bexpertise\b",
+    re.IGNORECASE)
+"""A yes/no question about the applicant's own experience, skills or background ("Do you
+have experience working at a digital marketing agency?"): whatever the heuristics or Jev
+read, it is never a consent or an attestation (the consent wording check comes first)."""
 _DOCUMENT_POOL = frozenset({DocumentPurpose.APPLICATION_ATTACHMENT.value,
                             DocumentPurpose.AUTOFILL_PARSER.value})
 """A required resume is the approved attachment whether the page attaches or parses it."""
@@ -330,6 +366,19 @@ def _yes_no_choice(fld: ApplicationField) -> bool:
         return False
     polarities = [_polarity(option.label) for option in usable_options(fld)]
     return polarities.count("yes") == 1 and polarities.count("no") == 1
+
+
+_PROFILE_URL_TYPES = frozenset({SemanticType.WEBSITE, SemanticType.LINKEDIN, SemanticType.GITHUB})
+
+
+def _quantity_text(fld: ApplicationField) -> bool:
+    """A text box that asks for a quantity and nowhere names a URL, link, site or profile;
+    its input type is not ``url``."""
+    if fld.control_type is not ControlType.TEXT or fld.input_type == "url":
+        return False
+    nearby = " ".join([fld.label, fld.help_text or "", fld.placeholder or ""])
+    return (QUANTITY_QUESTION.match(question_key(fld.label)) is not None
+            and _URL_WORDING.search(nearby) is None)
 
 
 def _consent_wording(fld: ApplicationField) -> bool:
@@ -612,12 +661,42 @@ class AIFormRouter:
                 semantic_pool = _pool_share(semantic, pool)
                 if meaning is SemanticType.UNKNOWN and self._pooled(semantic, pool):
                     meaning = max(RESIDENCE_TYPES, key=lambda t: shares.get(t.value, 0.0))
+                # Rippling's "Is your authorization to work in the United States" (Permanent /
+                # Temporary) read WORK_AUTHORIZATION 0.86 / CUSTOM_BOOLEAN 0.08 / CUSTOM_SELECT
+                # 0.05: on a select or radio the custom readings restate the control's shape,
+                # not another meaning, so they join the leading legal type's pool while it
+                # outweighs them together (and the residence types, whose pool is read first).
+                # The pool never crosses the two legal types: a split between them is two
+                # different legal answers.
+                choice_shape = _pool_share(semantic, _CHOICE_SHAPE_POOL)
+                legal = max(LEGAL_TYPES, key=lambda t: shares.get(t.value, 0.0))
+                if shares.get(legal.value, 0.0) > max(choice_shape, residence):
+                    legal_pool = _CHOICE_SHAPE_POOL | {legal.value}
+                    semantic_pool = _pool_share(semantic, legal_pool)
+                    if meaning is SemanticType.UNKNOWN and self._pooled(semantic, legal_pool):
+                        meaning = legal
             elif fld.control_type is ControlType.TEXT and _ADDRESS_LABEL.search(fld.label):
                 # "What is your current home address?" reads as ADDRESS or LOCATION; its label
                 # asks for the address, so together they are the address.
                 semantic_pool = _pool_share(semantic, _ADDRESS_POOL)
                 if meaning is SemanticType.UNKNOWN and self._pooled(semantic, _ADDRESS_POOL):
                     meaning = SemanticType.ADDRESS
+            elif _quantity_text(fld):
+                # "What is the largest overall annual ad spend you have personally overseen
+                # …" read WEBSITE at 0.9: a text box that asks for a quantity, with no URL
+                # wording, takes no profile URL; that reading is the custom-text reading.
+                semantic_pool = _pool_share(semantic, _PROFILE_URL_POOL)
+                if meaning in _PROFILE_URL_TYPES or (
+                        meaning is SemanticType.UNKNOWN and self._pooled(semantic, _PROFILE_URL_POOL)):
+                    meaning = SemanticType.CUSTOM_TEXT
+            if (meaning is SemanticType.UNKNOWN and fld.semantic_type in CUSTOM_TYPES
+                    and fld.semantic_type is not SemanticType.UNKNOWN
+                    and self._pooled(semantic, _CUSTOM_POOL)):
+                # Jev names no category (custom and unknown readings together, nothing else
+                # above the outside bound): the field is what its control is, as the
+                # heuristics typed it, so its saved answer can still reach it.
+                semantic_pool = _pool_share(semantic, _CUSTOM_POOL)
+                meaning = SemanticType.CUSTOM_BOOLEAN if yes_no else fld.semantic_type
         resume_typed = SemanticType.RESUME in (fld.semantic_type, meaning)
         prose_probability = narrative.probabilities["prose"]
         if route is FieldRoute.COPY_KNOWN and (
@@ -638,10 +717,15 @@ class AIFormRouter:
         plain_yes_no = (yes_no and not _consent_wording(fld)
                         and answer.choice == FieldRoute.COPY_KNOWN.value
                         and self._pooled(applicability, _APPLICANT_SCOPES))
-        if plain_yes_no and meaning in _CONSENT_TYPES:
+        # A yes/no question whose wording asks about the applicant's own experience ("Do
+        # you have experience working at a digital marketing agency?") is an experience
+        # screener whatever Jev's route or source reading: never a consent.
+        experience_yes_no = (yes_no and not _consent_wording(fld)
+                             and _EXPERIENCE_WORDING.search(fld.question_text) is not None)
+        if (plain_yes_no or experience_yes_no) and meaning in _CONSENT_TYPES:
             demoted_from, meaning = meaning, SemanticType.CUSTOM_BOOLEAN
-        elif (plain_yes_no and meaning is SemanticType.UNKNOWN and semantic is not None
-                and self._pooled(semantic, _BOOLEAN_POOL)):
+        elif ((plain_yes_no or experience_yes_no) and meaning is SemanticType.UNKNOWN
+                and semantic is not None and self._pooled(semantic, _BOOLEAN_POOL)):
             # The same question split between CONSENT and CUSTOM_BOOLEAN is one reading.
             leading = SemanticType(semantic.choice)
             demoted_from = leading if leading in _CONSENT_TYPES else None
@@ -714,8 +798,11 @@ class AIFormRouter:
             profile_copy_allowed=profile_allowed, autofill=autofill, demoted_from=demoted_from,
             proposed_route=FieldRoute(answer.choice),
             confidence=answer.confidence, probabilities=dict(answer.probabilities),
-            semantic_confidence=semantic.confidence if semantic else None,
-            semantic_probabilities=dict(semantic.probabilities) if semantic else {},
+            # A field the heuristics typed is not asked its meaning: its reading is the
+            # heuristics' own, explicit at 1.0, never a missing value.
+            semantic_confidence=semantic.confidence if semantic else 1.0,
+            semantic_probabilities=(dict(semantic.probabilities) if semantic
+                                    else {fld.semantic_type.value: 1.0}),
             semantic_pool_share=semantic_pool,
             narrative_probability=prose_probability, narrative_confidence=narrative.confidence,
             narrative_probabilities=dict(narrative.probabilities), source_requirement=requirement, reason=reason)

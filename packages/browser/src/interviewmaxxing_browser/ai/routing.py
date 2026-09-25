@@ -78,14 +78,15 @@ from interviewmaxxing_selection.jev import (
     NoulQuestion,
 )
 
-from .classification import RESIDENCE_TYPES as RESIDENCE_SEMANTICS
 from .classification import (
+    QUANTITY_QUESTION,
     AIFormRouter,
     FieldRoute,
     FieldRouteDecision,
     FormRouteReport,
     SourceScope,
 )
+from .classification import RESIDENCE_TYPES as RESIDENCE_SEMANTICS
 from .humanize import humanize_draft
 from .providers import (
     AIHold,
@@ -292,9 +293,11 @@ pronoun in "let us know" is not the country), "U.S.", "United States", or "in th
 _SPONSOR = re.compile(r"\bsponsor")
 _NEED = re.compile(r"\b(?:requir\w*|need\w*)\b")
 _AUTHORIZED_TO_WORK = re.compile(
-    r"\b(?:authori[sz]ed|eligible|legally|legal|right|permitted|allowed)\b.*"
-    r"\b(?:work|employed|employment)\b|\bwork authori[sz]ation\b"
+    r"\b(?:authori[sz]ed|eligible|legally|legal|right|permitted|allowed)\b.*\b(?:work|employ\w*)\b"
+    r"|\b(?:work|employment) authori[sz]ation\b"
     r"|\bwork\b.*\b(?:legally|lawfully)\b")
+"""Being authorized (eligible, permitted …) to work or "to be employed" (Ashby), "work
+authorization"/"employment authorization", or working "legally"/"lawfully"."""
 _UNTYPED_LEGAL = frozenset({SemanticType.UNKNOWN, SemanticType.CUSTOM_BOOLEAN})
 """Field types a classifier miss leaves a plain authorization question with; its wording
 ("authorized to be employed in the United States", "legally able to work") still gets the
@@ -503,7 +506,9 @@ _CURRENT_TIMEFRAME = re.compile(
 _HISTORICAL_TIMEFRAME = re.compile(
     r"\b(?:previous|previously|prior|former|formerly|past|last|before|ever|used to|history)\b",
     re.IGNORECASE)
-_NUMERIC_QUESTION = re.compile(r"^(?:how many|how much|what number|what percentage)\b")
+_NUMERIC_QUESTION = QUANTITY_QUESTION
+"""A short numeric experience question ("How many …", "What is the largest annual ad spend
+you have personally overseen …"); the classifier reads the same wording (round 5 retry)."""
 _ENUMERATION_QUESTION = re.compile(
     r"\b(?:how many (?:direct reports|reports|people|teams?|clients|accounts|campaigns|tools|"
     r"platforms)\b|list (?:the|all|every|each|your)\b|(?:for )?each (?:team|role|client|campaign)\b|"

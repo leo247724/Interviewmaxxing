@@ -283,7 +283,11 @@ def test_a_real_consent_without_consent_words_never_takes_a_reworded_saved_answe
 def test_a_consent_type_stays_unless_jev_reads_one_literal_fact_about_the_applicant(
     scripts: dict[str, Spec],
 ) -> None:
-    annotated, decision = classify(Jev(scripts), question(AGENCY, SemanticType.CONSENT, "Yes", "No"))
+    # A plain yes/no question without experience wording (an experience question is never
+    # a consent, whatever Jev reads: round 5 retry).
+    field = question("Would you be open to a contract-to-hire arrangement?", SemanticType.CONSENT,
+                     "Yes", "No")
+    annotated, decision = classify(Jev(scripts), field)
     assert annotated.fields[0].semantic_type is SemanticType.CONSENT
     assert decision.demoted_from is None and decision.route is FieldRoute.HUMAN_INPUT
 

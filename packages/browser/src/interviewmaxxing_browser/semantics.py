@@ -48,9 +48,12 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"disabilit|\bdisabled\b"), SemanticType.EEO_DISABILITY_STATUS),
     (_rx(r"pronoun"), SemanticType.PRONOUNS),
     (_rx(r"sponsor"), SemanticType.SPONSORSHIP),
+    # "Authorized to be employed in the United States" (Ashby) asks the same as "authorized
+    # to work"; so do "employment authorization" and "eligible for employment".
     (
-        _rx(r"authori[sz]ed to work|work authori[sz]ation|legally (?:authori[sz]ed|eligible|"
-            r"permitted)|right to work|eligib\w* to work"),
+        _rx(r"authori[sz]ed to (?:work|be employed)|(?:work|employment) authori[sz]ation|"
+            r"legally (?:authori[sz]ed|eligible|permitted)|right to work|"
+            r"eligib\w* (?:to work|for employment)"),
         SemanticType.WORK_AUTHORIZATION,
     ),
     (_rx(r"salary|compensation|pay expectation|desired pay|expected pay"), SemanticType.SALARY_EXPECTATION),
@@ -76,10 +79,19 @@ _RULES: list[tuple[re.Pattern[str], SemanticType]] = [
     (_rx(r"\bphone (?:device |number )?type\b|\btype of (?:phone|device)\b"), SemanticType.CUSTOM_SELECT),
     (_rx(r"phone|mobile|telephone|\bcell\b"), SemanticType.PHONE),
     (_rx(r"relocat"), SemanticType.RELOCATION),
-    (_rx(r"years (?:of )?(?:professional |relevant |work )?experience"), SemanticType.YEARS_EXPERIENCE),
+    # "Years of professional experience", and (Ashby) "How many years of programmatic media
+    # experience do you have?": a count of years, with up to four words between "years" and
+    # "experience". A yes/no "Do you have at least 8 years of … experience?" is not a count.
+    (_rx(r"(?:\bhow many |^\s*(?:total |number of |relevant )?)years\b(?: of)?(?: [\w/&-]+){0,4}"
+         r" experience\b"),
+     SemanticType.YEARS_EXPERIENCE),
     (_rx(r"\bstart date\b|available to start|when can you start|earliest start"), SemanticType.START_DATE),
     (_rx(r"hear about|how did you find|referr|referral source|source of application"), SemanticType.REFERRAL_SOURCE),
-    (_rx(r"current (?:company|employer)|most recent (?:company|employer)"), SemanticType.CURRENT_COMPANY),
+    # A work-history block's "Company name" (Paylocity, company-name-0) is the employer;
+    # the route gate holds a past employer's entry (its source is historical).
+    (_rx(r"current (?:company|employer)|most recent (?:company|employer)|\bcompany name\b|"
+         r"\bemployer name\b|\bname of (?:the )?(?:company|employer)\b|^\s*employer\s*[:*]?\s*$"),
+     SemanticType.CURRENT_COMPANY),
     (_rx(r"current (?:job )?title|current position|most recent title"), SemanticType.CURRENT_TITLE),
     (_rx(r"highest (?:level of )?education|education level|degree level"), SemanticType.EDUCATION_LEVEL),
     (_rx(r"universit|college|school"), SemanticType.UNIVERSITY),
