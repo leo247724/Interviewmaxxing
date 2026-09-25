@@ -538,14 +538,16 @@ are solved through 2Captcha behind a flag (see "CAPTCHAs").
     input, else the routing resolver's statement coverage over the person's saved
     statements (`acknowledge_privacy_notice`);
   - only a checked answer from the person's own answers lets `accept_data_consent` choose
-    the policy, wait for the page's one "I Accept", keep evidence of the policy shown
+    the policy, wait for the page's one "I Accept" (a button of the consent form or of no
+    form, else a link drawn as one), keep evidence of the policy shown
     (`data-consent`), click it and read the form it leads to (with the posting's identity).
     The runner records `consent.accepted` (the question, the page and the ids of the
     answers that cover it), once per preparation run; a submission run of an approval
     resolves nothing, so there the page stays the person's.
   Accepting sends the consent to the site; it never submits an application. A consent no
   statement covers stops the run as before ("Accept the data-processing consent"). Mock
-  `jobvite-like` (`?policies=regional` for one policy per location).
+  `jobvite-like` (`?policies=regional` for one policy per location, `?accept=link` for an
+  "I Accept" link).
 
 ## Uploads, autofill overlays and readback
 
