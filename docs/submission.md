@@ -141,8 +141,8 @@ share `status` output; share `events`.
 
 ## The store's rules
 
-`ApplicationStore` (`packages/core`) is the only authority; the CLI, the runner and any
-future dashboard action call these operations (see `CONTRACTS.md` §7):
+`ApplicationStore` (`packages/core`) is the only authority; the CLI, the runner and the
+dashboard (through the service) call these operations (see `CONTRACTS.md` §7):
 
 - `is_preparation_only(app)` is true while the application has an
   `application.preparation_only` event and no authorization lifts it. An authorization
