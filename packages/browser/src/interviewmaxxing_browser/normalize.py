@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -49,6 +49,7 @@ from interviewmaxxing_core import (
 
 from .semantics import classify
 from .signals import (
+    ACCOUNT_CREATION,
     ALREADY_APPLIED,
     APPLY_ENTRY,
     APPLY_LINK,
@@ -106,6 +107,35 @@ def detect_ats(url: str) -> str:
     return "generic"
 
 
+def sign_in_message(snapshot: DomSnapshot) -> str:
+    """What a sign-in page asks of the user, naming the site (the tenant) it is for.
+
+    Workday runs one candidate-account system per employer tenant
+    (``<tenant>.wdN.myworkdayjobs.com``), so its message names the tenant and says an
+    account is needed. Another page that offers "Create Account" asks for an account on
+    its host; a plain sign-in page asks to sign in there."""
+    parts = urlsplit(snapshot.url)
+    host = (parts.hostname or "").lower()
+    site = (parts.netloc or "").lower() or "this site"
+    if detect_ats(snapshot.url) == "workday" and host:
+        # <tenant>.wdN.myworkdayjobs.com, or wdN.myworkdaysite.com/<locale>/recruiting/<tenant>/...
+        tenant = host.split(".")[0]
+        segments = [part for part in parts.path.split("/") if part]
+        folded = [part.casefold() for part in segments]
+        if host.endswith("myworkdaysite.com") and "recruiting" in folded[:-1]:
+            tenant = segments[folded.index("recruiting") + 1]
+            host = f"{host}/recruiting/{tenant}"
+        return (f"A Workday account for {tenant} ({host}) is needed to apply. Workday accounts "
+                f"are per employer: in the browser window, create one for {tenant} or sign in "
+                "if you already have one (confirm the email if Workday asks), then continue.")
+    offers = [b.text for b in snapshot.buttons] + [lk.text for lk in snapshot.links] + [
+        h.text for h in snapshot.headings]
+    if any(ACCOUNT_CREATION.search(text) for text in offers):
+        return (f"An account on {site} is needed to apply. In the browser window, create one "
+                "or sign in if you already have one, then continue.")
+    return f"Sign in to {site} in the browser window to continue."
+
+
 @dataclass(frozen=True)
 class FieldBinding:
     """How the runtime operates one field. Internal to the browser package."""
@@ -132,6 +162,12 @@ class FieldBinding:
     """Previously uploaded resumes the site offers beside this resume upload."""
     attach_by_person: bool = False
     """A file field handed to the person because this session cannot attach files."""
+    date_segments: tuple[tuple[str, str], ...] = ()
+    """A segmented date's (kind, selector) pairs in page order ("month", "day", "year"):
+    the value is typed into the first segment in that order ("09/24/2026")."""
+    dial_code_field: str | None = None
+    """For a phone number box: the field just before it that picks the country code
+    separately (Workday "Country Phone Code"). Its chosen code is not typed again."""
 
 
 @dataclass(frozen=True)
@@ -411,8 +447,26 @@ def _pressed_members(control: DomControl) -> list[DomControl]:
     }) for option in control.pressed_options]
 
 
+_HONEYPOT = re.compile(
+    r"\b(?:ro)?bots? only\b|\bhoney ?pot\b|"
+    r"\bdo not (?:enter|fill|type|complete|change)\b[^.]{0,60}\bif you(?:'re| are) (?:a )?human\b|"
+    r"\bif you(?:'re| are) (?:a )?human\b[^.]{0,60}\b(?:leave|keep)\b[^.]{0,30}\b(?:blank|empty)\b|"
+    r"\b(?:leave|keep)\b[^.]{0,30}\b(?:blank|empty)\b[^.]{0,40}\bif you(?:'re| are) (?:a )?human\b",
+    re.IGNORECASE,
+)
+"""A trap for bots that people never see: Workday's apply pages carry
+``input[name=website]`` labelled "Enter website. This input is for robots only, do not
+enter if you're human." in a zero-height box."""
+
+
+def _honeypot(control: DomControl) -> bool:
+    text = " ".join([control.label, control.placeholder, *(d.text for d in control.described),
+                     *control.adjacent])
+    return bool(_HONEYPOT.search(text))
+
+
 def _operable(control: DomControl) -> bool:
-    if control.disabled:
+    if control.disabled or _honeypot(control):
         return False
     if control.kind == "native" and control.type == "file":
         # Styled uploads often hide the input behind a button or a drop zone; it stays
@@ -420,6 +474,11 @@ def _operable(control: DomControl) -> bool:
         # trigger is there, unless it has neither and is not visible itself.
         return (control.visible or control.label_visible or bool(control.label)
                 or bool(control.upload_trigger))
+    if control.kind == "native" and (control.tag == "textarea" or control.type in TEXT_INPUT_TYPES):
+        # A text box nobody can see (no box of its own) is never typed into, however
+        # visible its label is: styled choices hide their inputs behind labels, text
+        # boxes do not, and a honeypot does.
+        return control.visible
     return control.visible or control.label_visible
 
 
@@ -456,8 +515,10 @@ def _control_type(control: DomControl, group_size: int) -> ControlType:
     if control.type == "checkbox":
         return ControlType.CHECKBOX_GROUP if group_size > 1 else ControlType.CHECKBOX
     if control.type in TEXT_INPUT_TYPES:
-        if control.role == "combobox" or control.autocomplete_list:
-            return ControlType.UNSUPPORTED  # typeahead: typing alone does not choose a value
+        if control.role == "combobox" or control.autocomplete_list or (control.aria or {}).get("picker"):
+            # A typeahead or a picker's search box (not probed): typing alone does not
+            # choose a value.
+            return ControlType.UNSUPPORTED
         return ControlType.TEXT
     return ControlType.UNSUPPORTED
 
@@ -625,6 +686,8 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
     field_id = (first.question_for or first.name or first.id if first.choice_group
                 else first.name or first.id or first.question_for) or f"field-{_slug(label)}"
     input_type = first.type if control_type is ControlType.TEXT else None
+    if control_type is ControlType.TEXT and first.date_segments:
+        input_type = "date"
     accept = (
         [a.strip() for a in first.accept.split(",") if a.strip()] or None
         if control_type is ControlType.FILE
@@ -689,8 +752,35 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         user_completed=user_completed,
         upload_anchor=first.upload_anchor or None,
         pressed=first.tag == "button" and first.type == "radio",
+        date_segments=tuple((s["kind"], s["selector"]) for s in first.date_segments)
+        if control_type is ControlType.TEXT else (),
     )
     return app_field, binding
+
+
+_DIAL_CODE_LABEL = re.compile(
+    r"\bcountry (?:phone |calling |dial(?:ing)? )?code\b|\bphone country\b|\b(?:dial(?:ing)?|calling) code\b",
+    re.IGNORECASE,
+)
+
+
+def _with_dial_code_pickers(
+    pairs: list[tuple[ApplicationField, FieldBinding]],
+) -> list[tuple[ApplicationField, FieldBinding]]:
+    """Bind each phone number box to the separate country-code picker just before it
+    (at most two questions back), so the code is chosen there and not typed again."""
+    out = list(pairs)
+    for i, (app_field, binding) in enumerate(out):
+        if (app_field.control_type is not ControlType.TEXT or app_field.expects_international_phone
+                or app_field.semantic_type is not SemanticType.PHONE):
+            continue
+        for j in range(i - 1, max(-1, i - 3), -1):
+            picker = out[j][0]
+            if picker.control_type in (ControlType.SELECT, ControlType.TYPEAHEAD) and \
+                    _DIAL_CODE_LABEL.search(picker.label):
+                out[i] = (app_field, replace(binding, dial_code_field=picker.id))
+                break
+    return out
 
 
 def _dedupe_ids(pairs: list[tuple[ApplicationField, FieldBinding]]) -> list[tuple[ApplicationField, FieldBinding]]:
@@ -805,6 +895,11 @@ def _captcha_state(snapshot: DomSnapshot, captcha_controls: list[DomControl], ha
     if not has_fields and CAPTCHA_TEXT.search(page_text):
         return CaptchaState(True, False, "The page asks to verify you are human")
     return CaptchaState()
+
+
+_ANNOUNCEMENT = re.compile(r"\bpage (?:is |has )?(?:loaded|finished loading)\s*\.?\s*$", re.IGNORECASE)
+"""A screen-reader announcement in an alert region ("My Information page is loaded",
+Workday), not a validation error."""
 
 
 _UTILITY_CONTROL = re.compile(r"\b(?:lang(?:uage)?|locale|share|search)\b", re.IGNORECASE)
@@ -1184,6 +1279,8 @@ def build_page(
         # selection), never questions or bindings of their own.
         snapshot = snapshot.model_copy(update={
             "controls": [c for c in snapshot.controls if c.selector not in folded]})
+    # A phone number box after its own country-code picker takes the national number.
+    pairs = _with_dial_code_pickers(pairs)
     buttons = [b for b in form_buttons if b.button.form_index == form_index] if form_index is not None else []
     is_final, submit_selector, next_selector = _primary_action(buttons)
     dom_form = next((f for f in snapshot.forms if f.index == form_index), None)
@@ -1219,14 +1316,14 @@ def build_page(
         and (any(f.visible for f in snapshot.captcha_frames) or snapshot.captcha_widget)
     )
     identity = extract_job_identity(snapshot)
-    alerts = [r.text for r in snapshot.regions if r.role == "alert"]
+    alerts = [r.text for r in snapshot.regions if r.role == "alert" and not _ANNOUNCEMENT.search(r.text)]
     h1 = next((h.text for h in snapshot.headings if h.level == 1), None)
     form: ApplicationForm | None = None
     message: str | None = None
 
     if snapshot.password_visible:
         kind = PageKind.SIGN_IN_REQUIRED
-        message = "Sign in (or create an account) in the browser to continue."
+        message = sign_in_message(snapshot)
     elif captcha.present and not captcha.solved and not captcha_pending:
         kind = PageKind.CAPTCHA
         message = f"{captcha.detail}. Solve it in the browser to continue."
