@@ -101,6 +101,8 @@ from .humanize import (
     LETTER_PARAGRAPHS,
     LETTER_WORDS,
     QUOTED_STATEMENT_FEEDBACK,
+    attribution_clauses,
+    employer_names,
     fit_hedges,
     greeting,
     humanize_draft,
@@ -563,6 +565,13 @@ LETTER_LENGTH_FEEDBACK = (
 LETTER_STORY_FEEDBACK = (
     "Draw the proof from a story passage (an entry keyed story) and cite it: one campaign told as "
     "constraint, what the applicant changed and the result, naming the tradeoff it states.")
+ATTRIBUTION_FEEDBACK = (
+    "Cut every clause that attributes a requirement to the employer or compares the employer to "
+    "the applicant's work ('<employer> wants / asks / needs / names / expects', 'holds this role "
+    "accountable for', 'as the role asks', 'the kind of X that <employer> names', '<employer>'s team "
+    "works the way my practice has', 'the same way', 'where I've done my best work'): a job priority "
+    "is only ever the object of what the applicant did, and the company fact states the employer's "
+    "own work in the posting's words.")
 _TALK = re.compile(r"\b(?:talk|call|walk\s+you\s+through|conversation|chat|meet|show\s+you)\b", re.IGNORECASE)
 """A close's offer to talk (the rubric's second closing sentence)."""
 CONTACT_ID = "contact:links"
@@ -1062,6 +1071,12 @@ def _fact_evidence(fact: CandidateFact) -> dict[str, Any]:
             "source": fact.source, "evidence": fact.evidence}
 
 
+def _sentence_key(sentence: Any) -> str:
+    """A sentence's identity for repeat reviews: its text and exact citations."""
+    return _digest({"text": " ".join(str(sentence.text).split()), "facts": sorted(sentence.fact_ids),
+                    "jobs": sorted(sentence.job_evidence_ids)})
+
+
 def _contact_fact(context: PacketContext) -> CandidateFact | None:
     """The applicant's LinkedIn and website from the profile identity, for a cover letter's
     close: a transient stand-in cited like a story passage, never packet provenance."""
@@ -1192,6 +1207,12 @@ class DynamicPacketResolver:
     comparison set, so another field on the same form reuses the verdict."""
     max_consistency_verdicts: int = 256
     _story_reviews: dict[str, frozenset[str]] = dataclass_field(default_factory=dict, init=False, repr=False)
+    _settled_sentences: dict[str, bool] = dataclass_field(default_factory=dict, init=False, repr=False)
+    """Sentences (text and citations) an independent review supported in this runtime: a later
+    review of a draft repeating them is told they are settled, so repeat reviews agree."""
+    _sentence_verdicts: dict[str, float] = dataclass_field(default_factory=dict, init=False, repr=False)
+    """Jev's grounding score per sentence, keyed by its text, citations and cited evidence: a
+    sentence the rubric pass or the no-slop rewrite repeats is not asked again (round 6)."""
     """Per-runtime independent reviews of story passages Jev left uncertain, keyed by the
     passages and their comparison facts: the story ids each review found contradicted."""
     max_concurrency: int = 3
@@ -3681,16 +3702,22 @@ class DynamicPacketResolver:
         trace = self._trace({"stage": "strong_review", "purpose": purpose,
             "question": question, "fact_ids": [fact["id"] for fact in facts], "status": "REVIEWING",
             **(scope or {})})
+        settled = [index for index, sentence in enumerate(sentences or [])
+                   if _sentence_key(sentence) in self._settled_sentences]
         try:
             result = review(question=question, facts=facts,
                 job=({} if purpose == "evidence_consistency" else
                      {"title": context.job.title or "", "company": context.job.company or ""}),
-                job_evidence=job_evidence, sentences=sentences, purpose=purpose)
+                job_evidence=job_evidence, sentences=sentences, purpose=purpose,
+                **({"settled": settled} if settled else {}))
         except AIHold:
             trace["status"] = "REVIEW_HELD"
             raise
         trace.update(status=result.verdict, review_issues=result.issues,
-                     reference_ids=result.reference_ids)
+                     reference_ids=result.reference_ids, settled=settled)
+        if result.verdict == "SUPPORTED" and sentences:
+            self._settle(NarrativeDraft.model_validate({"status": "READY", "missing_information": [],
+                "sentences": [sentence.model_dump() for sentence in sentences]}))
         if result.verdict != "SUPPORTED":
             # Only profile facts can be corrected or removed by id; story passages and job
             # evidence the review names stay in its trace.
@@ -3700,8 +3727,15 @@ class DynamicPacketResolver:
                 raise _CorrectableDraftRejection(result.verdict, result.issues, fact_ids, from_review=True)
             raise AIHold(_review_hold(result.issues, fact_ids))
 
+    def _settle(self, draft: NarrativeDraft) -> None:
+        with self._lock:
+            for sentence in draft.sentences:
+                if len(self._settled_sentences) >= 512:
+                    self._settled_sentences.pop(next(iter(self._settled_sentences)))
+                self._settled_sentences[_sentence_key(sentence)] = True
+
     def _letter_review(self, context: PacketContext, draft: NarrativeDraft, *, evidence: list[CandidateFact],
-                       job_evidence: list[dict[str, str]]) -> tuple[str, list[str]]:
+                       job_evidence: list[dict[str, str]]) -> tuple[str, list[str], str]:
         """A cover letter draft's one independent review (round 6): its grounding, as the draft
         review, and its grade against the owner's rubric, in one call. A grounding failure
         raises as ``_strong_review`` does; otherwise the rubric grade (PASS or FAIL) and its
@@ -3710,29 +3744,33 @@ class DynamicPacketResolver:
         if not callable(review):
             raise AIHold("Narrative is not fully supported or complete at the current confidence; "
                          "a stronger independent reviewer is not configured")
+        settled = [index for index, sentence in enumerate(draft.sentences) if _sentence_key(sentence) in self._settled_sentences]
         entry = self._trace({"stage": "strong_review", "purpose": "letter_review",
-                             "fact_ids": [fact.id for fact in evidence], "status": "REVIEWING"})
+                             "fact_ids": [fact.id for fact in evidence], "settled": settled, "status": "REVIEWING"})
         try:
             result = review(question="Review this cover letter's grounding and grade it against the rubric.",
                 facts=[_fact_evidence(fact) | {"experience_context": _experience_context(context, fact,
                        {f.id for f in evidence})} for fact in evidence], job_evidence=job_evidence,
                 job={"title": context.job.title or "", "company": context.job.company or ""},
-                sentences=draft.sentences, purpose="letter_review")
+                sentences=draft.sentences, purpose="letter_review", **({"settled": settled} if settled else {}))
         except AIHold:
             entry["status"] = "REVIEW_HELD"
             raise
         rubric = getattr(result, "rubric", "PASS")
         rubric_issues = [issue[:1000] for issue in getattr(result, "rubric_issues", []) or []
                          if isinstance(issue, str) and issue.strip()][:8]
+        question = getattr(result, "owner_question", "") or ""
         entry.update(status=result.verdict, review_issues=result.issues, reference_ids=result.reference_ids,
                      rubric=rubric, rubric_issue_count=len(rubric_issues))
+        if result.verdict == "SUPPORTED":
+            self._settle(draft)
         if result.verdict != "SUPPORTED":
             profile_ids = {fact.id for fact in context.candidate.facts}
             fact_ids = [rid for rid in result.reference_ids if rid in profile_ids]
             if result.verdict in ("UNSUPPORTED", "INCOMPLETE"):
                 raise _CorrectableDraftRejection(result.verdict, result.issues, fact_ids, from_review=True)
             raise AIHold(_review_hold(result.issues, fact_ids))
-        return ("PASS" if rubric == "PASS" or not rubric_issues else "FAIL"), rubric_issues
+        return ("PASS" if rubric == "PASS" or not rubric_issues else "FAIL"), rubric_issues, question.strip()
 
     def resolve_verified_fact(self, context: PacketContext, field: ApplicationField, *,
                               gate: FieldRouteDecision) -> PacketAnswer:
@@ -4068,13 +4106,22 @@ class DynamicPacketResolver:
                          missing_information=[CASE_DATA_MISSING])
         evidence = data_evidence(field, context.form.url)
         job = {"title": context.job.title or "", "company": context.job.company or ""}
+        voice: list[str] = []
+        if self.retriever is not None:
+            # The owner's own technical writing shows the working the way he does (round 6,
+            # addendum 3); style only, and a retrieval failure leaves the answer without it.
+            try:
+                voice = list(self._retrieve(context, field).voice_samples)[:2]
+            except AIHold:
+                voice = []
+        trace["voice_sample_count"] = len(voice)
         attempts: list[dict[str, Any]] = []
         trace["attempts"] = attempts
         feedback: list[str] | None = None
         for attempt in range(2):
             try:
                 draft = self.writer.write(question=field.question_text, facts=[], job=job,
-                    max_length=field.max_length, job_evidence=[evidence], voice_samples=[],
+                    max_length=field.max_length, job_evidence=[evidence], voice_samples=voice,
                     purpose="case_analysis", review_feedback=feedback, on_attempt=attempts.append)
             except AIHold as exc:
                 trace.update(status="WRITER_HELD", missing_information=list(getattr(exc, "missing_information", ())))
@@ -4322,9 +4369,16 @@ class DynamicPacketResolver:
                 self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
                     supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence,
                     trace=entry, rewrite_attempt=rewrite_attempt, force_review=True)
-                # The rewrite's own review grades it against the rubric too; that grade is the
-                # shipped letter's (recorded below), never a reason to discard a grounded rewrite:
-                # a live trial kept an un-humanized letter over one noisy FAIL.
+                graded = entry.get("rubric_review")
+                rubric = trace.get("rubric")
+                if (isinstance(graded, dict) and graded.get("rubric") == "FAIL"
+                        and isinstance(rubric, dict) and rubric.get("status") == "PASSED"):
+                    # Grade what ships: a rewrite that fails a HARD line the draft passed is
+                    # tried again with the issues, and the draft stands if it keeps failing.
+                    entry["status"] = "REJECTED_RUBRIC"
+                    raise _CorrectableDraftRejection("UNSUPPORTED", list(graded.get("review_issues") or [])[:8]
+                                                     or ["The rewrite fails a rubric line the draft passed."],
+                                                     from_review=True)
 
             def trace_humanize(entry: dict[str, Any]) -> dict[str, Any]:
                 humanized.append(self._trace(entry))
@@ -4333,7 +4387,9 @@ class DynamicPacketResolver:
             draft = humanize_draft(self.writer, question=field.question_text, purpose=purpose,
                 draft=draft, job=job, voice_samples=voice_samples, max_length=field.max_length,
                 supplied_ids=set(supplied), job_ids=set(supplied_job), ground=ground_again,
-                trace=trace_humanize, statements=statements)
+                trace=trace_humanize, statements=statements,
+                names=employer_names(context.job.company or "", " ".join(e["text"] for e in job_evidence))
+                if context.job.company else ())
         value = TextValue(text=draft.text)
         from interviewmaxxing_core import answer_problems
         if answer_problems(field, value):
@@ -4368,11 +4424,21 @@ class DynamicPacketResolver:
             # The letter that ships is the humanized one: its own review graded it.
             issues = list(final.get("review_issues") or [])
             rubric_trace.update(status="PASSED" if final.get("rubric") == "PASS" else "RESIDUAL",
-                                issue_count=len(issues), review_issues=issues, graded="humanized")
+                                issue_count=len(issues), review_issues=issues, graded="humanized",
+                                owner_question=final.get("owner_question") or "")
         rubric = trace.get("rubric")
-        if isinstance(rubric, dict) and rubric.get("status") == "RESIDUAL":
-            note += f"; rubric review: {rubric.get('issue_count', 0)} issue(s) remain"
-        elif isinstance(rubric, dict) and rubric.get("status") == "PASSED":
+        if purpose == "cover_letter":
+            # Grade what ships (the judge's fifth fix): READY only when the shipped text's own
+            # review passed the rubric; otherwise the letter holds and asks the owner one
+            # question when a missing element (a tradeoff, a cost, a result) is the reason.
+            status = rubric.get("status") if isinstance(rubric, dict) else "NOT_REVIEWED"
+            if status != "PASSED":
+                trace["status"] = "RUBRIC_HELD"
+                question = str((rubric or {}).get("owner_question") or "").strip()
+                issues = list((rubric or {}).get("review_issues") or [])
+                reason = question or (issues[0] if issues else "The cover letter has no rubric grade")
+                raise AIHold("The cover letter does not pass the owner's rubric: " + reason,
+                             missing_information=[question] if question else [])
             note += "; rubric review passed"
         trace["status"] = "READY"
         return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
@@ -4396,6 +4462,8 @@ class DynamicPacketResolver:
         findings: list[tuple[str, str]] = []
         company = (context.job.company or "").strip()
         described = " ".join(evidence["text"] for evidence in job_evidence)
+        if attribution_clauses(draft.text, employer_names(company, described) if company else []):
+            findings.append(("ATTRIBUTION", ATTRIBUTION_FEEDBACK))
 
         def names(text: str) -> bool:
             return re.search(rf"(?<!\w){re.escape(company)}(?!\w)", text, re.IGNORECASE) is not None
@@ -4448,7 +4516,8 @@ class DynamicPacketResolver:
         for number in range(RUBRIC_PASSES + 1):
             issues = list(graded.get("review_issues") or [])
             passes.append({"rubric": graded.get("rubric"), "issue_count": len(issues), "review_issues": issues})
-            trace["rubric"].update(issue_count=len(issues), review_issues=issues)
+            trace["rubric"].update(issue_count=len(issues), review_issues=issues,
+                                   owner_question=graded.get("owner_question") or "")
             if graded.get("rubric") == "PASS":
                 trace["rubric"]["status"] = "PASSED"
                 return draft, scores
@@ -4553,8 +4622,27 @@ class DynamicPacketResolver:
                                   for i in indices}},
                 questions={key: grounding_questions[key] for key in keys})
 
-        answers = self._decide_batched(["complete", *(f"q{i}" for i in range(len(draft.sentences)))],
-                                       grounding_request, purpose="narrative_grounding")
+        def verdict_key(index: int) -> str:
+            sentence = draft.sentences[index]
+            return _digest({"prompt_version": PROMPT_VERSION, "question": field.question_text, "purpose": purpose,
+                            "text": sentence.text, "facts": [_fact_evidence(supplied[f]) for f in sentence.fact_ids],
+                            "jobs": [supplied_job[e] for e in sentence.job_evidence_ids]})
+
+        keys = {index: verdict_key(index) for index in range(len(draft.sentences))}
+        with self._lock:
+            known = {f"q{index}": self._sentence_verdicts[key] for index, key in keys.items()
+                     if key in self._sentence_verdicts}
+        asked = self._decide_batched(["complete", *(f"q{i}" for i in range(len(draft.sentences)) if f"q{i}" not in known)],
+                                     grounding_request, purpose="narrative_grounding")
+        answers: dict[str, Any] = {**{name: NoulAnswer(type="noul", noul=score) for name, score in known.items()},
+                                   **asked}
+        with self._lock:
+            for name, answer in asked.items():
+                if name.startswith("q") and isinstance(answer, NoulAnswer):
+                    if len(self._sentence_verdicts) >= 1024:
+                        self._sentence_verdicts.pop(next(iter(self._sentence_verdicts)))
+                    self._sentence_verdicts[keys[int(name[1:])]] = answer.noul
+        trace["grounding_cached"] = sorted(known)
         trace["grounding"] = {key: answer.noul if isinstance(answer, NoulAnswer) else None
                               for key, answer in answers.items()}
         sentence_scores = [answer.noul if isinstance(answer := answers[f"q{i}"], NoulAnswer) else 0.0
@@ -4578,7 +4666,7 @@ class DynamicPacketResolver:
                 trace.update(status="REVIEW_REJECTED", review_verdict=exc.verdict, review_issues=list(exc.issues))
                 raise
             trace["independent_review"] = "SUPPORTED"
-            trace["rubric_review"] = {"rubric": graded[0], "review_issues": graded[1]}
+            trace["rubric_review"] = {"rubric": graded[0], "review_issues": graded[1], "owner_question": graded[2]}
             strong_grounding = True
         elif strong_grounding:
             try:

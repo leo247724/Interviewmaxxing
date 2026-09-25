@@ -526,8 +526,12 @@ def test_review_failures_have_precise_safe_statuses(
     with pytest.raises(AIHold, match=message) as caught:
         writer(provider, budget=budget).review(question="Check", facts=FACTS, job={},
                                               purpose="evidence_consistency")
-    assert len(provider.requests) == 1 and budget.calls == 1
+    # A length cut is retried once with twice the output allowance (round 6); the rest are not.
+    tries = 2 if status == "OUTPUT_LIMIT" else 1
+    assert len(provider.requests) == tries and budget.calls == tries
     assert budget.receipts[0].status == status
+    if tries == 2:
+        assert provider.requests[1]["max_tokens"] == 2 * provider.requests[0]["max_tokens"]
     assert "private-review-marker" not in str(caught.value)
     assert "private-review-marker" not in json.dumps(budget.metadata())
 

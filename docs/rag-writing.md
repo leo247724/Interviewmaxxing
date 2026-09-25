@@ -703,10 +703,32 @@ cut, never kept as voice. A rejected rewrite is tried again with its reason
 says "no-AI-slop rewrite discarded: …", so a kept original is never silent. The trace keeps each
 accepted rewrite's and the final draft's citation ids (`citations`, ids and paragraphs only).
 
+**The judge's batch-1 fixes** (JUDGE.md, D / D / D). A job priority is only ever the object of
+what the applicant did: clauses attributing a requirement to the employer or comparing the
+employer to his work ("Maximus asks its growth lead to…", "that Base holds this role accountable
+for", "as the role asks", "the kind of X that <employer> names", "where I've done my best work")
+get a corrective rewrite (`ATTRIBUTION`) and are linted (`attribution_clause`) with the names the
+posting uses (`employer_names`: "Base", "Maximus", not the record's legal name). The company fact
+and both closing sentences are structure: `job_restated` is found by a sentence's words, never by
+what it cites, and a rewrite that deletes the company fact is rejected (`dropped_structure`). The
+company fact passes a rarity test and is stated in the posting's words; an employer's dates come
+once, with no month-to-month ranges (`repeated_dates`); a tradeoff or a result comes from a cited
+passage, and the proof's result is the result of its change; one headline metric in the hook;
+one proof, other employers only as clauses; money figures keep their unit. Grade what ships: the
+shipped text's own review must pass the rubric (a rewrite that fails a line the draft passed is
+retried with the issues and otherwise discarded, `REJECTED_RUBRIC`), and a letter without a
+passing grade holds (`RUBRIC_HELD`), asking the owner the reviewer's one question
+(`owner_question`) when a missing element is the reason. Repeat reviews agree: sentences an
+earlier review supported are sent as `settled_sentences`, and Jev's per-sentence grounding
+verdicts are cached by sentence text and citations. A review cut at its output limit is retried
+once with twice the allowance. Retrieval lists the long-form candidate stories
+(`candidate-stories`) ahead of LinkedIn and site bullets for the proof.
+
 **The owner's voice** (addendum 3). Three posts he wrote in 2017 are indexed as voice samples
 (`index-voice`, style only); a letter gets the two most relevant passages (`voice_samples`), for
 the writer and the no-slop rewrite alike, never as evidence (they reach neither Jev nor the
-review). Both prompts carry `VOICE_RULE`: adopt his register (plain first person, direct
+review). Case-study answers get them too, to show the working the way his technical explainer
+does (the formula, each step with its numbers, what the result means). Both prompts carry `VOICE_RULE`: adopt his register (plain first person, direct
 address, short declarative sentences, concrete numbers, a homely analogy now and then, a blunt
 aside, confidence without puffery, "the bottom line" once) but never the posts' content or their
 blog tics (bucket brigades, "awesome", "insanely", "skyrocket", "explosive", "It's no secret

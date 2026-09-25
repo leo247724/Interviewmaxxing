@@ -50,6 +50,12 @@ chunks, else this many chunks ranked by requirement cues (round 6)."""
 MAX_REQUIREMENT_QUERIES = 10
 """Key requirements a cover letter or motivation answer retrieves facts for, each its own
 embedding input in the one request and its own hybrid query."""
+LONG_FORM_WINDOW = 4
+"""Story hits within which a passage of the candidate's long-form stories (the default story
+source) moves ahead of LinkedIn and site bullets: the proof needs the constraint and the
+tradeoff those stories tell (round 6, the judge's ninth fix)."""
+PRIORITY_POOL = 8
+"""First-priority story hits among which the best long-form passage is listed first."""
 PRIORITY_STORY_CHUNKS = 2
 """Story chunks ranked first for a cover letter or motivation answer by the posting's first
 priority alone: the letter's proof is drawn from the passage that best matches it."""
@@ -846,8 +852,20 @@ class PgKnowledgeStore:
         seen_stories: set[str] = set()
         versions = {j["source_version"] for j in jobs}
         priority_ids: list[str] = []
-        ranked_hits = ([(rank, hit, True) for rank, hit in enumerate(priority_hits, 1)]
-                       + [(rank, hit, False) for rank, hit in enumerate(story_hits, 1)])
+
+        def long_form_first(rows: list[dict[str, Any]], *, lead: bool) -> list[tuple[int, dict[str, Any]]]:
+            ranked = list(enumerate(rows, 1))
+            long_form = [item for item in ranked if item[1].get("source_id") == DEFAULT_STORY_SOURCE]
+            if lead:  # the proof's passage: the best long-form hit among the first few leads
+                best = next((item for item in long_form if item[0] <= PRIORITY_POOL), None)
+                if best is not None:
+                    ranked = [best, *(item for item in ranked if item is not best)]
+                return ranked
+            return sorted(ranked, key=lambda item: ((item[0] - 1) // LONG_FORM_WINDOW,
+                                                    item[1].get("source_id") != DEFAULT_STORY_SOURCE, item[0]))
+
+        ranked_hits = ([(rank, hit, True) for rank, hit in long_form_first(priority_hits, lead=True)]
+                       + [(rank, hit, False) for rank, hit in long_form_first(story_hits, lead=False)])
         for rank, hit, first_priority in ranked_hits:
             header = parse_chunk_header(hit["body"]) if _valid_hit_body(hit) else None
             if header is None:

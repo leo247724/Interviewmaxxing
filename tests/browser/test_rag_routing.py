@@ -709,7 +709,8 @@ def test_cover_letter_text_keeps_purpose_and_uses_retrieved_job_evidence(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
     evidence = fact(fictional_candidate, "experience", "I managed paid media.")
-    writer = Writer(rubric_letter(evidence.id, JOB_EVIDENCE["id"]))
+    # A cover letter ships only with its independent review's rubric PASS (round 6).
+    writer = ReviewingWriter(rubric_letter(evidence.id, JOB_EVIDENCE["id"]))
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [evidence]), mock_job,
         question="Cover letter", semantic=SemanticType.COVER_LETTER), Retriever([evidence], [JOB_EVIDENCE]),
         writer, DecisionsProvider(semantic="COVER_LETTER"))
@@ -728,8 +729,8 @@ def test_writer_can_independently_authorize_mixed_current_and_historical_source(
     semantic: SemanticType, question: str,
 ) -> None:
     evidence = fact(fictional_candidate, "experience", "I managed paid media.")
-    writer = Writer(rubric_letter(evidence.id, JOB_EVIDENCE["id"]) if semantic is SemanticType.COVER_LETTER
-                    else [{"text": evidence.value, "fact_ids": [evidence.id]}])
+    writer = (ReviewingWriter(rubric_letter(evidence.id, JOB_EVIDENCE["id"])) if semantic is SemanticType.COVER_LETTER
+              else Writer([{"text": evidence.value, "fact_ids": [evidence.id]}]))
     packet, resolver, _ = resolve(context(candidate_with(fictional_candidate, [evidence]), mock_job,
         question=question, semantic=semantic), Retriever([evidence], [JOB_EVIDENCE]), writer,
         DecisionsProvider(semantic=semantic.value, scope_probability=0.65, scope_approval=0.99))

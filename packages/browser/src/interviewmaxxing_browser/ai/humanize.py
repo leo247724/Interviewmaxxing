@@ -158,18 +158,63 @@ grammar, a proper noun, a title nor code requires ("Result: The CPA fell", "Focu
 Conversions And CRM Data")."""
 
 
+_LEGAL_SUFFIX = re.compile(r",?\s+(?:Inc\.?|LLC|L\.L\.C\.|Ltd\.?|Co\.?|Company|Corp\.?|Corporation|PBC|GmbH)$",
+                           re.IGNORECASE)
+
+
+def employer_names(company: str, described: str) -> list[str]:
+    """The names a letter may use for the employer, longest first: the job record's name,
+    without its legal suffix, and its first word, each kept when the job description uses it
+    (the posting says "Base" and "Maximus" where the record says "Base Power Company" and
+    "Maximus Health, Inc."); the record's name alone when the description uses none."""
+    full = company.strip()
+    bare = full
+    while _LEGAL_SUFFIX.search(bare):
+        bare = _LEGAL_SUFFIX.sub("", bare).strip()
+    words = bare.split()
+    first = words[0] if words and words[0].casefold() not in ("the", "a", "an") and len(words[0]) >= 3 else ""
+    candidates = [name for name in dict.fromkeys((full, bare, first)) if name]
+    used = [name for name in candidates if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", described)]
+    return sorted(used or candidates[:1], key=len, reverse=True)
+
+
+def attribution_clauses(text: str, names: Sequence[str]) -> list[str]:
+    """Clauses that attribute a requirement to the employer or compare the employer to the
+    applicant's work (round 6, the judge's first fix): "<employer> wants / asks / needs /
+    names / expects / holds this role accountable for", "as the role asks", "the kind of X
+    that <employer> names", "<employer>'s team works the way my practice has", "... the same
+    way", "where I've done my best work". A job priority is only ever the object of his work."""
+    found: list[str] = []
+    employer = "|".join(re.escape(name) for name in names if name.strip())
+    if employer:
+        found += [m.group(0) for m in re.finditer(
+            rf"\b(?:{employer})(?:'s\s+\w+)?\s+(?:wants|asks|needs|names|expects|requires|holds\b[^.!?]{{0,60}}?"
+            rf"accountable\s+for|puts|describes|calls\s+for|lists|values|seeks)\b", text, re.IGNORECASE)]
+        found += [m.group(0) for m in re.finditer(
+            rf"\b(?:{employer})(?:'s)?\s+(?:\w+\s+){{0,3}}works\s+the\s+way\b", text, re.IGNORECASE)]
+    found += [m.group(0) for m in re.finditer(
+        r"\bas\s+the\s+(?:role|posting|position|job|team)\s+(?:asks|requires|describes|wants|expects)\b"
+        r"|\bthe\s+kind\s+of\s+\w+(?:\s+\w+){0,5}\s+that\s+\w+(?:\s+\w+)?\s+(?:names|wants|asks|expects|needs)\b"
+        r"|\b(?:measured|ran|run|built|managed)\b[^.!?]{0,60}?\bthe\s+same\s+way\b"
+        r"|\bwhere\s+I(?:'ve|\s+have)?\s+done\s+my\s+best\s+work\b"
+        r"|\bworks\s+the\s+way\s+my\s+\w+\s+(?:has|does|did)\b", text, re.IGNORECASE)]
+    return [clause.strip()[:120] for clause in found]
+
+
 def fit_commentary(text: str) -> list[str]:
     """The fit commentary a draft contains (short excerpts)."""
     return [match.group(0).strip()[:120] for match in _FIT_COMMENTARY.finditer(text)]
 
 
-def restates_job(sentence: str, company: str = "") -> bool:
+def restates_job(sentence: str, company: str | Sequence[str] = "") -> bool:
     """A sentence that restates the posting rather than stating the applicant's work: it
     opens with the posting or the employer as its subject ("The role also calls for...",
     "The qualifications emphasize...", "Base wants...") and makes no first-person claim."""
     subject = _JOB_SUBJECT
-    if company.strip():
-        subject += rf"|{re.escape(company.strip())}(?:'s\s+\w+)?\s+(?:wants|needs|is\s+hiring|is\s+looking|"
+    names = [company] if isinstance(company, str) else list(company)
+    employer = "|".join(re.escape(name.strip()) for name in names if name.strip())
+    if employer:
+        subject += rf"|(?:{employer})(?:'s\s+\w+)?\s+(?:wants|needs|is\s+hiring|is\s+looking|"
         subject += r"seeks|asks|expects|values|describes|emphasi[sz]es|calls)"
     return (re.match(rf"(?:{subject})\b", sentence.strip(), re.IGNORECASE) is not None
             and _FIRST_PERSON.search(sentence) is None)
@@ -326,13 +371,15 @@ def _openers(sentences: list[str]) -> list[str]:
     return [" ".join(_WORD.findall(sentence.casefold())[:3]) for sentence in sentences]
 
 
-def lint(text: str, *, statements: Sequence[str] = (), job_only: Sequence[str] = (),
-         company: str = "") -> list[Finding]:
+def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[str] = "") -> list[Finding]:
     """The banned constructions present in a draft, by stable pattern name; with the
     person's ``statements``, also a run of more than ``MAX_QUOTED_WORDS`` words copied from
-    one of them (``quoted_statement``). ``job_only`` are the draft's sentences that cite
-    only job evidence and ``company`` the target employer: sentences restating the posting
-    (``job_restated``) are found from both."""
+    one of them (``quoted_statement``). ``company`` is the name, or the names, the letter uses
+    for the employer (the posting's, not the record's legal name): sentences restating the
+    posting (``job_restated``, by their words, never by what they cite: a company fact or an
+    offer to talk may cite job evidence alone) and attribution clauses are found with it."""
+    names = [company] if isinstance(company, str) else [name for name in company if name]
+    company = names[0] if names else ""
     findings: list[Finding] = []
     paragraphs = [paragraph.strip() for paragraph in text.strip().split("\n\n") if paragraph.strip()]
     if paragraphs and greeting(paragraphs[0]):
@@ -381,9 +428,7 @@ def lint(text: str, *, statements: Sequence[str] = (), job_only: Sequence[str] =
     elif len(paragraphs) >= 3 and not re.search(r"\d", last_paragraph) and _CLOSING_RECAP.search(last_paragraph):
         findings.append(Finding("closing_recap", 1, (last_paragraph[:120],)))
     # The cover-letter genre (round 6).
-    listed = {" ".join(sentence.split()) for sentence in job_only}
-    restated = [sentence for sentence in sentences
-                if " ".join(sentence.split()) in listed or restates_job(sentence, company)]
+    restated = [sentence for sentence in sentences if restates_job(sentence, names)]
     if restated:
         findings.append(Finding("job_restated", len(restated), tuple(s[:120] for s in restated[:4])))
     if sentences and stock_opener(sentences[0]):
@@ -401,28 +446,25 @@ def lint(text: str, *, statements: Sequence[str] = (), job_only: Sequence[str] =
     portables = [sentence for sentence in sentences if portable(sentence)]
     if portables:
         findings.append(Finding("portable_sentence", len(portables), tuple(s[:120] for s in portables[:4])))
-    if company.strip():
-        clauses = re.findall(rf"\b(?:that|which|what|as)\s+{re.escape(company.strip())}\s+(?:asks|wants|names|"
-                             r"expects|needs|holds|puts|describes|calls|requires|lists)\b|"
-                             rf"\b{re.escape(company.strip())}\s+(?:asks|wants|names|expects|needs|requires)\b",
-                             text, re.IGNORECASE)
-        clauses += re.findall(r"\bas\s+the\s+(?:role|posting|position|job)\s+(?:asks|requires|describes|wants)\b|"
-                              r"\bthe\s+kind\s+of\s+\w+(?:\s+\w+){0,4}\s+that\b", text, re.IGNORECASE)
-        if len(clauses) > 2:
-            findings.append(Finding("posting_clause", len(clauses), tuple(clauses[:4])))
-    dates = re.findall(r"\b(?:since|from|in)\s+(?:(?:january|february|march|april|may|june|july|august|september|"
-                       r"october|november|december)\s+)?(?:19|20)\d{2}\b", text, re.IGNORECASE)
-    restated_dates = [date for date in dict.fromkeys(d.casefold() for d in dates) if dates_count(dates, date) > 2]
-    if restated_dates:
-        findings.append(Finding("repeated_dates", len(restated_dates), tuple(restated_dates[:4])))
+    clauses = attribution_clauses(text, names)
+    if clauses:
+        findings.append(Finding("attribution_clause", len(clauses), tuple(clauses[:4])))
+    month = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    ranges = re.findall(rf"\b(?:from|between)?\s*{month}\s+(?:19|20)\d{{2}}\s*(?:to|and|through|-|\u2013)\s*"
+                        rf"(?:{month}\s+(?:19|20)\d{{2}}|present|now|today)\b", text, re.IGNORECASE)
+    since = re.findall(rf"\bsince\s+{month}\s+(?:19|20)\d{{2}}\b", text, re.IGNORECASE)
+    repeats = [date for date in dict.fromkeys(d.casefold() for d in since) if dates_count(since, date) > 1]
+    if ranges or repeats:
+        findings.append(Finding("repeated_dates", len(ranges) + len(repeats),
+                                tuple([r.strip() for r in ranges] + repeats)[:4]))
     if text.casefold().count("the bottom line") > 1:
         findings.append(Finding("blog_tic", text.casefold().count("the bottom line"), ("the bottom line",)))
-    names = {" ".join(match.group(1).casefold().split()) for match in _POSTING_NAME.finditer(text)}
-    if company.strip() and re.search(rf"\b{re.escape(company.strip())}(?:'s\s+\w+)?\s+(?:wants|needs|is\s+hiring|"
-                                     r"is\s+looking|seeks|asks|expects)\b", text, re.IGNORECASE):
-        names.add("<company> wants")
-    if len(names) >= 3:
-        findings.append(Finding("synonym_cycling", len(names), tuple(sorted(names))[:4]))
+    cycled = {" ".join(match.group(1).casefold().split()) for match in _POSTING_NAME.finditer(text)}
+    if any(re.search(rf"\b{re.escape(name.strip())}(?:'s\s+\w+)?\s+(?:wants|needs|is\s+hiring|is\s+looking|"
+                     r"seeks|asks|expects)\b", text, re.IGNORECASE) for name in names if name.strip()):
+        cycled.add("<company> wants")
+    if len(cycled) >= 3:
+        findings.append(Finding("synonym_cycling", len(cycled), tuple(sorted(cycled))[:4]))
     return findings
 
 
@@ -477,6 +519,30 @@ def _number_values(text: str) -> set[float]:
     return values
 
 
+def _keeps_company_fact(original: NarrativeDraft, rewritten: NarrativeDraft) -> bool:
+    """The company paragraph's sentences that cite job evidence (the fact only true of this
+    employer, its pairing with the applicant's work) survive a rewrite, as their own sentence
+    or folded into another of that paragraph: the no-slop pass rewords structure, never deletes
+    it (the judge's second fix; a live rewrite deleted Base's battery sentence)."""
+    def company_paragraph(draft: NarrativeDraft) -> list[Any]:
+        indices = sorted({s.paragraph for s in draft.sentences})
+        if len(indices) < 3:
+            return []
+        return [s for s in draft.sentences if s.paragraph == indices[-2]]
+
+    def words(text: str) -> set[str]:
+        return {word for word in _WORD.findall(text.casefold()) if len(word) >= 4}
+
+    kept = company_paragraph(rewritten)
+    # A sentence citing job evidence alone there is the company fact: it survives when most of
+    # its words stand in a sentence of that paragraph citing its job evidence (as its own
+    # sentence, reworded, or folded into another); another sentence citing the same chunk
+    # does not stand in for it.
+    return all(any(set(s.job_evidence_ids) <= set(r.job_evidence_ids)
+                   and len(words(s.text) & words(r.text)) >= 0.5 * len(words(s.text)) for r in kept)
+               for s in company_paragraph(original) if s.job_evidence_ids and not s.fact_ids)
+
+
 def _job_only(draft: NarrativeDraft) -> list[str]:
     return [s.text for s in draft.sentences if s.job_evidence_ids and not s.fact_ids]
 
@@ -518,6 +584,8 @@ def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
         return "length_drift"
     if len(rewritten.text) > (max_length or 4000):
         return "field_length"
+    if purpose == "cover_letter" and not _keeps_company_fact(original, rewritten):
+        return "dropped_structure"
     if purpose == "cover_letter":
         paragraphs = len({s.paragraph for s in rewritten.sentences})
         salutation = bool(original.sentences) and greeting(original.sentences[0].text)
@@ -537,6 +605,8 @@ REJECTION_FEEDBACK = {
     "unknown_citation": "Cite only ids the draft already cites.",
     "dropped_citation": "Keep every fact id the draft cites, and keep each fact sentence's job_evidence_ids "
                         "on it.",
+    "dropped_structure": "Keep the company paragraph's fact about the employer and its pairing with the "
+                         "applicant's work: reword those sentences, never delete them.",
     "moved_citation": "Keep each fact sentence's exact fact_ids together on one sentence; do not split, "
                       "merge or repeat fact citation sets.",
     "added_job_sentence": "Do not add a sentence that cites only job evidence; fold job priorities into the "
@@ -575,10 +645,15 @@ _RULES = (
     "never preserved as the applicant's voice (fit_hedge and fit_commentary findings such as "
     "'while I have not...', 'a quick learner', 'a strong fit', 'relates to', 'is where my "
     "experience', 'could apply to', 'aligns with', 'maps to', 'speaks to'); keep the affirmative "
-    "claims and never add a claim to replace one. A sentence that cites only job evidence and "
-    "restates the posting (job_restated: 'The role...', 'The posting...', '<Company> wants...') "
-    "is deleted, or folded as a clause into the sentence about the applicant's matching work, "
-    "whose job_evidence_ids then include its ids. Cut the stock opener and closer (an "
+    "claims and never add a claim to replace one. A job_restated sentence (the posting or the "
+    "employer as its subject: 'The role...', 'The posting...', '<Company> wants...') is recast so "
+    "the priority becomes the object of the applicant's work, or folded into that sentence (whose "
+    "job_evidence_ids then include its ids). The company fact (what this employer sells, builds or "
+    "is doing, citing job evidence) and both closing sentences are structure: reword them, never "
+    "delete them. An attribution_clause ('<Company> wants / asks / names / expects / holds this role "
+    "accountable for', 'as the role asks', 'the kind of X that <Company> names', 'the same way') is "
+    "cut: a job priority is only ever the object of what the applicant did. Cut the stock opener "
+    "and closer (an "
     "application line, a count of years, gratitude, 'I would welcome the chance'), the "
     "connective tic ('In that same role', 'In the same practice', 'In that role', "
     "'Separately,'), identical paragraph openings, sentences that fail the portability test "
@@ -587,9 +662,8 @@ _RULES = (
     "self-answered questions ('The result? CPA fell.'), closing recap paragraphs, 'And' "
     "fragments, capitals after a colon that neither grammar, a proper noun, a title nor code "
     "requires, decorative bold and bullets, and synonym cycling of the posting's name (pick one "
-    "name for the role and keep it). posting_clause findings ('the kind of X that <employer> "
-    "names', 'which <employer> expects', 'as the role asks') are fit commentary: cut the clause "
-    "and keep the work. repeated_dates: give an employer's dates once, where it first appears. "
+    "name for the role and keep it). repeated_dates: give an employer's dates once, as a year or "
+    "'since <Month YYYY>' where it first appears, and no month-to-month range. "
     "A greeting line ('Dear Hiring Manager,') stays as it is, and a cover letter's closing "
     "paragraph keeps both its sentences: the profile link and the offer to talk. "
     "When rejected_rewrite is supplied, your previous rewrite broke that constraint: fix it. Never "
@@ -735,7 +809,7 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
                    supplied_ids: set[str], job_ids: set[str],
                    ground: Callable[[NarrativeDraft, dict[str, Any]], None],
                    trace: Callable[[dict[str, Any]], dict[str, Any]],
-                   statements: Sequence[str] = ()) -> NarrativeDraft:
+                   statements: Sequence[str] = (), names: Sequence[str] = ()) -> NarrativeDraft:
     """Rewrite a grounded draft under the no-slop rules, ground the rewrite again with
     ``ground`` (which raises a hold on failure) and lint the result. A rewrite rejected by
     ``check_rewrite`` or by the grounding is tried again with the reason as feedback, and
@@ -747,10 +821,10 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
     ``MAX_QUOTED_WORDS`` consecutive words of one is a finding to rewrite, and a rewrite
     that does is rejected (``REJECTED_QUOTED_STATEMENT``). Each accepted rewrite's and the
     final draft's citation ids are traced (``citations``)."""
-    company = job.get("company", "")
+    employer = list(names) or [job.get("company", "")]
 
     def findings_for(current: NarrativeDraft) -> list[Finding]:
-        return lint(current.text, statements=statements, job_only=_job_only(current), company=company)
+        return lint(current.text, statements=statements, company=employer)
 
     before = findings_for(draft)
     record = trace({"stage": "humanize", "question": question, "purpose": purpose,

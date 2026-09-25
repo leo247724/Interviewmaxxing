@@ -363,3 +363,24 @@ def test_a_letter_gets_two_voice_passages_from_the_owners_posts(profile, mock_jo
     assert len(result.voice_samples) == 2 and not result.receipt["voice_from_stories"]
     assert all("fictional" in sample for sample in result.voice_samples)
     assert not any(sample in json.dumps(result.receipt) for sample in result.voice_samples)
+
+
+def test_the_long_form_story_leads_over_a_linkedin_bullet(profile, mock_job) -> None:
+    from interviewmaxxing_generation.knowledge.stories import DEFAULT_STORY_SOURCE
+
+    db, embedder = ConceptPg(), ConceptEmbedder()
+    store = PgKnowledgeStore(db, embedder)
+    store.index_candidate(profile)
+    bullet = _story(1, "Tracking bullet", "Rebuilt tracking tracking tracking for orders.")
+    long_form = _story(2, "The dashboard that lied", "The dashboard counted calls as orders while the ledger "
+                                                     "showed thin months, so I rebuilt tracking.")
+    store.index_stories(profile.id, [bullet], version="e" * 64, source_id="candidate-stories-linkedin",
+                        replace_others=False)
+    store.index_stories(profile.id, [long_form], version="f" * 64, source_id=DEFAULT_STORY_SOURCE,
+                        replace_others=False)
+    store.index_job(profile.id, mock_job, "You will build tracking so every order is counted.",
+                    "https://example.invalid/tracking-role")
+    result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True)
+    # The bullet matches the priority's words more closely; the long-form story still leads.
+    assert [c["title"] for c in result.story_chunks][:2] == ["The dashboard that lied", "Tracking bullet"]
+    assert result.receipt["story_priority_ids"][0] == long_form.id
