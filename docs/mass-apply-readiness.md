@@ -368,6 +368,19 @@ person's professional stories chunked into a `story` kind in pgvector, retrieval
 and narrative answers, Opus 5.5 at high effort, a no-AI-slop rewrite that must re-pass grounding).
 LinkedIn Easy Apply is out of scope for good.
 
+**Retry of pilot 7 (22:05, `prepare-batch --retry pilot7-20260924`, pilot branch = head + WP7, with
+the person's imported status, race and salary answers).** 32 of the 40 applications were retried
+(6 already prepared, 2 need only explicit answers): 3 more prepared, 27 held, 2 failed
+(BambooHR conditional reveals). Pilot 7 stands at 9 of 40 prepared, from 1 at the start of the
+day. The 118 remaining holds: 46 yes/no or select screeners about specific experience (Amazon
+DSP, MMM/MTA, incrementality, ABM, agency environment, platforms managed; WP12 round 3, not yet
+merged when this ran, lets screeners use the story and derived facts, the rest are genuine gaps
+for the person's stories to cover), 18 narratives (same round: motivation from alignment, output
+budgets), 8 salary variants (WP2 round 10, paused: range and period selects deterministic, base
+salary from the saved figure), consent and attestation statements (the person's optional consent
+keys), earliest start date (the saved value does not fit the sites' option wordings), and one-off
+questions (county, pronouns, AI tools, familiarity, location preference).
+
 **Merged late evening (j-workspace 99485ca).** WP1 rounds 7–9 (labels from the shown question,
 BambooHR comboboxes, hidden import inputs, Jobvite, lookup portals and Floating UI's page-wide
 aria-hidden marks, referral wording typed on any control); WP6 with WP8 (dialog wizards, embedded
