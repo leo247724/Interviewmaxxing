@@ -817,9 +817,10 @@ optional or required. The flow is now:
    to enforce in its prompt: the rubric's line rules with the length as a hard count
    (`LETTER_WORD_BUDGET`: 300-360 words, budgeted by paragraph), the no-slop lint as instructions
    (`NO_SLOP_RULE`), the voice rule, the ten fixes and the age rule. A cover letter's request
-   keeps its 6000-token answer allowance plus 4000 tokens of room for reasoning past its budget
-   (`OVERRUN_TOKENS`; batch 4's corrective rewrite was cut at 8560 and its retry cost a whole
-   call). Tokens not written cost nothing.
+   keeps its 6000-token answer allowance and no more. The request's `max_tokens` is what bounds
+   Opus's reasoning: with 4000 tokens of extra room, a live batch-5 draft reasoned into it and cost
+   USD 0.24 instead of 0.15. For the same reason the prompt states the count but does not ask the
+   model to count its words.
 2. **The code checks and Jev**, nearly free. A failed code check, a sentence Jev scores at or
    below `LETTER_GROUNDING_FLOOR` (0.20; in batches 1-4 the reviews rejected the sentences Jev
    scored 0.17-0.19 and supported those at 0.23 and above) or a letter Jev finds incomplete is a
@@ -870,6 +871,51 @@ draft is always Opus. The runner keeps the default until the owner decides.
   0.03, so about USD 0.22-0.25;
 - with the one corrective rewrite: about USD 0.40;
 - the evidence review, when Jev is uncertain: about 0.08 more.
+
+### The note: the owner's short form (the lead's addendum for the Wellfound notes)
+
+A cover-letter field is a **note** in either of two cases:
+- its label or placeholder asks for one (`NOTE_FIELD`: "Write a note to Jordan at Mock Co.", "Add
+  a note", a label "Note"; "Please note" or "Note:" in help text does not count);
+- its `max_length` is below 2400 characters (`SHORT_LETTER_CHARS`), too short for the rubric's
+  300-360-word letter.
+
+A note gets the short form (`letter_shape`, `NOTE_RULES`):
+- 120-180 words (ceiling 190) in 1-3 paragraphs;
+- no greeting line, no sign-off, no link;
+- a hook with one figure;
+- one proof told as constraint, change and result in two or three sentences;
+- one sentence true only of the employer, with the first move, citing the job chunk and his work;
+- a one-line close offering to walk them through the proof, with no gratitude and no age.
+
+The same code checks apply, scaled:
+- `GREETING` rejects a greeting line;
+- `LETTER_LENGTH` uses the note's range (`NOTE_WORDS`, `NOTE_PARAGRAPHS`);
+- `CLOSING` wants one line offering to talk;
+- the proof's told-once check needs the letter's paragraphs, so it is skipped.
+
+`check_rewrite` holds the no-slop rewrite to the note's range. Jev's completeness question and
+the one review grade the note against its own HARD lines (`NOTE_RUBRIC_LINES`). The flow, the
+one corrective rewrite and the costs are the letter's.
+
+**Batch-5 findings fixed with it:**
+- `FIGURE_UNPAIRED` paired a bare "10" in a story sentence with every fact stating a 10, so both
+  of a live letter's drafts held. It now pairs only headline figures (`_headline_figures`: money,
+  a percentage, or a count of 100 or more). A figure counts as paired when one cited verified
+  fact states it. A twin needs two shared content words.
+- `JOB_RESTATED` no longer counts the company paragraph's company fact (a job-only sentence whose
+  subject is the employer's own work, not the posting or the role) against the one restatement
+  the rubric allows (line 6a).
+- `PROOF_RETOLD` fired when the bridge and the first move cited the proof's passage. The first
+  move has to cite it to show the work it is built from. A retelling is now a company-paragraph
+  sentence citing the proof that restates the proof's headline figures, or more than two such
+  sentences.
+- `TENURE_OVERSTATED` (new, letters and notes): a sentence citing a story passage may not state a
+  duration longer than its role's resume dates (`tenure_overstated`, with the generation
+  package's `duration_claims`). Maximus's rewrite said "nearly 2 years" for a 15-month role; the
+  review rejected it only after the one rewrite was spent.
+- A grounding rejection now carries the same review's rubric issues into the one corrective
+  rewrite, so one rewrite can fix both. The review had graded both anyway.
 
 ## Verification
 

@@ -1861,8 +1861,10 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
     elif rule == "ATTRIBUTION":
         bad[9] = {**bad[9], "text": "Reporting to a sales team is the weekly habit I kept, and Mock Co holds this "
                                     "role accountable for exactly that kind of reporting."}
-    elif rule == "PROOF_RETOLD":  # the company paragraph tells the proof again, twice
-        bad[8] = {**bad[8], "fact_ids": [*bad[8]["fact_ids"], chunk["id"]]}
+    elif rule == "PROOF_RETOLD":  # the company paragraph tells the proof again, with its result
+        bad[8] = {**bad[8], "fact_ids": [*bad[8]["fact_ids"], chunk["id"]],
+                  "text": "Those managers watched online orders grow by 35% once the tracking counted only paid "
+                          "orders, and two of them started asking for my report before Monday."}
         bad[9] = {**bad[9], "fact_ids": [*bad[9]["fact_ids"], chunk["id"]]}
     elif rule == "COMPANY_FACT_COPIED":  # the posting's own sentence pasted in
         bad[7] = {**bad[7], "text": "Mock Co wants someone to own paid search strategy for enterprise brands and "
@@ -2608,3 +2610,201 @@ def test_the_review_model_serves_the_reviews_and_the_rewrite_never_the_draft(can
         NarrativeWriter(ApiKey("synthetic-writer-key", source="test"), MODEL, CallBudget(), review_model="openai/gpt-5")
     default = NarrativeWriter(ApiKey("synthetic-writer-key", source="test"), MODEL, CallBudget())
     assert default.reviewer == MODEL and default.call_label("letter_review") == "opus_letter_review"
+
+
+# --- round 7, the lead's addendum: a note-shaped cover-letter field gets the short form ----------
+
+
+NOTE_PLACEHOLDER = "Write a note to Jordan at Mock Co."
+
+
+def note_letter(fact_id: str, job_id: str, story_id: str) -> list[dict[str, Any]]:
+    """A fictional note in the owner's short form (149 words): hook, proof, the employer's
+    sentence with the first move, a one-line close; no greeting."""
+    return [
+        {"text": "In 2024 I grew online orders by 35% for a regional bakery chain after rebuilding how its paid "
+                 "search conversions were counted.", "fact_ids": [fact_id, story_id], "paragraph": 0},
+        {"text": "Its dashboard counted every phone call as an order, so the budget kept flowing to searches that "
+                 "never produced a sale.", "fact_ids": [fact_id, story_id], "paragraph": 1},
+        {"text": "I rebuilt the tracking so that only paid orders counted, which halved the reported conversions for "
+                 "two months and made the owner nervous about the spend.", "fact_ids": [fact_id, story_id],
+         "paragraph": 1},
+        {"text": "I held the budget flat through that dip, and by the end of 2024 online orders were up 35%.",
+         "fact_ids": [fact_id, story_id], "paragraph": 1},
+        {"text": "Your team runs paid search for enterprise brands and reports to a sales team, so first I would audit "
+                 "which paid search conversions reach the sales team's records, the step that paid off at the bakery "
+                 "chain.", "fact_ids": [fact_id], "job_evidence_ids": [job_id], "paragraph": 2},
+        {"text": "I can walk you through the bakery chain's order data and the tracking rebuild on a call this week.",
+         "fact_ids": [], "paragraph": 2},
+    ]
+
+
+def note_context(candidate: CandidateProfile, job: JobRecord, *, label: str = "Cover letter",
+                 placeholder: str | None = NOTE_PLACEHOLDER, help_text: str | None = None,
+                 max_length: int | None = None) -> PacketContext:
+    ctx = letter_context(candidate, job)
+    field = ctx.form.fields[0].model_copy(update={"label": label, "placeholder": placeholder,
+                                                  "help_text": help_text, "max_length": max_length})
+    return replace(ctx, form=ctx.form.model_copy(update={"fields": [field]}))
+
+
+def test_a_note_field_gets_the_short_form_with_the_same_checks_and_one_review(candidate, mock_job):
+    from interviewmaxxing_browser.ai.providers import NOTE_RUBRIC_LINES, NOTE_RULES
+    from interviewmaxxing_browser.ai.routing import (
+        NOTE_CLOSING_FEEDBACK,
+        NOTE_GREETING_FEEDBACK,
+        NOTE_LENGTH_FEEDBACK,
+        letter_shape,
+    )
+
+    chunk = story_chunk()
+    note = note_letter("fact.bakery", POSTING["id"], chunk["id"])
+    assert 120 <= len(NarrativeDraft.model_validate(ready(note)).text.split()) <= 180
+    retriever = lambda: Retriever(list(candidate.facts), [chunk], job_evidence=[POSTING])  # noqa: E731
+    # Which fields are notes: the placeholder or label asks for a note, or the field cannot hold
+    # the rubric's letter; "Please note" in the help text does not make one.
+    assert letter_shape(note_context(candidate, mock_job).form.fields[0]) == "note"
+    assert letter_shape(note_context(candidate, mock_job, label="Note", placeholder=None).form.fields[0]) == "note"
+    assert letter_shape(note_context(candidate, mock_job, placeholder=None, max_length=1500).form.fields[0]) == "note"
+    assert letter_shape(note_context(candidate, mock_job, placeholder=None, help_text="Please note: PDF text only.",
+                                     max_length=5000).form.fields[0]) == "letter"
+    # First time: the short form, one review graded against its own lines, no link supplied.
+    writer = LetterWriter([note])
+    packet, resolver, ctx = resolve(note_context(candidate, mock_job), retriever(), writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and ctx.problems(packet) == [] and len(writer.calls) == 1
+    assert writer.calls[0]["shape"] == "note" and writer.purposes() == ["letter_review"]
+    assert writer.reviews[0]["shape"] == "note"
+    assert not any(item["id"] == "contact:links" for item in writer.calls[0]["facts"])
+    assert not packet.answers[0].value.text.startswith("Dear")
+    draft = next(t for t in resolver.narrative_traces if t["stage"] == "draft")
+    assert draft["shape"] == "note" and draft["rubric"]["status"] == "PASSED"
+    # The same rubric line checks, scaled: a greeting line, a letter's length or a close that
+    # offers nothing gets the one corrective rewrite with the note's own feedback.
+    greeting_line = [{"text": "Dear Jordan,", "fact_ids": [], "paragraph": 0},
+                     *({**s, "paragraph": s["paragraph"] + 1} for s in note)]
+    long_note = [*note[:4], *({**s, "text": s["text"] + " That work ran every week of the season and kept the "
+                               "reported numbers honest for the owner and the store managers."} for s in note[1:4]),
+                 *note[4:]]
+    long_note = [{**s, "paragraph": min(s["paragraph"], 2)} for s in long_note]
+    no_offer = [*note[:5], {"text": "Thank you for considering my application.", "fact_ids": [], "paragraph": 2}]
+    for bad, code, feedback in ((greeting_line, "GREETING", NOTE_GREETING_FEEDBACK),
+                                (long_note, "LETTER_LENGTH", NOTE_LENGTH_FEEDBACK),
+                                (no_offer, "CLOSING", NOTE_CLOSING_FEEDBACK)):
+        writer = LetterWriter([bad, note])
+        packet, resolver, _ = resolve(note_context(candidate, mock_job), retriever(), writer,
+                                      Jev(semantic="COVER_LETTER"))
+        assert packet.is_complete and len(writer.calls) == 2, code
+        assert code in next(t for t in resolver.narrative_traces if t["stage"] == "draft")["rejected_for"]
+        assert feedback in writer.calls[1]["review_feedback"]
+    # The prompts: the writer gets the short form's rules, the review its HARD lines.
+    transport = Transport(write=[ready(note)], humanize=[ready(note)], review=[REVIEW_OK])
+    packet, _, _ = resolve(note_context(candidate, mock_job), retriever(),
+                           real_writer(transport, budget=CallBudget(max_usd=3.0)), Jev(semantic="COVER_LETTER"),
+                           humanize=True)
+    assert packet.is_complete
+    write = next(r for role, r in zip(transport.roles, transport.requests, strict=True) if role == "write")
+    review = next(r for role, r in zip(transport.roles, transport.requests, strict=True) if role == "review")
+    assert NOTE_RULES in write["messages"][0]["content"] and "HARD WORD COUNT 120-180" in write["messages"][0]["content"]
+    assert "280-380 words (never more than 400)" not in write["messages"][0]["content"]
+    assert NOTE_RUBRIC_LINES in review["messages"][0]["content"]
+    assert "(1) 280-380 words" not in review["messages"][0]["content"]
+
+
+def test_a_letters_company_fact_is_no_restatement_and_a_bare_count_needs_no_twin(candidate, mock_job):
+    """Live batch-5 findings (round 7): the rubric's line 6(a) exempts the company fact from the
+    one restatement a letter may make, and a bare small count ("10") is no headline figure."""
+    from interviewmaxxing_browser.ai.routing import DynamicPacketResolver, _headline_figures
+
+    chunk = story_chunk()
+    letter = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    company_fact = {"text": "Mock Co runs paid search for enterprise brands across four regional markets.",
+                    "fact_ids": [], "job_evidence_ids": [POSTING["id"]], "paragraph": 3}
+    restated = {"text": "The role also calls for weekly reports to the sales team.", "fact_ids": [],
+                "job_evidence_ids": [POSTING["id"]], "paragraph": 3}
+    ctx = letter_context(candidate, mock_job)
+
+    def codes(sentences: list[dict[str, Any]]) -> set[str]:
+        draft = NarrativeDraft.model_validate(ready(sentences))
+        return {code for code, _ in DynamicPacketResolver._letter_findings(
+            ctx, draft, purpose="cover_letter", job_evidence=[POSTING], stories=True, contact=True,
+            facts=list(candidate.facts), evidence=list(candidate.facts))}
+
+    assert "JOB_RESTATED" not in codes([*letter[:7], company_fact, *letter[7:9], restated, *letter[9:]])
+    assert "JOB_RESTATED" in codes([*letter[:7], dict(restated), *letter[7:9], restated, *letter[9:]])
+    assert _headline_figures("I cut the reply time to 10 minutes in 2024.") == set()
+    assert _headline_figures("I managed $400K+ a month and cut CPA 58% across 1,200 leads.") == {
+        (400000.0, False), (58.0, True), (1200.0, False)}
+    ten = [dict(s) for s in letter]
+    ten[3] = {**ten[3], "text": "When I took over the bakery chain's 10 store accounts, the dashboard counted every "
+                                "phone call as an order and the budget kept flowing to searches that never sold."}
+    stores = fact(candidate, "Ran paid search for the bakery chain's 10 stores and their weekly order reports.",
+                  fid="fact.stores")
+    draft = NarrativeDraft.model_validate(ready(ten))
+    assert "FIGURE_UNPAIRED" not in {code for code, _ in DynamicPacketResolver._letter_findings(
+        ctx, draft, purpose="cover_letter", job_evidence=[POSTING], stories=True, contact=True,
+        facts=[*candidate.facts, stores], evidence=[*candidate.facts, stores])}
+
+
+def test_a_first_move_may_cite_the_proof_but_never_retell_it_or_outrun_the_resume(candidate, mock_job):
+    """Live batch-5 findings (round 7): a company paragraph whose bridge and first move cite the
+    proof's passage retells nothing unless it restates the proof's figures; a passage's own length
+    ("nearly 2 years") never outruns its role's resume dates (TENURE_OVERSTATED, before any review)."""
+    from interviewmaxxing_browser.ai.routing import (
+        DynamicPacketResolver,
+        _period_months,
+        tenure_overstated,
+    )
+
+    chunk = story_chunk(resume_role="Marketing Manager, Crumb & Co. Bakeries", period="2023-04 to 2024-03")
+    letter = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    ctx = letter_context(candidate, mock_job)
+
+    def codes(sentences: list[dict[str, Any]]) -> set[str]:
+        draft = NarrativeDraft.model_validate(ready(sentences))
+        return {code for code, _ in DynamicPacketResolver._letter_findings(
+            ctx, draft, purpose="cover_letter", job_evidence=[POSTING], stories=True, contact=True,
+            facts=list(candidate.facts), evidence=list(candidate.facts),
+            story_periods={chunk["id"]: chunk["period"]})}
+
+    cited = [dict(s) for s in letter]
+    for index in (9, 10):  # the bridge and the first move cite the proof's passage
+        cited[index] = {**cited[index], "fact_ids": [*cited[index]["fact_ids"], chunk["id"]]}
+    assert "PROOF_RETOLD" not in codes(cited) and codes(letter) == set()
+    longer = [dict(s) for s in letter]
+    longer[3] = {**longer[3], "text": "For nearly 2 years the bakery chain's dashboard counted every phone call as an "
+                                      "order, so the budget kept flowing to searches that never produced a sale."}
+    assert "TENURE_OVERSTATED" in codes(longer)
+    writer = LetterWriter([longer, letter])
+    retriever = Retriever(list(candidate.facts), [chunk], job_evidence=[POSTING])
+    packet, _, _ = resolve(ctx, retriever, writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and writer.purposes() == ["letter_review"]
+    assert any("2023-04 to 2024-03" in issue for issue in writer.calls[1]["review_feedback"])
+    today = __import__("datetime").date(2026, 9, 25)
+    assert _period_months("2024-03 to 2025-05", today) == 15 and _period_months("since 2025-06", today) == 16
+    assert _period_months("2024", today) is None
+    sentence = NarrativeDraft.model_validate(ready([{"text": "I spent almost 2 years on it.", "fact_ids": ["story:x"]}]))
+    assert tenure_overstated(sentence.sentences, {"story:x": "2024-03 to 2025-03"}, today) == ["2024-03 to 2025-03"]
+    fits = NarrativeDraft.model_validate(ready([{"text": "I spent 6 months on it.", "fact_ids": ["story:x"]}]))
+    assert tenure_overstated(fits.sentences, {"story:x": "2024-03 to 2025-03"}, today) == []
+
+
+def test_a_grounding_rejection_carries_the_same_reviews_rubric_issues_into_the_one_rewrite(candidate, mock_job):
+    from interviewmaxxing_browser.ai.routing import DROP_REJECTED_FEEDBACK, RUBRIC_REWRITE_FEEDBACK
+
+    class BothWriter(LetterWriter):
+        def review(self, **kwargs: Any) -> Any:
+            self.reviews.append(kwargs)
+            if len(self.reviews) == 1:
+                return SimpleNamespace(verdict="UNSUPPORTED", issues=["Sentence 12 credits the revenue to the mail."],
+                                       reference_ids=[], rubric="FAIL",
+                                       rubric_issues=["Line 6a: two sentences restate the posting."], owner_question="")
+            return SimpleNamespace(verdict="SUPPORTED", issues=[], reference_ids=[], rubric="PASS", rubric_issues=[],
+                                   owner_question="")
+
+    letter = rubric_letter("fact.bakery", POSTING["id"])
+    writer = BothWriter([letter])
+    packet, _, _ = resolve(letter_context(candidate, mock_job), Retriever(list(candidate.facts), job_evidence=[POSTING]),
+                           writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and len(writer.calls) == 2
+    assert writer.calls[1]["review_feedback"] == [DROP_REJECTED_FEEDBACK, "Sentence 12 credits the revenue to the mail.",
+                                                  RUBRIC_REWRITE_FEEDBACK, "Line 6a: two sentences restate the posting."]
