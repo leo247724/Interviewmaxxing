@@ -294,9 +294,13 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
     resumed = {c["argv"][1]: c["argv"] for c in retried if c["argv"][0] == "resume"}
     assert set(resumed) == {by_id[k].application_id for k in
                             ("lst_held", "lst_flaky", "lst_crash", "lst_noform")}
-    assert all(argv[2:] == ["--json", *flags] for argv in resumed.values())
+    titles = {by_id[k].application_id: k.removeprefix("lst_").title() for k in by_id}
+    # The ledger's listing details go with every job (round 5: --job-title/--job-company).
+    assert all(argv[2:] == ["--json", *flags, "--job-title", titles[app],
+                            "--job-company", "Brambleway"] for app, argv in resumed.items())
     [applied] = [c["argv"] for c in retried if c["argv"][0] == "apply"]
-    assert applied == ["apply", f"{ORIGIN}/garbage", "--json", "--candidate", "default", *flags]
+    assert applied == ["apply", f"{ORIGIN}/garbage", "--json", "--candidate", "default", *flags,
+                       "--job-title", "Garbage", "--job-company", "Brambleway"]
     workers = paths.home / "browser-workers"
     assert {c["env"]["IMX_BROWSER_DIR"] for c in retried} <= {str(workers / "w0"),
                                                               str(workers / "w1")}
