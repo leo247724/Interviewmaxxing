@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
@@ -118,6 +120,22 @@ class PlaywrightApplicationBrowser(GenericApplicationBrowser):
             await self._playwright.stop()
 
 
+
+def _launch_extra() -> dict[str, Any]:
+    """Opt-in launch options for runs on the person's own machine (never in tests):
+    ``IMX_BROWSER_CHANNEL`` (for example ``chrome``) launches the installed browser of that
+    channel instead of Playwright's Chromium, and ``IMX_BROWSER_STEALTH=1`` drops the
+    ``--enable-automation`` switch and the ``AutomationControlled`` blink feature that
+    application sites read as a bot. Both are read from the environment at launch."""
+    extra: dict[str, Any] = {}
+    channel = os.environ.get("IMX_BROWSER_CHANNEL", "").strip()
+    if channel:
+        extra["channel"] = channel
+    if os.environ.get("IMX_BROWSER_STEALTH", "").strip() == "1":
+        extra["args"] = ["--disable-blink-features=AutomationControlled"]
+        extra["ignore_default_args"] = ["--enable-automation"]
+    return extra
+
 class PlaywrightSessionFactory:
     """``BrowserSessionFactory`` launching Chromium.
 
@@ -157,25 +175,29 @@ class PlaywrightSessionFactory:
         playwright = await async_playwright().start()
         browser: Browser | None = None
         try:
+            launch_extra = _launch_extra()
             if options.profile_dir is not None:
                 options.profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
                 agent = self.user_agent or (
-                    await _headless_user_agent(playwright, None) if options.headless else None)
+                    await _headless_user_agent(playwright, None)
+                    if options.headless and not launch_extra else None)
                 context = await playwright.chromium.launch_persistent_context(
                     str(options.profile_dir),
                     headless=options.headless,
                     slow_mo=options.slow_mo_ms,
                     accept_downloads=False,
                     user_agent=agent,
+                    **launch_extra,
                 )
                 await _block_hosts(context, self.blocked_hosts)
                 page = context.pages[0] if context.pages else await context.new_page()
             else:
                 browser = await playwright.chromium.launch(
-                    headless=options.headless, slow_mo=options.slow_mo_ms
+                    headless=options.headless, slow_mo=options.slow_mo_ms, **launch_extra
                 )
                 agent = self.user_agent or (
-                    await _headless_user_agent(playwright, browser) if options.headless else None)
+                    await _headless_user_agent(playwright, browser)
+                    if options.headless and not launch_extra else None)
                 context = await browser.new_context(accept_downloads=False, user_agent=agent)
                 await _block_hosts(context, self.blocked_hosts)
                 page = await context.new_page()
