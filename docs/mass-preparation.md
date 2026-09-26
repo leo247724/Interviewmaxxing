@@ -143,6 +143,27 @@ and `--yes`, and submits exactly what you approved
 Preparation runs the site's intermediate steps: a multi-step form may store a
 draft on the employer's side before the final step, as with a single `apply`.
 
+## The Wellfound lane (sign-in-gated, one worker)
+
+Wellfound applications run in the person's own signed-in Chrome through the OpenCLI Browser
+Bridge profile, one worker, prepare-only. The person's account was verified signed in on
+September 25, 2026 (candidate navigation, active Apply controls). Nothing is submitted: the
+application modal's "Send application" is the dialog's submit and is never clicked.
+
+```sh
+interviewmaxxing prepare-batch --inventory /abs/private/application-urls.json \
+  --backends wellfound --browser opencli --opencli-profile PROFILE --workers 1 \
+  --per-job-timeout 600 --limit 30 --batch-id wellfound-20260925 \
+  --captcha-solver 2captcha --captcha-budget-usd 2.00 --ai-routing --env-file /abs/env.local \
+  --writer-model anthropic/claude-opus-5.5 --rag-connection-file /abs/private/connection.json
+```
+
+Two things observed live and read-only on one posting are being fixed in WP1 round 15: under
+OpenCLI the "Apply" control needs a DOM click (its coordinate click and Enter do nothing), and
+the application is one note textarea to a named recruiter plus "Send application", a dialog
+shape the form rule has to accept. Until that round lands, this lane stops on every job with
+"Could not reach the application form".
+
 ## Inventory format
 
 A JSON list of objects (an export of `public.application_urls`, see
