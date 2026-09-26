@@ -704,12 +704,12 @@ confirmed submission moves its card to Applied, removed postings move to Closed)
 
 | Outcome | Count |
 |---|---|
-| Confirmed ("application submitted" text) | 84 |
-| Accepted without the banner (form replaced by the job page, no error) | 8 |
+| Confirmed ("application submitted" text) | 93 |
+| Accepted without the banner (form replaced by the job page, no error) | 11 |
 | Refused by Ashby as possible spam | 11 |
 | Postings gone ("Job not found") | 11 |
-| Still open (writer holds, facts missing, unsupported widgets) | 53 |
-| RAG spend (notes and answers) | USD 28.53 |
+| Still open (writer holds, facts missing, unsupported widgets) | 39 |
+| RAG spend (notes and answers) | USD 36.41 (OpenRouter left at USD 4.07) |
 
 Plus Pomelo Care and Webflow on Greenhouse (`gh.py`, react-select options picked by clicking the option element).
 
@@ -725,7 +725,7 @@ inferred. Yes/No buttons take a trusted click verified through `aria-pressed`; r
 years come as radio buckets (pick the bucket containing 7, SEO 6); "authorized to be employed" and "work eligibility"
 wording had to join the rules; essay questions arrive as single-line inputs and go to the RAG.
 
-**Where the writer stopped it:** 14 why-us notes failed the note rubric ("what measurable result…") on both tries and
+**Where the writer stopped it:** why-us notes failed the note rubric ("what measurable result…"); drafting the same question as a plain motivation answer (no `--cover-letter`) passed the writer's gates and recovered 9 of 11 such jobs in a final pass. Beyond that,
 22 essay/case questions were routed to the person (NEEDS_INPUT "Required:") — CAC targets, client counts, budgets,
 company-specific opinions. The writer's 120 s network cap also timed out often under two lanes; one retry is built in,
 drafts are capped at two per question.
