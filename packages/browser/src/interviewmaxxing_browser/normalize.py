@@ -715,6 +715,7 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
         autocomplete=first.autocomplete,
         input_type=input_type,
         control_type=control_type,
+        placeholder=first.placeholder,
     )
     # A street address input that lists suggestions while it is typed into (Paylocity's
     # Address Line 1) keeps what is typed: a text answer, never a choice among suggestions.
@@ -1040,9 +1041,12 @@ def _in_scope(items: list[Any], dialog: DomDialog) -> list[Any]:
 def application_dialog(snapshot: DomSnapshot) -> DomDialog | None:
     """The visible dialog that is an application wizard: its own controls make an
     application step (see ``_qualifies_as_application``) with a Next/Continue/Review/
-    Submit control, and it looks like an application (two or more questions, a step or
-    progress indicator, a file field, or application wording in its name). Sign-in and
-    account dialogs never are. With several, a modal one, the last in document order."""
+    Submit control, and it looks like an application: two or more questions, a step or
+    progress indicator, a file field, application wording in its name or (round 15) in its
+    own text ("… stand out as a candidate …"), or a submit control that sends an application
+    ("Send application", "Submit application", "Apply"), since its one question is then
+    that application's (Wellfound's note dialog: one textarea, no name). Sign-in and account
+    dialogs never are. With several, a modal one, the last in document order."""
     displays = {c.id: _display(c) for c in snapshot.controls if c.id and c.aria}
     found: list[DomDialog] = []
     for dialog in snapshot.dialogs:
@@ -1062,7 +1066,10 @@ def application_dialog(snapshot: DomSnapshot) -> DomDialog | None:
         has_step = dialog.step is not None or progress_step(progress) is not None
         if not _qualifies_as_application(fields, buttons, final, has_step):
             continue
+        sends_application = any(b.intent is ButtonIntent.SUBMIT and application_wording(b.button.text)
+                                for b in buttons)
         if not (len(fillable) >= 2 or has_step or application_wording(dialog.label)
+                or application_wording(dialog.text) or sends_application
                 or any(f.control_type is ControlType.FILE for f in fields)):
             continue
         found.append(dialog)
