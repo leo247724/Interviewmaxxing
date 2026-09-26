@@ -295,12 +295,16 @@ def test_retry_runs_held_and_failed_applications_again(fake, paths, tmp_path, mo
     assert set(resumed) == {by_id[k].application_id for k in
                             ("lst_held", "lst_flaky", "lst_crash", "lst_noform")}
     titles = {by_id[k].application_id: k.removeprefix("lst_").title() for k in by_id}
-    # The ledger's listing details go with every job (round 5: --job-title/--job-company).
-    assert all(argv[2:] == ["--json", *flags, "--job-title", titles[app],
-                            "--job-company", "Brambleway"] for app, argv in resumed.items())
+    listings = {by_id[k].application_id: k for k in by_id}
+    # The ledger's listing details go with every job (round 5: --job-title/--job-company;
+    # round 6: --job-listing-id, whose full description becomes the job's evidence).
+    assert all(argv[2:] == ["--json", *flags, "--job-listing-id", listings[app], "--job-title",
+                            titles[app], "--job-company", "Brambleway"]
+               for app, argv in resumed.items())
     [applied] = [c["argv"] for c in retried if c["argv"][0] == "apply"]
     assert applied == ["apply", f"{ORIGIN}/garbage", "--json", "--candidate", "default", *flags,
-                       "--job-title", "Garbage", "--job-company", "Brambleway"]
+                       "--job-listing-id", "lst_garbage", "--job-title", "Garbage",
+                       "--job-company", "Brambleway"]
     workers = paths.home / "browser-workers"
     assert {c["env"]["IMX_BROWSER_DIR"] for c in retried} <= {str(workers / "w0"),
                                                               str(workers / "w1")}
@@ -728,9 +732,9 @@ def test_resume_argv_and_busy_outcomes(paths):
                            retry_of="b1")
     assert options.resume_argv("app_1") == ["imx", "resume", "app_1", "--json", "--headless"]
     resume_row = BatchRow(listing_id="l", application_url=f"{ORIGIN}/x", application_id="app_1")
-    assert options.job_argv(resume_row) == options.resume_argv("app_1")
+    assert options.job_argv(resume_row) == [*options.resume_argv("app_1"), "--job-listing-id", "l"]
     assert options.job_argv(resume_row.model_copy(update={"application_id": None})) == \
-        options.argv(f"{ORIGIN}/x")
+        [*options.argv(f"{ORIGIN}/x"), "--job-listing-id", "l"]
     # A job that did not run because another run held the application is retryable,
     # whatever stored state it reports (a timed-out run's claim lapses in minutes).
     for state in (S.NEEDS_INPUT, S.FAILED_RETRYABLE, S.INSPECTING):

@@ -2,7 +2,9 @@
 store (authorize, begin, record the outcome) the way the real command would, so the
 harness's target selection, slots, per-slot browser directories, the submission
 ledger, store-based classification (a kill mid-submit is uncertain, never an error),
-reruns and ``batch-report``'s submissions table are exercised without a browser.
+reruns, the runner's per-profile lock (a submission slot never shares a prepare worker's
+profile), moving a confirmed submission's pipeline card to Applied and
+``batch-report``'s submissions table are exercised without a browser.
 
 All data is fictional; nothing is sent anywhere."""
 
@@ -39,7 +41,12 @@ from interviewmaxxing_cli.batch import (
     run_submissions,
 )
 from interviewmaxxing_cli.main import EXIT_BLOCKED, EXIT_INCOMPLETE, EXIT_OK, EXIT_UNCERTAIN, main
-from interviewmaxxing_cli.runner import KEPT_DRAFT_MESSAGE
+from interviewmaxxing_cli.runner import (
+    BUSY_MESSAGE,
+    KEPT_DRAFT_MESSAGE,
+    RUN_LOCK_NAME,
+    browser_profile_lock,
+)
 from interviewmaxxing_core import (
     AnswerSource,
     ApplicationField,
@@ -55,13 +62,19 @@ from interviewmaxxing_core import (
     SemanticType,
     TextValue,
 )
+from interviewmaxxing_pipeline import (
+    NewPipelineItem,
+    PipelineStore,
+    TrackingFields,
+    default_pipeline_db,
+)
 
 S = ApplicationState
 ORIGIN = "https://jobs.fictional.example/brambleway"
 
 FAKE_SUBMIT = textwrap.dedent('''\
     """Fake ``interviewmaxxing submit APP --yes --json``: acts on the real store by plan."""
-    import json, os, sys, time
+    import fcntl, json, os, sys, time
     from pathlib import Path
 
     from interviewmaxxing_core import (ApplicationState as S, ApplicationStore, NotSubmittedNext,
@@ -80,6 +93,16 @@ FAKE_SUBMIT = textwrap.dedent('''\
         print(json.dumps({"application_id": app_id, "state": state, "receipt": receipt,
                           "missing_inputs": [], "message": message}))
         sys.exit(code)
+
+    profile = os.open(Path(os.environ["IMX_BROWSER_DIR"]) / os.environ["FAKE_LOCK_NAME"],
+                      os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(profile, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the runner's per-profile lock
+    except BlockingIOError:  # `submit` authorized the approval; the runner found the profile busy
+        claim = store.claim(app_id, "fake-submit")
+        store.authorize_submission(claim)
+        store.release(claim)
+        outcome("NEEDS_INPUT", "another run is using the browser profile", 4)
 
     def begin():
         claim = store.claim(app_id, "fake-submit")
@@ -202,6 +225,7 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.write_text(FAKE_SUBMIT)
     monkeypatch.setenv("FAKE_LOG", str(tmp_path / "fake.log"))
     monkeypatch.setenv("FAKE_PLAN", str(tmp_path / "plan.json"))
+    monkeypatch.setenv("FAKE_LOCK_NAME", RUN_LOCK_NAME)
     monkeypatch.setenv("IMX_BROWSER_DIR", str(tmp_path / "parent-browser"))  # must not leak
     return script
 
@@ -277,8 +301,10 @@ def test_the_submission_environment_is_explicit_and_prepare_batch_never_gets_it(
         _options(paths, fake, workers=2, browser="opencli")
     submit = _options(paths, fake, workers=2)
     env = submit.submit_environment(1)
-    assert env["IMX_ALLOW_SUBMISSION"] == "1"
-    assert env["IMX_BROWSER_DIR"] == str(paths.home / "browser-workers" / "w1")
+    assert env["IMX_ALLOW_SUBMISSION"] == "1" and env["IMX_SUBMIT_CARDS_BY_BATCH"] == "1"
+    assert "IMX_SUBMIT_CARDS_BY_BATCH" not in prepare.environment(1)
+    assert env["IMX_BROWSER_DIR"] == str(paths.home / "browser-workers" / "s1")
+    assert prepare.environment(1)["IMX_BROWSER_DIR"] == str(paths.home / "browser-workers" / "w1")
     assert submit.submit_argv("app_1")[2:] == ["submit", "app_1", "--yes", "--json", "--headless"]
 
 
@@ -331,7 +357,7 @@ def test_each_submission_is_recorded_from_the_store(paths, fake, tmp_path):
     assert len(log) == len(kinds)
     for line in log:
         assert line["env"]["IMX_ALLOW_SUBMISSION"] == "1"
-        assert line["env"]["IMX_BROWSER_DIR"] in {str(paths.home / "browser-workers" / f"w{s}")
+        assert line["env"]["IMX_BROWSER_DIR"] in {str(paths.home / "browser-workers" / f"s{s}")
                                                   for s in (0, 1)}
         assert line["env"]["IMX_STATE_DB"] == str(paths.state_db)
     ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
@@ -594,3 +620,158 @@ def test_a_rejected_submission_is_submitted_again_by_the_next_run_from_another_b
     rejected = ApplyOutcome(application_id="app_x", state=S.FAILED_RETRYABLE,
                             message="Rejected by the site: 'flagged as possible spam'.")
     assert classify_submission(rejected, 3) == "rejected"
+
+
+# --- browser profiles -----------------------------------------------------------------------------
+
+
+def test_submission_slots_never_wait_on_a_running_prepare_batch(paths, fake, tmp_path):
+    """A prepare batch's worker holds the runner's lock on its ``w0`` profile. Submission
+    slot 0 is ``s0``, so the submission runs instead of stopping as busy."""
+    ids = _approved_batch(paths, ["one"])
+    _plan(tmp_path, {ids["one"]: "submitted"})
+    workers = paths.home / "browser-workers"
+    prepare = BatchOptions(paths=paths, candidate_id="default", batch_id="p1")
+    assert prepare.worker_browser_dir(0) == workers / "w0"
+    with browser_profile_lock(prepare.worker_browser_dir(0)):
+        summary = asyncio.run(run_submissions(
+            _options(paths, fake), approved_targets(paths, "default", source_batch="b1"),
+            source_batch="b1"))
+    assert summary.totals == {"submitted": 1}
+    [line] = _log(tmp_path)
+    assert line["env"]["IMX_BROWSER_DIR"] == str(workers / "s0")
+    assert stat.S_IMODE((workers / "s0").stat().st_mode) == 0o700
+
+
+def test_a_submission_blocked_by_a_busy_profile_is_submitted_by_the_next_run_once(
+    paths, fake, tmp_path, monkeypatch, capsys
+):
+    """The profile was in use (exit 4, nothing ran): the application keeps its approval,
+    the next ``submit-approved --batch`` submits it and the one after launches nothing."""
+    ids = _approved_batch(paths, ["one"])
+    _plan(tmp_path, {ids["one"]: "submitted"})
+    monkeypatch.setattr(batch_module, "default_command", lambda: [sys.executable, str(fake)])
+    monkeypatch.setenv("IMX_ALLOW_SUBMISSION", "1")
+    argv = ["--home", str(paths.home), "submit-approved", "--batch", "b1", "--yes"]
+    ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
+    with browser_profile_lock(paths.home / "browser-workers" / "s0"):  # e.g. a `submit` by hand
+        assert main(argv) == EXIT_INCOMPLETE
+    [blocked] = read_submissions(ledger)
+    assert blocked.outcome == "blocked" and BUSY_MESSAGE in blocked.message
+    with ApplicationStore.open(paths.state_db) as store:
+        assert store.approved_packet(ids["one"]) is not None
+        assert store.get_application(ids["one"]).state is S.NEEDS_INPUT
+
+    assert main(argv) == EXIT_OK
+    assert [(e.outcome, e.attempt) for e in read_submissions(ledger)] == [
+        ("blocked", 1), ("submitted", 2)]
+    capsys.readouterr()
+    assert main(argv) == EXIT_OK
+    assert "No approved application to submit" in capsys.readouterr().out
+    assert [line["app"] for line in _log(tmp_path)] == [ids["one"]] * 2  # busy, then submitted
+    assert len(read_submissions(ledger)) == 2
+    with ApplicationStore.open(paths.state_db) as store:
+        assert store.get_application(ids["one"]).state is S.SUBMITTED
+
+
+# --- pipeline cards -------------------------------------------------------------------------------
+
+
+def _card(paths: LocalPaths, app_id: str | None, name: str, lane: str = "saved") -> str:
+    """A fictional pipeline card in ``lane`` linked to ``app_id``; its id."""
+    with PipelineStore.from_paths(paths) as pipeline:
+        return pipeline.create_item("default", NewPipelineItem(
+            tracking=TrackingFields(company="Brambleway Analytics", role=name.title()),
+            lane=lane, listing_id=f"lst_{name}", application_url=f"{ORIGIN}/{name}",
+            application_id=app_id)).id
+
+
+def _lanes(paths: LocalPaths, cards: dict[str, str]) -> dict[str, str]:
+    with PipelineStore.from_paths(paths) as pipeline:
+        return {name: pipeline.get_item("default", card).lane for name, card in cards.items()}
+
+
+def test_only_a_confirmed_submission_moves_its_saved_card_to_applied(paths, fake, tmp_path):
+    kinds = ["submitted", "uncertain", "changed", "closed", "refused", "retryable", "garbage"]
+    ids = _approved_batch(paths, kinds)
+    cards = {k: _card(paths, ids[k], k) for k in kinds}
+    _plan(tmp_path, {ids[k]: k for k in kinds})
+
+    summary = asyncio.run(run_submissions(
+        _options(paths, fake, workers=2), approved_targets(paths, "default", source_batch="b1"),
+        source_batch="b1"))
+
+    entries = {e.application_id: e for e in read_submissions(paths.home / "batches" / "b1" /
+                                                             "ledger.jsonl")}
+    by_kind = {k: entries[ids[k]] for k in kinds}
+    assert {k: e.outcome for k, e in by_kind.items()} == {
+        "submitted": "submitted", "uncertain": "uncertain", "changed": "needs_input",
+        "closed": "blocked", "refused": "blocked", "retryable": "error", "garbage": "error"}
+    assert _lanes(paths, cards) == {k: "applied" if k == "submitted" else "saved" for k in kinds}
+    done = by_kind["submitted"]
+    assert (done.applied_synced, done.applied_sync_reason) == (True, None)
+    assert all((e.applied_synced, e.applied_sync_reason) == (None, None)
+               for k, e in by_kind.items() if k != "submitted")
+    with PipelineStore.from_paths(paths) as pipeline:
+        [move] = [h for h in pipeline.history("default", cards["submitted"]) if h.kind == "moved"]
+        assert pipeline.get_item("default", cards["submitted"]).application_id == ids["submitted"]
+    assert (move.from_lane, move.to_lane) == ("saved", "applied")
+    assert move.note == (
+        f"Submitted on {done.finished_at:%Y-%m-%d} (UTC) by submit-approved b1; the site "
+        f"confirmed it (application {ids['submitted']}, receipt {done.receipt_id}, "
+        "confirmation BWA-000777)")
+    assert (summary.cards_applied, summary.card_problems) == (1, {})
+    assert "- pipeline cards moved to Applied: 1" in render_submissions_markdown(summary)
+    assert batch_module.format_submission(done).endswith("[card moved to Applied]")
+
+    # A rerun launches the rest again; the moved card is not touched twice.
+    asyncio.run(run_submissions(_options(paths, fake, workers=2),
+                                approved_targets(paths, "default", source_batch="b1"),
+                                source_batch="b1"))
+    with PipelineStore.from_paths(paths) as pipeline:
+        assert len([h for h in pipeline.history("default", cards["submitted"])
+                    if h.kind == "moved"]) == 1
+    assert _lanes(paths, cards) == {k: "applied" if k == "submitted" else "saved" for k in kinds}
+
+
+def test_a_card_already_applied_or_closed_is_left_alone(paths, tmp_path):
+    cards = {name: _card(paths, f"app_{name}", name, lane)
+             for name, lane in (("applied", "applied"), ("closed", "closed"),
+                                ("later", "interviewing"), ("bystander", "saved"))}
+    confirmed = {"receipt_id": "sub_fictional", "reference": None, "by": "submit",
+                 "submitted_at": datetime(2026, 9, 25, 9, 30, tzinfo=UTC)}
+
+    def move(app_id: str, where: LocalPaths = paths) -> tuple[bool | None, str | None]:
+        return batch_module.move_submitted_card(where, "default", app_id, **confirmed)
+
+    assert move("app_applied") == move("app_closed") == (None, None)
+    assert move("app_later") == (False, "card not in Saved (in interviewing)")
+    assert move("app_nobody") == (None, None)  # no card links it
+    assert _lanes(paths, cards) == {"applied": "applied", "closed": "closed",
+                                    "later": "interviewing", "bystander": "saved"}
+    with PipelineStore.from_paths(paths) as pipeline:
+        assert not any(h.kind == "moved" for c in cards.values()
+                       for h in pipeline.history("default", c))
+
+    bare = LocalPaths.from_env({}, home=tmp_path / "bare")
+    bare.ensure()
+    assert move("app_applied", bare) == (None, None)
+    assert not default_pipeline_db(bare).exists()  # never created
+
+
+def test_a_card_that_cannot_be_moved_is_counted_with_its_reason(paths, fake, tmp_path):
+    ids = _approved_batch(paths, ["one"])
+    card = _card(paths, ids["one"], "one", lane="follow-up")
+    _plan(tmp_path, {ids["one"]: "submitted"})
+    summary = asyncio.run(run_submissions(
+        _options(paths, fake), approved_targets(paths, "default", source_batch="b1"),
+        source_batch="b1"))
+    [entry] = read_submissions(paths.home / "batches" / "b1" / "ledger.jsonl")
+    assert (entry.outcome, entry.applied_synced) == ("submitted", False)
+    assert entry.applied_sync_reason == "card not in Saved (in follow-up)"
+    assert (summary.cards_applied, summary.card_problems) == (
+        0, {"card not in Saved (in follow-up)": 1})
+    assert ("- pipeline cards moved to Applied: 0; not moved: card not in Saved (in follow-up)"
+            in render_submissions_markdown(summary))
+    assert batch_module.format_submission(entry).endswith("[card not moved to Applied]")
+    assert _lanes(paths, {"one": card}) == {"one": "follow-up"}

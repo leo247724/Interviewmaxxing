@@ -94,10 +94,12 @@ and `--yes`, and submits exactly what you approved
   applications, whatever runs them later.
 - **One Chromium per worker slot.** Worker `N` runs with
   `IMX_BROWSER_DIR=$IMX_HOME/browser-workers/wN`, because the runner holds one OS
-  lock per browser profile. All workers share the same `IMX_HOME`, state database,
-  candidate profile and artifacts directory (each passed explicitly, so per-path
-  overrides are kept). A sign-in stored in one worker profile is not visible to
-  the others or to the default `$IMX_HOME/browser` profile.
+  lock per browser profile. `submit-approved` slots use `browser-workers/sN` instead,
+  so a submission run beside a running batch never shares, or waits on, a prepare
+  worker's profile. All workers share the same `IMX_HOME`, state database, candidate
+  profile, artifacts directory and jobs store (`IMX_JOBS_DB`), each passed explicitly,
+  so per-path overrides are kept. A sign-in stored in one worker profile is not visible
+  to the others or to the default `$IMX_HOME/browser` profile.
 - **Owner-only directories.** The batch creates the local directories first
   (`LocalPaths.ensure`), then `batches/`, the batch directory, `browser-workers/` and
   each slot directory one level at a time, each `0700`; ledgers and summaries are
@@ -131,9 +133,10 @@ and `--yes`, and submits exactly what you approved
   runner's wording "The job is no longer accepting applications"), its linked Saved
   card moves to Closed with a dated note in the card's history. Any other
   `FAILED_PERMANENT` stop leaves the card where it is. `--no-sync-closed` turns this off.
-- **Cards are never created or advanced.** The batch creates no card and no
-  pipeline database, and never moves a card to Applied. Closed is the only lane it
-  moves a card to.
+- **Cards are never created, and preparing never advances one.** The batch creates no
+  card and no pipeline database; Closed is the only lane preparing moves a card to. A
+  submission the site confirmed moves its card to Applied (`submit`, `submit-approved`;
+  see [Pipeline cards](#pipeline-cards)).
 - **Nothing private is printed.** Progress lines show outcome, backend, company,
   title, duration, application id and, for a row with a card, `[card linked]`,
   `[card not linked]` or `[card linked, moved to Closed]`. Questions and CLI
@@ -226,6 +229,32 @@ locality. The ledger line keeps the location the run was given (`location`).
 `--retry` passes it again, and a line written before this field existed takes its
 listing's location from the jobs store. The service's application handoff writes the
 linked card's `locationCommute` (else its listing's location) the same way.
+
+### The listing's description is the job's evidence
+
+A narrative question (why this company, how you use AI, a cover letter) is written from the
+job's description, which the writer reads from the knowledge store under the application's
+job. The browser reads no description from the page, and an apply page such as Ashby's
+`/application` shows none, so with nothing indexed the writer holds the question
+(`NO_ANSWER`) before any provider call.
+
+`prepare-batch` therefore passes each row's listing id as `apply --job-listing-id ID`, and
+`--retry` passes it as `resume --job-listing-id ID`, except for a row keyed by its URL
+(`url:…`). `apply` and `resume` read that listing from the same jobs store (each worker
+gets `IMX_JOBS_DB`) and use its description only when its completeness is `FULL`. Before
+the run resolves any field, the runner indexes it through the knowledge store's `index_job`
+(the call `scripts/rag_answers.py index-job` and `scripts/index_saved_jobs.py` make) under
+the job the writer retrieves for (after any identity binding), with the listing's source
+URL (else its posting URL) as the source, once per job per run. This needs `--ai-routing
+--rag-connection-file`: without a knowledge store nothing is indexed. An unchanged
+description needs no new embeddings, and the embedding call counts in the run's provider
+budget (`knowledge_embedding`). The knowledge store keeps one current description per job,
+so this replaces one indexed for the same job from another source.
+
+Each attempt is recorded on the application as `evidence.job_description`: `source`
+(`listing`), `listing_id`, `status` (`indexed`, `unchanged`, or `failed` with the error's
+type) and `chunks`; never the description. A failed index does not stop the run: its
+narrative questions hold as they would without the listing.
 
 ## Command
 
@@ -348,6 +377,29 @@ When a card is not linked or not moved, the ledger line says why:
 | `closed_sync_reason` | `board has no Closed lane` | The candidate's board has no lane with id `closed` or label Closed. |
 | `closed_sync_reason` | `card not in Saved (in <lane id>)` | The card is in a lane other than Saved or Closed, for example `(in applied)`. It stays there. |
 | `closed_sync_reason` | `move error: <type>` | An unexpected error while moving, named by its exception type. |
+
+### A confirmed submission moves the card to Applied
+
+When `submit-approved` records a submission as `submitted` with a receipt, every card
+linked to that application (`application_id`) that is still in Saved moves to Applied (id
+`applied`, or labelled Applied) through the revision-aware `move_item`, retried after a
+concurrent edit in the same way, with a note such as:
+
+```text
+Submitted on 2026-09-25 (UTC) by submit-approved mass-20260925-a; the site confirmed it (application app_example, receipt sub_example, confirmation BWA-000777)
+```
+
+A single `submit APP --yes` does the same (`by submit`) and prints "Pipeline card moved
+from Saved to Applied."; the `submit` processes that `submit-approved` runs leave the move
+to the batch (`IMX_SUBMIT_CARDS_BY_BATCH=1`), which records it. `uncertain`, `blocked`,
+`needs_input` and `error` never move a card, and a card already in Applied or Closed is left
+alone. The submission's ledger line records `applied_synced` (true when a card moved, false
+when one could not be, null when there was nothing to move) and `applied_sync_reason`:
+`board has no Applied lane`, `card not in Saved (in <lane id>)` (for example a card you
+already moved on to `interviewing`; it stays there), `card kept changing` or `move error:
+<type>`. The Markdown summary counts them ("pipeline cards moved to Applied: N; not moved:
+…") and the progress line ends with `[card moved to Applied]` or `[card not moved to
+Applied]`.
 
 A settled row is not launched again when the same batch id runs again, so a link
 that failed on it is not retried either. To retry the link, run the inventory
@@ -965,9 +1017,14 @@ IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit-approved --batch BATCH_ID --slots
 interviewmaxxing batch-report BATCH_ID   # now with a Submissions table
 ```
 
-It uses the same worker slots and browser profiles, appends one `kind: "submission"`
-line per application (outcome and receipt id) to the batch's ledger, and never
-launches an application that line records as submitted or uncertain again. A form
+Its slots have their own browser profiles (`$IMX_HOME/browser-workers/s<slot>`, never a
+prepare worker's `w<slot>`), so it runs beside a prepare batch without either waiting on
+the other's profile lock. It appends one `kind: "submission"` line per application
+(outcome and receipt id) to the batch's ledger, and never launches an application that line
+records as submitted or uncertain again. A submission that did not run (`blocked`: another
+run was using its profile or held the application) keeps its approval, so running the same
+command again submits it, once. A confirmed submission moves the application's Saved card
+to Applied ([above](#a-confirmed-submission-moves-the-card-to-applied)). A form
 that changed since you approved it is not submitted and comes back as `needs_input`, and so
 does one whose site resumed a draft it kept at a later page; those are listed on their own
 (`kept_drafts`) with the remedy, submitting them in the browser yourself, because preparing

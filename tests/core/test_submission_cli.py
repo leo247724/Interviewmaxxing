@@ -279,3 +279,81 @@ def test_submit_authorizes_the_approval_then_runs_the_submission(
     assert built["headless"] is True and built["interaction"].allow_browser_action is False
     names = _events(isolated_imx_home, app_id)
     assert names.index("application.approved") < names.index("application.submission_authorized")
+
+
+# --- the pipeline card --------------------------------------------------------------------------
+
+
+def _submitted(paths: LocalPaths) -> Any:
+    """What the submission runner does for a confirmed submission: the store records the
+    attempt and the site's acceptance, and the outcome carries the receipt."""
+
+    def outcome(app_id: str) -> ApplyOutcome:
+        with ApplicationStore.open(paths.state_db) as store:
+            claim = store.claim(app_id, "runner")
+            for state in (S.INSPECTING, S.PACKET_READY, S.FILLING):
+                store.transition(claim, state)
+            attempt = store.begin_submission(claim, packet_id=store.approved_packet(app_id))
+            store.record_submission_outcome(claim, attempt.id, SubmissionObservation(
+                outcome=SubmissionOutcome.ACCEPTED, signals=["heading 'Application submitted'"],
+                confirmation_reference="MOCK-4012"))
+            store.release(claim)
+            receipt = store.get_receipt(app_id)
+        return ApplyOutcome(application_id=app_id, state=S.SUBMITTED, receipt=receipt,
+                            message="Submitted; the site confirmed it. Receipt saved.")
+
+    return outcome
+
+
+def _uncertain(app_id: str) -> ApplyOutcome:
+    return ApplyOutcome(application_id=app_id, state=S.SUBMISSION_UNKNOWN,
+                        message="The submit may have reached the employer.")
+
+
+@pytest.mark.parametrize(("kind", "by_batch", "as_json", "code", "lane"), [
+    ("submitted", False, False, EXIT_OK, "applied"),
+    ("submitted", False, True, EXIT_OK, "applied"),
+    ("submitted", True, False, EXIT_OK, "saved"),  # submit-approved moves it and records it
+    ("uncertain", False, False, EXIT_UNCERTAIN, "saved"),
+])
+def test_a_confirmed_submit_moves_the_saved_card_to_applied(
+    capsys, isolated_imx_home, allowed, monkeypatch, kind, by_batch, as_json, code, lane
+):
+    from interviewmaxxing_pipeline import NewPipelineItem, PipelineStore, TrackingFields
+
+    paths = isolated_imx_home
+    app_id, _ = _prepare(paths)
+    assert run(capsys, "approve", app_id)[0] == EXIT_OK
+    with PipelineStore.from_paths(paths) as pipeline:
+        card = pipeline.create_item("default", NewPipelineItem(
+            tracking=TrackingFields(company="Mock Co", role="Fictional Analyst"), lane="saved",
+            application_url=URL, application_id=app_id))
+    if by_batch:
+        monkeypatch.setenv("IMX_SUBMIT_CARDS_BY_BATCH", "1")
+    else:
+        monkeypatch.delenv("IMX_SUBMIT_CARDS_BY_BATCH", raising=False)
+    outcome = _submitted(paths) if kind == "submitted" else _uncertain
+    monkeypatch.setattr(cli_main, "create_submission_runner",
+                        lambda paths, **kwargs: StubRunner(paths, outcome))
+
+    result, out, err = run(capsys, "submit", app_id, "--yes", *(["--json"] if as_json else []))
+
+    assert result == code
+    with PipelineStore.from_paths(paths) as pipeline:
+        assert pipeline.get_item("default", card.id).lane == lane
+        moves = [h for h in pipeline.history("default", card.id) if h.kind == "moved"]
+    with ApplicationStore.open(paths.state_db) as store:
+        receipt = store.get_receipt(app_id)
+    if lane == "applied":
+        assert receipt is not None
+        [move] = moves
+        assert (move.from_lane, move.to_lane) == ("saved", "applied")
+        assert move.note == (
+            f"Submitted on {receipt.confirmed_at:%Y-%m-%d} (UTC) by submit; the site confirmed "
+            f"it (application {app_id}, receipt {receipt.attempt_id}, confirmation MOCK-4012)")
+    else:
+        assert moves == []
+    if as_json:
+        assert ApplyOutcome.model_validate_json(out).state is S.SUBMITTED  # stdout is one outcome
+    assert ("Pipeline card moved from Saved to Applied." in out) == (lane == "applied" and not as_json)
+    assert "not moved" not in err

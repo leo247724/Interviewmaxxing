@@ -132,6 +132,7 @@ from interviewmaxxing_core import (
     FileValue,
     FillResult,
     IdentityConflict,
+    JobRecord,
     LocalPaths,
     MissingInput,
     MissingReason,
@@ -185,6 +186,11 @@ CAPTCHA_EVENT = "captcha.solve"
 2captcha``): the widget kind, the outcome, the seconds and the cost 2Captcha reported, the
 site's host; never the token or the key. A solve that reached 2Captcha is also counted in a
 ``provider.budget`` event (purpose ``captcha``)."""
+JOB_EVIDENCE_EVENT = "evidence.job_description"
+"""Emitted by the runner when it indexed, or tried to index, the saved listing's full
+description as the job's evidence (``--job-listing-id``): ``source`` (``listing``), the
+``listing_id``, ``status`` (``indexed``, ``unchanged`` or ``failed`` with the error's type)
+and the number of ``chunks``; never the description."""
 PREPARED_EVENT = "preparation.ready"
 """Emitted by a prepare-only run at the final review step: the form step and URL, the
 prepared packet, ``submitted: False`` and every filled step with its questions
@@ -329,11 +335,24 @@ class ListingDetails:
     page: ``apply``/``resume --job-location/--job-title/--job-company``, which
     ``prepare-batch`` fills from the jobs store. Written on the job before the run
     (``ApplicationStore.record_listing``), so the metro rule reads the listing's location
-    ("Round Rock, TX (Hybrid)", "Remote (US)") and not only what a page states."""
+    ("Round Rock, TX (Hybrid)", "Remote (US)") and not only what a page states.
+
+    ``description`` is the listing's full description (``--job-listing-id``): never
+    written on the job, it is indexed as the job's evidence before the run resolves any
+    field (``_Run.index_listing_description``), so the writer has the posting even when
+    the page it fills (Ashby's ``/application``) shows none. A listing is true when it has
+    something to write on the job (a location, title or company)."""
 
     location: str | None = None
     title: str | None = None
     company: str | None = None
+    listing_id: str | None = None
+    """The saved listing (jobs store) the description came from."""
+    description: str | None = None
+    """The listing's FULL description, or None."""
+    description_url: str | None = None
+    """Where the description was observed (the listing's source or posting URL): the job
+    evidence's source."""
 
     def __bool__(self) -> bool:
         return any(v and v.strip() for v in (self.location, self.title, self.company))
@@ -801,7 +820,7 @@ class LocalApplicationRunner:
             self._record_listing(store, app_id, listing)
             if not result.may_proceed:
                 return self._blocked(store, app_id)
-            return await self._run(store, app_id, application_url)
+            return await self._run(store, app_id, application_url, listing=listing)
 
     async def resume(self, application_id: str, *,
                      listing: ListingDetails | None = None) -> ApplyOutcome:
@@ -814,7 +833,7 @@ class LocalApplicationRunner:
                 return self._blocked(store, application_id)
             self._record_listing(store, application_id, listing)
             url = store.list_requests(application_id)[0].application_url
-            return await self._run(store, application_id, url)
+            return await self._run(store, application_id, url, listing=listing)
 
     async def submit(self, application_id: str) -> ApplyOutcome:
         """Submit exactly what the user approved. The application must be authorized
@@ -1006,7 +1025,8 @@ class LocalApplicationRunner:
     # --- the run --------------------------------------------------------------------------
 
     async def _run(self, store: ApplicationStore, app_id: str, url: str, *,
-                   submission: bool = False) -> ApplyOutcome:
+                   submission: bool = False, listing: ListingDetails | None = None
+                   ) -> ApplyOutcome:
         try:
             with browser_profile_lock(self.paths.browser_dir):
                 try:
@@ -1056,7 +1076,8 @@ class LocalApplicationRunner:
                         message = self._browser_start_failed(exc) + " Then resume."
                         _fail_retryable(store, claim, app, message)
                         return _outcome(store, app_id, message)
-                    run = _Run(self, store, claim, candidate, browser, url, approved=approved)
+                    run = _Run(self, store, claim, candidate, browser, url, approved=approved,
+                               listing=listing)
                     try:
                         return await run.execute()
                     except asyncio.CancelledError:
@@ -1088,8 +1109,14 @@ class _Run:
 
     def __init__(self, runner: LocalApplicationRunner, store: ApplicationStore, claim: Claim,
                  candidate: CandidateProfile, browser: ApplicationBrowser, url: str,
-                 approved: _Approved | None = None) -> None:
+                 approved: _Approved | None = None,
+                 listing: ListingDetails | None = None) -> None:
         self.runner = runner
+        self.listing = listing
+        """The saved listing's details (``apply``/``resume --job-listing-id``); its
+        description is indexed as the job's evidence before the first resolution."""
+        self.evidence_jobs: set[str] = set()
+        """Jobs this run already indexed the listing's description for."""
         self.store = store
         self.claim = claim
         self.candidate = candidate
@@ -1455,8 +1482,42 @@ class _Run:
                              candidate=self.candidate,
                              user_inputs=self.store.get_user_inputs(self.app_id, form))
 
+    async def index_listing_description(self, job: JobRecord) -> None:
+        """Index the saved listing's full description as the job's evidence, once per job
+        this run resolves for and before any of its fields is resolved: the knowledge
+        store's ``index_job`` (what ``scripts/rag_answers.py index-job`` and
+        ``scripts/index_saved_jobs.py`` call) under the job the writer retrieves for
+        (``PacketContext.job``, after any identity binding). Only a resolver that retrieves
+        from a knowledge store (``--ai-routing --rag-connection-file``) has one; without it,
+        or without a description, nothing happens. An unchanged description needs no new
+        embeddings. The store keeps one current description per job: the browser reads no
+        description from the page, so this is the one a run adds. A failure is recorded
+        (``evidence.job_description``, the error's type only) and the run goes on; its narrative
+        questions then hold as they would without the listing."""
+        listing = self.listing
+        retriever = getattr(self.runner.resolver, "retriever", None)
+        index_job = getattr(retriever, "index_job", None)
+        if (listing is None or not listing.description or not listing.description.strip()
+                or not callable(index_job) or job.id in self.evidence_jobs):
+            return
+        self.evidence_jobs.add(job.id)
+        metadata: dict[str, Any] = {"source": "listing", "listing_id": listing.listing_id}
+        try:
+            result = await asyncio.to_thread(index_job, self.app().candidate_id, job,
+                                             listing.description.strip(),
+                                             listing.description_url or job.application_url)
+        except Exception as exc:  # provider and database errors can carry private detail
+            metadata |= {"status": "failed", "error": type(exc).__name__}
+        else:
+            result = result if isinstance(result, dict) else {}
+            metadata |= {"status": "unchanged" if result.get("unchanged_source_count")
+                         else "indexed", "chunks": result.get("chunk_count")}
+        with contextlib.suppress(Exception):
+            self.store.append_event(self.claim, JOB_EVIDENCE_EVENT, metadata)
+
     async def _resolve(self, form: ApplicationForm) -> ApplicationPacket:
         context = self._context(form)
+        await self.index_listing_description(context.job)
         packet = await self.runner.resolver.resolve(context)
         self._record_routing(form)
         problems = context.problems(packet)
@@ -2289,6 +2350,7 @@ __all__ = [
     "ALLOW_SUBMISSION_ENV",
     "BUSY_MESSAGE",
     "CLAIMED_MESSAGE",
+    "JOB_EVIDENCE_EVENT",
     "KEPT_DRAFT_MESSAGE",
     "KEPT_DRAFT_REASON",
     "MISMATCH_MESSAGE",

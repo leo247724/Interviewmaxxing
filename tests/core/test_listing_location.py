@@ -362,9 +362,11 @@ def test_rows_take_their_saved_listings_location_from_the_jobs_store(paths):
         ("", "", ""), ("", "", ""),  # no listing; keyed by URL
         ("Kept, TX", "", "")]  # a row's own location (a retry's ledger line) is kept
     assert jobs_db.read_bytes() == before  # only read
-    assert listing_argv(updated[0]) == ["--job-location", HYBRID, "--job-title",
-                                        "Growth Marketing Manager", "--job-company", "Brambleway"]
-    assert listing_argv(updated[3]) == []
+    assert listing_argv(updated[0]) == ["--job-listing-id", hybrid, "--job-location", HYBRID,
+                                        "--job-title", "Growth Marketing Manager",
+                                        "--job-company", "Brambleway"]
+    assert listing_argv(updated[3]) == ["--job-listing-id", "lst_not_saved"]  # apply finds none
+    assert listing_argv(updated[4]) == []  # keyed by its URL: no saved listing
 
     missing = paths.home / "elsewhere" / "jobs.sqlite3"
     assert with_saved_listings(rows, missing) == (rows, 0)
@@ -438,6 +440,8 @@ def test_prepare_batch_passes_the_listing_location_and_a_retry_carries_it(
     assert applied["hybrid"][-6:] == ["--job-location", HYBRID, "--job-title", "Growth Lead",
                                       "--job-company", "Brambleway"]
     assert applied["remote"][applied["remote"].index("--job-location") + 1] == REMOTE
+    assert [applied[n][applied[n].index("--job-listing-id") + 1] for n in ("hybrid", "remote")] == \
+        [hybrid, remote]
     assert "--job-location" not in applied["none"]
     ledger = {e.listing_id: e for e in read_ledger(paths.home / "batches" / "b1" / "ledger.jsonl")}
     assert (ledger[hybrid].location, ledger[remote].location, ledger["lst_unsaved"].location) == \
