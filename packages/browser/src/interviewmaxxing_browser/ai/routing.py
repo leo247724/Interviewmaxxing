@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from urllib.parse import urlsplit
 
@@ -68,6 +69,7 @@ from interviewmaxxing_core.answer_policies import (
 )
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
 from interviewmaxxing_core.preferences import names_work_mode, stated_metro_area
+from interviewmaxxing_generation.knowledge.stories import duration_claims
 from interviewmaxxing_generation.questions import (
     QuestionText,
     motivation_question,
@@ -710,6 +712,10 @@ HOOK_VOLUME_FEEDBACK = (
     "Make the hook's one metric the money or cases result the passage or its verified fact states "
     "(revenue, cost per acquisition, signed cases), not lead or call volume; drop the volume figure "
     "rather than moving it into the proof.")
+TENURE_FEEDBACK = (
+    "Date the work by the resume, never by a story passage's own length: a passage's 'nearly 2 years' "
+    "gives way to its role's resume dates ({periods}). State no duration longer than those dates, or "
+    "none.")
 EMPLOYER_REPEATED_FEEDBACK = (
     "Name each of your employers at most once per paragraph; a later sentence about the same work "
     "needs no name.")
@@ -830,6 +836,8 @@ class _CorrectableDraftRejection(AIHold):
         self.verdict = verdict
         self.issues = tuple(issues)
         self.from_review = from_review
+        self.rubric_issues: tuple[str, ...] = ()
+        """The rubric issues the same review found, carried into the one corrective rewrite."""
 
 
 def _digest(value: Any) -> str:
@@ -1409,8 +1417,12 @@ def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Seq
         hook, company = paragraphs[0], paragraphs[-2]
         proof_stories = {fid for s in body if hook < s.paragraph < company
                          for fid in s.fact_ids if fid.startswith("story:")}
+        # Citing the proof's passage is how the first move shows the work it is built from; a
+        # retelling restates the proof's figures there, or spreads over more than two sentences
+        # (a live batch-5 letter was rewritten for a bridge and a first move citing it, round 7).
         retold = [s for s in body if s.paragraph == company and proof_stories & set(s.fact_ids)]
-        if len(retold) > 1:
+        proof_figures = {figure for s in body if hook <= s.paragraph < company for figure in _headline_figures(s.text)}
+        if len(retold) > 2 or any(_headline_figures(s.text) & proof_figures for s in retold):
             findings.append(("PROOF_RETOLD", PROOF_RETOLD_FEEDBACK))
     if any(len(quoted_run(s.text, item["text"])) > MAX_QUOTED_WORDS for s in body for item in job_evidence):
         findings.append(("COMPANY_FACT_COPIED", COMPANY_FACT_FEEDBACK))
@@ -1451,6 +1463,39 @@ def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Seq
 
 def _words(text: str) -> set[str]:
     return {word for word in re.findall(r"[a-z]+", text.casefold()) if len(word) >= 4}
+
+
+_PERIOD = re.compile(r"^(?:since\s+)?(\d{4})(?:-(\d{2}))?(?:\s*(?:to|-|\u2013)\s*(?:(\d{4})(?:-(\d{2}))?|present|now))?$",
+                     re.IGNORECASE)
+
+
+def _period_months(period: str | None, today: date) -> int | None:
+    """A resume period's length in months, inclusive ("2024-03 to 2025-05" is 15); an open one
+    runs to today; None when the period is only a start or cannot be read."""
+    match = _PERIOD.match((period or "").strip())
+    if not match:
+        return None
+    first = int(match.group(1)) * 12 + int(match.group(2) or 1) - 1
+    if match.group(3):
+        last = int(match.group(3)) * 12 + int(match.group(4) or 12) - 1
+    elif re.search(r"present|now|^since", period or "", re.IGNORECASE):
+        last = today.year * 12 + today.month - 1
+    else:
+        return None
+    return max(last - first + 1, 0)
+
+
+def tenure_overstated(sentences: Sequence[Any], periods: dict[str, str], today: date) -> list[str]:
+    """The resume periods a letter's sentences outrun: a duration a sentence states ("nearly 2
+    years") longer than the resume dates of a story passage it cites (round 7, batch 5: the review
+    rejected Maximus's rewrite for it after the one rewrite was spent)."""
+    outrun: list[str] = []
+    for sentence in sentences:
+        for fid in sentence.fact_ids:
+            months = _period_months(periods.get(fid), today)
+            if months is not None and any(minimum > months + 1 for _, minimum in duration_claims(sentence.text)):
+                outrun.append(periods[fid])
+    return list(dict.fromkeys(outrun))
 
 
 _HEADLINE = re.compile(r"(?<![\w.])([$\u20ac\u00a3])?(\d+(?:,\d{3})*(?:\.\d+)?)\s*([kKmMbB](?![a-z]))?(\s*%|\s+percent\b)?")
@@ -5149,7 +5194,11 @@ class DynamicPacketResolver:
             profile_ids = {fact.id for fact in context.candidate.facts}
             fact_ids = [rid for rid in result.reference_ids if rid in profile_ids]
             if result.verdict in ("UNSUPPORTED", "INCOMPLETE"):
-                raise _CorrectableDraftRejection(result.verdict, result.issues, fact_ids, from_review=True)
+                rejection = _CorrectableDraftRejection(result.verdict, result.issues, fact_ids, from_review=True)
+                if rubric != "PASS" and rubric_issues and not question.strip():
+                    # The same call graded the rubric: the one rewrite fixes both (round 7, batch 5).
+                    rejection.rubric_issues = tuple(rubric_issues)
+                raise rejection
             raise AIHold(_review_hold(result.issues, fact_ids))
         return ("PASS" if rubric == "PASS" or not rubric_issues else "FAIL"), rubric_issues, question.strip()
 
@@ -5445,6 +5494,8 @@ class DynamicPacketResolver:
                     raise AIHold("Independent narrative review issues exceed the safe corrective-rewrite bound") from None
                 feedback = ([DROP_REJECTED_FEEDBACK, *exc.issues[:7]] if getattr(exc, "from_review", False)
                             else list(exc.issues))
+                if exc.rubric_issues:
+                    feedback = [*feedback[:5], RUBRIC_REWRITE_FEEDBACK, *exc.rubric_issues[:2]]
                 self._trace({"stage": "corrective_rewrite", "question": field.question_text,
                     "rewrite_attempt": attempt + 1, "review_verdict": exc.verdict, "review_issues": feedback,
                     "status": "ONE_REWRITE_ALLOWED" if attempts == 2 else "REWRITE_ALLOWED"})
@@ -5728,7 +5779,9 @@ class DynamicPacketResolver:
                 rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
             rejections.extend(self._letter_findings(context, candidate, purpose=purpose, job_evidence=job_evidence,
                                                     stories=bool(stories), contact=contact is not None,
-                                                    facts=relevant, evidence=evidence, shape=shape))
+                                                    facts=relevant, evidence=evidence, shape=shape,
+                                                    story_periods={c["id"]: c["period"] for c in story_chunks
+                                                                   if c.get("resume_role") and c.get("period")}))
             cited = {fid for s in candidate.sentences for fid in s.fact_ids}
             if (purpose == "cover_letter" and cited and cited <= set(supplied)
                     and not cited & {fact.id for fact in relevant}):
@@ -5843,7 +5896,8 @@ class DynamicPacketResolver:
                          job_evidence: list[dict[str, str]], stories: bool = False,
                          contact: bool = False, facts: Sequence[CandidateFact] = (),
                          evidence: Sequence[CandidateFact] = (),
-                         shape: Literal["letter", "note"] = "letter") -> list[tuple[str, str]]:
+                         shape: Literal["letter", "note"] = "letter",
+                         story_periods: dict[str, str] | None = None) -> list[tuple[str, str]]:
         """The owner's letter rules the code can check (round 6 and its rubric): the employer
         as the job description names it; job priorities paired with the applicant's work
         rather than restated (at most one sentence citing job evidence alone, besides a
@@ -5911,6 +5965,9 @@ class DynamicPacketResolver:
                         findings.append(("CLOSING", LETTER_CLOSING_FEEDBACK))
             if stories and not any(fid.startswith("story:") for s in draft.sentences for fid in s.fact_ids):
                 findings.append(("STORY_MISSING", LETTER_STORY_FEEDBACK))
+            outrun = tenure_overstated(body, story_periods or {}, utc_now().date())
+            if outrun:
+                findings.append(("TENURE_OVERSTATED", TENURE_FEEDBACK.format(periods="; ".join(outrun))))
             findings.extend(_round7_findings(context, draft, body=body, job_evidence=job_evidence,
                                              facts=facts, evidence=evidence, note=note))
         return findings

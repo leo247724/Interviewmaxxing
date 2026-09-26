@@ -1861,8 +1861,10 @@ def test_each_rubric_line_the_code_checks_gets_a_corrective_rewrite(candidate, m
     elif rule == "ATTRIBUTION":
         bad[9] = {**bad[9], "text": "Reporting to a sales team is the weekly habit I kept, and Mock Co holds this "
                                     "role accountable for exactly that kind of reporting."}
-    elif rule == "PROOF_RETOLD":  # the company paragraph tells the proof again, twice
-        bad[8] = {**bad[8], "fact_ids": [*bad[8]["fact_ids"], chunk["id"]]}
+    elif rule == "PROOF_RETOLD":  # the company paragraph tells the proof again, with its result
+        bad[8] = {**bad[8], "fact_ids": [*bad[8]["fact_ids"], chunk["id"]],
+                  "text": "Those managers watched online orders grow by 35% once the tracking counted only paid "
+                          "orders, and two of them started asking for my report before Monday."}
         bad[9] = {**bad[9], "fact_ids": [*bad[9]["fact_ids"], chunk["id"]]}
     elif rule == "COMPANY_FACT_COPIED":  # the posting's own sentence pasted in
         bad[7] = {**bad[7], "text": "Mock Co wants someone to own paid search strategy for enterprise brands and "
@@ -2741,3 +2743,68 @@ def test_a_letters_company_fact_is_no_restatement_and_a_bare_count_needs_no_twin
     assert "FIGURE_UNPAIRED" not in {code for code, _ in DynamicPacketResolver._letter_findings(
         ctx, draft, purpose="cover_letter", job_evidence=[POSTING], stories=True, contact=True,
         facts=[*candidate.facts, stores], evidence=[*candidate.facts, stores])}
+
+
+def test_a_first_move_may_cite_the_proof_but_never_retell_it_or_outrun_the_resume(candidate, mock_job):
+    """Live batch-5 findings (round 7): a company paragraph whose bridge and first move cite the
+    proof's passage retells nothing unless it restates the proof's figures; a passage's own length
+    ("nearly 2 years") never outruns its role's resume dates (TENURE_OVERSTATED, before any review)."""
+    from interviewmaxxing_browser.ai.routing import (
+        DynamicPacketResolver,
+        _period_months,
+        tenure_overstated,
+    )
+
+    chunk = story_chunk(resume_role="Marketing Manager, Crumb & Co. Bakeries", period="2023-04 to 2024-03")
+    letter = rubric_letter("fact.bakery", POSTING["id"], story_id=chunk["id"])
+    ctx = letter_context(candidate, mock_job)
+
+    def codes(sentences: list[dict[str, Any]]) -> set[str]:
+        draft = NarrativeDraft.model_validate(ready(sentences))
+        return {code for code, _ in DynamicPacketResolver._letter_findings(
+            ctx, draft, purpose="cover_letter", job_evidence=[POSTING], stories=True, contact=True,
+            facts=list(candidate.facts), evidence=list(candidate.facts),
+            story_periods={chunk["id"]: chunk["period"]})}
+
+    cited = [dict(s) for s in letter]
+    for index in (9, 10):  # the bridge and the first move cite the proof's passage
+        cited[index] = {**cited[index], "fact_ids": [*cited[index]["fact_ids"], chunk["id"]]}
+    assert "PROOF_RETOLD" not in codes(cited) and codes(letter) == set()
+    longer = [dict(s) for s in letter]
+    longer[3] = {**longer[3], "text": "For nearly 2 years the bakery chain's dashboard counted every phone call as an "
+                                      "order, so the budget kept flowing to searches that never produced a sale."}
+    assert "TENURE_OVERSTATED" in codes(longer)
+    writer = LetterWriter([longer, letter])
+    retriever = Retriever(list(candidate.facts), [chunk], job_evidence=[POSTING])
+    packet, _, _ = resolve(ctx, retriever, writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and writer.purposes() == ["letter_review"]
+    assert any("2023-04 to 2024-03" in issue for issue in writer.calls[1]["review_feedback"])
+    today = __import__("datetime").date(2026, 9, 25)
+    assert _period_months("2024-03 to 2025-05", today) == 15 and _period_months("since 2025-06", today) == 16
+    assert _period_months("2024", today) is None
+    sentence = NarrativeDraft.model_validate(ready([{"text": "I spent almost 2 years on it.", "fact_ids": ["story:x"]}]))
+    assert tenure_overstated(sentence.sentences, {"story:x": "2024-03 to 2025-03"}, today) == ["2024-03 to 2025-03"]
+    fits = NarrativeDraft.model_validate(ready([{"text": "I spent 6 months on it.", "fact_ids": ["story:x"]}]))
+    assert tenure_overstated(fits.sentences, {"story:x": "2024-03 to 2025-03"}, today) == []
+
+
+def test_a_grounding_rejection_carries_the_same_reviews_rubric_issues_into_the_one_rewrite(candidate, mock_job):
+    from interviewmaxxing_browser.ai.routing import DROP_REJECTED_FEEDBACK, RUBRIC_REWRITE_FEEDBACK
+
+    class BothWriter(LetterWriter):
+        def review(self, **kwargs: Any) -> Any:
+            self.reviews.append(kwargs)
+            if len(self.reviews) == 1:
+                return SimpleNamespace(verdict="UNSUPPORTED", issues=["Sentence 12 credits the revenue to the mail."],
+                                       reference_ids=[], rubric="FAIL",
+                                       rubric_issues=["Line 6a: two sentences restate the posting."], owner_question="")
+            return SimpleNamespace(verdict="SUPPORTED", issues=[], reference_ids=[], rubric="PASS", rubric_issues=[],
+                                   owner_question="")
+
+    letter = rubric_letter("fact.bakery", POSTING["id"])
+    writer = BothWriter([letter])
+    packet, _, _ = resolve(letter_context(candidate, mock_job), Retriever(list(candidate.facts), job_evidence=[POSTING]),
+                           writer, Jev(semantic="COVER_LETTER"))
+    assert packet.is_complete and len(writer.calls) == 2
+    assert writer.calls[1]["review_feedback"] == [DROP_REJECTED_FEEDBACK, "Sentence 12 credits the revenue to the mail.",
+                                                  RUBRIC_REWRITE_FEEDBACK, "Line 6a: two sentences restate the posting."]

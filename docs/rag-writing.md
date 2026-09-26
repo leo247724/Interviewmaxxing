@@ -906,6 +906,16 @@ one corrective rewrite and the costs are the letter's.
 - `JOB_RESTATED` no longer counts the company paragraph's company fact (a job-only sentence whose
   subject is the employer's own work, not the posting or the role) against the one restatement
   the rubric allows (line 6a).
+- `PROOF_RETOLD` fired when the bridge and the first move cited the proof's passage. The first
+  move has to cite it to show the work it is built from. A retelling is now a company-paragraph
+  sentence citing the proof that restates the proof's headline figures, or more than two such
+  sentences.
+- `TENURE_OVERSTATED` (new, letters and notes): a sentence citing a story passage may not state a
+  duration longer than its role's resume dates (`tenure_overstated`, with the generation
+  package's `duration_claims`). Maximus's rewrite said "nearly 2 years" for a 15-month role; the
+  review rejected it only after the one rewrite was spent.
+- A grounding rejection now carries the same review's rubric issues into the one corrective
+  rewrite, so one rewrite can fix both. The review had graded both anyway.
 
 ## Verification
 
