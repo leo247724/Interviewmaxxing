@@ -1277,6 +1277,7 @@
       visible: visible(d),
       parent: parentOf(d) ? dialogIndexOf(parentOf(d)) : -1,
       step: stepIn(d),
+      text: squashText(d.innerText || "").slice(0, 600),
     };
   });
 

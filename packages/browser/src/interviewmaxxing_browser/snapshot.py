@@ -216,6 +216,9 @@ class DomDialog(_Raw):
     """Index of the dialog enclosing this one, or -1."""
     step: DomStep | None = None
     """"Step N of M" or an ``aria-current=step`` list inside this dialog."""
+    text: str = ""
+    """The dialog's own visible text, whitespace squashed, at most 600 characters (round 15:
+    "Indicate how you can stand out as a candidate …" says it is an application)."""
 
 
 class DomFrame(_Raw):

@@ -24,6 +24,10 @@ Rules this driver enforces:
 * **Evaluation is read-only and allowlisted.** ``evaluate`` runs only the fixed
   read scripts of this package (inspector, control/document state, digests). It is
   not a general JavaScript sandbox; the internal regex lint is only defence in depth.
+* **One fixed script writes** (round 15): ``dom_click`` runs ``element.click()`` on the one
+  element a selector matches, when it is enabled, outside any dialog and submits no form.
+  The runtime uses it only for an apply control whose structured ``click`` left the page
+  unchanged (Wellfound's "Apply" ignores the bridge's click and answers ``click()``).
 * **Unsupported capabilities are errors, never success.** Selecting several options
   of a multi-select, uploading when Browser Bridge may not set files, pressing keys
   when the CLI refuses them, scrolling a menu list and focusing a window raise
@@ -74,8 +78,10 @@ from .runtime import (
     _EFFECTIVE_SUBMISSION,
     _IN_OWN_POPUP,
     _NATIVE_VALIDITY,
+    _NOW,
     _READ_CHECKED,
     _READ_CONTROL,
+    _REQUESTS_SINCE,
     ActionPolicy,
     GenericApplicationBrowser,
 )
@@ -241,8 +247,23 @@ _ALLOWED_SCRIPTS: frozenset[str] = frozenset({
     _IN_OWN_POPUP,
     _IN_SHADOW,
     CAPTCHA_DETECT,
+    _NOW,
+    _REQUESTS_SINCE,
 })
 """The only page scripts ``OpenCliDriver.evaluate`` will run: fixed read-only ones."""
+
+_DOM_CLICK = (
+    "(sel) => { " + DEEP_QUERY + "let els; try { document.querySelector(sel); els = deepAll(sel); } "
+    "catch (e) { return {n: -1}; } if (els.length !== 1) return {n: els.length}; const el = els[0]; "
+    "if (el.disabled || el.getAttribute('aria-disabled') === 'true') return {n: 1, clicked: false, why: 'disabled'}; "
+    "if (el.closest('dialog, [role=\"dialog\"], [role=\"alertdialog\"], [aria-modal=\"true\"]')) "
+    "return {n: 1, clicked: false, why: 'inside a dialog'}; "
+    "if (el.form && /^(?:submit|image)$/i.test(el.type || '')) return {n: 1, clicked: false, why: 'submits a form'}; "
+    "el.click(); return {n: 1, clicked: true}; }"
+)
+"""The one page script that writes (``OpenCliDriver.dom_click``): ``click()`` on the one
+element the selector matches, only when it is enabled, outside any dialog and submits no
+form. Nothing else."""
 
 
 # --- driver ---------------------------------------------------------------------------
@@ -397,6 +418,24 @@ class OpenCliDriver:
         _lint_read_script(expression)
         if expression == inspector_script():
             await self._refresh_doc()
+        return await self._eval(expression, arg)
+
+    async def dom_click(self, selector: str) -> None:
+        """``element.click()`` on the one element ``selector`` matches, through the one fixed
+        page script that writes (``_DOM_CLICK``). The runtime's fallback for an apply control
+        whose structured ``click`` left the page unchanged: Browser Bridge's click reaches the
+        element, but a site may answer only a script ``click()`` (Wellfound's "Apply"). Refused,
+        with nothing clicked, for a disabled element, one inside a dialog and one that would
+        submit a form (``NotActionable``)."""
+        self._mark = self._doc.origin
+        result = await self._eval(_DOM_CLICK, selector)
+        if not isinstance(result, dict) or result.get("n") != 1:
+            count = result.get("n") if isinstance(result, dict) else None
+            raise OpenCliTargetError(f"click() {selector}: matched {count} elements")
+        if not result.get("clicked"):
+            raise NotActionable(f"click() {selector} refused: it {result.get('why') or 'cannot be clicked'}")
+
+    async def _eval(self, expression: str, arg: Any) -> Any:
         raw = await self._call(self._argv(["eval"], positionals=[_wrap(expression, arg)]))
         if isinstance(raw, str):
             try:

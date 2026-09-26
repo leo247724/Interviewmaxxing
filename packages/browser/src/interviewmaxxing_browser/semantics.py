@@ -168,6 +168,17 @@ _ATTESTATION = _rx(
     r"information (?:provided|above|entered|you (?:have )?(?:provided|entered)) is (?:accurate|correct|true)"
 )
 _FIRST_PERSON = _rx(r"^\s*(?:i|i'm|i am|i have|i will|i do|my)\b")
+_NOTE_TO_EMPLOYER = _rx(
+    r"\b(?:write|add|leave|send|include)\s+(?:a|an)\s+(?:(?:short|brief|personal|optional)\s+)?"
+    r"(?:note|message)\s+(?:to|for)\b|"
+    r"\b(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:recruiter|hiring\s+(?:manager|team)|employer|company)\b|"
+    r"\bin\s+the\s+note\s+below\b|\bstand\s+out\s+as\s+a\s+candidate\b"
+)
+"""A free-text note to the recruiter or the company (Wellfound's "Write a note to <recruiter>
+at <Company>.", "Indicate how you can stand out as a candidate in the note below"): written
+as a short cover letter (round 15)."""
+_NOTE_ID = _rx(r"\buser\s*note\b|\bnote\s+to\s+(?:recruiter|employer|hiring\s+manager)\b|\bcover\s*note\b")
+"""A note field's own name or id ("userNote")."""
 _CURRENTLY_EMPLOYED = _rx(r"^\s*(?:i\s+)?(?:currently|still)\s+(?:work|employed)\b|^\s*i\s+(?:currently\s+)?work\s+here\b")
 """A work-history entry's "I currently work here": a fact about the role, not a pledge."""
 # Free-text questions that ask for a signature or a sworn statement.
@@ -205,9 +216,11 @@ def classify(
     autocomplete: str = "",
     input_type: str | None = None,
     control_type: ControlType,
+    placeholder: str = "",
 ) -> SemanticType:
     """The semantic type of one field. ``help_text`` is used only for checkboxes,
-    where the terms being agreed to often sit outside the label ("I agree")."""
+    where the terms being agreed to often sit outside the label ("I agree"), and
+    ``placeholder`` only for a textarea's note to the recruiter or company."""
     if control_type is ControlType.UNSUPPORTED:
         return SemanticType.UNKNOWN
     identifiers = _tokens(name, element_id)
@@ -264,6 +277,12 @@ def classify(
             return SemanticType.CONSENT
         if _TEXT_ATTESTATION.search(label) or _TEXT_ATTESTATION.search(help_text):
             return SemanticType.ATTESTATION
+
+    if control_type is ControlType.TEXTAREA and (
+            _NOTE_TO_EMPLOYER.search(f"{label} {placeholder}") or _NOTE_ID.search(identifiers)):
+        # Round 15: a note to the recruiter or the company (Wellfound's userNote) is written
+        # as a short cover letter, like any cover-letter textarea.
+        return SemanticType.COVER_LETTER
 
     auto = autocomplete.split()[-1] if autocomplete else ""
     if control_type is ControlType.TEXT and (_EXTENSION.search(label) or auto == "tel-extension"):

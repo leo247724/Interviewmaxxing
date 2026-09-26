@@ -389,6 +389,18 @@ _EFFECTIVE_SUBMISSION = """(sel) => {""" + DEEP_QUERY + """
 }"""
 
 _DOCUMENT_IDENTITY = "() => String(performance.timeOrigin) + ' ' + location.href"
+_NOW = "() => performance.now()"
+"""Read-only: the document's clock, the mark ``_REQUESTS_SINCE`` counts from."""
+_REQUESTS_SINCE = """(since) => {
+  const site = (host) => String(host || '').toLowerCase().split('.').slice(-2).join('.');
+  const here = site(location.hostname);
+  return performance.getEntriesByType('resource').filter((e) => {
+    if (e.startTime < since || !['fetch', 'xmlhttprequest'].includes(e.initiatorType)) return false;
+    try { return site(new URL(e.name).hostname) === here; } catch (x) { return false; }
+  }).length;
+}"""
+"""Read-only: the fetch/XHR requests the page sent to its own site since the mark (a
+click that did something usually asks the site; third-party telemetry does not count)."""
 """Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
 
 _READY_POLL_S = 0.5
@@ -904,6 +916,9 @@ class GenericApplicationBrowser:
         """(document, selector) of the cookie-banner buttons clicked: each at most once."""
         self._followed: set[str] = set()
         """Apply links and embedded application pages already opened by ``open``."""
+        self._last_click: tuple[str, DomButton | DomLink, float | None] | None = None
+        """The apply control ``_follow_apply`` clicked last (its kind and entry) and the
+        page clock just before (for ``_REQUESTS_SINCE``) when the driver has ``dom_click``."""
 
     # --- inspection -----------------------------------------------------------------
 
@@ -1300,6 +1315,7 @@ class GenericApplicationBrowser:
         self._attach_needed = {}
         self._apply_clicked = set()
         self._followed = set()
+        self._last_click = None
         await self.driver.goto(url)
         model = await self._await_ready()
         consent_done = await self._dismiss_cookie_banner(model)
@@ -1316,8 +1332,14 @@ class GenericApplicationBrowser:
             if followed is None:
                 break
             how, note = followed
-            notes.append(note)
             model = await (self._await_ready() if how == "frame" else self._await_opened(posting))
+            if how == "click":
+                # Round 15: an apply control whose click left the page as it was is clicked
+                # once more by script (``dom_click``), where the driver has one (OpenCLI).
+                retried = await self._dom_click_fallback(posting, model)
+                if retried is not None:
+                    model, note = retried
+            notes.append(note)
             if how == "frame" and model.inspection.kind is not PageKind.APPLICATION_FORM:
                 framed = await self._open_in_frame(posting)
                 if framed is not None:
@@ -1416,10 +1438,69 @@ class GenericApplicationBrowser:
             if kind == "button" and entry.submits_form and not await self._navigation_form(model, entry):
                 continue
             self._apply_clicked.add((document, entry.selector))
+            mark = await self._clock() if getattr(self.driver, "dom_click", None) is not None else None
+            self._last_click = (kind, entry, mark)
             await self.driver.click(entry.selector)
             await self.driver.settle(self.settle_timeout_s)
             return "click", f"clicked {entry.text!r}"
         return None
+
+    async def _clock(self) -> float | None:
+        """The page's clock (``performance.now()``), None when it cannot be read."""
+        try:
+            now = await self.driver.evaluate(_NOW)
+        except DriverError:
+            return None
+        return float(now) if isinstance(now, int | float) else None
+
+    async def _dom_click_fallback(self, posting: PageModel, model: PageModel) -> tuple[PageModel, str] | None:
+        """Round 15: the apply control ``_follow_apply`` just clicked left the page exactly as
+        it was (``_click_changed_nothing``): click it once more with ``element.click()``
+        through the driver's ``dom_click`` (OpenCLI's one fixed writing script; Playwright has
+        none, and its clicks are the page's own), then read the page as after any apply
+        click. Only an apply control outside any dialog that submits no form, or an apply
+        script link; never a step's submit or next control. Returns the page and the note
+        ("clicked 'Apply' (DOM click)"), or None when the fallback does not apply or was
+        refused."""
+        dom_click = getattr(self.driver, "dom_click", None)
+        last, self._last_click = self._last_click, None
+        if dom_click is None or last is None:
+            return None
+        kind, entry, mark = last
+        if kind not in ("button", "script-link") or entry.dialog_index != -1 or (
+                isinstance(entry, DomButton) and entry.submits_form):
+            return None
+        if not await self._click_changed_nothing(posting, model, entry, mark):
+            return None
+        try:
+            await dom_click(entry.selector)
+        except NotActionable:
+            return None
+        await self.driver.settle(self.settle_timeout_s)
+        return await self._await_opened(posting), f"clicked {entry.text!r} (DOM click)"
+
+    async def _click_changed_nothing(self, posting: PageModel, model: PageModel,
+                                     entry: DomButton | DomLink, mark: float | None) -> bool:
+        """Whether an apply click left the posting as it was, once ``_await_opened`` has
+        waited for it: the same document at the same address (no navigation, no client
+        route), still the posting with the control on it, no dialog shown that was not
+        there, and no request to the page's own site since the click."""
+        before, after = posting.snapshot, model.snapshot
+        if (after.document != before.document or after.url != before.url
+                or model.inspection.kind is not PageKind.JOB_DESCRIPTION):
+            return False
+        if {d.selector for d in after.dialogs if d.visible} - {d.selector for d in before.dialogs if d.visible}:
+            return False
+        shown = after.buttons if isinstance(entry, DomButton) else after.links
+        if not any(item.selector == entry.selector for item in shown):
+            return False
+        if mark is None:
+            return True
+        try:
+            requests = await self.driver.evaluate(_REQUESTS_SINCE, mark)
+        except DriverError:
+            return False
+        return isinstance(requests, int) and requests == 0
 
     async def _navigation_form(self, model: PageModel, button: DomButton) -> bool:
         """A form whose apply button may be clicked (a posting page wrapped in one form,
