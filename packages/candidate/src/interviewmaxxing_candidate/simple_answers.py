@@ -34,7 +34,12 @@ from interviewmaxxing_core import (
     normalize_work_arrangement,
 )
 from interviewmaxxing_core.answer_policies import ANSWER_POLICY_KEYS, ANSWER_POLICY_QUESTIONS
-from interviewmaxxing_core.preferences import METRO_AREA_QUESTION
+from interviewmaxxing_core.preferences import (
+    METRO_AREA_QUESTION,
+    MIDDLE_NAME_QUESTION,
+    TIME_ZONE_QUESTION,
+    normalize_middle_name,
+)
 
 from .answers import question_key, value_key
 
@@ -136,6 +141,10 @@ _REUSABLE_QUESTIONS: dict[str, tuple[SemanticType | None, str]] = {
     # Round 13: the towns around the person's city where on-site or hybrid work is fine
     # (comma-separated); only the work-arrangement derivation reads it.
     "metro_area": (None, METRO_AREA_QUESTION),
+    # Round 15: the middle name ("none" is stored as "N/A": "Middle Name — write N/A if none")
+    # and the person's own time zone ("What is your Time Zone?": Eastern / Central / …).
+    "middle_name": (None, MIDDLE_NAME_QUESTION),
+    "time_zone": (None, TIME_ZONE_QUESTION),
 }
 STATEMENT_KEYS = frozenset({
     "acknowledge_privacy_notice", "certify_information_true", "consent_to_contact",
@@ -275,6 +284,11 @@ _REUSABLE_PHRASES = {
         "Preferred work arrangement", "What is your preferred work arrangement?",
         "Which work setting do you prefer?", "Remote, hybrid or on-site?",
         "What is your work location preference?",
+    ],
+    "middle_name": ["Middle name", "Middle Name (optional)", "Middle name, if any"],
+    "time_zone": [
+        "Time zone", "Timezone", "Your time zone", "What time zone are you in?", "Current time zone",
+        "Which time zone are you located in?", "What time zone do you live in?",
     ],
     "interview_accommodations": [
         "Do you require any accommodations for the interview process?",
@@ -438,6 +452,10 @@ class SimpleAnswers(BaseModel):
     metro_area: str | None = None
     """The places around the person's city where on-site or hybrid work is fine, comma-separated
     ("Round Rock, Cedar Park, Pflugerville"); round 13."""
+    middle_name: str | None = None
+    """The person's middle name, or "none" (stored as "N/A"); round 15."""
+    time_zone: str | None = None
+    """The person's own time zone ("Central", "US Eastern", "America/Denver"); round 15."""
     answer_policies: AnswerPolicies = Field(default_factory=AnswerPolicies)
     """Standing answers by class of question (round 12); a null section is no policy."""
 
@@ -468,6 +486,11 @@ class SimpleAnswers(BaseModel):
         if value.casefold() not in choices:
             raise ValueError('Use "Yes", "No", or null for this answer.')
         return choices[value.casefold()]
+
+    @field_validator("middle_name", mode="after")
+    @classmethod
+    def _middle_name(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_middle_name(value)
 
     @field_validator("work_arrangement_preference", mode="after")
     @classmethod

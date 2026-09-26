@@ -39,6 +39,7 @@ from interviewmaxxing_core import (
     ControlType,
     FactVerification,
     FieldOption,
+    JobRecord,
     MissingInput,
     MissingReason,
     MultiChoiceValue,
@@ -68,7 +69,14 @@ from interviewmaxxing_core.answer_policies import (
     stated_answer_policies,
 )
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
-from interviewmaxxing_core.preferences import names_work_mode, stated_metro_area
+from interviewmaxxing_core.preferences import (
+    MIDDLE_NAME_QUESTION,
+    TIME_ZONE_QUESTION,
+    address_time_zone,
+    names_work_mode,
+    stated_metro_area,
+    time_zone_of,
+)
 from interviewmaxxing_generation.knowledge.stories import duration_claims
 from interviewmaxxing_generation.questions import (
     QuestionText,
@@ -152,7 +160,10 @@ from .closed_vocab import (
     state_options,
 )
 from .experience import (
+    PLATFORMS,
     area_facts,
+    channel_stated,
+    channels_named,
     experience_wording,
     platform_facts,
     platforms_named,
@@ -208,9 +219,11 @@ from .providers import (
 from .salary import (
     RangeStatus,
     WordingKind,
+    asks_for_currency,
     asks_for_detail,
     containing_option,
     convert_amount,
+    country_currency,
     currencies_named,
     field_wording,
     parse_salary,
@@ -218,6 +231,7 @@ from .salary import (
     range_options,
     render_amount,
     render_salary,
+    render_salary_with_code,
     salary_wording,
 )
 from .start_dates import bucket_choice, days_from_today, in_words, option_bucket
@@ -450,6 +464,33 @@ _ONSITE_ELSEWHERE = re.compile(
     r"off-?sites?|retreats?|meetings?|visits?|clients?|customers?)\b", re.IGNORECASE)
 """On-site wording about something other than the regular way of working (an in-person
 interview, travel, onboarding, client sites): never the metro's to answer (round 14)."""
+_INTEREST_WORDING = re.compile(
+    r"\bwhy (?:did|do|would|have) you (?:decide|decided|choose|chosen|want|wanted) to "
+    r"(?:apply|join|work)\b"
+    r"|\bwhy you(?:'re|\u2019re| are| were) (?:applying|interested|excited|drawn)\b"
+    r"|\bwhat (?:excited|interested|drew|attracted) you (?:about|to)\b"
+    r"|\btell (?:us|me) (?:a (?:bit|little) )?(?:more )?about yourself\b"
+    r"|\byour interest in (?:joining|working|applying)\b"
+    r"|\binterest(?:ed)? in (?:joining|working (?:at|for|with))\b", re.IGNORECASE)
+"""Interest and motivation wordings the generation predicate misses (round 15, the first
+mass slice): "Why did you decide to apply to this role at ClickUp?", "why you're applying to
+work at Yondr", "What excited you about this role?", "Tell us about yourself"."""
+_INTEREST_NAMED = re.compile(
+    r"\b[Ww]hy\s+[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\s*(?:&|\+|and)\s*(?:this|the|your)\s+"
+    r"(?:role|position|job|team|opportunity)\b"
+    r"|\byour interest in (?:[A-Z]|this\b|the\b|our\b)")
+"""The employer named in a why-us question ("Why Dovetail & this role?", "your interest in
+Smalls"): case-sensitive, so a capitalized name is the employer."""
+_PREFERENCE_WORDING = re.compile(
+    r"\b(?:salary|salaries|compensation|pay|wage|rate|relocat\w*|availab\w*|start date|"
+    r"notice period|hours|travel|schedule|shift|remote|hybrid|on-?site|visa|sponsor\w*|"
+    r"authori[sz]\w*|citizen\w*|commut\w*|overtime|weekends?|earliest|when can you)\b",
+    re.IGNORECASE)
+"""An explicit preference or eligibility the person answers themselves, never a motivation
+narrative (the exclusion of ``motivation_question``, for the round-15 wordings)."""
+_MOTIVATION_QUERY = "Why are you interested in this role? "
+"""Prefixed to a motivation question the knowledge store's own predicate does not read as
+one, so its facts are ranked by the job's description like any motivation narrative."""
 _STATUS_OPTION = re.compile(
     r"\b(?:citizen\w*|green card|resident\w*|residence|visa|h-?1b|ead|opt|tn|asylee|asylum|"
     r"refugee|daca|tps)\b", re.IGNORECASE)
@@ -1020,6 +1061,122 @@ def _asks_sponsorship(field: ApplicationField) -> bool:
             or _SPONSOR.search(field.question_text.casefold()) is not None)
 
 
+_NOT_APPLICABLE_OPTION = re.compile(r"^\s*(?:n/?a|not applicable)\b", re.IGNORECASE)
+_SPONSORSHIP_NEGATED = re.compile(
+    r"\b(?:no|not|never|without|don'?t|do not|won'?t|will not|doesn'?t|does not)\b|\bdon\u2019t\b|\bwon\u2019t\b",
+    re.IGNORECASE)
+
+
+_PRONOUN_WORDS = frozenset({"he", "him", "his", "she", "her", "hers", "they", "them", "their",
+                            "theirs", "xe", "xem", "xyr", "ze", "zir", "hir", "it", "its"})
+
+
+def _pronoun_set(text: str) -> tuple[str, ...] | None:
+    """The pronouns a value or an option states, in order ("He/him/his" → he, him, his;
+    "she / her" → she, her); None when it states anything else ("Prefer not to say")."""
+    words = re.findall(r"[a-z]+", text.casefold())
+    if not words or any(word not in _PRONOUN_WORDS for word in words):
+        return None
+    return tuple(dict.fromkeys(words))
+
+
+def _pronoun_option(field: ApplicationField, value: str) -> FieldOption | None:
+    """The one option naming the saved pronouns (round 15): the same subject pronoun and every
+    saved form ("he/him" is "He/him/his" and "He / Him", never "She/her" or "He/they")."""
+    saved = _pronoun_set(value)
+    if saved is None:
+        return None
+    matching = [o for o in usable_options(field)
+                if (stated := _pronoun_set(o.label)) is not None and stated[0] == saved[0]
+                and set(saved) <= set(stated) and not (set(stated) - set(saved) - _POSSESSIVES.get(saved[0], set()))]
+    return matching[0] if len(matching) == 1 else None
+
+
+_POSSESSIVES = {"he": {"his"}, "she": {"hers", "her"}, "they": {"their", "theirs"}, "xe": {"xyr"},
+                "ze": {"zir", "hir"}}
+"""The forms an option may add to the saved pronouns ("he/him" in "He/him/his")."""
+
+
+_ENGLISH_QUESTION = re.compile(
+    r"\benglish\b.*\b(?:fluen\w*|proficien\w*)\b|\b(?:fluen\w*|proficien\w*)\b.*\benglish\b"
+    r"|\b(?:able to|can you|could you|do you)\b[^?.]*\b(?:speak|read|write|communicate)\b[^?.]*\benglish\b",
+    re.IGNORECASE)
+"""A question whether the applicant speaks, reads or writes English fluently (round 15)."""
+_OTHER_LANGUAGE = re.compile(
+    r"\b(?:other than|besides|in addition to|apart from|except|beyond)\s+english\b|\bother languages?\b"
+    r"|\bsecond language\b|\blanguages? (?:other|besides)\b|\bnon-english\b", re.IGNORECASE)
+"""A question about another language than English: never the English level's."""
+_FLUENT = re.compile(r"\b(?:native|fluent|fluently|bilingual|full professional|c1|c2|mother tongue|"
+                     r"first language|advanced)\b", re.IGNORECASE)
+_NOT_FLUENT = re.compile(r"\b(?:basic|limited|elementary|beginner|none|no|a1|a2)\b", re.IGNORECASE)
+ENGLISH_PROFICIENCY_QUESTION = "What is your level of proficiency in English?"
+"""The saved question of the simple answers' ``english_proficiency``."""
+
+
+def english_fluency(value: str) -> str | None:
+    """"yes" for a stated English level that is fluent (native, fluent, bilingual, full
+    professional, C1/C2), "no" for a basic or limited one, else None (the person answers)."""
+    if _FLUENT.search(value) and not _NOT_FLUENT.search(value):
+        return "yes"
+    if _NOT_FLUENT.search(value) and not _FLUENT.search(value):
+        return "no"
+    return None
+
+
+_MIDDLE_NAME_LABEL = re.compile(r"^\s*middle\s+name\b", re.IGNORECASE)
+"""A middle-name question ("Middle Name — write N/A if none"), round 15."""
+_TIME_ZONE_LABEL = re.compile(r"\btime\s*-?\s*zone\b", re.IGNORECASE)
+_TIME_ZONE_AVAILABILITY = re.compile(
+    r"\b(?:available|availability|can you work|could you work|willing|overlap|able to work|work in|"
+    r"work across|comfortable|hours)\b", re.IGNORECASE)
+"""A time-zone question about working hours, not the person's own zone."""
+
+
+_NO_EXPERIENCE_OPTION = re.compile(
+    r"^(?:none|no|0|0 years?|never|n/?a)$|^(?:no|zero)(?: prior| hands-on)? (?:experience|exposure|knowledge)\b"
+    r"|^not (?:familiar|proficient|experienced|at all)\b|^(?:i have not|i haven't|i've never|never) "
+    r"(?:done|used|bought|worked|managed|run)\b", re.IGNORECASE)
+"""A scale option stating no experience at all ("No experience", "None", "Not familiar")."""
+_PROFICIENCY_QUESTION = re.compile(
+    r"\bproficien\w*|\brate your\b|\bhow (?:would you rate|experienced|familiar|comfortable|skilled)\b"
+    r"|\blevel of (?:experience|expertise|familiarity|proficiency)\b|\bexpertise\b|\bfamiliarity\b",
+    re.IGNORECASE)
+"""A graded proficiency or experience-level question ("How would you rate your proficiency in
+CTV buying?")."""
+_YEARS_COUNT_QUESTION = re.compile(r"\bhow (?:many|much)\b.*\byears?\b|\byears? of (?:experience|work)\b",
+                                   re.IGNORECASE)
+_PLATFORM_AREAS = frozenset(area for _, _, areas in PLATFORMS for area in areas)
+
+
+def _sponsorship_polarity(label: str) -> str | None:
+    """Whether an option says the applicant needs sponsorship ("yes") or not ("no"): a plain
+    Yes or No, or a statement ("I will require sponsorship", "I do not require sponsorship");
+    None for a not-applicable option ("N/A - I am based in …") or anything else (round 15)."""
+    plain = _polarity(label)
+    if plain is not None:
+        return plain
+    if _NOT_APPLICABLE_OPTION.match(label) or not re.search(r"\b(?:requir|need|sponsor)", label, re.IGNORECASE):
+        return None
+    return "no" if _SPONSORSHIP_NEGATED.search(label) else "yes"
+
+
+def _generic_sponsorship(field: ApplicationField, job: JobRecord) -> bool:
+    """A plain question whether the applicant needs sponsorship ("Will you now or in the
+    future require sponsorship for employment visa status (e.g., H-1B visa status)?") that
+    names no other country, visa type or subject and asks nothing else, for a job whose
+    location names no other country (round 15): the person's own sponsorship answer is the
+    answer to it, and a permanent U.S. status settles it. Saved jobs are U.S. or U.S.-remote
+    (the finder's gate), so a job without a location is not abroad."""
+    question = _without_employer(field.question_text, job.company)
+    folded = question.casefold()
+    location = (job.location or "").casefold()
+    return (_asks_sponsorship(field) and _NEED.search(folded) is not None
+            and _AUTH_EXCLUDED.search(folded) is None and _AUTH_NEGATION.search(folded) is None
+            and _AUTHORIZED_TO_WORK.search(folded) is None
+            and not _places(question, after_preposition=True)
+            and _AUTH_EXCLUDED.search(location) is None)
+
+
 def _plain_authorization(field: ApplicationField) -> bool:
     """A plain U.S. work-authorization question by its wording alone ("Are you authorized
     to be employed in the United States?", "legally able to work"): no sponsorship, no
@@ -1033,16 +1190,19 @@ def _plain_authorization(field: ApplicationField) -> bool:
 
 
 def _status_table(field: ApplicationField, code: str,
-                  keys: dict[str, FieldOption]) -> FieldOption | None:
+                  keys: dict[str, FieldOption], *, generic: bool = False) -> FieldOption | None:
     """The obvious status pairs, answered without a call; None leaves the question to Jev.
     Only U.S. questions without negation or another subject (citizenship, a visa type,
     clearance, another country, expiry) take part, and only one question at a time: a
     wording that names sponsorship and asks about authorization is Jev's.
     Yes/No answers need bare "Yes" and "No" options, and no option may name a status of its
-    own ("Permanent resident" beside "Citizen")."""
+    own ("Permanent resident" beside "Citizen"). With ``generic`` (round 15) a sponsorship
+    question naming no country, for a job not abroad (``_generic_sponsorship``), is a U.S.
+    one, and its statement options ("I will require sponsorship" / "I do not require
+    sponsorship", beside "N/A - …") answer it like Yes and No."""
     question = field.question_text.casefold()
     if (_AUTH_EXCLUDED.search(question) or _AUTH_NEGATION.search(question)
-            or not _US_WORDS.search(field.question_text)):
+            or not (_US_WORDS.search(field.question_text) or generic)):
         return None
     sponsor = bool(_SPONSOR.search(question))
     sponsorship = sponsor and bool(_NEED.search(question))
@@ -1058,6 +1218,10 @@ def _status_table(field: ApplicationField, code: str,
         return bare["yes"]
     if any(_STATUS_OPTION.search(o.label) for o in options):
         return None
+    if sponsorship and code in PERMANENT_STATUSES and not {"yes", "no"} <= set(bare):
+        needs_none = [o for o in options if _sponsorship_polarity(o.label) == "no"]
+        if len(needs_none) == 1 and any(_sponsorship_polarity(o.label) == "yes" for o in options):
+            return needs_none[0]
     if len(options) == 2 and set(bare) == {"yes", "no"}:
         if sponsorship:
             return bare["no"] if code in PERMANENT_STATUSES else None
@@ -1110,6 +1274,21 @@ def _without_employer(text: str, company: str | None) -> str:
         return text
     return re.sub(rf"(?<![\w-]){re.escape(name)}(?:['\u2019]s)?(?![\w-])", "the employer", text,
                   flags=re.IGNORECASE)
+
+
+def interest_question(text: str | None) -> bool:
+    """A question about the applicant's interest in, motivation for or fit with the job or
+    employer: ``motivation_question`` or a round-15 wording ("Why Dovetail & this role?", "Why
+    did you decide to apply …", "Tell us about yourself & your interest in Smalls."). By the
+    owner's rule every saved job is a fit and the writer makes the case, whatever the source
+    scope the classifier gave it; an explicit preference or eligibility is never one."""
+    if not text:
+        return False
+    cleaned = " ".join(text.split())
+    if motivation_question(cleaned):
+        return True
+    return ((_INTEREST_WORDING.search(cleaned) is not None or _INTEREST_NAMED.search(cleaned) is not None)
+            and _PREFERENCE_WORDING.search(cleaned) is None)
 
 
 def _names_city(city: str | None, text: str) -> bool:
@@ -2146,7 +2325,7 @@ class DynamicPacketResolver:
                 and field.input_type in (None, "text")
                 and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
                 and gate.semantic_type not in EXPLICIT_ANSWER_REQUIRED
-                and motivation_question(field.question_text))
+                and interest_question(field.question_text))
 
     @staticmethod
     def _case_analysis(field: ApplicationField, gate: FieldRouteDecision) -> bool:
@@ -2440,6 +2619,26 @@ class DynamicPacketResolver:
                 decided, answer = self._metro_onsite(context, field, *metro, question="onsite")
                 if decided:
                     return answer
+            if (not settled and not own and _yes_no_pair(field)
+                    and _ENGLISH_QUESTION.search(field.question_text) is not None
+                    and _OTHER_LANGUAGE.search(field.question_text) is None):
+                # Round 15: "Are you able to speak, read, and write English fluently?" from the
+                # stated English level, without a call.
+                placed = self._english(context, field)
+                if placed is not None:
+                    return placed
+            if not settled and self._is_time_zone_question(field):
+                # Round 15: "What is your Time Zone?" (Eastern / Central / …) from the saved
+                # time zone, else from the verified address on an identity-typed field.
+                placed = self._time_zone(context, field, own)
+                if placed is not None:
+                    return placed
+            if not settled and legal and _asks_sponsorship(field):
+                # Round 15: the person's own sponsorship answer on the site's options without
+                # a call (plain Yes/No or "I do not require sponsorship"; never "N/A - …").
+                placed = self._stated_sponsorship(context, field, own)
+                if placed is not None:
+                    return placed
             if not settled and not (legal and exact and not own):
                 # A question asking for the status itself ("Work authorization status") is
                 # derived from the status below, never mapped from its meaning.
@@ -2471,6 +2670,12 @@ class DynamicPacketResolver:
             answer, settled = self._eeo_answer(context, field, gate)
             if settled:
                 return answer
+        if (not exact and field.control_type in (ControlType.TEXT, ControlType.TEXTAREA)
+                and _MIDDLE_NAME_LABEL.match(field.label) is not None):
+            # Round 15: "Middle Name — write N/A if none" from the saved middle name.
+            placed = self._middle_name(context, field)
+            if placed is not None:
+                return placed
         if not exact:
             if field.semantic_type is SemanticType.SALARY_EXPECTATION:
                 # Round 10: derived from the desired salary (converted to the period the
@@ -2518,6 +2723,13 @@ class DynamicPacketResolver:
         keys = _option_keys(field)
         if not keys or len(keys) >= 255:
             return None
+        if field.semantic_type is SemanticType.PRONOUNS and isinstance(stored.value, str):
+            # Round 15: "he/him" is the one option naming the same pronouns ("He/him/his",
+            # "He / Him"), without a call; no single such option leaves it to Jev.
+            option = _pronoun_option(field, stored.value)
+            if option is not None:
+                return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
+                                    value=_choice_value(field, [option]), provenance=stored.provenance)
         if (stored.provenance.source is AnswerSource.PROFILE_IDENTITY
                 and (gate.route is not FieldRoute.COPY_KNOWN
                      or gate.source_scope is not SourceScope.APPLICANT_CURRENT)):
@@ -2920,6 +3132,157 @@ class DynamicPacketResolver:
                  if a.scope is AnswerScope.GLOBAL and stated_status(a) is not None]
         return max(found, key=lambda a: a.confirmed_at) if found else None
 
+    def _middle_name(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
+        """A middle-name question from the saved middle name (``middle_name``): the name, or
+        "N/A" for a person who has none."""
+        saved = [a for a in context.candidate.applicable_saved_answers(context.job)
+                 if question_key(a.question) == question_key(MIDDLE_NAME_QUESTION)
+                 and a.semantic_type is None and isinstance(a.value, str)]
+        if not saved:
+            return None
+        latest = max([a for a in saved if a.scope is AnswerScope.JOB] or saved, key=lambda a: a.confirmed_at)
+        result = translate(field, str(latest.value))
+        trace: dict[str, Any] = {"stage": "middle_name", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "reference_ids": [latest.id]}
+        if not isinstance(result, Mapped) or answer_problems(field, result.value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED"})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=result.value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[latest.id],
+                note="the person's saved middle name"))
+
+    @staticmethod
+    def _is_time_zone_question(field: ApplicationField) -> bool:
+        """A choice asking for the applicant's own time zone ("What is your Time Zone?") whose
+        options name at least two US time zones; not one about the hours they can work."""
+        text = " ".join([field.label, field.help_text or ""])
+        return (field.control_type in CHOICE_CONTROLS and field.control_type not in MULTI_CHOICE_CONTROLS
+                and _TIME_ZONE_LABEL.search(text) is not None and _TIME_ZONE_AVAILABILITY.search(text) is None
+                and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
+                and len({time_zone_of(o.label) for o in usable_options(field)} - {None}) >= 2)
+
+    def _time_zone(self, context: PacketContext, field: ApplicationField,
+                   own: Sequence[SavedAnswer]) -> PacketAnswer | None:
+        """The option naming the person's time zone: their own answer to this wording, else
+        their saved ``time_zone``; without either, the zone of the verified address when the
+        field is an identity type (a custom select cannot carry an address-derived answer: the
+        classifier's typing is WP10's, round 15 report)."""
+        saved = ([a for a in own if isinstance(a.value, str)]
+                 or [a for a in context.candidate.applicable_saved_answers(context.job)
+                     if question_key(a.question) == question_key(TIME_ZONE_QUESTION)
+                     and a.semantic_type is None and isinstance(a.value, str)])
+        trace: dict[str, Any] = {"stage": "time_zone", "field_id": field.id,
+            "field_fingerprint": field.fingerprint}
+        provenance: Provenance
+        if saved:
+            latest = max([a for a in saved if a.scope is AnswerScope.JOB] or saved, key=lambda a: a.confirmed_at)
+            zone = time_zone_of(str(latest.value))
+            trace.update(source="saved", reference_ids=[latest.id])
+            provenance = Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[latest.id],
+                                    note="the person's saved time zone on the site's own option")
+        elif field.semantic_type in PROFILE_IDENTITY_TYPES:
+            address = context.candidate.identity.address
+            zone = address_time_zone(address.city, us_state_code(address.region or ""))
+            trace["source"] = "address"
+            provenance = Provenance(source=AnswerSource.PROFILE_IDENTITY,
+                                    note="the time zone of the verified address")
+        else:
+            self._trace(trace | {"status": "NO_TIME_ZONE", "semantic_type": field.semantic_type.value})
+            return None
+        trace["zone"] = zone
+        matching = [o for o in usable_options(field) if zone is not None and time_zone_of(o.label) == zone]
+        if len(matching) != 1:
+            self._trace(trace | {"status": "NO_OPTION" if not matching else "AMBIGUOUS"})
+            return None
+        value = _choice_value(field, matching)
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED"})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+                            provenance=provenance)
+
+    def _english(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
+        """A yes/no English-fluency question from the person's stated English level
+        (``english_proficiency``): Yes for native, fluent, bilingual, full professional or
+        C1/C2; No for a basic or limited level; anything else waits for the person."""
+        saved = [a for a in context.candidate.applicable_saved_answers(context.job)
+                 if question_key(a.question) == question_key(ENGLISH_PROFICIENCY_QUESTION)
+                 and a.semantic_type is None and isinstance(a.value, str)]
+        trace: dict[str, Any] = {"stage": "english_fluency", "field_id": field.id,
+            "field_fingerprint": field.fingerprint}
+        if not saved:
+            self._trace(trace | {"status": "NONE"})
+            return None
+        latest = max([a for a in saved if a.scope is AnswerScope.JOB] or saved, key=lambda a: a.confirmed_at)
+        polarity = english_fluency(str(latest.value))
+        trace["reference_ids"] = [latest.id]
+        if polarity is None:
+            self._trace(trace | {"status": "UNREADABLE"})
+            return None
+        option = next(o for o in usable_options(field) if _polarity(o.label) == polarity)
+        value = _choice_value(field, [option])
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED", "choice": polarity})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[latest.id],
+                note="derived from the person's stated English proficiency"))
+
+    def _stated_sponsorship(self, context: PacketContext, field: ApplicationField,
+                            own: Sequence[SavedAnswer]) -> PacketAnswer | None:
+        """The person's own sponsorship answer placed on a sponsorship question's options
+        without a call (round 15): their answer to exactly this wording, else their canonical
+        ``requires_visa_sponsorship`` answer for a generic question (``_generic_sponsorship``).
+        It takes the one option of its polarity: a plain Yes or No, or a statement ("I will
+        require sponsorship" / "I do not require sponsorship"); a not-applicable option ("N/A
+        - I am based in …") is never chosen. None when the stated status contradicts the
+        answer, no single option has its polarity, or the answer is typed otherwise."""
+        via = "exact"
+        candidates = [a for a in own if isinstance(a.value, str)]
+        # With a stated status the derivation answers a reworded question (round 8: derived,
+        # not matched); the canonical answer is placed only for a person who states none.
+        if not candidates and self._status_answer(context) is None and _generic_sponsorship(field, context.job):
+            via = "stated"
+            canonical = question_key(STATED_ANSWER_QUESTIONS["requires_visa_sponsorship"])
+            candidates = [a for a in context.candidate.applicable_saved_answers(context.job)
+                          if question_key(a.question) == canonical and isinstance(a.value, str)]
+        if not candidates:
+            return None
+        latest = max([a for a in candidates if a.scope is AnswerScope.JOB] or candidates,
+                     key=lambda a: a.confirmed_at)
+        polarity = _polarity(str(latest.value))
+        trace: dict[str, Any] = {"stage": "sponsorship_answer", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "via": via, "reference_ids": [latest.id],
+            "option_count": len(usable_options(field))}
+        if polarity is None or latest.semantic_type not in (None, field.semantic_type):
+            self._trace(trace | {"status": "NOT_PLACED"})
+            return None
+        status = self._status_answer(context)
+        code = stated_status(status) if status is not None else None
+        wrong = STATUS_CONTRADICTIONS.get(code or "", {}).get("requires_visa_sponsorship")
+        if wrong is not None and question_key(wrong) == polarity:
+            self._trace(trace | {"status": "CONTRADICTS_STATUS"})
+            return None
+        keys, text_yes_no = self._status_options(field)
+        matching = [o for o in keys.values() if _sponsorship_polarity(o.label) == polarity]
+        if len(matching) != 1:
+            self._trace(trace | {"status": "AMBIGUOUS" if matching else "NO_OPTION"})
+            return None
+        value: AnswerValue = (TextValue(text=matching[0].label) if text_yes_no
+                              else _choice_value(field, matching))
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED", "choice": polarity})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.SAVED_ANSWER, reference_ids=[latest.id],
+                note=("the person's own answer to this question" if via == "exact"
+                      else f"the person's own answer to {latest.question!r}")
+                     + " placed on the site's sponsorship options"))
+
     @staticmethod
     def _stated_answer(context: PacketContext, question: str) -> str | None:
         """The newest saved answer to exactly this question (comparison form), else None."""
@@ -2966,7 +3329,8 @@ class DynamicPacketResolver:
         if conflicts:
             self._trace(trace | {"status": "CONTRADICTS_STATED", "stated_keys": conflicts})
             return None
-        option = _status_table(_with_job_country(field, context.job.location), code, keys)
+        option = _status_table(_with_job_country(field, context.job.location), code, keys,
+                               generic=_generic_sponsorship(field, context.job))
         confidence = 1.0
         if option is not None:
             trace.update(via="table", choice=next(k for k, o in keys.items() if o is option))
@@ -3202,6 +3566,17 @@ class DynamicPacketResolver:
         if period != salary.period:
             trace["conversion"] = f"{salary.period}->{period}"
         figure = render_salary(amount, period, salary.currency)
+        with_currency = asks_for_currency(question)
+        if with_currency:
+            # Round 15: "Please include the currency." A salary saved without one is in the
+            # currency of the person's verified country (USD in the United States).
+            currency = salary.currency or (next(iter(currencies), None) if len(currencies) == 1 else None) \
+                or country_currency(context.candidate.identity.address.country)
+            if currency is None:
+                self._trace(trace | {"status": "CURRENCY_UNSTATED"})
+                return None, True
+            figure = render_salary_with_code(amount, period, currency)
+            trace["currency"] = currency
         value: RawValue
         if field.control_type is ControlType.TEXT and field.input_type == "number":
             # A numeric input takes the bare amount only when the question states the
@@ -3215,7 +3590,7 @@ class DynamicPacketResolver:
             value = f"My desired base salary is {figure}."
         elif kind is WordingKind.COMPENSATION_CLAUSE:
             value = f"{figure} base"
-        elif period == salary.period:
+        elif period == salary.period and not with_currency:
             value = saved.value  # the person's own words, unit included
         else:
             value = figure
@@ -4395,8 +4770,20 @@ class DynamicPacketResolver:
         """The option (or the exact number) that verified facts explicitly state; UNKNOWN
         holds with a prompt naming the fact needed. None when Jev finds it is not a
         question about the applicant's own experience."""
-        facts = self._screener_facts(context, field, query=self._screener_query(field))
         unknown = _fact_screener_prompt(field)
+        if field.control_type in (ControlType.SELECT, ControlType.RADIO):
+            # Round 15: a years bucket from the stated years of the area the question names,
+            # and a proficiency scale for an ad channel no fact names, without a decision.
+            decided = self._years_bucket(context, field) or self._no_channel_experience(context, field)
+            if decided is not None:
+                return decided
+        try:
+            facts = self._screener_facts(context, field, query=self._screener_query(field))
+        except AIHold:
+            if field.control_type not in MULTI_CHOICE_CONTROLS or self._platform_options(field) is None:
+                raise
+            # Round 15: the platform facts still decide the platform options they name.
+            facts = []
         if field.control_type in MULTI_CHOICE_CONTROLS:
             return self._fact_multi(context, field, facts, unknown)
         choice = field.control_type in (ControlType.SELECT, ControlType.RADIO)
@@ -4555,6 +4942,11 @@ class DynamicPacketResolver:
             answer = response.choice("fact_select")
             sources = {key: response.choice(f"source_{key}") for key in items}
         except AIHold as exc:
+            if mapped:
+                # Round 15: the platforms the facts state stand; the rest are left unselected,
+                # never held because the decision about them failed.
+                return self._multi_answer(context, field, mapped, {}, list(items), None,
+                                          trace | {"decision_error": str(exc)})
             self._trace(trace | {"status": "HELD", "reason": str(exc)})
             raise
         trace.update(choice=answer.choice, confidence=answer.confidence,
@@ -4583,6 +4975,86 @@ class DynamicPacketResolver:
         # leaves undecided) is left unselected, never held.
         return self._multi_answer(context, field, mapped, chosen if supported else {}, undecided,
                                   (answer, sources), trace)
+
+    def _years_bucket(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
+        """A single choice of year ranges ("How many years of experience do you have in
+        planning / buying media for a national brand": 0-4 / 5-7 / 8+) from the stated years
+        of the area it names, by its words or a synonym (``area_facts``: planning or buying
+        media is paid media): the one range containing them. None when no area fact, several
+        values, or no single range fits (the screener then decides)."""
+        options = usable_options(field)
+        bounds = {o.value: _option_bounds(o.label) for o in options}
+        if (len(options) < 2 or any(b is None for b in bounds.values())
+                or _YEARS_COUNT_QUESTION.search(field.question_text) is None):
+            return None
+        facts = area_facts(field.question_text, [f for f in _current_facts(context) if f.value is not None])
+        values = {years_value(f) for f in facts}
+        trace: dict[str, Any] = {"stage": "fact_screener", "kind": "years_bucket", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "fact_ids": [f.id for f in facts]}
+        if not facts or len(values) != 1 or None in values:
+            if facts:
+                self._trace(trace | {"status": "YEARS_DISAGREE"})
+            return None
+        years = next(iter(values))
+        assert years is not None
+        matching = [o for o in options if (b := bounds[o.value]) is not None and b[0] <= years <= b[1]]
+        if len(matching) != 1:
+            self._trace(trace | {"status": "NO_RANGE", "years": years})
+            return None
+        if any(_conflicts(fact, _current_facts(context)) for fact in facts):
+            self._trace(trace | {"status": "CONFLICT"})
+            return None
+        value = _choice_value(field, matching)
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED", "years": years, "evidence_ids": [f.id for f in facts]})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.GENERATED_FROM_FACTS,
+                reference_ids=[f.id for f in facts],
+                note="the range containing the stated years of the area the question names"))
+
+    def _no_channel_experience(self, context: PacketContext, field: ApplicationField) -> PacketAnswer | None:
+        """A proficiency scale about one ad channel or platform ("How would you rate your
+        proficiency in CTV buying?") that no verified fact names, for a person who states the
+        platforms they have worked on (their platform years): the scale's one option stating
+        no experience, the lowest true one and never a claim; none holds (round 15)."""
+        question = field.question_text
+        named = channels_named(question)
+        if _PROFICIENCY_QUESTION.search(question) is None or len(set(named)) != 1:
+            return None
+        current = [f for f in _current_facts(context) if f.value is not None]
+        stated = [f for f in current if (years_fact_area(f.key) or "") and f.key.split(".", 1)[1] in _PLATFORM_AREAS
+                  and (stated_years := years_value(f)) is not None and stated_years >= 1]
+        trace: dict[str, Any] = {"stage": "fact_screener", "kind": "channel_scale", "field_id": field.id,
+            "field_fingerprint": field.fingerprint, "channel": named[0]}
+        if not stated or channel_stated(named[0], current):
+            return None
+        options = [o for o in usable_options(field) if _NO_EXPERIENCE_OPTION.match(" ".join(o.label.split()))]
+        if len(options) != 1:
+            self._trace(trace | {"status": "NO_NONE_OPTION"})
+            return None
+        value = _choice_value(field, options)
+        if answer_problems(field, value):
+            self._trace(trace | {"status": "INVALID"})
+            return None
+        self._trace(trace | {"status": "ANSWERED", "evidence_ids": [f.id for f in stated]})
+        return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type, value=value,
+            provenance=Provenance(source=AnswerSource.GENERATED_FROM_FACTS,
+                reference_ids=[f.id for f in stated],
+                note=f"no verified fact names {named[0]}; the platforms the person states do not include it"))
+
+    @staticmethod
+    def _platform_options(field: ApplicationField) -> dict[str, str] | None:
+        """Each item option's one ad platform ("Facebook/Instagram" → meta_ads, "Bing" →
+        microsoft_ads), when every item option names exactly one; else None (round 15: such a
+        list keeps its stated platforms when retrieval or the decision about the rest fails)."""
+        items = {key: option for key, option in _option_keys(field).items()
+                 if not _NON_ITEM_OPTION.match(question_key(option.label))}
+        named = {key: platforms_named(option.label) for key, option in items.items()}
+        if not named or any(len(platforms) != 1 for platforms in named.values()):
+            return None
+        return {key: platforms[0] for key, platforms in named.items()}
 
     def _multi_answer(self, context: PacketContext, field: ApplicationField,
                       mapped: dict[str, CandidateFact], chosen: dict[str, CandidateFact],
@@ -5479,7 +5951,11 @@ class DynamicPacketResolver:
         voice_samples: list[str] = []
         story_chunks: list[dict[str, Any]] = []
         if self.retriever is not None:
-            retrieved = retrieved or self._retrieve(context, field, narrative=True,
+            # Round 15: a motivation question the store's predicate misses ("Why Dovetail &
+            # this role?") is retrieved as one, so its facts are ranked by the job description.
+            query = (_MOTIVATION_QUERY + field.question_text
+                     if purpose == "motivation" and not motivation_question(field.question_text) else None)
+            retrieved = retrieved or self._retrieve(context, field, narrative=True, query=query,
                                                     limit=self._fact_limit(purpose))
             facts = retrieved.facts
             job_evidence, voice_samples = retrieved.job_evidence, retrieved.voice_samples

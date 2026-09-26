@@ -274,6 +274,25 @@ HOURS_PER_YEAR = 2080.0
 _PER_YEAR = {"year": 1.0, "month": 12.0, "week": 52.0, "day": 260.0, "hour": HOURS_PER_YEAR}
 """How many of each pay period make a year; hourly figures assume 2,080 hours."""
 _SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£"}
+_COUNTRY_CURRENCIES = {"united states": "USD", "united states of america": "USD", "usa": "USD",
+                       "us": "USD", "u.s.": "USD", "u.s.a.": "USD", "canada": "CAD",
+                       "united kingdom": "GBP", "uk": "GBP", "australia": "AUD", "india": "INR"}
+"""The currency a salary stated without one is in, by the person's verified country (round 15),
+read only when a question asks for the currency."""
+
+
+def country_currency(country: str | None) -> str | None:
+    """The ISO code of the currency of ``country`` ("United States" → "USD"), else None."""
+    return _COUNTRY_CURRENCIES.get(" ".join((country or "").casefold().split()))
+
+
+def render_salary_with_code(amount: float, period: str | None, currency: str) -> str:
+    """A figure with its currency code as well as any symbol, for a question that asks for
+    the currency ("$135,000 USD per year", "CAD 90,000 per year")."""
+    number = f"{amount:,.0f}" if amount.is_integer() else f"{amount:,.2f}".rstrip("0").rstrip(".")
+    symbol = _SYMBOLS.get(currency)
+    figure = f"{symbol}{number} {currency}" if symbol else f"{currency} {number}"
+    return f"{figure} per {period}" if period else figure
 
 
 def convert_amount(amount: float, source: str, target: str) -> float:
@@ -316,6 +335,12 @@ _NOT_DERIVED = re.compile(
     r"highest|ceiling|currency|reason|why|explain|justify)\b", re.IGNORECASE)
 """A salary question the desired salary does not answer (a current, previous or maximum
 salary, a currency, an explanation): left to the wording decision."""
+_INCLUDE_CURRENCY = re.compile(
+    r"\b(?:include|including|includes|with|specify|specifying|state|stating|indicate|indicating|"
+    r"mention|note|add|and)\b[^.?!]{0,20}?\bcurrenc(?:y|ies)\b", re.IGNORECASE)
+"""A salary question that asks for the figure with its currency ("What is your target annual
+salary? Please include the currency."): a desired salary, never a question for the currency
+alone (round 15: the first mass slice held it as NOT_DERIVED)."""
 _SPECIFIC = re.compile(r"\b(?:as specific as possible|be specific|in detail|details)\b", re.IGNORECASE)
 
 
@@ -330,8 +355,16 @@ class WordingKind(StrEnum):
     """Not settled here: the wording decision or the person decides."""
 
 
+def asks_for_currency(question: str) -> bool:
+    """A salary wording that asks for the figure with its currency ("… Please include the
+    currency.")."""
+    return _INCLUDE_CURRENCY.search(question) is not None
+
+
 def salary_wording(question: str) -> WordingKind:
-    """What a salary-typed question asks for, from its label, help text and field id."""
+    """What a salary-typed question asks for, from its label, help text and field id. "Include
+    the currency" asks for the figure with it, not for the currency (round 15)."""
+    question = _INCLUDE_CURRENCY.sub(" ", question)
     if _NOT_DERIVED.search(question):
         return WordingKind.NOT_DERIVED
     if _COMPENSATION_CLAUSE.search(question):

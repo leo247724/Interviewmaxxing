@@ -388,6 +388,41 @@ The person does not answer screeners one by one: at retry five (2026-09-25) they
   - On the `prepare-batch` path the listing's own location is not carried: the inventory has no location column and only the URL reaches `apply` (the round 14 report lists the files and lines).
   - A job whose apply page shows no such posting therefore has no location, and the metro rule reads it as remote.
 
+## Round 15: the first mass slice's holds that the person's answers settle
+
+Batch `mass-20260925-a` held 12 of 25 applications. Most of the held questions are answered by what the person already stated, and seven were narratives the writer should have written.
+
+- **Why-us questions reach the writer, whatever their source scope.** All seven narratives routed WRITER at 1.0, but the classifier scoped several as EXPLICIT_ANSWER or low-confidence HISTORICAL_OR_CONTEXTUAL, so `_routable` or `_writer_scope` held them. By the owner's rule (every saved job is a fit, and the writer makes the case), a motivation narrative is written whatever its scope: `_motivation_narrative` already did so, but its wording predicate missed these questions.
+  - `interest_question` adds the missed wordings to `motivation_question`: "Why Dovetail & this role?", "Why did you decide to apply to this role at ClickUp?", "Tell us a bit about why you're applying to work at Yondr. What excited you about this role?", "Tell us about yourself & your interest in Smalls." These take purpose `motivation`, with no scope label and no `candidate_narrative` call.
+  - An explicit preference ("Why are you interested in a remote position?") and leaving a role are never motivation.
+  - The knowledge store's own predicate misses these wordings too, so retrieval is asked `"Why are you interested in this role? " + question`, and the facts are ranked by the job description like any motivation narrative.
+  - The AI-use questions ("How are you currently using AI in your workflows?", "How do you use AI to 10x your output?") ask about the applicant's own practice. Their scope is WP10's to fix (round 15 report).
+- **Sponsorship without a call.**
+  - The person's own answer to exactly this wording is placed by its polarity (`_stated_sponsorship`): a plain Yes or No, or a statement ("I will require sponsorship" / "I do not require sponsorship"). A not-applicable option ("N/A - I am based in …") is never chosen.
+  - For a person with no stated status, their canonical `requires_visa_sponsorship` answer is placed on a generic sponsorship question (`_generic_sponsorship`). Such a question names no other country, visa type or subject, and asks nothing else. The job's location names no other country either: saved jobs are U.S. or U.S.-remote, so a job without a location is not abroad.
+  - With a stated status the derivation decides, as in round 8. The status table now reads such a generic question as a U.S. one and answers its statement options.
+  - A status contradicting the answer never places it.
+- **A salary with its currency.** "What is your target annual salary? Please include the currency." was NOT_DERIVED ("currency" was read as a question for the currency). "Include the currency" now asks for the figure with it: "$135,000 USD per year" (`render_salary_with_code`).
+  - A salary saved without a currency takes the currency of the person's verified country (USD in the United States); another country without a known currency holds (`CURRENCY_UNSTATED`).
+  - "Desired salary currency" and "Which currency …" stay not derived.
+- **The current role (generation resolver).**
+  - `CURRENT_COMPANY` / `CURRENT_TITLE` and the labels "Current/Most Recent Company Name" and "Current/Most Recent Job Title" read the `current_company` / `current_title` facts first.
+  - Without any, they read the profile's one `experience` entry marked current, citing the verified facts it links.
+  - Facts that disagree are never chosen between.
+- **English fluency.** "Are you able to speak, read, and write English fluently?" reads the stated `english_proficiency`: Yes for native, fluent, bilingual, full professional or C1/C2, No for basic or limited, anything else for the person. A question about another language is never the English level's.
+- **Pronouns.** The saved pronouns take the one option naming the same pronouns before any Jev mapping ("he/him" on "He/him/his" or "He / Him", never "He/They"). Two such options, or a mixed set, leave it to Jev.
+- **Middle name and time zone (new simple-answers keys).** Neither was stated anywhere the resolver could read.
+  - `middle_name` answers "Middle Name — write N/A if none"; "none" is stored as "N/A".
+  - `time_zone` answers "What is your Time Zone?" (Eastern / Central / …) on the option naming the same zone ("Central Time (CT)", "America/Chicago" → Central).
+  - Without `time_zone`, an identity-typed question (LOCATION) reads the verified address (`address_time_zone`: Austin, TX is Central, El Paso Mountain). A custom select cannot carry an address-derived answer (core's provenance rule): it waits for `time_zone`, or for the classifier to type it LOCATION.
+- **Platforms and AI-use select-alls.**
+  - "Have you managed your own ads in the following platforms?" already selected the platforms the years facts state (round 11). When the decision about the other options, or retrieval, fails, those selections now stand and the rest are left unselected instead of holding.
+  - "Which of the following best describes how you use AI in your current role? (Select all that apply)" is experience wording now ("how you use"), so it reaches the select-all fact screener.
+- **Buckets and scales without a decision.**
+  - A single choice of year ranges takes the range containing the stated years of the area it names. "Planning / buying media" and "media buying" are paid media (`AREA_SYNONYMS`): "…in planning / buying media for a national brand" (0-4 / 5-7 / 8+) is 5-7 for a stated 7.
+  - A proficiency scale about one ad channel no verified fact names ("How would you rate your proficiency in CTV buying?") takes its one no-experience option, for a person who states their platform years. The answer cites those facts; a scale without such an option waits.
+  - Neither rule applies to a skill that is not an ad channel ("Excel").
+
 ## Narrative escalation
 
 Jev classifies and selects facts; it never authors prose. `COPY_KNOWN` describes responsibility, not ready-to-fill status. Readiness requires an actual verified source and canonical validation. `EXPLICIT_ANSWER`, unclear or low-confidence source applicability blocks both copy and writing unless an exact scoped user/saved answer already resolves the question. Demographic answers require an explicit verified saved answer; identity never implies them.

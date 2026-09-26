@@ -6,7 +6,7 @@ the application runner keeps reading that profile as its source of truth.
 
 The map covers contact questions repeatedly seen in the real application forms:
 names, email, phone, LinkedIn, websites and address components. It also accepts
-forty-three explicit reusable answers, stored through the existing saved-answer system,
+forty-five explicit reusable answers, stored through the existing saved-answer system,
 and one statement key, `career_motivation`, stored as a verified fact (below).
 Each starts as `null`; nothing is filled in for you.
 
@@ -69,6 +69,8 @@ Each starts as `null`; nothing is filled in for you.
 | `consent_sms_messages` | The employer may send me recruiting text messages (SMS) … (a statement; Yes/No) |
 | `interview_accommodations` | Are there any accommodations we can make throughout the interview process? |
 | `metro_area` | Not a form question: the towns around your city where on-site or hybrid work is fine, comma-separated (round 13) |
+| `middle_name` | Middle name; "none" is stored as "N/A" for "write N/A if none" (round 15) |
+| `time_zone` | What is your time zone? (your own zone, such as "Central"; round 15) |
 
 Full name is derived from first and last name. Location is derived from city,
 state and country, omitting unanswered components. The selected resume already
@@ -111,7 +113,7 @@ uv run --no-sync python scripts/simple_answers.py import \
 
 Import records the changed contact details as user-confirmed. This is a complete
 contact snapshot: keep all thirteen contact keys, and use `null` to clear an optional
-contact value. The forty-three additional reusable-answer keys and `career_motivation`
+contact value. The forty-five additional reusable-answer keys and `career_motivation`
 may be omitted or `null`;
 that adds no new answer and leaves earlier confirmed saved answers intact.
 First name, last name and a valid email are required for import. Whitespace-only
@@ -123,7 +125,7 @@ Import preserves the selected resume, work history, facts and unrelated saved an
 does not open a browser or prepare or submit an application. Export and import
 write owner-only files; command output lists keys without printing their values.
 
-Nonblank values for the forty-three additional keys become explicitly
+Nonblank values for the forty-five additional keys become explicitly
 user-confirmed **GLOBAL** saved answers,
 reusable across applications when the complete question matches. Sponsorship must
 be `"Yes"`, `"No"`, or `null`; it does not establish work authorization. The employee
@@ -216,6 +218,13 @@ With it set, the job's place decides the work arrangement instead of
   earlier route). So does a null `metro_area`.
 
 `metro_area` never answers a question by its wording; it only feeds this decision.
+
+`middle_name` (round 15) is your middle name, or "none" when you have none. The import stores
+"none", "no", "n/a" or "-" as "N/A", which answers "Middle Name — write N/A if none".
+`time_zone` (round 15) is your own time zone ("Central", "US Eastern", "America/Denver"), not the
+zones you can work in (`available_time_zones`). "What is your Time Zone?" takes the option
+naming it ("Central Time (CT)"). Without it, only a question typed as a location reads your
+verified address.
 
 `desired_salary` (round 10) states one amount with its unit and, ideally, its currency:
 "USD 95,000 per year", "$45/hr", "95k annually". Every salary question is then derived from it
