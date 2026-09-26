@@ -157,7 +157,7 @@ def test_random_unicode_forms_keep_every_packing_invariant(seed: int) -> None:
         assert listed in (40, 10, 0)
         if listed < 40:
             wider = 40 if listed == 10 else 10
-            state = {"version": "full-form-routing-v13", "observation": report.context_hash,
+            state = {"version": "full-form-routing-v14", "observation": report.context_hash,
                      "schema_prior_untrusted": hints or {},
                      "fields": {f"f{i}": field_data(f, max_options=wider) for i, f in enumerate(observed.fields)}}
             assert 2 * _json_bytes({"model": r.decisions.model, "questions": {}, "state": state}) > target

@@ -228,7 +228,7 @@ def test_a_twenty_field_form_with_a_250_option_select_is_classified_in_bounded_b
     # Every batch carries the same form header and whole-form context.
     assert all(request["state"] == requests[0]["state"] for request in requests)
     state = requests[0]["state"]
-    assert state["version"] == "full-form-routing-v13"
+    assert state["version"] == "full-form-routing-v14"
     assert state["schema_prior_untrusted"] == GREENHOUSE_HINT
     assert [state["fields"][f"f{i}"]["field_id"] for i in range(20)] == [f.id for f in fields]
     menu = state["fields"]["f4"]
