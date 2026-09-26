@@ -1032,3 +1032,45 @@ def test_a_submission_run_leaves_a_consent_page_to_the_person(isolated_imx_home,
     assert (need.label, need.reason) == ("Accept the data-processing consent", MissingReason.USER_ACTION)
     assert "data_consent" not in site.calls and "accept_data_consent" not in site.calls
     assert "submit" not in site.calls and "fill" not in site.calls
+
+
+
+# --- round 15: an approved submission may click the submit once more by script ---------------
+
+class ScriptSubmitBrowser(FakeBrowser):
+    """A browser with ``submit_approved`` (the runtime's approved-only script-click fallback):
+    records which submit the runner called."""
+
+    async def submit_approved(self) -> SubmitActionResult:
+        self.site.calls.append("submit_approved")
+        return await FakeBrowser.submit(self)
+
+
+class ScriptSubmitFactory(FakeFactory):
+    async def start(self, options: BrowserOptions) -> FakeBrowser:
+        self.starts += 1
+        self.site.options.append(options)
+        return ScriptSubmitBrowser(self.site)
+
+
+def test_only_an_approved_submission_uses_the_script_click_fallback(isolated_imx_home, candidates):
+    site = Site(steps=[_contact()])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    _approve(isolated_imx_home, app_id)
+    site.calls.clear()
+    runner = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptSubmitFactory(site), candidates=candidates, resolver=NeverResolve(),
+        limits=RunLimits(max_steps=8, max_same_form=2), prepare_only=False)
+    result = asyncio.run(runner.submit(app_id))
+    assert result.state is S.SUBMITTED, result.message
+    assert site.calls.count("submit_approved") == 1 and site.calls.count("submit") == 1
+
+    # A run without an approval (synthetic tests only) submits as before, never through it.
+    other = Site(steps=[_contact()])
+    unapproved = LocalApplicationRunner(
+        paths=isolated_imx_home, interaction=NoninteractiveInteraction(), headless=True,
+        browser_factory=ScriptSubmitFactory(other), candidates=candidates, prepare_only=False,
+        submit_unapproved=True, limits=RunLimits(max_steps=8, max_same_form=2))
+    asyncio.run(unapproved.apply(URL + "?other", candidate_id="c2"))
+    assert "submit_approved" not in other.calls and other.calls.count("submit") == 1

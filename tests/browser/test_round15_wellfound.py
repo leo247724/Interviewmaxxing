@@ -246,6 +246,12 @@ class SyntheticClickBridge:
                                      "new MouseEvent('click', {bubbles: true, cancelable: true, detail: 1}))",
                                      positionals[0])
             return self.ok({"clicked": True, "matches_n": 1, "match_level": "exact", "target": positionals[0]})
+        if command == "fill":
+            target = self.page.locator("css:light=" + positionals[0])
+            await target.fill(positionals[1])
+            actual = await target.input_value()
+            return self.ok({"filled": True, "verified": actual == positionals[1], "text": positionals[1],
+                            "actual": actual, "matches_n": 1, "match_level": "exact", "target": positionals[0]})
         return CommandResult(1, json.dumps({"error": {"code": "unknown_command", "message": command}}), "")
 
 
@@ -276,3 +282,179 @@ def test_opencli_clicks_an_unanswered_apply_control_once_by_script(
     assert len(writes) == 1 and "Apply" not in writes[0]  # the element by its selector, never by text
     (note,) = page.form.fields
     assert (note.id, note.semantic_type) == (NOTE, SemanticType.COVER_LETTER)
+
+
+# --- the mock ATS: wellfound-modal, and the approved submit (interim 2) ---------------------------
+
+WELLFOUND = "/jobs/wellfound-modal"
+MOCK_STATE = "() => JSON.parse(JSON.stringify(window.__mock))"
+LETTER = ("I rebuilt the tracking for a regional bakery chain's paid search so only paid orders "
+          "counted, and online orders grew 35% that year.")
+BRIDGE_CONFIG = OpenCliConfig(profile="fixture-profile", navigation_grace_s=0.05, poll_interval_s=0.01)
+
+
+async def _over_bridge(options: BrowserOptions, url: str, work: Any) -> Any:
+    """``work(browser, bridge)`` on an OpenCLI browser whose bridge click the page ignores."""
+    async with async_playwright() as playwright:
+        chromium = await playwright.chromium.launch(headless=True)
+        try:
+            bridge = SyntheticClickBridge(await chromium.new_page())
+            browser = await OpenCliSessionFactory(BRIDGE_CONFIG, runner=bridge,
+                                                  settle_timeout_s=SETTLE_S).start(options)
+            try:
+                page = await browser.open(url)
+                return await work(browser, bridge, page)
+            finally:
+                await browser.close()
+        finally:
+            await chromium.close()
+
+
+def _script_clicks(bridge: SyntheticClickBridge) -> tuple[int, int]:
+    """(apply script clicks, submit script clicks) the bridge ran: ``_DOM_CLICK`` refuses
+    anything "inside a dialog", ``_DOM_SUBMIT`` anything that "is not a submit button"."""
+    evals = bridge.evals()
+    return (sum(1 for e in evals if "inside a dialog" in e), sum(1 for e in evals if "is not a submit button" in e))
+
+
+def test_the_mock_opens_its_dialog_over_the_bridge_by_one_script_click(
+    kit: Any, server: Any, options: BrowserOptions
+) -> None:
+    async def work(browser: Any, bridge: SyntheticClickBridge, page: Any) -> Any:
+        return page, await bridge.page.evaluate(MOCK_STATE), _script_clicks(bridge)
+
+    page, state, (apply_clicks, submit_clicks) = kit.run(_over_bridge(options, server.url(WELLFOUND), work))
+    assert page.kind is PageKind.APPLICATION_FORM and "clicked 'Apply' (DOM click)" in (page.message or "")
+    assert (state["opened"], state["ignored"], state["scriptClicks"]) == (1, 1, 1)
+    assert (apply_clicks, submit_clicks) == (1, 0) and state["sent"] == 0
+    assert "openedOther" not in state  # the "Similar Jobs" rail was never touched
+    assert server.submissions("wellfound-modal")["accepted_count"] == 0
+
+
+def test_the_similar_jobs_rail_is_never_clicked_even_when_this_job_has_no_apply(
+    kit: Any, server: Any, options: BrowserOptions
+) -> None:
+    """This job was applied to before: its own Apply controls read "Applied" (disabled), and
+    the rail's "Apply" buttons belong to other listings. None of them is ever clicked."""
+    async def work(browser: Any, bridge: SyntheticClickBridge, page: Any) -> Any:
+        return page, await bridge.page.evaluate(MOCK_STATE), _script_clicks(bridge), bridge.calls
+
+    page, state, (apply_clicks, _), calls = kit.run(_over_bridge(options, server.url(WELLFOUND + "?applied=1"), work))
+    assert page.kind is not PageKind.APPLICATION_FORM, page.message
+    assert "openedOther" not in state and state["opened"] == 0 and apply_clicks == 0
+    assert not [argv for argv in calls if argv[argv.index("browser") + 2] == "click"]
+
+
+def test_an_ignored_click_that_asked_the_site_is_never_repeated_by_script(
+    kit: Any, server: Any, options: BrowserOptions
+) -> None:
+    async def work(browser: Any, bridge: SyntheticClickBridge, page: Any) -> Any:
+        return page, await bridge.page.evaluate(MOCK_STATE)
+
+    page, state = kit.run(_over_bridge(options, server.url(WELLFOUND + "?click_request=1"), work))
+    # Both apply clicks asked the site (a request the page shows nothing for): no script click.
+    assert page.kind is PageKind.JOB_DESCRIPTION and "(DOM click)" not in (page.message or "")
+    assert (state["opened"], state["scriptClicks"], state["ignored"]) == (0, 0, 2)
+
+
+async def _fill_note(kit: Any, browser: Any, page: Any) -> None:
+    assert page.form is not None
+    result = await browser.fill(page.form, kit.build(page.form, {"userNote": LETTER}).packet)
+    assert result.ok, result.fields
+
+
+def test_the_approved_submit_clicks_send_application_once_by_script_and_reads_applied(
+    kit: Any, server: Any, options: BrowserOptions
+) -> None:
+    async def work(browser: Any, bridge: SyntheticClickBridge, page: Any) -> Any:
+        await _fill_note(kit, browser, page)
+        sent = await browser.submit_approved()
+        observed = await browser.confirm()
+        return sent, observed, await bridge.page.evaluate(MOCK_STATE), _script_clicks(bridge)
+
+    sent, observed, state, (_, submit_clicks) = kit.run(_over_bridge(options, server.url(WELLFOUND), work))
+    assert sent.dispatched and "clicked once more by script (DOM click)" in sent.detail
+    assert submit_clicks == 1 and (state["submitIgnored"], state["submitScriptClicks"], state["sent"]) == (1, 1, 1)
+    assert observed.outcome.value == "ACCEPTED", observed
+    assert any("reads 'Applied'" in signal for signal in observed.signals), observed.signals
+    summary = server.submissions("wellfound-modal")
+    assert summary["accepted_count"] == 1 and summary["submissions"][0]["fields"]["userNote"] == LETTER
+
+
+def test_a_submit_outside_an_approved_run_never_clicks_by_script(
+    kit: Any, server: Any, options: BrowserOptions
+) -> None:
+    async def work(browser: Any, bridge: SyntheticClickBridge, page: Any) -> Any:
+        await _fill_note(kit, browser, page)
+        sent = await browser.submit()
+        observed = await browser.confirm()
+        return sent, observed, await bridge.page.evaluate(MOCK_STATE), _script_clicks(bridge)
+
+    sent, observed, state, (_, submit_clicks) = kit.run(_over_bridge(options, server.url(WELLFOUND), work))
+    assert sent.dispatched and "(DOM click)" not in sent.detail and submit_clicks == 0
+    assert (state["submitIgnored"], state["sent"]) == (1, 0)
+    assert observed.outcome.value == "UNKNOWN"  # the page did not answer; nothing is repeated
+    assert server.submissions("wellfound-modal")["accepted_count"] == 0
+
+
+def test_a_submit_click_the_page_answers_is_never_followed_by_a_script_click(
+    kit: Any, server: Any, options: BrowserOptions
+) -> None:
+    async def work(browser: Any, bridge: SyntheticClickBridge, page: Any) -> Any:
+        await _fill_note(kit, browser, page)
+        sent = await browser.submit_approved()
+        observed = await browser.confirm()
+        return sent, observed, await bridge.page.evaluate(MOCK_STATE), _script_clicks(bridge)
+
+    sent, observed, state, (_, submit_clicks) = kit.run(
+        _over_bridge(options, server.url(WELLFOUND + "?submit=any"), work))
+    assert sent.dispatched and "(DOM click)" not in sent.detail and submit_clicks == 0
+    assert state["sent"] == 1 and observed.outcome.value == "ACCEPTED"
+    assert server.submissions("wellfound-modal")["accepted_count"] == 1  # once, never twice
+
+
+def _write_profile(paths: Any) -> None:
+    """The fictional candidate (identity and resume only): the note stays unanswered."""
+    import shutil
+
+    directory = paths.profile_dir / "default"
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(__file__).resolve().parents[1] / "fixtures" / "browser" / "resume_avery_quill.pdf",
+                    directory / "resume.pdf")
+    (directory / "profile.json").write_text(json.dumps({
+        "id": "default",
+        "identity": {"first_name": "Avery", "last_name": "Quill", "email": "avery.quill@example.test",
+                     "phone": "+1 (303) 555-0142", "verified_at": "2026-09-01T12:00:00Z"},
+        "resume": {"id": "resume_supplied", "path": "resume.pdf"},
+        "facts": [], "saved_answers": [],
+    }, indent=2))
+
+
+def test_preparation_never_touches_the_submit(
+    kit: Any, server: Any, options: BrowserOptions, isolated_imx_home: Any
+) -> None:
+    from interviewmaxxing_cli.runner import LocalApplicationRunner, NoninteractiveInteraction
+    from interviewmaxxing_core import ApplicationState
+
+    _write_profile(isolated_imx_home)
+
+    async def scenario() -> tuple[Any, list[str], dict[str, Any]]:
+        async with async_playwright() as playwright:
+            chromium = await playwright.chromium.launch(headless=True)
+            try:
+                bridge = SyntheticClickBridge(await chromium.new_page())
+                factory = OpenCliSessionFactory(BRIDGE_CONFIG, runner=bridge, settle_timeout_s=SETTLE_S)
+                runner = LocalApplicationRunner(paths=isolated_imx_home, interaction=NoninteractiveInteraction(),
+                                                headless=True, browser_factory=factory, prepare_only=True)
+                result = await runner.apply(server.url(WELLFOUND), candidate_id="default")
+                return result, bridge.evals(), await bridge.page.evaluate(MOCK_STATE)
+            finally:
+                await chromium.close()
+
+    result, evals, state = kit.run(scenario())
+    assert result.state is ApplicationState.NEEDS_INPUT, result.message
+    assert "Prepared to the final review step" in result.message, result.message
+    assert sum(1 for e in evals if "inside a dialog" in e) == 1  # the apply control, once
+    assert not any("is not a submit button" in e for e in evals)  # never the submit
+    assert (state["submitIgnored"], state["submitScriptClicks"], state["sent"]) == (0, 0, 0)
+    assert server.submissions("wellfound-modal")["accepted_count"] == 0

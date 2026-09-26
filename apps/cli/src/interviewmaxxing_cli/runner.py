@@ -2004,7 +2004,13 @@ class _Run:
         try:
             if not has_expected_job:
                 await self.interaction.progress("Submitting the application")
-            await self.browser.submit()
+            # Round 15: an approved submission may click the submit control once more by
+            # script when the page did not answer the first click (``submit_approved``).
+            submit_approved = getattr(self.browser, "submit_approved", None)
+            if self.approved is not None and callable(submit_approved):
+                await submit_approved()
+            else:
+                await self.browser.submit()
             observation = await self.browser.confirm()
         except BaseException as exc:
             # Interrupted or failed after SUBMITTING was recorded: the site may have the

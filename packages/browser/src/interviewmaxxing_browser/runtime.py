@@ -113,12 +113,14 @@ from .evidence import EvidenceRecorder
 from .needs import consent_gate
 from .normalize import TEXT_INPUT_TYPES, FieldBinding, PageModel, build_page, detect_ats
 from .signals import (
+    APPLIED_STATE,
     APPLY_LINK,
     CONFIRMATION_LINK,
     DATA_CONSENT_GATE,
     LOADING_STATE,
     MANUAL_APPLY,
     NOT_SUBMITTED_STATUS,
+    OTHER_LISTINGS,
     PENDING,
     STATUS_LINK,
     THIRD_PARTY_ASSIST,
@@ -389,6 +391,7 @@ _EFFECTIVE_SUBMISSION = """(sel) => {""" + DEEP_QUERY + """
 }"""
 
 _DOCUMENT_IDENTITY = "() => String(performance.timeOrigin) + ' ' + location.href"
+"""Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
 _NOW = "() => performance.now()"
 """Read-only: the document's clock, the mark ``_REQUESTS_SINCE`` counts from."""
 _REQUESTS_SINCE = """(since) => {
@@ -400,8 +403,10 @@ _REQUESTS_SINCE = """(since) => {
   }).length;
 }"""
 """Read-only: the fetch/XHR requests the page sent to its own site since the mark (a
-click that did something usually asks the site; third-party telemetry does not count)."""
-"""Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
+click that did something usually asks the site; third-party telemetry does not count).
+Chromium records a request here once the page has read its response, as sites read their
+API answers; a request whose answer is never read is not seen, so this only adds to the
+page-state checks, never replaces them."""
 
 _READY_POLL_S = 0.5
 """Interval between page readiness polls (an SPA rendering its form)."""
@@ -538,6 +543,10 @@ class _PendingSubmit:
     next_state: NotSubmittedNext = NotSubmittedNext.FAILED_RETRYABLE
     evidence: list[EvidenceRef] = field(default_factory=list)
     resolved: bool = False
+    dialog: str | None = None
+    """The application dialog the submitted form lived in (its selector), if any."""
+    requests_mark: float | None = None
+    """The page clock just before the submit click (``_REQUESTS_SINCE``), when read."""
 
 
 def _still_on(before: ApplicationForm, after: PageModel, by_progress: bool) -> bool:
@@ -1398,8 +1407,8 @@ class GenericApplicationBrowser:
         if frame is not None and _entry_key(frame.src) not in self._followed:
             entries.append(("frame", frame))
         for link in model.snapshot.links:
-            if not APPLY_LINK.search(link.text):
-                continue
+            if not APPLY_LINK.search(link.text) or OTHER_LISTINGS.search(link.heading):
+                continue  # an apply link under "Similar Jobs" applies to another listing
             if _same_document_link(link, model.snapshot.url):
                 if (document, link.selector) not in self._apply_clicked:
                     entries.append(("script-link", link))
@@ -2923,6 +2932,19 @@ class GenericApplicationBrowser:
     async def submit(self) -> SubmitActionResult:
         """Dispatch the final submit once. Call only after
         ``ApplicationStore.begin_submission`` has durably recorded SUBMITTING."""
+        return await self._submit(dom_click_fallback=False)
+
+    async def submit_approved(self) -> SubmitActionResult:
+        """``submit`` for a submission run of an approved, authorized application (round 15).
+        When the structured click on the submit control leaves the page unchanged (the same
+        document, the same step or dialog still shown without errors, no request to the page's
+        own site) for the settle timeout, the same submit control is clicked once more by
+        script (the driver's ``dom_click_submit``; only OpenCLI has one): Wellfound's "Send
+        application" ignores Browser Bridge's click and answers ``click()``. Never called in
+        preparation; never on any other control."""
+        return await self._submit(dom_click_fallback=True)
+
+    async def _submit(self, *, dom_click_fallback: bool) -> SubmitActionResult:
         self._refuse_resubmission()
         model = await self._model()
         form = model.form
@@ -2982,16 +3004,64 @@ class GenericApplicationBrowser:
             return not_dispatched(str(exc), next_state=NotSubmittedNext.FILLING)
         text = next((b.button.text for b in model.buttons if b.button.selector == form.submit_selector),
                     form.submit_selector)
+        dialog = (model.snapshot.dialogs[model.dialog_index].selector
+                  if model.dialog_index is not None and model.dialog_index < len(model.snapshot.dialogs) else None)
+        script_submit = getattr(self.driver, "dom_click_submit", None) if dom_click_fallback else None
+        mark = await self._clock() if callable(script_submit) else None
         dispatched_at = utc_now()
         detail = f"clicked {text!r} once"
+        raised = False
         try:
             await self.driver.click(form.submit_selector)
         except DriverError as exc:
             # The trial click passed; a failure now may have happened mid-dispatch.
             detail = f"click raised after it was dispatched ({exc}); outcome uncertain"
+            raised = True
+        if callable(script_submit) and not raised and await self._submit_changed_nothing(
+                model, form, marker, mark, dialog, text):
+            try:
+                await script_submit(form.submit_selector)
+                detail = (f"clicked {text!r} once; the page did not answer it, so it was clicked once "
+                          "more by script (DOM click)")
+            except NotActionable as exc:
+                detail = f"clicked {text!r} once; the page did not answer it, and a script click was refused ({exc})"
         self._pending = _PendingSubmit(dispatched=True, detail=detail, form=form, tie=tie,
-                                       marker=marker, evidence=before)
+                                       marker=marker, evidence=before, dialog=dialog, requests_mark=mark)
         return SubmitActionResult(dispatched=True, dispatched_at=dispatched_at, detail=detail)
+
+    async def _submit_changed_nothing(self, model: PageModel, form: ApplicationForm, marker: str,
+                                      mark: float | None, dialog: str | None, text: str) -> bool:
+        """Whether the structured submit click left the page exactly as it was for the whole
+        settle timeout: the same document at the same address, no request to the page's own
+        site since the click, and the same step still shown, in its dialog when it has one,
+        without any error, its submit control still enabled and reading ``text``. Any change,
+        or any doubt (a failed read, no page clock), is an answer: the click is never
+        repeated then."""
+        if mark is None:
+            return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.settle_timeout_s
+        while True:
+            try:
+                if str(await self.driver.evaluate(_DOCUMENT_IDENTITY)) != marker:
+                    return False
+                requests = await self.driver.evaluate(_REQUESTS_SINCE, mark)
+                if not isinstance(requests, int) or requests:
+                    return False
+                after = await self._model(probe=False)
+            except DriverError:
+                return False
+            button = next((b for b in after.snapshot.buttons if b.selector == form.submit_selector), None)
+            if (after.form is None or not _same_step_shown_again(form, after.form)
+                    or _validation_errors(after.form) or after.snapshot.document != model.snapshot.document
+                    or button is None or button.disabled or button.text != text
+                    or (dialog is not None and not any(d.selector == dialog and d.visible
+                                                       for d in after.snapshot.dialogs))):
+                # A submit that now reads otherwise ("Sending…") or is disabled is an answer too.
+                return False
+            if loop.time() >= deadline:
+                return True
+            await asyncio.sleep(_READY_POLL_S)
 
     async def confirm(self) -> SubmissionObservation:
         pending = self._pending
@@ -3141,6 +3211,15 @@ class GenericApplicationBrowser:
                 evidence=evidence,
                 detail="site confirmation tied to this application",
             )
+        applied = self._applied_state(pending, model, same_document)
+        if applied:
+            return SubmissionObservation(
+                outcome=SubmissionOutcome.ACCEPTED,
+                signals=applied,
+                observed_url=url,
+                evidence=evidence,
+                detail="the application dialog closed and the job page shows the job as applied",
+            )
         heading = next((h.text for h in snapshot.headings), snapshot.title or "no heading")
         status = self.driver.last_status
         observed = [f"observed: page kind {model.inspection.kind.value}", f"observed: heading {heading!r}"]
@@ -3156,6 +3235,35 @@ class GenericApplicationBrowser:
             detail="no confirmation tied to this application was observed; do not retry "
                    "until the outcome is reconciled",
         )
+
+    def _applied_state(self, pending: _PendingSubmit, model: PageModel, same_document: bool) -> list[str]:
+        """Round 15: Wellfound's acceptance, which shows no confirmation text. The form was
+        submitted from a dialog on the job page; after the submit the same document shows no
+        form and no longer that dialog, a control on the page now reads as applied ("Applied",
+        "Application sent") where no apply control of this job is left (other listings' under
+        "Similar Jobs" never count), and the page names this job (its title or job id).
+        Signals, or [] when any part is missing."""
+        snapshot = model.snapshot
+        if (pending.dialog is None or not same_document or model.form is not None
+                or model.inspection.kind is PageKind.APPLICATION_FORM
+                or any(d.selector == pending.dialog and d.visible for d in snapshot.dialogs)):
+            return []
+        states = [b.text for b in snapshot.buttons if APPLIED_STATE.match(b.text)
+                  and not OTHER_LISTINGS.search(b.heading)]
+        if not states or any(APPLY_LINK.search(b.text) and not b.disabled and not OTHER_LISTINGS.search(b.heading)
+                             for b in snapshot.buttons):
+            return []  # this job's own apply control must read as applied (other listings' never count)
+        tie = pending.tie
+        shown = " ".join([snapshot.title, *(h.text for h in snapshot.headings), snapshot.body_text[:4000]])
+        ties: list[str] = []
+        if tie.job_title and normalize_text(tie.job_title) in normalize_text(shown):
+            ties.append(f"job title {tie.job_title!r} shown on the page")
+        if tie.external_job_id and tie.external_job_id.lower() in shown.lower():
+            ties.append(f"job id {tie.external_job_id!r} shown on the page")
+        if not ties:
+            return []
+        return ["the application dialog closed after the submit",
+                f"the job page's apply control now reads {states[0]!r}", *ties]
 
     # --- user interaction and reconciliation ------------------------------------------
 

@@ -811,6 +811,10 @@ JV_SPONSORSHIP = Field(
              ("sp_future", "Yes, I will require FUTURE work sponsorship"),
              ("sp_never", "No, I will NOT ever require any work sponsorship")),
 )
+WF_SIMILAR = (("Senior Growth Manager", "Fictional Rival Co"), ("Lifecycle Marketing Lead", "Example Orbit Inc"))
+"""The "Similar Jobs" rail of the Wellfound-style page: other listings, each with its own Apply."""
+WF_NOTE = Field("userNote", "Write a note to Jordan at Brambleway Analytics.", "textarea")
+"""Wellfound's note to the recruiter (optional), posted only by the dialog's "Send application"."""
 JV_CONSENT_COOKIE = "bwa_jv_consent"
 JV_POLICY_ID = "policy-7d1f"
 JV_REGIONAL = (("policy-ca-en", "Canada - English"), ("policy-ca-fr", "Canada - Français"),
@@ -836,6 +840,8 @@ IFRAME_EMBED = "iframe-embed"
 STEPPER_AMBIGUOUS = "stepper-ambiguous"
 """JazzHR-style form whose only action controls are anchors."""
 APPLY_IN_ALERT_FORM = "apply-in-alert-form"
+WELLFOUND = "wellfound-modal"
+"""Wellfound-style: the job page's Apply opens a note dialog (round 15)."""
 """Dayforce-style posting inside one form beside a job-alert signup."""
 
 EASY_APPLY_POSTING = "4007130"
@@ -1577,6 +1583,22 @@ JOBS: dict[str, Job] = {
             "fresh input replaces it and gets the id back only when the upload ends, and the "
             "preview shows \"Uploading…\" for 1.2 s next to a hidden URL input with the same id.",
             _single(FIRST_NAME, LAST_NAME, EMAIL, PHONE, TT_RESUME, TT_FILES),
+        ),
+        Job(
+            WELLFOUND,
+            "BWA-WF-150",
+            "Growth Marketing Manager",
+            "Marketing",
+            "Remote (United States)",
+            "A Wellfound-style job page: \"Apply\" in the job card and \"Apply now\" below the "
+            "description are buttons whose press handler (like react-aria's) answers a pointer press "
+            "or a script click() but ignores a bare synthetic mouse click. The press asks the site "
+            "twice (POST graphql) and opens a dialog with no name: \"Indicate how you can stand out "
+            "as a candidate in the note below to improve your odds.\", one textarea userNote (\"Write "
+            "a note to Jordan at Brambleway Analytics.\") and \"Send application\", the only control "
+            "that posts anything.",
+            _single(WF_NOTE),
+            formless=True,  # the page has no <form> of its own: the dialog's is script-made
         ),
         Job(
             "jobvite-like",
@@ -3619,6 +3641,109 @@ VALIDITY_JS = r"""(function () {
   });
   update();
   setInterval(update, 100);
+})();"""
+
+
+WELLFOUND_JS = r"""(function () {
+  "use strict";
+  // Wellfound's apply buttons, pressed like react-aria's usePress: a pointer press (pointerdown
+  // then pointerup) or a script click() (detail 0) opens the application; a bare synthetic
+  // mouse click (detail 1, no pointer events: what a browser bridge may send) is ignored.
+  // ?press=any opens on any click; ?press=none never opens. ?click_request=1: an ignored click
+  // still asks the site (a click that does something the page does not show yet).
+  // "Send application" is pressed the same way (?submit=any: any click sends); the note goes
+  // to the site by fetch (graphql CreateJobApplication), then the dialog closes and both
+  // apply buttons read "Applied" (disabled).
+  var params = new URLSearchParams(location.search);
+  var mode = params.get("press") || "aria";
+  var submitMode = params.get("submit") || "aria";
+  var mock = window.__mock = window.__mock || {log: []};
+  mock.opened = 0; mock.ignored = 0; mock.scriptClicks = 0;
+  mock.sent = 0; mock.submitIgnored = 0; mock.submitScriptClicks = 0;
+  var config = JSON.parse(document.getElementById("wellfound-config").textContent);
+  function ask(what, variables) {
+    // The response is read, as a GraphQL client reads it (Chromium records a fetch in the
+    // page's resource timing once its body has been read).
+    return fetch(config.graphql, {method: "POST", headers: {"Content-Type": "application/json"},
+                                  body: JSON.stringify({operationName: what, variables: variables || {}})})
+      .then(function (response) { return response.json(); });
+  }
+  function close(modal) { modal.remove(); document.removeEventListener("keydown", modal.__escape); }
+  function pressable(button, onPress, counters) {
+    // A pointer press or a script click() presses; a bare synthetic mouse click does not
+    // (its default action, a form submit, is cancelled).
+    var pressed = false;
+    button.addEventListener("pointerdown", function () { pressed = true; });
+    button.addEventListener("pointerup", function () {
+      var was = pressed;
+      pressed = false;
+      if (was && counters.mode !== "none") { button.__viaPointer = true; onPress(); }
+    });
+    button.addEventListener("click", function (e) {
+      if (button.__viaPointer) { button.__viaPointer = false; if (counters.submit) e.preventDefault(); return; }
+      if (e.detail === 0) counters.script();
+      if (counters.mode === "any" || (counters.mode === "aria" && e.detail === 0)) {
+        if (counters.submit) e.preventDefault();
+        onPress();
+        return;
+      }
+      if (counters.submit) e.preventDefault();
+      if (e.detail !== 0) counters.ignored();
+    });
+  }
+  function applied() {
+    Array.prototype.forEach.call(document.querySelectorAll("button.wf-target"), function (b) {
+      b.textContent = "Applied";
+      b.disabled = true;
+    });
+  }
+  if (params.get("applied") === "1") applied();  // this job was applied to before
+  function open(listing) {
+    // ``listing``: a "Similar Jobs" entry's own job (another company); none for this job.
+    if (document.querySelector('[data-test="JobApplicationModal"]')) return;
+    var job = listing || {company: config.company, title: config.title, recruiter: config.recruiter};
+    if (listing) { mock.openedOther = (mock.openedOther || 0) + 1; } else { mock.opened++; }
+    Promise.all([ask("JobApplicationModalQuery"), ask("TrackJobApplicationStart")]).then(function () {
+      var modal = document.createElement("div");
+      modal.setAttribute("role", "dialog");
+      modal.tabIndex = -1;
+      modal.setAttribute("data-test", "JobApplicationModal");
+      modal.className = "wf-modal";
+      modal.innerHTML =
+        '<div class="wf-modal-body"><p class="wf-company">' + job.company + " \u00b7 " + job.title + "</p>" +
+        "<p>Indicate how you can stand out as a candidate in the note below to improve your odds.</p>" +
+        '<form method="post" action="' + config.apply + '">' +
+        '<textarea id="form-input--userNote" name="userNote" rows="6" placeholder="Write a note to ' +
+        job.recruiter + " at " + job.company + '."></textarea>' +
+        '<button type="submit" data-test="JobApplicationModal--SubmitButton">Send application</button>' +
+        "</form></div>";
+      modal.__escape = function (e) { if (e.key === "Escape") close(modal); };
+      document.addEventListener("keydown", modal.__escape);
+      var form = modal.querySelector("form");
+      var send = modal.querySelector('[data-test="JobApplicationModal--SubmitButton"]');
+      form.addEventListener("submit", function (e) { e.preventDefault(); });
+      pressable(send, function () {
+        mock.sent++;
+        ask("CreateJobApplication", {userNote: form.elements.userNote.value}).then(function () {
+          close(modal);
+          applied();
+        });
+      }, {mode: submitMode, submit: true,
+          script: function () { mock.submitScriptClicks++; },
+          ignored: function () { mock.submitIgnored++; }});
+      document.body.appendChild(modal);
+      modal.focus();
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('button[data-test="Button"]'), function (button) {
+    var listing = button.hasAttribute("data-listing") ? JSON.parse(button.getAttribute("data-listing")) : null;
+    pressable(button, function () { open(listing); }, {mode: mode, submit: false,
+      script: function () { mock.scriptClicks++; },
+      ignored: function () {
+        mock.ignored++;
+        if (params.get("click_request") === "1") ask("TrackClick");
+      }});
+  });
 })();"""
 
 
@@ -6142,6 +6267,7 @@ ROUTES: list[tuple[re.Pattern[str], str, str]] = [
         (rf"/jobs/{SLUG}/apply/{DRAFT}/submit", "POST", "post_submit"),
         (rf"/jobs/{SLUG}/application-status", "GET", "get_status"),
         (rf"/jobs/{MODAL_WIZARD}/easy-apply", "POST", "post_easy_apply"),
+        (rf"/jobs/{WELLFOUND}/graphql", "POST", "post_wellfound_graphql"),
         (r"/embed/job_app", "GET", "get_embed_job_app"),
         (rf"/jobs/{APPLY_IN_ALERT_FORM}/start", "POST", "post_alert_start"),
         (rf"/jobs/{APPLY_IN_ALERT_FORM}/alerts", "POST", "post_alert_subscribe"),
@@ -6419,6 +6545,9 @@ class Handler(BaseHTTPRequestHandler):
         if job.slug == MODAL_WIZARD:
             self._render_easy_apply(job, auto_open=False)
             return
+        if job.slug == WELLFOUND:
+            self._render_wellfound(job)
+            return
         if job.slug == IFRAME_EMBED:
             self._render_careers_embed(job)
             return
@@ -6465,6 +6594,9 @@ class Handler(BaseHTTPRequestHandler):
                                        with_form=self._param("form") == "email",
                                        delay_ms=int(delay) if delay.isdigit() else 0)
             self._send_html(HTTPStatus.OK, page(f"Security check: {job.title}", gate))
+            return
+        if job.slug == WELLFOUND:  # no apply page of its own: the job page's dialog is the application
+            self._render_wellfound(job)
             return
         if job.slug == MODAL_WIZARD:  # the SDUI apply URL: the job view with its dialog open
             self._render_easy_apply(job, auto_open=True)
@@ -7732,6 +7864,52 @@ class Handler(BaseHTTPRequestHandler):
                            "html": form_body},
             },
         }
+
+    def _render_wellfound(self, job: Job) -> None:
+        """The Wellfound-style job page (``WELLFOUND_JS``): "Apply" in the job card and "Apply
+        now" below the description, both ``button[data-test=Button]`` outside any form."""
+        body = (
+            _job_heading(job)
+            + '<section class="wf-card" data-test="JobCard">'
+            f"<p>{COMPANY} \u00b7 {esc(job.location)} \u00b7 Full-time</p>"
+            '<button type="button" class="wf-button wf-target" data-test="Button">Apply</button></section>'
+            "<section><h2>About the job</h2>"
+            f"<p>{COMPANY} is hiring a {esc(job.title)} to own paid acquisition and lifecycle "
+            "programs: plan budgets, run experiments and report what they bring in.</p>"
+            "<h2>What you bring</h2><ul><li>Hands-on paid search and paid social</li>"
+            "<li>Experiment design and reporting</li></ul></section>"
+            '<button type="button" class="wf-button wf-target" data-test="Button">Apply now</button>'
+            '<aside class="wf-similar"><h2>Similar Jobs</h2><ul>'
+            + "".join(
+                f'<li><a href="/jobs/{job.slug}?listing={i}">{esc(title)}</a> <span>{esc(company)}</span> '
+                f"<button type=\"button\" class=\"wf-button wf-rail\" data-test=\"Button\" "
+                f"data-listing='{esc(json.dumps({'company': company, 'title': title, 'recruiter': 'Casey'}))}'>"
+                "Apply</button></li>"
+                for i, (title, company) in enumerate(WF_SIMILAR))
+            + "</ul></aside>"
+        )
+        config = {"graphql": f"/jobs/{job.slug}/graphql", "apply": f"/jobs/{job.slug}/apply",
+                  "company": COMPANY, "title": job.title, "recruiter": "Jordan"}
+        after = _json_island("wellfound-config", config) + f"<script>{WELLFOUND_JS}</script>"
+        self._send_html(HTTPStatus.OK, page(job.title, body, self._posting_head(job), after_main=after))
+
+    def post_wellfound_graphql(self) -> None:
+        """Wellfound's GraphQL endpoint as the page asks it: every call is counted
+        (``graphql:<job>`` in the store's loads); ``CreateJobApplication`` (the dialog's "Send
+        application") takes the application with its note (a submission)."""
+        try:
+            request = json.loads(self._read_body() or b"{}")
+        except ValueError:
+            request = {}
+        self.store.count_load(f"graphql:{WELLFOUND}")
+        if isinstance(request, dict) and request.get("operationName") == "CreateJobApplication":
+            job = self._job(WELLFOUND)
+            note = str((request.get("variables") or {}).get("userNote") or "")
+            record = self.store.add_submission(job, {WF_NOTE.name: note}, {}, {})
+            self._send_json(HTTPStatus.OK, {"data": {"createJobApplication": {
+                "id": record["submission_id"], "state": "APPLIED"}}})
+            return
+        self._send_json(HTTPStatus.OK, {"data": {}})
 
     def _render_alert_posting(
         self, job: Job, *, notice: str = "", error: str = "", email: str = "",

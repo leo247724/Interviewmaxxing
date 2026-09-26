@@ -1115,6 +1115,22 @@
     }
     return false;
   };
+  // The nearest heading before an element in document order (round 15): an apply control
+  // under "Similar Jobs" belongs to another listing, never to this page's job.
+  // Only a heading in the same dialog (or, for the page, outside every dialog) counts: a
+  // dialog appended after the page's last section is not in that section.
+  const sectionHeadings = deepAll('h1, h2, h3, h4, [role="heading"]').filter((h) => visible(h) && !inPopup(h))
+    .map((h) => [h, dialogIndexOf(h)]);
+  const headingBefore = (el) => {
+    const own = dialogIndexOf(el);
+    for (let i = sectionHeadings.length - 1; i >= 0; i--) {
+      const [h, dialog] = sectionHeadings[i];
+      if (h !== el && dialog === own && (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+        return squashText(textOf(h)).slice(0, 120);
+      }
+    }
+    return "";
+  };
   const buttons = [];
   for (const el of deepAll('button, input[type=submit], input[type=button], input[type=image], input[type=reset], [role="button"]')) {
     if (!visible(el) || inPopup(el) || comboButton(el) || el.closest(CALENDAR) || pressedButtons.has(el)) continue;
@@ -1143,6 +1159,7 @@
       effective_action: action,
       dialog_index: dialogIndexOf(el),
       toggle: el.hasAttribute("aria-pressed"),
+      heading: headingBefore(el),
     });
   }
   // An anchor inside a form that goes nowhere ("#", empty, javascript:) is that form's
@@ -1165,13 +1182,14 @@
       effective_method: "",
       effective_action: "",
       dialog_index: dialogIndexOf(a),
+      heading: headingBefore(a),
     });
   }
   const links = [];
   for (const a of deepAll("a[href]")) {
     if (!visible(a) || inPopup(a)) continue;
     links.push({ text: textOf(a) || a.getAttribute("aria-label") || "", href: a.href, selector: selectorFor(a),
-      dialog_index: dialogIndexOf(a) });
+      dialog_index: dialogIndexOf(a), heading: headingBefore(a) });
   }
   const headings = deepAll("h1, h2, h3")
     .filter((h) => visible(h) && !inPopup(h)).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h) })).filter((h) => h.text);

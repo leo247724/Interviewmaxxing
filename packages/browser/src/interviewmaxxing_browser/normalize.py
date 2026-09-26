@@ -58,6 +58,7 @@ from .signals import (
     DATA_CONSENT_GATE,
     ERROR_HEADING,
     JOB_CLOSED,
+    OTHER_LISTINGS,
     ButtonIntent,
     affirmative_acceptance,
     button_intent,
@@ -958,9 +959,13 @@ def _classify_buttons(
         # A toggle (a filter pill) and entry wording are never a step's submit or next.
         intent = (ButtonIntent.OTHER if b.toggle or entry
                   else button_intent(b.text, submits_form=b.submits_form))
-        apply_control = bool(APPLY_LINK.search(b.text)) and not b.toggle and (entry or (
-            b.form_index != DIALOG_FORM_INDEX and fillable_counts.get(b.form_index, 0) < 2))
-        out.append(ClassifiedButton(b, ButtonIntent.OTHER if apply_control else intent, apply_control))
+        # An apply control under a heading over other listings ("Similar Jobs") applies to
+        # another job: neither one of this page's ways onwards nor a submit (round 15).
+        other_listing = bool(APPLY_LINK.search(b.text)) and bool(OTHER_LISTINGS.search(b.heading))
+        apply_control = bool(APPLY_LINK.search(b.text)) and not b.toggle and not other_listing and (
+            entry or (b.form_index != DIALOG_FORM_INDEX and fillable_counts.get(b.form_index, 0) < 2))
+        out.append(ClassifiedButton(b, ButtonIntent.OTHER if apply_control or other_listing else intent,
+                                    apply_control))
     return out
 
 
