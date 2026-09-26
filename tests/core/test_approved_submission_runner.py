@@ -17,18 +17,23 @@ from typing import Any
 import pytest
 
 from interviewmaxxing_browser import AmbiguousAction
+from interviewmaxxing_browser.runtime import GenericApplicationBrowser, site_refusal
 from interviewmaxxing_cli.main import EXIT_OK, KEPT_DRAFT_STEP, main
 from interviewmaxxing_cli.runner import (
     KEPT_DRAFT_MESSAGE,
     KEPT_DRAFT_REASON,
     MISMATCH_MESSAGE,
     NOT_AUTHORIZED_MESSAGE,
+    REJECTED_MESSAGE,
     LocalApplicationRunner,
     NoninteractiveInteraction,
     RunLimits,
     StepBack,
+    _ApprovedStep,
     _Run,
     _Stop,
+    approval_mismatches,
+    approval_omissions,
     create_submission_runner,
     field_record,
     redact_detail,
@@ -44,6 +49,8 @@ from interviewmaxxing_core import (
     BrowserOptions,
     CandidateProfile,
     ControlType,
+    EvidenceKind,
+    EvidenceRef,
     FieldFillResult,
     FieldFillStatus,
     FieldOption,
@@ -66,6 +73,7 @@ from interviewmaxxing_core import (
     SubmitActionResult,
     TextValue,
     UserInput,
+    sha256_file,
 )
 
 S = ApplicationState
@@ -121,6 +129,8 @@ class Site:
     """The step the site opens at (a kept draft); the first one when None."""
     fill_detail: dict[str, str] = field(default_factory=dict)
     """Field id -> the detail a fill result reports for it."""
+    attaches_files: bool = True
+    """False stands for a browser that cannot attach files (OpenCLI's Browser Bridge)."""
     options: list[BrowserOptions] = field(default_factory=list)
     advance_to: dict[int, int] = field(default_factory=dict)
     """Step -> the step Next leads to (the next one when absent): a site that skips a page."""
@@ -146,6 +156,10 @@ class FakeBrowser:
         self.site = site
         self.step = 0
         self.filled: dict[int, ApplicationPacket] = {}
+
+    @property
+    def attaches_files(self) -> bool:
+        return self.site.attaches_files
 
     def _page(self) -> PageInspection:
         form = self.site.form(self.step)
@@ -429,12 +443,6 @@ def _changes() -> dict[str, tuple[Any, str]]:
         "new required question": (
             lambda site: site.steps[0].append(new_required),
             "a new required question 'Are you willing to travel?' appeared"),
-        "new optional question": (
-            lambda site: site.steps[0].append(new_required.model_copy(update={"required": False})),
-            "a new question 'Are you willing to travel?' appeared"),
-        "changed options": (
-            lambda site: site.steps[0].__setitem__(3, _heard(options=[*HEARD, FieldOption(value="src_x", label="X")])),
-            "the options of 'How did you hear about us?' changed"),
         "changed wording": (
             lambda site: site.steps[0].__setitem__(2, _text("email", "Work email", SemanticType.EMAIL)),
             "the question 'Email' changed"),
@@ -443,7 +451,7 @@ def _changes() -> dict[str, tuple[Any, str]]:
             "the question 'Last name' is no longer on the form"),
         "now required": (
             lambda site: site.steps[0].__setitem__(3, _heard(required=True)),
-            "'How did you hear about us?' is now required"),
+            "the required question 'How did you hear about us?' has no approved answer"),
         "final step moved": (
             lambda site: setattr(site, "final_flags", [False]),
             "step 1 no longer submits the application"),
@@ -1032,3 +1040,165 @@ def test_a_submission_run_leaves_a_consent_page_to_the_person(isolated_imx_home,
     assert (need.label, need.reason) == ("Accept the data-processing consent", MissingReason.USER_ACTION)
     assert "data_consent" not in site.calls and "accept_data_consent" not in site.calls
     assert "submit" not in site.calls and "fill" not in site.calls
+
+
+# --- round 4: omissions, rejections, a browser that cannot attach files ------------------------
+
+
+BANNER = ("We couldn\u2019t submit your application. Your application submission was flagged as "
+          "possible spam. If you believe this was a mistake, please submit your application "
+          "again. Try these steps: turn off your VPN, turn off browser extensions, try another "
+          "browser or network.")
+"""A fictional copy of Ashby's refusal banner."""
+
+
+def _rules_step(*fields: ApplicationField) -> _ApprovedStep:
+    form = ApplicationForm(url=URL, step=0, fields=list(fields), is_final_step=True,
+                           submit_selector="#submit")
+    answers = [PacketAnswer(field_id=f.id, semantic_type=f.semantic_type,
+                            value=TextValue(text="fictional"),
+                            provenance=(Provenance(source=AnswerSource.PROFILE_IDENTITY)
+                                        if f.semantic_type is SemanticType.EMAIL else
+                                        Provenance(source=AnswerSource.USER_INPUT,
+                                                   reference_ids=["ui_fictional"])))
+               for f in fields if f.control_type is ControlType.TEXT]
+    packet = ApplicationPacket(application_id="app_x", job_id="job_x", candidate_id="c1",
+                               form_url=URL, form_step=0, form_fingerprint=form.fingerprint,
+                               answers=answers)
+    return _ApprovedStep(packet=packet, fields={f.id: field_record(f) for f in fields})
+
+
+def test_absent_or_changed_optional_questions_are_omissions_and_required_ones_withhold():
+    gender = _text("gender", "Gender", SemanticType.CUSTOM_TEXT)  # required, self-identification
+    email = _text("email", "Email", SemanticType.EMAIL)
+    step = _rules_step(email, gender, _heard())
+    changed_heard = _heard(options=[*HEARD, FieldOption(value="src_x", label="X")])
+
+    def form(*fields: ApplicationField) -> ApplicationForm:
+        return ApplicationForm(url=URL, step=0, fields=list(fields), is_final_step=True,
+                               submit_selector="#submit")
+
+    now = form(email, changed_heard, _text("notes", "Notes", SemanticType.CUSTOM_TEXT, required=False))
+    assert approval_omissions(step, now) == {
+        "gender": "'Gender' (optional; not on the form at submit)",
+        "heard": "'How did you hear about us?' (optional; its options changed, left unanswered)",
+        "notes": "'Notes' (a new optional question, left unanswered)",
+    }
+    assert approval_mismatches(step, now, final_step=0) == []
+    # A required question absent, changed, or new still withholds the submission.
+    assert approval_mismatches(step, form(gender, _heard()), final_step=0) == [
+        "the question 'Email' is no longer on the form"]
+    assert approval_mismatches(step, form(_text("email", "Work email", SemanticType.EMAIL), gender),
+                               final_step=0) == ["the question 'Email' changed"]
+    assert approval_mismatches(step, form(email, gender, _text("travel", "Travel?", SemanticType.CUSTOM_TEXT)),
+                               final_step=0) == ["a new required question 'Travel?' appeared"]
+
+
+def test_optional_questions_absent_at_submit_are_left_out_and_noted_on_the_receipt(
+    isolated_imx_home, candidates
+):
+    linkedin = _text("linkedin", "LinkedIn profile", SemanticType.LINKEDIN, required=False)
+    gender = _text("gender", "Gender", SemanticType.CUSTOM_TEXT)  # answered while preparing
+    site = Site(steps=[[*_contact(), linkedin, gender]])
+    app_id = _prepare(isolated_imx_home, candidates, site,
+                      interaction=Answering("Prefer not to say")).application_id
+    packet_id = _approve(isolated_imx_home, app_id)
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        approved = store.get_packet(packet_id)
+    assert {a.field_id for a in approved.answers} >= {"linkedin", "gender"}
+    site.steps[0] = _contact()  # the site renders its optional block conditionally
+    site.fills.clear()
+
+    result, _ = _submit(isolated_imx_home, candidates, site, app_id)
+
+    assert result.state is S.SUBMITTED, result.message
+    assert "Left unanswered: 'LinkedIn profile' (optional; not on the form at submit)" in result.message
+    [(_, filled)] = site.fills
+    assert filled.id == packet_id and {a.field_id for a in filled.answers} == {
+        "first_name", "last_name", "email"}
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        receipt = store.get_receipt(app_id)
+    assert receipt is not None
+    assert "submitted without 'Gender' (optional; not on the form at submit)" in receipt.signals
+    assert "submitted without 'LinkedIn profile' (optional; not on the form at submit)" in receipt.signals
+
+
+def test_a_submission_the_site_refuses_is_rejected_and_a_later_run_submits_it(isolated_imx_home, candidates):
+    site = Site(steps=[_contact()])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    packet_id = _approve(isolated_imx_home, app_id)
+    refusal = site_refusal(BANNER)
+    assert refusal == ("We couldn\u2019t submit your application. Your application submission was "
+                       "flagged as possible spam.")
+    site.confirm = [GenericApplicationBrowser._refused(refusal, URL, [])]
+
+    rejected, _ = _submit(isolated_imx_home, candidates, site, app_id)
+
+    assert rejected.state is S.FAILED_RETRYABLE and rejected.message.startswith(REJECTED_MESSAGE)
+    assert "flagged as possible spam" in rejected.message and "the approval stands" in rejected.message
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        [attempt] = store.list_attempts(app_id)
+        assert attempt.outcome is SubmissionOutcome.NOT_SUBMITTED
+        assert store.approved_packet(app_id) == packet_id  # nothing was received; approval stands
+    # The next run (for example from a real browser) submits the same approved packet.
+    again, _ = _submit(isolated_imx_home, candidates, site, app_id)
+    assert again.state is S.SUBMITTED, again.message
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        assert [a.packet_id for a in store.list_attempts(app_id)] == [packet_id, packet_id]
+
+
+def test_an_uncertain_submission_whose_recorded_page_refused_it_reconciles_as_not_received(
+    isolated_imx_home, candidates
+):
+    site = Site(steps=[_contact()])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    _approve(isolated_imx_home, app_id)
+    site.confirm = [SubmissionObservation(outcome=SubmissionOutcome.UNKNOWN,
+                                          signals=["observed: the form is shown again"])]
+    unknown, _ = _submit(isolated_imx_home, candidates, site, app_id)
+    assert unknown.state is S.SUBMISSION_UNKNOWN
+    # The page text the run saved right after its submit (as a run before this rule did).
+    rel = f"{app_id}/003-after-submit.txt"
+    page = isolated_imx_home.artifacts_dir / rel
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("Apply for this job\n" + BANNER, encoding="utf-8")
+    with ApplicationStore.open(isolated_imx_home.state_db) as store:
+        claim = store.claim(app_id, "evidence")
+        store.add_evidence(claim, [EvidenceRef(kind=EvidenceKind.PAGE_TEXT, path=rel,
+                                               sha256=sha256_file(page),
+                                               description=f"after-submit at {URL} (visible text)")])
+        store.release(claim)
+
+    settled = asyncio.run(_runner(isolated_imx_home, candidates, site, prepare_only=False).reconcile(app_id))
+
+    assert settled.state is S.FAILED_RETRYABLE and settled.message.startswith(REJECTED_MESSAGE)
+    assert "flagged as possible spam" in settled.message
+    again, _ = _submit(isolated_imx_home, candidates, site, app_id)
+    assert again.state is S.SUBMITTED, again.message
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_a_browser_that_cannot_attach_files_never_sends_without_the_resume(
+    isolated_imx_home, candidates, present
+):
+    resume = ApplicationField(id="resume", label="Resume", selector="#resume",
+                              semantic_type=SemanticType.RESUME, control_type=ControlType.FILE,
+                              required=True, accept=[".pdf"])
+    site = Site(steps=[[*_contact(), resume]])
+    app_id = _prepare(isolated_imx_home, candidates, site).application_id
+    _approve(isolated_imx_home, app_id)
+    site.attaches_files = False  # e.g. --browser opencli
+    site.calls.clear()
+
+    result, _ = _submit(isolated_imx_home, candidates, site, app_id,
+                        interaction=NoninteractiveInteraction(allow_browser_action=present))
+
+    if present:  # the person attached it when asked; the fill verified it, then the submit
+        assert site.calls.count("wait_for_user") == 1 and result.state is S.SUBMITTED
+    else:
+        assert result.state is S.NEEDS_INPUT and "submit" not in site.calls and "fill" not in site.calls
+        [need] = result.missing_inputs
+        assert need.field_id == "resume" and need.reason is MissingReason.USER_ACTION
+        assert "resume-avery-example.pdf" in need.prompt and "never sent without it" in need.prompt
+        with ApplicationStore.open(isolated_imx_home.state_db) as store:
+            assert store.approved_packet(app_id) is not None and store.list_attempts(app_id) == []

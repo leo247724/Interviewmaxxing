@@ -714,7 +714,7 @@ def cmd_submit_approved(args: argparse.Namespace) -> int:
         print(render_submissions_markdown(summary), end="")
     if summary.totals.get("uncertain"):
         return EXIT_UNCERTAIN
-    if any(summary.totals.get(k) for k in ("blocked", "needs_input", "error")):
+    if any(summary.totals.get(k) for k in ("rejected", "blocked", "needs_input", "error")):
         return EXIT_INCOMPLETE
     return EXIT_OK
 

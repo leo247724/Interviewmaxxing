@@ -83,7 +83,7 @@ import os
 import re
 import socket
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -99,6 +99,7 @@ from interviewmaxxing_browser import (
     user_action_needs,
 )
 from interviewmaxxing_browser.captcha import CaptchaAttempt, CaptchaSolver
+from interviewmaxxing_browser.runtime import REFUSAL_SIGNAL, site_refusal
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_core import (
     PRE_SUBMISSION_STATES,
@@ -125,8 +126,10 @@ from interviewmaxxing_core import (
     ClaimLost,
     ClaimUnavailable,
     ControlType,
+    EvidenceKind,
     FieldFillStatus,
     FieldOption,
+    FileValue,
     FillResult,
     IdentityConflict,
     LocalPaths,
@@ -144,12 +147,14 @@ from interviewmaxxing_core import (
     SubmissionApproval,
     SubmissionObservation,
     SubmissionOutcome,
+    SubmissionReconciliation,
     TextValue,
     UserInput,
     UserInteraction,
     answer_problems,
     new_id,
     normalize_text,
+    sha256_file,
     utc_now,
 )
 from interviewmaxxing_core.interfaces import SelectiveFill, SuggestionChooser
@@ -195,6 +200,9 @@ NEEDS_INPUT before filling anything and the approval is invalidated (with this r
 Preparing again reopens the same draft; the user submits it in the browser."""
 KEPT_DRAFT_REASON = "site resumed a kept draft"
 """The ``reason`` of that NEEDS_INPUT stop (``application.needs_input`` metadata)."""
+REJECTED_MESSAGE = "Rejected by the site"
+"""How a submission run reports a submit the site refused (for example Ashby's "flagged as
+possible spam" banner): definitely not received, FAILED_RETRYABLE, the approval stands."""
 NOT_AUTHORIZED_MESSAGE = "Not authorized for submission"
 """How ``submit`` reports an application without a current authorization; nothing is
 opened."""
@@ -594,6 +602,51 @@ def _awaiting_user(step: _ApprovedStep, form: ApplicationForm) -> list[Applicati
     return pending
 
 
+_SELF_IDENTIFICATION = re.compile(
+    r"pronoun|gender|\brace\b|ethnic|veteran|disabilit|hear about|how did you (?:hear|find|learn)",
+    re.IGNORECASE)
+_SELF_IDENTIFICATION_TYPES = frozenset({
+    "EEO_GENDER", "EEO_RACE_ETHNICITY", "EEO_VETERAN_STATUS", "EEO_DISABILITY_STATUS",
+    "PRONOUNS", "REFERRAL_SOURCE",
+})
+
+
+def _may_omit(record: Mapping[str, Any]) -> bool:
+    """An approved question a submission may go without: optional, or a voluntary
+    self-identification or how-did-you-hear question (sites such as Ashby render that
+    block conditionally)."""
+    return (record.get("required") is False
+            or record.get("semantic_type") in _SELF_IDENTIFICATION_TYPES
+            or bool(_SELF_IDENTIFICATION.search(str(record.get("label") or ""))))
+
+
+def approval_omissions(step: _ApprovedStep | None, form: ApplicationForm) -> dict[str, str]:
+    """What this submission goes without, by field id with the reason: approved optional
+    or self-identification questions that are not on the form now, or whose options or
+    wording changed (left unanswered), and new optional questions (left unanswered).
+    A required question is never omitted: missing, changed or new, it withholds the
+    submission (``approval_mismatches``)."""
+    if step is None or step.fields is None:
+        return {}
+    current = {f.id: f for f in form.fields}
+    omitted: dict[str, str] = {}
+    for field_id, record in step.fields.items():
+        if not _may_omit(record):
+            continue
+        label = str(record.get("label") or field_id)
+        field = current.get(field_id)
+        if field is None:
+            omitted[field_id] = f"{label!r} (optional; not on the form at submit)"
+        elif field.fingerprint != record.get("fingerprint"):
+            what = "options" if options_digest(field) != record.get("options") else "wording"
+            omitted[field_id] = f"{label!r} (optional; its {what} changed, left unanswered)"
+    for field in form.fields:
+        if field.id not in step.fields and not field.required:
+            omitted[field.id] = (f"{_short(field.question_text) or field.id!r} (a new optional "
+                                 "question, left unanswered)")
+    return omitted
+
+
 def approval_mismatches(step: _ApprovedStep | None, form: ApplicationForm, *, final_step: int,
                         awaiting: Sequence[ApplicationField] = ()) -> list[str]:
     """Why ``form`` (inspected, not yet filled) is not the approved step: a step that was
@@ -602,7 +655,9 @@ def approval_mismatches(step: _ApprovedStep | None, form: ApplicationForm, *, fi
     not fill. Empty when the approved packet may be filled into it as it is. The
     semantic type is the runtime's reading, not the site's question, so it is not
     compared (``bound_packet`` follows the current reading). ``awaiting``: custom
-    controls left to the user, not counted as changed."""
+    controls left to the user, not counted as changed. Optional and self-identification
+    questions that are gone or changed, and new optional questions, are omissions, not
+    mismatches (``approval_omissions``)."""
     if step is None:
         return [f"step {form.step + 1} was not part of the approved application"]
     problems: list[str] = []
@@ -610,44 +665,52 @@ def approval_mismatches(step: _ApprovedStep | None, form: ApplicationForm, *, fi
         problems.append(f"step {form.step + 1} now submits the application" if form.is_final_step
                         else f"step {form.step + 1} no longer submits the application")
     skip = {f.id for f in awaiting}
+    omitted = approval_omissions(step, form)
     if step.fields is not None:
         current = {f.id: f for f in form.fields}
         for field_id, record in step.fields.items():
             label = str(record.get("label") or field_id)
             field = current.get(field_id)
+            if field_id in omitted:
+                continue
             if field is None:
                 problems.append(f"the question {label!r} is no longer on the form")
             elif field.fingerprint != record.get("fingerprint"):
                 problems.append(f"the options of {label!r} changed"
                                 if options_digest(field) != record.get("options")
                                 else f"the question {label!r} changed")
-            elif field.required != record.get("required") and field_id not in skip:
-                problems.append(f"{label!r} is {'now' if field.required else 'no longer'} required")
         for field in form.fields:
-            if field.id not in step.fields:
-                kind = "required question" if field.required else "question"
-                problems.append(f"a new {kind} {_short(field.question_text) or field.id!r} appeared")
+            if field.id not in step.fields and field.required and field.id not in skip:
+                problems.append(f"a new required question {_short(field.question_text) or field.id!r} appeared")
     elif (step.packet.form_step != form.step or form.model_copy(
             update={"url": step.packet.form_url}).fingerprint != step.packet.form_fingerprint):
         # Pinned before questions were recorded: the form must ask exactly the questions
         # the approved packet answered (ids, wording, options), whatever its URL.
         problems.append("the questions differ from the ones the approved answers were prepared for")
     if not problems:
+        # A question that is required now needs an approved answer: one that turned
+        # required, or an omitted one the page now requires, withholds the submission.
         unanswered = [f for f in form.required_fields()
-                      if step.packet.answer_for(f.id) is None and f.id not in skip]
+                      if (step.packet.answer_for(f.id) is None or f.id in omitted)
+                      and f.id not in skip]
         problems += [f"the required question {_short(f.question_text) or f.id!r} has no approved answer"
                      for f in unanswered]
     return problems
 
 
-def bound_packet(packet: ApplicationPacket, form: ApplicationForm) -> ApplicationPacket:
+def bound_packet(packet: ApplicationPacket, form: ApplicationForm,
+                 omit: Collection[str] = ()) -> ApplicationPacket:
     """The approved packet bound to this inspection of its step, with the same id,
     values and provenance: a step URL may carry a new draft or session id, and each
-    answer takes the semantic type the runtime reads for its (unchanged) question now."""
+    answer takes the semantic type the runtime reads for its (unchanged) question now.
+    Answers to ``omit`` (``approval_omissions``) and to questions no longer on the page
+    are left out, so those questions stay unanswered."""
     answers = []
     for answer in packet.answers:
         field = form.find(answer.field_id)
-        if field is not None and field.semantic_type is not answer.semantic_type:
+        if field is None or answer.field_id in omit:
+            continue
+        if field.semantic_type is not answer.semantic_type:
             answer = answer.model_copy(update={"semantic_type": field.semantic_type})
         answers.append(answer)
     if (packet.form_url == form.url and packet.form_fingerprint == form.fingerprint
@@ -658,7 +721,8 @@ def bound_packet(packet: ApplicationPacket, form: ApplicationForm) -> Applicatio
         "form_fingerprint": form.fingerprint,
         "answers": answers,
         "missing_inputs": [m.model_copy(update={"form_url": form.url}) if m.field_id is not None else m
-                           for m in packet.missing_inputs],
+                           for m in packet.missing_inputs
+                           if m.field_id is None or (m.field_id not in omit and form.find(m.field_id))],
     })
 
 
@@ -768,6 +832,26 @@ class LocalApplicationRunner:
             url = store.list_requests(application_id)[0].application_url
             return await self._run(store, application_id, url, submission=True)
 
+    def _recorded_refusal(self, store: ApplicationStore, application_id: str) -> str | None:
+        """The refusal (``site_refusal``) on the page text the latest attempt recorded right
+        after its submit, when that file is unchanged; None otherwise."""
+        attempts = store.list_attempts(application_id)
+        if not attempts:
+            return None
+        started = attempts[-1].started_at
+        for ref in reversed(store.list_evidence(application_id)):
+            if (ref.kind is not EvidenceKind.PAGE_TEXT or not ref.path
+                    or not ref.description.startswith("after-submit") or ref.captured_at < started):
+                continue
+            path = Path(ref.path) if Path(ref.path).is_absolute() else self.paths.artifacts_dir / ref.path
+            try:
+                if ref.sha256 and sha256_file(path) != ref.sha256:
+                    return None
+                return site_refusal(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                return None
+        return None
+
     def _not_authorized(self, store: ApplicationStore, application_id: str) -> ApplyOutcome:
         reason = ("this runner is preparation-only" if self.prepare_only else
                   "approve the prepared application, then authorize its submission")
@@ -785,6 +869,24 @@ class LocalApplicationRunner:
                 return _outcome(store, application_id,
                                 f"Only an uncertain submission can be reconciled; this one is "
                                 f"{app.state.value}.")
+            refusal = self._recorded_refusal(store, application_id)
+            if refusal is not None:
+                try:
+                    claim = store.claim(application_id, self.owner, ttl=self._ttl)
+                except ClaimUnavailable:
+                    return _outcome(store, application_id, CLAIMED_MESSAGE)
+                try:
+                    store.reconcile_submission(claim, SubmissionReconciliation(
+                        outcome=SubmissionOutcome.NOT_SUBMITTED,
+                        method=ReconciliationMethod.SITE_CONFIRMATION,
+                        detail=f"{REFUSAL_SIGNAL} on the page it showed right after the submit: "
+                               f"{refusal}"))
+                finally:
+                    store.release(claim)
+                return _outcome(store, application_id,
+                                f"{REJECTED_MESSAGE}: the page it showed right after the submit "
+                                f"says {refusal!r}. Nothing was received; it can be submitted "
+                                "again (an approval stands).")
             job = store.get_job(app.job_id)
             tie = ConfirmationTie.from_job(job)
             if not (tie.external_job_id or tie.job_title):
@@ -1003,6 +1105,9 @@ class _Run:
         """Custom controls ``(step, field id)`` this submission run already waited for."""
         self.filled_steps: set[int] = set()
         """Steps this submission run filled from their approved packets."""
+        self.omissions: dict[tuple[int, str], str] = {}
+        """Approved or new optional questions this submission goes without, with why
+        (``approval_omissions``); noted on the receipt."""
         self.limits = runner.limits
         self.interaction = runner.interaction
         self.forms_seen: Counter[str] = Counter()
@@ -1779,7 +1884,24 @@ class _Run:
         assert step is not None
         if awaiting:
             return await self._approved_user_action(page, form, awaiting)
-        packet = bound_packet(step.packet, form)
+        omitted = approval_omissions(step, form)
+        packet = bound_packet(step.packet, form, omit=omitted)
+        files = [(field, answer) for answer in packet.answers
+                 if isinstance(answer.value, FileValue) and (field := form.find(answer.field_id))]
+        if files and not getattr(self.browser, "attaches_files", True):
+            keys = {(form.step, field.id) for field, _ in files}
+            if not keys <= self.awaited:
+                # This browser cannot attach files (OpenCLI): the person attaches the approved
+                # file, or the run stops here. The fill then verifies the attached file's bytes
+                # and stops if it is not the approved one; nothing is sent without it.
+                self.awaited |= keys
+                return await self._user_action(page, [MissingInput.for_field(
+                    form, field, reason=MissingReason.USER_ACTION,
+                    prompt=f"Attach {answer.value.artifact.filename!r} to "
+                           f"{_short(field.question_text) or field.id!r} in the browser window: "
+                           "this browser cannot attach files, and the application is never "
+                           "sent without it.")
+                    for field, answer in files if isinstance(answer.value, FileValue)])
         rejected = [redact_detail(p) or p for answer in packet.answers
                     if (field := form.find(answer.field_id))
                     for p in answer_problems(field, answer.value)]
@@ -1794,6 +1916,8 @@ class _Run:
                              + "; ".join(redact_detail(p) or p for p in problems[:3]) + "). Nothing "
                              "was submitted and the approval stands; submit again with the "
                              "runtime options the application was prepared with.")
+        for field_id, note in omitted.items():
+            self.omissions[(form.step, field_id)] = note
         return await self._act_approved(form, packet)
 
     async def _approved_user_action(self, page: PageInspection, form: ApplicationForm,
@@ -2045,15 +2169,27 @@ class _Run:
                     detail="the run stopped while submitting; the outcome is not known",
                 ))
             raise
+        notes = [f"submitted without {note}" for note in self.omissions.values()]
+        if notes:
+            # The receipt lists what the approved application went without.
+            observation = observation.model_copy(update={"signals": [*observation.signals, *notes]})
         app = self.store.record_submission_outcome(self.claim, attempt.id, observation)
+        left = (" Left unanswered: " + "; ".join(self.omissions.values()) + ".") if notes else ""
         if app.state is S.SUBMITTED:
             raise _Stop(_outcome(self.store, self.app_id, "Submitted; the site confirmed it. "
-                                                          "Receipt saved." + cost))
+                                                          "Receipt saved." + left + cost))
         if app.state is S.SUBMISSION_UNKNOWN:
             raise _Stop(_outcome(self.store, self.app_id,
                                  "The submit may have reached the employer, but no confirmation "
                                  "tied to this job was seen. It will not be retried; reconcile it."
                                  + cost))
+        refused = next((sig for sig in observation.signals if sig.startswith(REFUSAL_SIGNAL)), None)
+        if refused is not None and app.state is S.FAILED_RETRYABLE:
+            raise _Stop(_outcome(self.store, self.app_id,
+                                 f"{REJECTED_MESSAGE}: {refused.removeprefix(REFUSAL_SIGNAL + ': ')}. "
+                                 "Nothing was received; the approval stands. Submit again later, "
+                                 "or from a real browser (--browser opencli --opencli-profile "
+                                 "PROFILE)." + cost))
         if app.state in (S.FAILED_RETRYABLE, S.FAILED_PERMANENT):
             raise _Stop(_outcome(self.store, self.app_id,
                                  f"Not submitted: {app.failure_reason or observation.detail}"

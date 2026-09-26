@@ -94,7 +94,13 @@ from interviewmaxxing_core import (
 )
 
 from .dynamic import DynamicOptions
-from .runner import ALLOW_SUBMISSION_ENV, BUSY_MESSAGE, CLAIMED_MESSAGE, KEPT_DRAFT_MESSAGE
+from .runner import (
+    ALLOW_SUBMISSION_ENV,
+    BUSY_MESSAGE,
+    CLAIMED_MESSAGE,
+    KEPT_DRAFT_MESSAGE,
+    REJECTED_MESSAGE,
+)
 from .triage import (
     HOLD_CATEGORIES,
     LEDGER_LABEL_LIMIT,
@@ -1678,10 +1684,15 @@ def format_entry(entry: LedgerEntry) -> str:
 
 # --- submitting approved applications -------------------------------------------------
 
-SubmissionOutcomeName = Literal["submitted", "uncertain", "blocked", "needs_input", "error"]
+SubmissionOutcomeName = Literal["submitted", "rejected", "uncertain", "blocked", "needs_input",
+                                "error"]
 """How one ``submit`` ended in ``submit-approved``:
 
 ``submitted``    SUBMITTED: the site confirmed it; ``receipt_id`` names the receipt.
+``rejected``     the site refused the submit it received (for example Ashby's "flagged as
+                 possible spam" banner): nothing was received, the application is
+                 FAILED_RETRYABLE and its approval stands. The next run submits it again,
+                 for example from a real browser (``--browser opencli``).
 ``uncertain``    SUBMITTING or SUBMISSION_UNKNOWN: the submit may have reached the
                  employer. Never retried; ``interviewmaxxing reconcile APP``.
 ``blocked``      nothing was done or can be: not approved or authorized any more, a
@@ -1695,7 +1706,7 @@ SubmissionOutcomeName = Literal["submitted", "uncertain", "blocked", "needs_inpu
                  stands), or the subprocess printed no outcome or timed out.
 """
 SUBMISSION_OUTCOMES: tuple[SubmissionOutcomeName, ...] = (
-    "submitted", "uncertain", "blocked", "needs_input", "error",
+    "submitted", "rejected", "uncertain", "blocked", "needs_input", "error",
 )
 SUBMISSION_SUMMARY_NAME = "submission-summary.json"
 EXIT_BLOCKED_CODE = 4
@@ -1882,6 +1893,8 @@ def classify_submission(outcome: ApplyOutcome, exit_code: int | None) -> Submiss
         return "submitted"
     if state in (S.SUBMITTING, S.SUBMISSION_UNKNOWN):
         return "uncertain"
+    if state is S.FAILED_RETRYABLE and outcome.message.startswith(REJECTED_MESSAGE):
+        return "rejected"
     if exit_code == EXIT_BLOCKED_CODE or state in (S.SUBMITTED, S.DUPLICATE, S.WITHDRAWN,
                                                    S.FAILED_PERMANENT):
         return "blocked"
@@ -2133,7 +2146,10 @@ def render_submissions_markdown(summary: SubmissionSummary) -> str:
             + (f"; {r.confirmation_reference})" if r.confirmation_reference else ")")
             for r in summary.receipts)]
     kept = set(summary.kept_drafts)
-    for outcome, advice in (("uncertain", "never resubmitted; interviewmaxxing reconcile APP"),
+    for outcome, advice in (("rejected", "the site refused them and received nothing; the next "
+                                         "run submits them again, e.g. with --browser opencli "
+                                         "--opencli-profile PROFILE --slots 1"),
+                            ("uncertain", "never resubmitted; interviewmaxxing reconcile APP"),
                             ("needs_input", "interviewmaxxing status APP; prepare, review and "
                                             "approve again if the form changed")):
         ids = [i for i in summary.application_ids.get(outcome, []) if i not in kept]
