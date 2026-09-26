@@ -418,6 +418,15 @@ class OpenCliDriver:
             raise OpenCliError(f"new tab {page} is not listed in session {self.session}", command="tab")
         self._tab = page
 
+    async def fresh_tab(self) -> None:
+        """Close this driver's own tab, so the next ``goto`` opens the page in a new one
+        (round 15, live on Wellfound: a tab that already showed a page keeps the next job's
+        apply control inert). Only this driver's tab is ever closed; nothing when none is open."""
+        if self._tab is None:
+            return
+        await self._call(self._argv(["tab", "close"], positionals=[self._tab], pin=False))
+        self._tab = None
+
     async def goto(self, url: str) -> int | None:
         if self._tab is None:
             await self._own_tab()

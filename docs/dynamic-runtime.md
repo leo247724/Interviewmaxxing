@@ -634,6 +634,89 @@ Code: `packages/browser/src/interviewmaxxing_browser/captcha.py`,
   the form) and `captcha-steps` (the widget on step 1 of 2); see
   `tests/browser/MOCK_ATS.md`.
 
+## Round 15: Wellfound through OpenCLI (the apply click, the note dialog, the approved submit)
+
+The owner's Wellfound account is signed in inside the OpenCLI Browser Bridge profile. Read-only
+observations by the lead (2026-09-25):
+- OpenCLI's click on the job page's "Apply" and "Apply now" (and focus + Enter) changes
+  nothing: no dialog, no navigation, no request to wellfound.com.
+- A script `click()` on the same button opens the application at once: a dialog with one note
+  textarea and "Send application".
+
+Mock `wellfound-modal`; tests `tests/browser/test_round15_wellfound.py`, plus the runner test
+in `tests/core/test_approved_submission_runner.py`.
+
+- **The apply control's script click** (OpenCLI only). An apply control whose click left the
+  posting exactly as it was, for the settle timeout, is clicked once more by script:
+  - "exactly as it was" means the same document at the same address, still the posting with
+    the control on it, no dialog that was not there, and no fetch/XHR to the page's own site
+    since the click (`_REQUESTS_SINCE`, read-only resource timing);
+  - the script click is `OpenCliDriver.dom_click`, the fixed script `element.click()` on the
+    one element the selector matches, refused for a disabled element, one inside a dialog and
+    one that submits a form;
+  - it happens at most once per control, never for a step's submit or next control;
+  - the message says "clicked 'Apply' (DOM click)".
+  Playwright has no `dom_click`; its clicks are the page's own.
+- **Other listings' apply controls.** Every button and link carries the nearest heading before
+  it in its own dialog or page (`DomButton.heading`, `DomLink.heading`). One under a heading over
+  other listings ("Similar Jobs", "More jobs at …", "Jobs you may like", "Related/Recommended/
+  Other jobs|roles|positions") is never an apply control, nor a submit. Wellfound's rail
+  carries an "Apply" per other job; with script clicks working, taking one would open another
+  listing's dialog on this job's page, under this job's identity.
+- **The note dialog is the application form.** Besides the earlier signs (two questions, a step
+  indicator, a file field, application wording in its name), a dialog qualifies when:
+  - its own text has application wording ("… stand out as a candidate …"; `DomDialog.text`); or
+  - its submit sends an application ("Send application", "Submit application", "Apply") and it
+    has one question.
+  "Send application" is the step's submit: never clicked in preparation.
+- **The note is a cover letter.** A textarea asking for a note to the recruiter or the company
+  ("Write a note to <recruiter> at <Company>.", "in the note below", name `userNote`) is
+  `COVER_LETTER`. Routing therefore writes it with purpose `cover_letter`, like any
+  cover-letter textarea. Its 120–180-word target is the writer's (WP12), not changed here.
+- **The approved submit's script click** (`submit_approved`). The runner calls it only in a
+  submission run of an approved, authorized application; plain `submit` is unchanged.
+  - When the structured click on the step's submit leaves the page unchanged for the settle
+    timeout (same document and address, same step shown in its dialog without errors, the
+    submit still enabled and reading the same, no request to the page's own site), the same
+    submit gets one `element.click()` through `OpenCliDriver.dom_click_submit`.
+  - That script takes only an enabled submit button.
+  - Any change or doubt means it is never repeated.
+- **Wellfound's accepted reading** (from the lead's 30 live sends on 2026-09-25). After "Send
+  application" the dialog stays open and says "SUCCESS! YOUR APPLICATION HAS BEEN SENT.", and
+  the job page's button reads "✓ Applied". A form submitted from a dialog is accepted when, in
+  the same document:
+  - the dialog states an affirmative acceptance ("… has been sent" is acceptance wording now),
+    or it is gone and this job's apply control reads as applied;
+  - none of this job's apply controls is left to click;
+  - the page names the job.
+  This is checked before "the form is shown again", since the live dialog stays open.
+- **The dialog's questions vary** (the lead's field map of all 30 dialogs). Besides the note:
+  - "What interests you about working for this company?" (a textarea);
+  - phone, LinkedIn, salary and portfolio text inputs;
+  - radio groups (country, state, sponsorship, former employee);
+  - a pronouns checkbox group;
+  - an optional "If yes, please add …" answer.
+  The runtime reads them this way:
+  - **Required** by the "*" of the question as shown; Wellfound sets no `required` attribute.
+  - **A `<label>` wrapping a whole group of choices** (question on its first line, each
+    option's text in its input's parent) is the group's box. The group is one question, even
+    when its checkboxes have an empty `name`. The label is never one option's label; the
+    options' texts come from their own boxes.
+  - **A limit only the help text states** ("Please limit your answer to 128 characters or
+    less": a longer value blocks the send without a word) is the field's `max_length`.
+  - **The name of the person who referred the applicant** is free text, not the referral
+    source.
+  A blank optional answer never blocks the send.
+- **A fresh tab per job.** Wellfound's Apply answers a script click only in a tab that loaded
+  the job fresh. Each run opens its own OpenCLI tab. A second `open` in the same run (after a
+  sign-in or consent wait) closes the driver's own tab and opens the page in a new one
+  (`OpenCliDriver.fresh_tab`).
+- **The job's location (item 6).** `extract_job_identity` reads a `jobLocation` list (every place
+  once, joined with " / ") and keeps the region and country beside the locality ("Austin, TX,
+  US"), so the metro rule tells Austin, TX from Austin, MN. A form page whose own identity ("Job
+  ID …" in its text) states no location keeps the posting's, when it names the same job
+  (`_with_posting_location`, in `open` and after a sign-in or consent page).
+
 ## Uploads, autofill overlays and readback
 
 Hosted forms upload through styled controls and react to the upload: Ashby and Lever parse

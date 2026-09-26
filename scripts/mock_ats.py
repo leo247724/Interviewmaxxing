@@ -3669,6 +3669,43 @@ WELLFOUND_JS = r"""(function () {
       .then(function (response) { return response.json(); });
   }
   function close(modal) { modal.remove(); document.removeEventListener("keydown", modal.__escape); }
+  // The one note (most listings) or, with ?fields=screen, the screening questions live
+  // Wellfound dialogs ask (shapes from the lead's 30-dialog field map, wording fictional):
+  // text answers labelled "…*" (required by the asterisk, never the attribute), a short answer
+  // limited to 128 characters by its help text only, a radio group and a checkbox group each
+  // wrapped in one <label> with the question on its first line and each option's text in the
+  // input's parent (the checkboxes have an empty name), the interest question, and an optional
+  // "If yes, please add…" answer.
+  function NOTE(job) {
+    return '<textarea id="form-input--userNote" name="userNote" rows="6" placeholder="Write a note to ' +
+      job.recruiter + " at " + job.company + '."></textarea>';
+  }
+  function text(id, label, kind, help) {
+    var name = "customQuestionAnswers[" + id + "][answer]";
+    return '<div class="wf-q"><label for="form-input--' + name + '">' + label + "</label>" +
+      (kind === "textarea" ? '<textarea rows="4" id="form-input--' + name + '" name="' + name + '"></textarea>'
+                           : '<input type="' + kind + '" id="form-input--' + name + '" name="' + name + '">') +
+      (help ? '<div class="wf-help">' + help + "</div>" : "") + "</div>";
+  }
+  function group(kind, id, question, options, named) {
+    var name = named ? "customQuestionAnswers[" + id + "][jobListingQuestionOptionId]" : "";
+    return '<div class="wf-q"><label><div class="wf-question">' + question + "</div>" +
+      options.map(function (option, i) {
+        var input = '<input type="' + kind + '" name="' + name + '" value="' + (7000 + i) + '" id="form-input--' +
+          (named ? "modal-form-150--" + name : "customQuestionSets[set9001][question_" + id + "]") + "--" + (7000 + i) + '">';
+        return '<div class="wf-option">' + input + "<span>" + option + "</span></div>";
+      }).join("") + "</label></div>";
+  }
+  var SCREEN =
+    text(900001, "Phone Number*", "text") +
+    text(900002, "LinkedIn Profile*", "text") +
+    text(900003, "Please share your salary expectations*", "text", "Please limit your answer to 128 characters or less") +
+    text(900004, "Portfolio Link", "text") +
+    group("radio", 900005, "Will you now or in the future require sponsorship to work in the US?*", ["Yes", "No"], true) +
+    group("checkbox", 900006, "What are your pronouns?*",
+          ["pronouns not listed", "they/them/theirs", "he/him/his", "she/her/hers"], false) +
+    text(900007, "What interests you about working for this company?*", "textarea") +
+    text(900008, "If yes, please add the name of the employee who referred you", "textarea");
   function pressable(button, onPress, counters) {
     // A pointer press or a script click() presses; a bare synthetic mouse click does not
     // (its default action, a form submit, is cancelled).
@@ -3693,7 +3730,7 @@ WELLFOUND_JS = r"""(function () {
   }
   function applied() {
     Array.prototype.forEach.call(document.querySelectorAll("button.wf-target"), function (b) {
-      b.textContent = "Applied";
+      b.textContent = "\u2713 Applied";
       b.disabled = true;
     });
   }
@@ -3707,14 +3744,13 @@ WELLFOUND_JS = r"""(function () {
       var modal = document.createElement("div");
       modal.setAttribute("role", "dialog");
       modal.tabIndex = -1;
-      modal.setAttribute("data-test", "JobApplicationModal");
+      modal.setAttribute("data-test", "JobApplication-Modal");
       modal.className = "wf-modal";
+      var questions = params.get("fields") === "screen" ? SCREEN : NOTE(job);
       modal.innerHTML =
         '<div class="wf-modal-body"><p class="wf-company">' + job.company + " \u00b7 " + job.title + "</p>" +
         "<p>Indicate how you can stand out as a candidate in the note below to improve your odds.</p>" +
-        '<form method="post" action="' + config.apply + '">' +
-        '<textarea id="form-input--userNote" name="userNote" rows="6" placeholder="Write a note to ' +
-        job.recruiter + " at " + job.company + '."></textarea>' +
+        '<form method="post" action="' + config.apply + '">' + questions +
         '<button type="submit" data-test="JobApplicationModal--SubmitButton">Send application</button>' +
         "</form></div>";
       modal.__escape = function (e) { if (e.key === "Escape") close(modal); };
@@ -3724,8 +3760,14 @@ WELLFOUND_JS = r"""(function () {
       form.addEventListener("submit", function (e) { e.preventDefault(); });
       pressable(send, function () {
         mock.sent++;
-        ask("CreateJobApplication", {userNote: form.elements.userNote.value}).then(function () {
-          close(modal);
+        var answers = {};
+        Array.prototype.forEach.call(form.elements, function (el) {
+          if (el.name && (el.type === "radio" || el.type === "checkbox" ? el.checked : true)) answers[el.name] = el.value;
+        });
+        ask("CreateJobApplication", {userNote: (form.elements.userNote || {}).value || "", answers: answers}).then(function () {
+          // Live: the dialog stays open and says so; the job page's button reads "✓ Applied".
+          modal.querySelector(".wf-modal-body").innerHTML =
+            '<p class="wf-success">SUCCESS! YOUR APPLICATION HAS BEEN SENT.</p>';
           applied();
         });
       }, {mode: submitMode, submit: true,
@@ -7904,8 +7946,11 @@ class Handler(BaseHTTPRequestHandler):
         self.store.count_load(f"graphql:{WELLFOUND}")
         if isinstance(request, dict) and request.get("operationName") == "CreateJobApplication":
             job = self._job(WELLFOUND)
-            note = str((request.get("variables") or {}).get("userNote") or "")
-            record = self.store.add_submission(job, {WF_NOTE.name: note}, {}, {})
+            variables = request.get("variables") or {}
+            answers = variables.get("answers") if isinstance(variables.get("answers"), dict) else {}
+            fields = {**{str(k): str(v) for k, v in answers.items()},
+                      WF_NOTE.name: str(variables.get("userNote") or "")}
+            record = self.store.add_submission(job, fields, {}, {})
             self._send_json(HTTPStatus.OK, {"data": {"createJobApplication": {
                 "id": record["submission_id"], "state": "APPLIED"}}})
             return

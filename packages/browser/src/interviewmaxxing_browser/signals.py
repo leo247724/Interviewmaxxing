@@ -19,10 +19,10 @@ def _rx(pattern: str) -> re.Pattern[str]:
 
 
 ACCEPTANCE = _rx(
-    r"\b(?:application (?:has been |was |is )?(?:successfully )?(?:submitted|received|complete)|"
+    r"\b(?:application (?:has been |was |is )?(?:successfully )?(?:submitted|received|complete|sent)|"
     r"thank(?:s| you) for (?:applying|your application|submitting)|"
     r"we(?:'ve| have) received your application|"
-    r"your application (?:has been|was|is) (?:successfully )?(?:submitted|received|complete)|"
+    r"your application (?:has been|was|is) (?:successfully )?(?:submitted|received|complete|sent)|"
     r"successfully applied|you(?:'ve| have) (?:successfully )?applied)\b"
 )
 """Acceptance *wording*. Use :func:`affirmative_acceptance`, which also rejects

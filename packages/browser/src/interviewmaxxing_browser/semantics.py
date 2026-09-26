@@ -145,6 +145,11 @@ _CONSENT = _rx(
 )
 # A choice question (a Yes/No select or radio) is consent only when it asks for it: a
 # consent act, not merely a consent topic ("Have you worked in performance marketing?").
+_REFERRER_NAME = _rx(
+    r"\b(?:name|who)\b[^?.]{0,60}\breferr(?:ed|ing)\b|\breferr(?:er|ing (?:employee|person))(?:'s)? name\b"
+)
+"""The name of the person who referred the applicant ("If yes, please add the name of the employee
+who referred you"): free text about someone, never the referral source (round 15)."""
 _HEARD_ABOUT = _rx(
     r"\b(?:how|where) did you (?:first )?(?:hear|learn|find out) (?:about|of)\b|"
     r"\bhow did you find (?:us|out about|this (?:job|role|position|opportunity))\b"
@@ -278,6 +283,8 @@ def classify(
         if _TEXT_ATTESTATION.search(label) or _TEXT_ATTESTATION.search(help_text):
             return SemanticType.ATTESTATION
 
+    if control_type in (ControlType.TEXT, ControlType.TEXTAREA) and _REFERRER_NAME.search(label):
+        return SemanticType.CUSTOM_TEXT if control_type is ControlType.TEXT else SemanticType.CUSTOM_LONG_TEXT
     if control_type is ControlType.TEXTAREA and (
             _NOTE_TO_EMPLOYER.search(f"{label} {placeholder}") or _NOTE_ID.search(identifiers)):
         # Round 15: a note to the recruiter or the company (Wellfound's userNote) is written

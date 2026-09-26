@@ -706,6 +706,12 @@ def _build_field(group: _Group, displays: Mapping[str, str]) -> tuple[Applicatio
     max_length = (
         first.max_length if control_type in (ControlType.TEXT, ControlType.TEXTAREA) else None
     )
+    if max_length is None and control_type in (ControlType.TEXT, ControlType.TEXTAREA):
+        # Round 15: a limit only the help text states ("Please limit your answer to 128
+        # characters or less": a longer answer blocks Wellfound's send without a word).
+        stated = _STATED_LIMIT.search(" ".join([help_text or "", label]))
+        if stated:
+            max_length = int(next(g for g in stated.groups() if g))
     semantic = classify(
         label=label,
         help_text=help_text or "",
@@ -868,6 +874,37 @@ def _text(value: Any) -> str | None:
     return _squash(value) if isinstance(value, str) and value.strip() else None
 
 
+def _place(place: Any) -> str | None:
+    """One schema.org ``Place`` of a ``JobPosting``'s ``jobLocation`` as "Locality, Region,
+    Country" ("Austin, TX, US"), each part only when stated and once, so the metro rule can
+    tell Austin, TX from Austin, MN; an address given as plain text as it is."""
+    if isinstance(place, str):
+        return _text(place)
+    if not isinstance(place, dict):
+        return None
+    address = place.get("address")
+    if isinstance(address, list):
+        address = next((a for a in address if isinstance(a, dict | str)), None)
+    if isinstance(address, str):
+        return _text(address)
+    if not isinstance(address, dict):
+        return None
+    country = address.get("addressCountry")
+    if isinstance(country, dict):
+        country = country.get("name")
+    parts = [_text(address.get("addressLocality")), _text(address.get("addressRegion")), _text(country)]
+    named = [part for part in parts if part]
+    return ", ".join(dict.fromkeys(named)) or None
+
+
+def _job_location(value: Any) -> str | None:
+    """A ``JobPosting``'s ``jobLocation``: one place or a list of them (schema.org allows
+    one or more), every place once, joined with " / " ("Austin, TX, US / Denver, CO, US")."""
+    places = value if isinstance(value, list) else [value]
+    named = [text for text in (_place(place) for place in places) if text]
+    return " / ".join(dict.fromkeys(named)) or None
+
+
 def extract_job_identity(snapshot: DomSnapshot) -> JobIdentityObservation | None:
     """A job identity the page itself shows: schema.org ``JobPosting`` identifier, or
     a single "Job ID ..." token in the page text. Never derived from the URL."""
@@ -881,10 +918,6 @@ def extract_job_identity(snapshot: DomSnapshot) -> JobIdentityObservation | None
             if not ident:
                 continue
             org = posting.get("hiringOrganization")
-            location = posting.get("jobLocation")
-            locality = None
-            if isinstance(location, dict) and isinstance(location.get("address"), dict):
-                locality = _text(location["address"].get("addressLocality"))
             return JobIdentityObservation(
                 ats_type=ats,
                 ats_tenant=tenant,
@@ -894,7 +927,7 @@ def extract_job_identity(snapshot: DomSnapshot) -> JobIdentityObservation | None
                 observed_url=url,
                 company=_text(org.get("name")) if isinstance(org, dict) else None,
                 title=_text(posting.get("title")) or h1,
-                location=locality,
+                location=_job_location(posting.get("jobLocation")),
             )
     visible_text = " ".join([*(h.text for h in snapshot.headings), snapshot.body_text[:4000]])
     ids = job_ids(visible_text)
@@ -937,6 +970,15 @@ Workday), not a validation error."""
 _UTILITY_CONTROL = re.compile(r"\b(?:lang(?:uage)?|locale|share|search)\b", re.IGNORECASE)
 """Page utilities that are not application questions: a language/locale switch, a
 share or search box. They never make a page an application form on their own."""
+
+
+_STATED_LIMIT = re.compile(
+    r"\blimit (?:your |the |this )?(?:answer|response|text|reply)s? to (\d{1,5}) char(?:acter)?s\b|"
+    r"\b(\d{1,5}) char(?:acter)?s? (?:or less|or fewer|max(?:imum)?)\b|"
+    r"\b(?:max(?:imum)?|up to|no more than) (?:of )?(\d{1,5}) char(?:acter)?s\b",
+    re.IGNORECASE,
+)
+"""A character limit stated in words, when the input carries no ``maxlength``."""
 
 
 def _fillable(fields: list[ApplicationField]) -> list[ApplicationField]:

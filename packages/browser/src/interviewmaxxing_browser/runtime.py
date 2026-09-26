@@ -510,6 +510,19 @@ class ActionPolicy:
     automation_may_submit: bool = True
 
 
+def _with_posting_location(identity: JobIdentityObservation,
+                           posting: JobIdentityObservation) -> JobIdentityObservation:
+    """Round 15 (item 6): the form page's own identity ("Job ID 4012" in its text) keeps the
+    location the posting page stated (its JSON-LD ``jobLocation``) when it states none, as
+    long as it names the same job (the same job id, or none against the posting's)."""
+    if identity.location or not posting.location:
+        return identity
+    if (identity.external_job_id and posting.external_job_id
+            and identity.external_job_id.lower() != posting.external_job_id.lower()):
+        return identity
+    return identity.model_copy(update={"location": posting.location})
+
+
 def _names_residence(label: str, residence: str) -> bool:
     """Whether a consent policy's name names the person's country of residence: the
     country's name in any case, or its upper-case abbreviation ("US", "U.S.A.", "UK")."""
@@ -876,6 +889,9 @@ class GenericApplicationBrowser:
         re-render that regenerated only selectors or generated ids is not a change."""
         self._active_fill_signature: str | None = None
         self._steps_advanced = 0
+        self._opened = False
+        """Whether ``open`` already loaded a page in this session (a second one gets a fresh
+        tab where the driver can give one: ``fresh_tab``)."""
         self._last: PageModel | None = None
         self._identity: JobIdentityObservation | None = None
         self._posting_identity: JobIdentityObservation | None = None
@@ -1325,6 +1341,12 @@ class GenericApplicationBrowser:
         self._apply_clicked = set()
         self._followed = set()
         self._last_click = None
+        fresh_tab = getattr(self.driver, "fresh_tab", None)
+        if self._opened and callable(fresh_tab):
+            # Round 15 (live, Wellfound): a tab that already showed a page keeps script state
+            # that leaves the next page's apply control inert; open it in a new tab.
+            await fresh_tab()
+        self._opened = True
         await self.driver.goto(url)
         model = await self._await_ready()
         consent_done = await self._dismiss_cookie_banner(model)
@@ -1367,6 +1389,9 @@ class GenericApplicationBrowser:
             inspection = (await self._model(evidence=label)).inspection
         if inspection.job_identity is None and posting_identity is not None:
             inspection = inspection.model_copy(update={"job_identity": posting_identity})
+        elif inspection.job_identity is not None and posting_identity is not None:
+            inspection = inspection.model_copy(update={
+                "job_identity": _with_posting_location(inspection.job_identity, posting_identity)})
         if notes and inspection.kind not in USER_ACTION_PAGES:
             # How the form (or the page instead of it) was reached; a page that asks the
             # person to act (sign in, a consent, a CAPTCHA) keeps the site's own message.
@@ -3052,6 +3077,9 @@ class GenericApplicationBrowser:
             except DriverError:
                 return False
             button = next((b for b in after.snapshot.buttons if b.selector == form.submit_selector), None)
+            said = next((d.text for d in after.snapshot.dialogs if d.selector == dialog and d.visible), "")
+            if affirmative_acceptance(said) or any(APPLIED_STATE.match(b.text) for b in after.snapshot.buttons):
+                return False  # the send went out: the dialog says so, or the job reads applied
             if (after.form is None or not _same_step_shown_again(form, after.form)
                     or _validation_errors(after.form) or after.snapshot.document != model.snapshot.document
                     or button is None or button.disabled or button.text != text
@@ -3163,6 +3191,17 @@ class GenericApplicationBrowser:
         evidence = [*pending.evidence, *model.inspection.evidence]
         before = pending.form
         after = model.form
+        applied = self._dialog_accepted(pending, model, same_document)
+        if applied:
+            # Round 15 (Wellfound): checked before "the form is shown again", since the live
+            # dialog stays open after the send and says so.
+            return SubmissionObservation(
+                outcome=SubmissionOutcome.ACCEPTED,
+                signals=applied,
+                observed_url=url,
+                evidence=evidence,
+                detail="the application dialog confirmed the send and the job page shows the job as applied",
+            )
         if before is not None and _same_step_shown_again(before, after, any_url=True):
             assert after is not None
             errors = _validation_errors(after)
@@ -3211,15 +3250,6 @@ class GenericApplicationBrowser:
                 evidence=evidence,
                 detail="site confirmation tied to this application",
             )
-        applied = self._applied_state(pending, model, same_document)
-        if applied:
-            return SubmissionObservation(
-                outcome=SubmissionOutcome.ACCEPTED,
-                signals=applied,
-                observed_url=url,
-                evidence=evidence,
-                detail="the application dialog closed and the job page shows the job as applied",
-            )
         heading = next((h.text for h in snapshot.headings), snapshot.title or "no heading")
         status = self.driver.last_status
         observed = [f"observed: page kind {model.inspection.kind.value}", f"observed: heading {heading!r}"]
@@ -3236,23 +3266,28 @@ class GenericApplicationBrowser:
                    "until the outcome is reconciled",
         )
 
-    def _applied_state(self, pending: _PendingSubmit, model: PageModel, same_document: bool) -> list[str]:
-        """Round 15: Wellfound's acceptance, which shows no confirmation text. The form was
-        submitted from a dialog on the job page; after the submit the same document shows no
-        form and no longer that dialog, a control on the page now reads as applied ("Applied",
-        "Application sent") where no apply control of this job is left (other listings' under
-        "Similar Jobs" never count), and the page names this job (its title or job id).
+    def _dialog_accepted(self, pending: _PendingSubmit, model: PageModel, same_document: bool) -> list[str]:
+        """Round 15: Wellfound's acceptance. The form was submitted from a dialog on the job
+        page, and after the submit, in the same document:
+        - the dialog says the application went out ("SUCCESS! YOUR APPLICATION HAS BEEN SENT.",
+          an affirmative acceptance statement; live, it stays open), or it is gone and this
+          job's apply control reads as applied ("✓ Applied", "Application sent");
+        - no apply control of this job is left to click (other listings' under "Similar Jobs"
+          never count);
+        - the page names this job (its title or job id).
         Signals, or [] when any part is missing."""
         snapshot = model.snapshot
-        if (pending.dialog is None or not same_document or model.form is not None
-                or model.inspection.kind is PageKind.APPLICATION_FORM
-                or any(d.selector == pending.dialog and d.visible for d in snapshot.dialogs)):
+        if pending.dialog is None or not same_document:
             return []
+        dialog = next((d for d in snapshot.dialogs if d.selector == pending.dialog and d.visible), None)
+        statement = affirmative_acceptance(dialog.text) if dialog is not None else None
         states = [b.text for b in snapshot.buttons if APPLIED_STATE.match(b.text)
                   and not OTHER_LISTINGS.search(b.heading)]
-        if not states or any(APPLY_LINK.search(b.text) and not b.disabled and not OTHER_LISTINGS.search(b.heading)
-                             for b in snapshot.buttons):
-            return []  # this job's own apply control must read as applied (other listings' never count)
+        if (dialog is not None and statement is None) or (statement is None and not states):
+            return []
+        if any(APPLY_LINK.search(b.text) and not b.disabled and not OTHER_LISTINGS.search(b.heading)
+               and b.dialog_index == -1 for b in snapshot.buttons):
+            return []  # this job can still be applied to: the send did not go out
         tie = pending.tie
         shown = " ".join([snapshot.title, *(h.text for h in snapshot.headings), snapshot.body_text[:4000]])
         ties: list[str] = []
@@ -3262,8 +3297,11 @@ class GenericApplicationBrowser:
             ties.append(f"job id {tie.external_job_id!r} shown on the page")
         if not ties:
             return []
-        return ["the application dialog closed after the submit",
-                f"the job page's apply control now reads {states[0]!r}", *ties]
+        signals = ([f"the application dialog says {statement!r}"] if statement
+                   else ["the application dialog closed after the submit"])
+        if states:
+            signals.append(f"the job page's apply control now reads {states[0]!r}")
+        return [*signals, *ties]
 
     # --- user interaction and reconciliation ------------------------------------------
 
@@ -3416,9 +3454,10 @@ class GenericApplicationBrowser:
         Jobvite's data consent) that shows no job identity of its own gets the identity of
         the posting ``open()`` loaded, as ``open()`` gives it to the form an apply link
         leads to, but only while the form continues that posting: same origin, and its
-        path is the posting's or one segment below it (".../job/<id>/apply")."""
+        path is the posting's or one segment below it (".../job/<id>/apply"). A form that
+        shows an identity of its own without a location keeps the posting's (round 15)."""
         posting = self._posting_identity
-        if (posting is None or not posting.observed_url or inspection.job_identity is not None
+        if (posting is None or not posting.observed_url
                 or inspection.kind is not PageKind.APPLICATION_FORM):
             return inspection
         base, here = urlsplit(posting.observed_url), urlsplit(inspection.observed_url)
@@ -3427,6 +3466,9 @@ class GenericApplicationBrowser:
         if ((here.scheme, here.netloc) != (base.scheme, base.netloc) or below is None
                 or (below and not (below.startswith("/") and below.count("/") == 1))):
             return inspection
+        if inspection.job_identity is not None:
+            return inspection.model_copy(update={
+                "job_identity": _with_posting_location(inspection.job_identity, posting)})
         return inspection.model_copy(update={"job_identity": posting})
 
     # --- a data-processing consent in front of the form (round 14) ---------------------

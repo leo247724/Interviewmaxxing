@@ -190,15 +190,19 @@
     byIds(el && el.getAttribute("aria-describedby")).map((d) => ({ text: textOf(d), error: errorFor(el, d) }))
       .filter((d) => d.text);
 
+  // A <label> wrapping a whole group of choices (Wellfound: the question on its first line,
+  // each option's text in its input's parent) labels the group, never one option (round 15).
+  const wrapsChoices = (l) => l.querySelectorAll('input[type="radio"], input[type="checkbox"]').length > 1;
+  const ownLabels = (el) => Array.from(el.labels || []).filter((l) => !wrapsChoices(l));
   const labelOf = (el) => {
     const byLabelledby = byIds(el.getAttribute("aria-labelledby")).map((n) => textOf(n)).join(" ").trim();
     if (byLabelledby) return [byLabelledby, "aria-labelledby"];
-    if (el.labels && el.labels.length) {
+    if (ownLabels(el).length) {
       // A <label> that wraps a whole input-select also holds what it shows ("Country
       // United States"): that is state, not the question.
       const widget = inputSelect(el);
       const shownState = widget ? new Set([widget.shown, ...widget.options]) : undefined;
-      const t = Array.from(el.labels).map((l) => textOf(l, shownState)).join(" ").trim();
+      const t = ownLabels(el).map((l) => textOf(l, shownState)).join(" ").trim();
       // A styled uploader's hidden file input is labelled with its button's verb
       // ("Attach"); the question is the name of the uploader's group ("Resume/CV").
       if (t && el.type === "file" && /^(?:attach|upload|browse|choose|select|add)(?:\s+(?:a\s+)?files?)?$/i.test(t)) {
@@ -546,8 +550,22 @@
   // a distinct name that is empty or its own label's text (radios: any distinct names),
   // so separately named consents in one fieldset stay separate questions.
   const choiceBoxCache = new Map();
+  const wrapLabel = (el) => {
+    const l = el.closest("label");
+    return l && wrapsChoices(l) ? l : null;
+  };
   const choiceBox = (el) => {
     if (!(el.type === "radio" || el.type === "checkbox")) return null;
+    const wrap = wrapLabel(el);
+    if (wrap) {
+      if (choiceBoxCache.has(wrap)) return choiceBoxCache.get(wrap);
+      // One question's options in one label: all of one type, one shared name or none.
+      const inside = nativeControls.filter((o) => wrap.contains(o));
+      const names = new Set(inside.map((o) => o.name || ""));
+      const grouped = inside.length > 1 && inside.every((o) => o.type === el.type) && names.size === 1;
+      choiceBoxCache.set(wrap, grouped ? wrap : null);
+      if (grouped) return wrap;
+    }
     const box = el.closest('fieldset, [role="radiogroup"], [role="group"]');
     if (!box) return null;
     if (choiceBoxCache.has(box)) return choiceBoxCache.get(box);
@@ -582,6 +600,20 @@
     return (star("::before") ? "* " : "") + text + (star("::after") ? " *" : "");
   };
   const questionOf = (members, container) => {
+    // 0. A group wrapped in one <label> (Wellfound): its text outside the options' own
+    //    boxes ("Will you now or in the future require sponsorship …?*").
+    const wrap = members.length > 1 ? wrapLabel(members[0]) : null;
+    if (wrap && members.every((m) => wrap.contains(m))) {
+      const boxes = members.map((m) => ownBox(m) || m);
+      const walker = document.createTreeWalker(wrap, NodeFilter.SHOW_TEXT);
+      const parts = [];
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (boxes.some((b) => b.contains(n)) || !n.parentElement || !visible(n.parentElement)) continue;
+        parts.push(n.textContent);
+      }
+      const text = squashText(parts.join(" "));
+      if (text) return [drawn(wrap, text).slice(0, 500), ""];
+    }
     // 1. A <label> in the control's own box that labels nothing: Ashby writes
     //    <label for="<field path>"> while the input has no id at all.
     if (container) {
@@ -801,11 +833,13 @@
     const exclude = new Set([...ownedEls, ...popupRoots]);
     for (const m of members) for (const l of m.labels || []) exclude.add(l);
     for (const m of members) for (const d of byIds(m.getAttribute("aria-describedby"))) exclude.add(d);
+    const wrapping = members.length > 1 ? wrapLabel(members[0]) : null;
+    if (wrapping) exclude.add(wrapping);  // the group's question and its options, read above
     const pressed = pressedOptionsOf(el);
     for (const b of pressed) exclude.add(b);  // its options, not text around it
     // A group's unlabelled options state their text in their own boxes: option text, not
     // text around the group.
-    const unlabelled = members.length > 1 ? members.filter((m) => !(m.labels && m.labels.length)) : [];
+    const unlabelled = members.length > 1 ? members.filter((m) => !ownLabels(m).length) : [];
     for (const m of unlabelled) { const b = ownBox(m); if (b) exclude.add(b); }
     if (date) {
       exclude.add(date.root);
@@ -860,7 +894,7 @@
       option_text: unlabelled.includes(el) && !label ? (() => { const b = ownBox(el); return b ? textOf(b).slice(0, 300) : ""; })() : "",
       choice_group: (() => { const b = choiceBox(el); return b ? selectorFor(b) : ""; })(),
       pressed_options: pressed.map((b) => ({ label: squashText(textOf(b)), selector: selectorFor(b), pressed: b.getAttribute("aria-pressed") === "true" })),
-      label_selector: el.labels && el.labels.length ? selectorFor(el.labels[0]) : null,
+      label_selector: ownLabels(el).length ? selectorFor(ownLabels(el)[0]) : null,
       required: (date ? date.segments.map((s) => s.el) : [el]).some((m) =>
         m.required || m.getAttribute("aria-required") === "true" || !!(m.closest('[aria-required="true"]'))) ||
         (!!trigger && trigger.getAttribute("aria-required") === "true"),
