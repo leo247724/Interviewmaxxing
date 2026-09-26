@@ -316,6 +316,22 @@ class StepBack(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ListingDetails:
+    """What the saved listing (or its pipeline card) says about the job, from outside the
+    page: ``apply``/``resume --job-location/--job-title/--job-company``, which
+    ``prepare-batch`` fills from the jobs store. Written on the job before the run
+    (``ApplicationStore.record_listing``), so the metro rule reads the listing's location
+    ("Round Rock, TX (Hybrid)", "Remote (US)") and not only what a page states."""
+
+    location: str | None = None
+    title: str | None = None
+    company: str | None = None
+
+    def __bool__(self) -> bool:
+        return any(v and v.strip() for v in (self.location, self.title, self.company))
+
+
+@dataclass(frozen=True, slots=True)
 class RunLimits:
     max_steps: int = 12
     """Pages inspected in one run before it stops (FAILED_RETRYABLE)."""
@@ -709,24 +725,30 @@ class LocalApplicationRunner:
 
     # --- public API -------------------------------------------------------------------
 
-    async def apply(self, application_url: str, *, candidate_id: str) -> ApplyOutcome:
+    async def apply(self, application_url: str, *, candidate_id: str,
+                    listing: ListingDetails | None = None) -> ApplyOutcome:
         """Record the request (idempotent) and run it unless the stored state forbids
         it. A repeated request for a submitted, in-flight or uncertain application
-        returns that state without touching the browser."""
+        returns that state without touching the browser. ``listing`` is written on the
+        job right after the request is recorded (``record_listing``)."""
         with self._store() as store:
             result = store.record_request(candidate_id, application_url)
             app_id = result.application.id
+            self._record_listing(store, app_id, listing)
             if not result.may_proceed:
                 return self._blocked(store, app_id)
             return await self._run(store, app_id, application_url)
 
-    async def resume(self, application_id: str) -> ApplyOutcome:
+    async def resume(self, application_id: str, *,
+                     listing: ListingDetails | None = None) -> ApplyOutcome:
         """Continue a stopped application (missing input answered, sign-in done, a
-        retryable failure) from a fresh inspection of the site."""
+        retryable failure) from a fresh inspection of the site. ``listing`` is written on
+        the job first, as for ``apply``."""
         with self._store() as store:
             app = store.get_application(application_id)
             if app.state in SUBMISSION_BLOCKING_STATES or app.state in TERMINAL_STATES:
                 return self._blocked(store, application_id)
+            self._record_listing(store, application_id, listing)
             url = store.list_requests(application_id)[0].application_url
             return await self._run(store, application_id, url)
 
@@ -803,6 +825,13 @@ class LocalApplicationRunner:
                 return _outcome(store, application_id, CLAIMED_MESSAGE)
 
     # --- plumbing -------------------------------------------------------------------------
+
+    def _record_listing(self, store: ApplicationStore, application_id: str,
+                        listing: ListingDetails | None) -> None:
+        """The listing's location, title and company on the job (``record_listing``)."""
+        if listing:
+            store.record_listing(application_id, location=listing.location, title=listing.title,
+                                 company=listing.company, actor=self.owner)
 
     @property
     def _ttl(self) -> timedelta:
@@ -2134,6 +2163,7 @@ __all__ = [
     "REJECTION_EVENT",
     "ROUTING_EVENT",
     "SUGGESTION_EVENT",
+    "ListingDetails",
     "LocalApplicationRunner",
     "NoninteractiveInteraction",
     "RunLimits",

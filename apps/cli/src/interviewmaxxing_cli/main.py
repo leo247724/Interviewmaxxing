@@ -407,6 +407,23 @@ def _interrupted(paths: LocalPaths, application_id: str | None) -> int:
 # --- commands --------------------------------------------------------------------
 
 
+def _listing(args: argparse.Namespace) -> Any:
+    """``--job-location/--job-title/--job-company`` as ``runner.ListingDetails``."""
+    from .runner import ListingDetails
+
+    return ListingDetails(location=args.job_location, title=args.job_title,
+                          company=args.job_company)
+
+
+def _listing_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--job-location", metavar="TEXT",
+                   help="the saved listing's location (\"Austin, TX (Hybrid)\", \"Remote\"): kept "
+                        "on the job over a page's locality, for the metro rule")
+    p.add_argument("--job-title", metavar="TEXT", help="the listing's title, if the job has none")
+    p.add_argument("--job-company", metavar="TEXT",
+                   help="the listing's company, if the job has none")
+
+
 def cmd_apply(args: argparse.Namespace) -> int:
     paths = _paths(args)
     candidate_id = args.candidate or paths.candidate_id
@@ -421,7 +438,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
     already = existing is not None and existing.state is S.SUBMITTED
     runner = _runner(args)
     try:
-        outcome = _run(lambda: runner.apply(args.url, candidate_id=candidate_id))
+        outcome = _run(lambda: runner.apply(args.url, candidate_id=candidate_id,
+                                            listing=_listing(args)))
     except (KeyboardInterrupt, asyncio.CancelledError):
         with ApplicationStore.open(paths.state_db) as store:
             app = store.find_application(candidate_id, args.url)
@@ -437,7 +455,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     runner = _runner(args)
     try:
-        outcome = _run(lambda: runner.resume(args.application_id))
+        outcome = _run(lambda: runner.resume(args.application_id, listing=_listing(args)))
     except (KeyboardInterrupt, asyncio.CancelledError):
         return _interrupted(paths, args.application_id)
     _print_outcome(outcome, as_json=args.json)
@@ -1098,7 +1116,15 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     from pydantic import ValidationError
 
-    from .batch import BatchOptions, default_batch_id, prepared_or_held, read_inventory, run_batch
+    from .batch import (
+        BatchOptions,
+        default_batch_id,
+        default_jobs_db,
+        prepared_or_held,
+        read_inventory,
+        run_batch,
+        with_saved_listings,
+    )
 
     paths = _paths(args)
     try:
@@ -1133,8 +1159,12 @@ def cmd_prepare_batch(args: argparse.Namespace) -> int:
               + ")", file=sys.stderr)
         return EXIT_USAGE
     batches = list(exclusion.batches) if exclusion is not None else []
+    # Each row's saved listing (the jobs store, by listing_id) gives the job its location,
+    # which the metro rule reads (round 5).
+    rows, located = with_saved_listings(rows, default_jobs_db(paths))
     header = (f"batch {options.batch_id}: {len(rows)} row(s), {options.workers} worker(s), "
-              f"preparation only; ledger in {options.batch_dir}")
+              f"{located} with their saved listing's location, preparation only; ledger in "
+              f"{options.batch_dir}")
     if exclusion is not None:
         header += (f"; {excluded} row(s) left out as prepared or held by "
                    f"{', '.join(batches)}")
@@ -1152,7 +1182,7 @@ def _retry_batch(args: argparse.Namespace) -> int:
     """``prepare-batch --retry BATCH_ID``: see ``interviewmaxxing_cli.retry``."""
     from pydantic import ValidationError
 
-    from .batch import counted, read_summary
+    from .batch import counted, default_jobs_db, read_summary
     from .retry import RETRY_OUTCOMES, default_retry_id, plan_retry, retry_options, run_retry
 
     if args.statuses != "resolved" or args.include_existing or args.exclude_batches is not None:
@@ -1171,7 +1201,8 @@ def _retry_batch(args: argparse.Namespace) -> int:
                           outcomes=args.outcomes or RETRY_OUTCOMES,
                           include_explicit=args.include_explicit, rerun_all=args.rerun_all,
                           user_actions=args.user_actions, backends=_csv(args.backends),
-                          limit=args.limit, only_apps=_flat(args.only_apps))
+                          limit=args.limit, only_apps=_flat(args.only_apps),
+                          jobs_db=default_jobs_db(paths))
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -1187,6 +1218,7 @@ def _retry_batch(args: argparse.Namespace) -> int:
               f"{stats.considered} listing(s) selected"
               + (f" (by: {counted(stats.selected_by)})" if stats.selected_by else "")
               + f" (skipped: {counted(stats.skipped) or 'none'}), "
+              f"{sum(1 for i in plan.items if i.row.location)} with their listing's location, "
               f"{options.workers} worker(s), preparation only; ledger in {options.batch_dir}")
     summary = _run_batch_command(args, header, options.batch_dir,
                                  lambda show: run_retry(options, plan, on_entry=show))
@@ -1414,6 +1446,7 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
     p.add_argument("url", metavar="APPLICATION_URL")
     p.add_argument("--candidate", metavar="ID", help="candidate id (default: IMX_CANDIDATE_ID)")
     _run_options(p)
+    _listing_flags(p)
     p.set_defaults(func=cmd_apply)
 
     p = sub.add_parser(
@@ -1565,6 +1598,7 @@ def build_parser(*, batch_defaults: dict[str, Any] | None = None) -> argparse.Ar
                        "with `answer`. Never resubmits an uncertain or confirmed application.")
     p.add_argument("application_id", metavar="APPLICATION_ID")
     _run_options(p)
+    _listing_flags(p)
     p.set_defaults(func=cmd_resume)
 
     p = sub.add_parser(

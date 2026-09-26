@@ -84,6 +84,11 @@ from .urls import normalize_application_url
 S = ApplicationState
 SCHEMA_VERSION = 4
 DEFAULT_CLAIM_TTL = timedelta(minutes=5)
+LOCATION_EVENT = "job.location_bound"
+"""Emitted on the application whenever its job's location is written: metadata ``job_id``,
+``location``, ``source`` (``listing``: the saved listing or its pipeline card, through
+``record_listing``; ``page``: the application page's locality, through
+``bind_job_identity``) and ``previous`` (the location it replaced, or None)."""
 SUBMISSION_LEASE = timedelta(minutes=10)
 RESERVED_EVENT_PREFIXES = (
     "application.", "job.", "submission.", "packet.", "input.", "document.",
@@ -342,6 +347,11 @@ def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _clean_text(value: str | None) -> str | None:
+    """``value`` stripped; None when blank."""
+    return (value or "").strip() or None
+
+
 def _json(value: Any) -> str:
     return json.dumps(to_jsonable_python(value), sort_keys=True, separators=(",", ":"))
 
@@ -496,6 +506,26 @@ class ApplicationStore:
                 _json(metadata or {}),
             ),
         )
+
+    def _location_source(self, c: sqlite3.Connection, job_id: str) -> str | None:
+        """Where the job's current location came from: the ``source`` of the latest
+        ``job.location_bound`` event of its applications; None when none was recorded (a
+        location bound from a page before sources were recorded)."""
+        row = c.execute(
+            "SELECT e.metadata FROM events e JOIN applications a ON a.id = e.application_id"
+            " WHERE a.job_id = ? AND e.event = ? ORDER BY e.seq DESC LIMIT 1",
+            (job_id, LOCATION_EVENT),
+        ).fetchone()
+        source = json.loads(row["metadata"]).get("source") if row is not None else None
+        return source if isinstance(source, str) else None
+
+    def _takes_listing_location(self, c: sqlite3.Connection, job_id: str,
+                                current: str | None, location: str) -> bool:
+        """A listing's location replaces a page's locality (or an unrecorded one) and fills
+        a job without one; the first listing location is kept."""
+        if current == location:
+            return False
+        return current is None or self._location_source(c, job_id) != "listing"
 
     def _app_row(self, c: sqlite3.Connection, application_id: str) -> sqlite3.Row:
         row: sqlite3.Row | None = c.execute(
@@ -775,6 +805,9 @@ class ApplicationStore:
             if expected is not None and expected != key:
                 raise IdentityConflict("the observed job does not match the selected job")
             job_row = self._job_row(c, job_id)
+            # A listing location on this job, kept if it is merged into another (round 5).
+            carried = (job_row["location"]
+                       if self._location_source(c, job_id) == "listing" else None)
             if job_row["identity_key"] not in (None, key):
                 raise IdentityConflict(
                     f"job {job_id} is bound to {job_row['identity_key']}, page shows {key}"
@@ -783,6 +816,9 @@ class ApplicationStore:
                 "SELECT job_id FROM job_aliases WHERE alias = ?", (key,)
             ).fetchone()
             target = self._canonical_job_id(c, alias["job_id"]) if alias else job_id
+            # Read before a merge moves this job's applications, and their location events,
+            # onto the canonical job.
+            target_source = self._location_source(c, target)
             meta = {
                 "identity_key": key,
                 "evidence_kind": observation.evidence_kind.value,
@@ -846,17 +882,28 @@ class ApplicationStore:
                     (key, job_id, observation.evidence, _ts(now)),
                 )
 
+            # The job's location (round 5): a listing's location is kept over the page's
+            # locality, which only fills a job without one; a merged job's listing location
+            # replaces the canonical job's page locality.
+            previous = self._job_row(c, target)["location"]
+            location, source = previous, None
+            page = _clean_text(observation.location)
+            if carried is not None and carried != previous and (
+                    previous is None or target_source != "listing"):
+                location, source = carried, "listing"
+            elif previous is None and page is not None:
+                location, source = page, "page"
             c.execute(
                 "UPDATE jobs SET identity_key = ?, ats_type = ?, external_job_id = ?,"
                 " company = COALESCE(?, company), title = COALESCE(?, title),"
-                " location = COALESCE(?, location), updated_at = ? WHERE id = ?",
+                " location = ?, updated_at = ? WHERE id = ?",
                 (
                     key,
                     observation.ats_type,
                     observation.external_job_id,
                     observation.company,
                     observation.title,
-                    observation.location,
+                    location,
                     _ts(now),
                     target,
                 ),
@@ -866,6 +913,10 @@ class ApplicationStore:
                     c, row["id"], "job.identity_bound", now=now, actor=claim.owner,
                     metadata={**meta, "job_id": target, "merged_from_job_id": merged_from},
                 )
+            if source is not None:
+                self._event(c, row["id"], LOCATION_EVENT, now=now, actor=claim.owner, metadata={
+                    "job_id": target, "location": location, "source": source,
+                    "previous": previous})
             job = self._to_job(self._job_row(c, target))
             application = self._to_application(self._app_row(c, row["id"]))
         return BindResult(
@@ -875,6 +926,55 @@ class ApplicationStore:
             duplicate_of=duplicate_of,
             moved_application_ids=moved,
         )
+
+    def record_listing(
+        self,
+        application_id: str,
+        *,
+        location: str | None = None,
+        title: str | None = None,
+        company: str | None = None,
+        actor: str | None = None,
+    ) -> JobRecord:
+        """Record what the saved listing (or its pipeline card) says about the
+        application's job, before any run reads the job: ``prepare-batch`` and ``apply
+        --job-location`` call it right after ``record_request``, the service handoff with
+        the card's ``locationCommute``.
+
+        * ``location`` fills a job without one, and replaces a location that came from a
+          page (``bind_job_identity``'s locality, or one bound before sources were
+          recorded): the listing's text ("Austin, TX (Hybrid)", "Remote") says more than a
+          page's bare locality, and a remote posting whose page names the company's
+          office is not an office job. The first listing location is kept. Each write is
+          recorded as ``job.location_bound`` (source ``listing``) on this application.
+        * ``title`` and ``company`` only fill a job without them (the page's own, bound
+          later by ``bind_job_identity``, still win).
+
+        Blank values are ignored. Needs no claim: like ``record_request`` it runs before
+        any work, and it never changes a state."""
+        location, title, company = (_clean_text(v) for v in (location, title, company))
+        now = self._now()
+        with self._tx() as c:
+            row = self._app_row(c, application_id)
+            job_id = self._canonical_job_id(c, row["job_id"])
+            job = self._job_row(c, job_id)
+            updates: dict[str, str] = {}
+            if location is not None and self._takes_listing_location(
+                    c, job_id, job["location"], location):
+                updates["location"] = location
+            if title is not None and job["title"] is None:
+                updates["title"] = title
+            if company is not None and job["company"] is None:
+                updates["company"] = company
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                c.execute(f"UPDATE jobs SET {assignments}, updated_at = ? WHERE id = ?",
+                          (*updates.values(), _ts(now), job_id))
+            if "location" in updates:
+                self._event(c, application_id, LOCATION_EVENT, now=now, actor=actor, metadata={
+                    "job_id": job_id, "location": location, "source": "listing",
+                    "previous": job["location"]})
+            return self._to_job(self._job_row(c, job_id))
 
     # --- claims --------------------------------------------------------------------
 
