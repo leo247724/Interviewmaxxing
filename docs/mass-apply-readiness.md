@@ -413,6 +413,29 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Wellfound: the first 30 real applications (September 25, 19:28–20:25).** The person set the
+goal (apply to the 30 saved Wellfound jobs, provider cost under USD 10, cards to Applied) and
+authorized the submissions. The runtime's OpenCLI path still could not open Wellfound's apply
+modal on the batch path, so the lead drove the site directly through the person's signed-in
+Chrome (OpenCLI Browser Bridge, profile `jgd7jms9`) with the pipeline's own writer for the
+answers. What Wellfound's modal turned out to be: one textarea per job, either a note to a named
+recruiter or "What interests you about working for this company?", and on three jobs a form of
+plain inputs (phone, LinkedIn, salary, portfolio), radio groups (country, state, sponsorship,
+former-employee) and a pronouns checkbox group, two of them with 128-character limits on short
+answers. Result: **30 of 30 submitted**, each confirmed on wellfound.com/jobs/applications and
+each Saved card moved to Applied with a dated note. 22 answers came from the RAG writer (USD
+0.16–0.53 each, 20 shipped first time, all grounded and reviewed); 8 were written by the lead
+from the verified profile facts and the posting after OpenRouter started refusing calls at USD
+3.40 of balance (Juno, Earnest, Softr, Nika, Hope Street, FactoryFix, Surf, Twenty5). Provider
+spend for the run: about USD 10.5 (the account moved USD 12.45 tonight, USD 1.4–1.9 of it WP12's
+batch 5), roughly one dollar over the cap, all of it in drafts the rubric held and the lead
+retried. Lessons for the runtime (WP1 round 15): a job must open in a fresh tab or the Apply
+click is inert; the site confirms with "SUCCESS! YOUR APPLICATION HAS BEEN SENT." inside the
+modal while the modal stays open; a blank optional textarea ("If yes, …") must not block the
+send; radio options are read from the input's parent element, not the group label; short-answer
+inputs carry a character limit in their help text. Private run files:
+`.imx/dynamic-applications/wellfound-run/` (fields map, answers with receipts, ledger).
+
 **Sixth merge wave (September 25, evening, j-workspace 4d5e186): WP1 round 14.** Questions that
 appear during the fill are answered in the same run (Greenhouse's EEO block, Teamtailor's late
 LinkedIn field), Paylocity's address line and its work-history dates come from the profile's most
@@ -619,10 +642,9 @@ years-of-experience facts from the resume timeline.
 5. **Sign-in-gated backends.** LinkedIn Easy Apply is out of scope (the person applies
    by hand). Wellfound (30), Indeed (10), Workday (51; the account step is left to the
    person, WP7) and iCIMS (8) still need the person's browser session or an account.
-   *Status, September 25 evening:* the person's Wellfound account exists and is signed in
-   inside the OpenCLI profile; the lane script is written; WP1 round 15 makes the apply
-   control and the note dialog work under OpenCLI. Indeed, iCIMS and the Workday accounts
-   still need the person.
+   *Status, September 25 night:* all 30 Wellfound applications are submitted (see the
+   Wellfound entry above); WP1 round 15 makes the runtime do what the lead did by hand.
+   Indeed, iCIMS and the Workday accounts still need the person.
 6. **Submission stays disabled by design.** WP8's approve → authorize → submit path is
    mock-only; the reviewer's rule stands: no `submit-approved` on a real employer before
    the cloud rounds land and a review pass covers 551717e..HEAD.
