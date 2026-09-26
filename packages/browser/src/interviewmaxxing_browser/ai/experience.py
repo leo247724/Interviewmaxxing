@@ -146,6 +146,11 @@ AREA_SYNONYMS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
     (re.compile(r"\blinked\s?in\b", re.IGNORECASE), ("linkedin_ads",)),
     (re.compile(r"\bpaid media\b|\bperformance marketing\b|\bperformance (?:media|advertising|"
                 r"channels)\b", re.IGNORECASE), ("paid_media", "performance_marketing")),
+    # Round 15: "How many years of experience do you have in planning / buying media for a
+    # national brand" (0-4 / 5-7 / 8+) is the paid media years.
+    (re.compile(r"\b(?:plan(?:ning)?|buy(?:ing)?)(?:\s*(?:/|and|&)\s*(?:plan(?:ning)?|buy(?:ing)?))?\s+media\b"
+                r"|\bmedia\s+(?:planning|buying)(?:\s*(?:/|and|&)\s*(?:planning|buying))?\b", re.IGNORECASE),
+     ("paid_media",)),
     (re.compile(r"\bdirect reports?\b|\bmanag\w*\s+(?:a\s+)?(?:team|people)\b|\bteam (?:lead\w*|"
                 r"management)\b|\bled\s+(?:a\s+)?team\b|\bpeople manage\w*\b", re.IGNORECASE),
      ("team_leadership",)),
@@ -203,6 +208,29 @@ _DENIAL = re.compile(r"\b(?:not|never|no|none|without)\b|n't\b", re.IGNORECASE)
 deterministic support: Jev reads it."""
 
 
+CHANNELS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("ctv", re.compile(r"\bctv\b|\bconnected\s+tv\b|\bott\b|\bstreaming\s+tv\b", re.IGNORECASE)),
+    ("linear_tv", re.compile(r"\blinear\s+tv\b|\bbroadcast\s+tv\b", re.IGNORECASE)),
+    ("audio", re.compile(r"\b(?:streaming|digital)\s+audio\b|\bpodcast\s+ads?\b", re.IGNORECASE)),
+    ("dooh", re.compile(r"\bdooh\b|\bdigital\s+out[- ]of[- ]home\b", re.IGNORECASE)),
+)
+"""Ad channels a proficiency question may name beside the platforms (round 15: CTV)."""
+
+
+def channels_named(text: str) -> list[str]:
+    """The ad platforms and channels ``text`` names ("CTV buying" → ctv)."""
+    return [*platforms_named(text), *(name for name, pattern in CHANNELS if pattern.search(text))]
+
+
+def channel_stated(channel: str, facts: Sequence[CandidateFact]) -> bool:
+    """Whether any fact names the channel or platform (its years, a story, a resume bullet)."""
+    platform = next((entry for entry in PLATFORMS if entry[0] == channel), None)
+    if platform is not None and platform_facts(channel, facts):
+        return True
+    pattern = platform[1] if platform is not None else dict(CHANNELS)[channel]
+    return any(isinstance(f.value, str) and pattern.search(f.value) for f in facts)
+
+
 def platform_facts(platform: str, facts: Sequence[CandidateFact]) -> list[CandidateFact]:
     """The facts that state the person's own work on ``platform``: a years fact for one of
     its areas with one year or more, or a story fact naming it."""
@@ -223,7 +251,10 @@ _EXPERIENCE_WORDING = re.compile(
     r"\b\d+\s*\+?\s*(?:years?|yrs?)\b(?!\s+(?:old|of\s+age))|"
     r"\bskills?\b|\bproficien\w*|\bfamiliar(?:ity)?\b|\bplatforms?\b|\bhands-on\b|\bexpertise\b|"
     r"\bworked\s+(?:in|at|with|on|for|as)\b|\b(?:managed|managing|led|leading|owned|owning|"
-    r"built|building|ran|running|launched|executed|executing|implemented|optimi[sz]ed)\b",
+    r"built|building|ran|running|launched|executed|executing|implemented|optimi[sz]ed)\b|"
+    # Round 15: "Which of the following best describes how you use AI in your current role?"
+    r"\bhow (?:do|did|have|would) you (?:use|used|leverage|apply)\b|\bhow you (?:use|leverage|apply|have used)\b"
+    r"|\bhow are you (?:currently )?(?:using|leveraging|applying)\b",
     re.IGNORECASE)
 
 

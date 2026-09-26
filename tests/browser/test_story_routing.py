@@ -2808,3 +2808,68 @@ def test_a_grounding_rejection_carries_the_same_reviews_rubric_issues_into_the_o
     assert packet.is_complete and len(writer.calls) == 2
     assert writer.calls[1]["review_feedback"] == [DROP_REJECTED_FEEDBACK, "Sentence 12 credits the revenue to the mail.",
                                                   RUBRIC_REWRITE_FEEDBACK, "Line 6a: two sentences restate the posting."]
+
+
+# --- round 15: the first mass slice's why-us questions ---------------------------------------
+
+MASS_SLICE_INTEREST = [
+    # The live wordings, with the source scope the classifier gave each (the lead's diagnosis):
+    # every one routed WRITER at 1.0.
+    ("Why Dovetail & this role?", "EXPLICIT_ANSWER", 0.41),
+    ("Why did you decide to apply to this role at ClickUp?", "EXPLICIT_ANSWER", 0.78),
+    ("Tell us a bit about why you're applying to work at Yondr. What excited you about this role?",
+     "EXPLICIT_ANSWER", 0.34),
+    ("Tell us about yourself & your interest in Smalls.", "HISTORICAL_OR_CONTEXTUAL", 0.49),
+]
+
+
+@pytest.mark.parametrize(("question", "scope", "probability"), MASS_SLICE_INTEREST)
+def test_the_mass_slice_why_us_questions_are_motivation_narratives_whatever_their_scope(
+    candidate, mock_job, question, scope, probability,
+):
+    chunk = story_chunk()
+    jev = Jev(scope=scope, scope_probability=probability)
+    retriever = Retriever([candidate.facts[0]], [chunk], job_evidence=[JOB_EVIDENCE])
+    writer = Writer([
+        {"text": "Your description puts paid search at the center of the role.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+        {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.", "fact_ids": ["fact.bakery"]},
+        {"text": "I set up conversion tracking so the owner could see which campaigns paid off.", "fact_ids": [chunk["id"]]},
+    ])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=question), retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert writer.calls[0]["purpose"] == "motivation"
+    # The store's own predicate misses these wordings: retrieval asks as a motivation question,
+    # so the facts are ranked by the job description.
+    assert retriever.calls[0]["narrative"] is True
+    assert retriever.calls[0]["query"] == "Why are you interested in this role? " + question
+    trace = next(t for t in resolver.narrative_traces if t["stage"] == "motivation_narrative")
+    assert trace["status"] == "MOTIVATION_PURPOSE" and trace["source_scope"] == scope
+    assert not any("candidate_narrative" in r["questions"] for r in jev.requests)  # the owner's rule
+    assert packet.answers[0].provenance.reference_ids == ["fact.bakery"]
+
+
+@pytest.mark.parametrize("question", [
+    "How do you use AI to 10x your output? Please mention any tools you use.",
+    "How are you currently using AI in your workflows?",
+    "Why did you decide to leave your last role?",
+    "Why are you interested in a remote position?",
+    "Tell us about yourself and your salary expectations.",
+])
+def test_ai_use_leaving_and_preference_questions_are_not_motivation_narratives(candidate, mock_job, question):
+    # The AI-use questions are the applicant's own practice, not a motivation: an explicit scope
+    # keeps them held here, and the classifier's scope is WP10's to fix (round 15 report).
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.41)
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=question),
+                                    Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    assert not any(t["stage"] == "motivation_narrative" for t in resolver.narrative_traces)
+
+
+def test_a_motivation_question_the_store_reads_itself_keeps_its_own_query(candidate, mock_job):
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.78)
+    retriever = Retriever([candidate.facts[0]], [story_chunk()], job_evidence=[JOB_EVIDENCE])
+    writer = Writer([{"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
+                      "fact_ids": ["fact.bakery"]}])
+    resolve(context(candidate, mock_job, question="Why Pacvue?"), retriever, writer, jev)
+    assert retriever.calls[0]["query"] == "Why Pacvue?"

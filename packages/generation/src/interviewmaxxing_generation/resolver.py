@@ -26,6 +26,7 @@ protected attributes are never inferred.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -164,6 +165,16 @@ _FACT_KEYS: dict[SemanticType, tuple[str, ...]] = {
     SemanticType.DEGREE: ("degree",),
 }
 """Semantic types answered verbatim from verified facts with these keys."""
+
+_CURRENT_ROLE_LABELS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?:what is )?(?:your )?(?:current ?(?:/|or) ?(?:most recent|latest)|most recent|latest)"
+                r" (?:job )?title"), "current_title"),
+    (re.compile(r"(?:what is )?(?:the name of )?(?:your )?(?:current ?(?:/|or) ?(?:most recent|latest)|"
+                r"most recent|latest) (?:company|employer)(?: name)?"), "current_company"),
+)
+"""Labels asking for the current or most recent title or employer (round 15: "Current/Most
+Recent Job Title", "Current/Most Recent Company Name"), read like the current ones."""
+_CURRENT_ROLE_KEYS = {SemanticType.CURRENT_COMPANY: "current_company", SemanticType.CURRENT_TITLE: "current_title"}
 
 _TEMPLATE_TYPES = frozenset(
     {SemanticType.CUSTOM_TEXT, SemanticType.CUSTOM_LONG_TEXT, SemanticType.CUSTOM_SELECT}
@@ -361,6 +372,7 @@ class _FieldResolver:
         *,
         source: AnswerSource = AnswerSource.CANDIDATE_FACT,
         numeric_ranges: bool = False,
+        note: str | None = None,
     ) -> _Outcome:
         result = translate(fld, raw, numeric_ranges=numeric_ranges)
         if isinstance(result, Unmapped):
@@ -373,14 +385,39 @@ class _FieldResolver:
         return _Answer(
             result.value,
             Provenance(source=source, reference_ids=[f.id for f in facts],
-                       note=f"verified facts: {keys}"),
+                       note=note or f"verified facts: {keys}"),
         )
 
     def _lookup(self, fld: ApplicationField, keys: Sequence[str]) -> _Outcome:
         found = self._fact_value(keys)
+        if found is None and fld.semantic_type in _CURRENT_ROLE_KEYS and not self._has_facts(keys):
+            return self._current_role(fld, _CURRENT_ROLE_KEYS[fld.semantic_type])
         if found is None:
             return _Unresolved()
         return self._from_facts(fld, *found)
+
+    def _has_facts(self, keys: Sequence[str]) -> bool:
+        """Whether any verified fact with one of ``keys`` states a value (facts that disagree
+        are the person's to resolve: the profile's current role never chooses between them)."""
+        return any(f.key in keys and _has_value(f.value) for f in self.facts)
+
+    def _current_role(self, fld: ApplicationField, key: str) -> _Outcome:
+        """The company or title of the profile's one current role (``experience`` marked
+        current), citing the verified facts that role links (round 15: the profile states the
+        current role there, not as ``current_company`` / ``current_title`` facts). Unresolved
+        without exactly one current role or a verified fact it links."""
+        current = [role for role in self.candidate.experience if role.current]
+        if len(current) != 1:
+            return _Unresolved()
+        role = current[0]
+        verified = {f.id: f for f in self.facts}
+        cited = [verified[fid] for fid in role.fact_ids if fid in verified]
+        if not cited:
+            return _Unresolved()
+        value = role.company if key == "current_company" else role.title
+        return self._from_facts(fld, value, cited,
+                                note=f"the profile's current role ({role.id}): its "
+                                     + ("company" if key == "current_company" else "title"))
 
     def _years(self, fld: ApplicationField, question: QuestionText) -> _Outcome:
         asked = parse_years_question(question)
@@ -397,9 +434,19 @@ class _FieldResolver:
             return self._years(fld, question)
         template = factual_template(question)
         if template is None:
-            return _Unresolved()
+            role_key = next((key for pattern, key in _CURRENT_ROLE_LABELS
+                             if question.label_is_complete and pattern.fullmatch(question.label)), None)
+            if role_key is None:
+                return _Unresolved()
+            found = self._fact_value([role_key])
+            if found is not None:
+                return self._from_facts(fld, *found)
+            return _Unresolved() if self._has_facts([role_key]) else self._current_role(fld, role_key)
         values: list[str] = []
         facts: list[CandidateFact] = []
+        if len(template.fact_keys) == 1 and template.fact_keys[0] in _CURRENT_ROLE_KEYS.values() \
+                and not self._has_facts(template.fact_keys):
+            return self._current_role(fld, template.fact_keys[0])
         for key in template.fact_keys:
             found = self._fact_value([key])
             if found is None or isinstance(found[0], list):

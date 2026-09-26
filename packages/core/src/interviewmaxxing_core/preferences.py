@@ -97,3 +97,84 @@ def is_work_mode_choice(field: ApplicationField) -> bool:
 def stated_work_arrangement_preference(question: str) -> bool:
     """Whether a saved answer's question is the work-arrangement preference question."""
     return normalize_text(question) == normalize_text(WORK_ARRANGEMENT_PREFERENCE_QUESTION)
+
+
+# --- middle name and time zone (round 15) ------------------------------------------------
+
+MIDDLE_NAME_QUESTION = "What is your middle name?"
+"""The saved question of the simple answers' ``middle_name`` (round 15): the person's middle
+name, or "N/A" when they have none (the importer stores "none" and the like as "N/A")."""
+
+NO_MIDDLE_NAME = "N/A"
+_NONE_WORDS = re.compile(r"^(?:none|no|n/?a|na|no middle name|-+|—)$", re.IGNORECASE)
+
+
+def normalize_middle_name(value: str) -> str:
+    """The person's middle name as stated, or "N/A" for none ("none", "no", "n/a", "-")."""
+    cleaned = " ".join(value.split())
+    return NO_MIDDLE_NAME if _NONE_WORDS.match(cleaned) else cleaned
+
+
+TIME_ZONE_QUESTION = "What is your time zone?"
+"""The saved question of the simple answers' ``time_zone`` (round 15): the person's own time
+zone ("Central"), not the time zones they can work in (``available_time_zones``)."""
+
+US_TIME_ZONES: tuple[str, ...] = ("eastern", "central", "mountain", "pacific", "alaska", "hawaii")
+_ZONE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("eastern", re.compile(r"\beastern\b|\be[sd]?t\b|\bnew[_ ]york\b", re.IGNORECASE)),
+    ("central", re.compile(r"\bcentral\b|\bc[sd]?t\b|\bchicago\b", re.IGNORECASE)),
+    ("mountain", re.compile(r"\bmountain\b|\bm[sd]?t\b|\bdenver\b|\bphoenix\b|\barizona\b", re.IGNORECASE)),
+    ("pacific", re.compile(r"\bpacific\b|\bp[sd]?t\b|\blos[_ ]angeles\b", re.IGNORECASE)),
+    ("alaska", re.compile(r"\balaska\w*\b|\bak[sd]?t\b|\banchorage\b", re.IGNORECASE)),
+    ("hawaii", re.compile(r"\bhawaii\w*\b|\bh[sd]?t\b|\bhonolulu\b", re.IGNORECASE)),
+)
+
+
+def time_zone_of(text: str) -> str | None:
+    """The one US time zone ``text`` names ("Central", "CST", "Central Time (US & Canada)",
+    "America/Chicago" → "central"), else None (none, several, or only a UTC offset)."""
+    zones = [zone for zone, pattern in _ZONE_PATTERNS if pattern.search(text)]
+    return zones[0] if len(zones) == 1 else None
+
+
+_STATE_ZONES: dict[str, str] = {
+    **dict.fromkeys(("CT", "DE", "DC", "GA", "ME", "MD", "MA", "NH", "NJ", "NY", "NC", "OH", "PA",
+                     "RI", "SC", "VT", "VA", "WV", "FL", "IN", "KY", "MI"), "eastern"),
+    **dict.fromkeys(("AL", "AR", "IL", "IA", "LA", "MN", "MS", "MO", "OK", "WI", "TN", "KS", "NE",
+                     "ND", "SD", "TX"), "central"),
+    **dict.fromkeys(("AZ", "CO", "MT", "NM", "UT", "WY", "ID"), "mountain"),
+    **dict.fromkeys(("CA", "WA", "OR", "NV"), "pacific"),
+    "AK": "alaska", "HI": "hawaii",
+}
+"""Each state's zone, the majority one where a state spans two (``_MINORITY_CITIES``)."""
+_MINORITY_CITIES: dict[str, dict[str, str]] = {
+    "FL": dict.fromkeys(("pensacola", "panama city", "fort walton beach", "destin", "navarre",
+                         "crestview", "niceville", "milton"), "central"),
+    "IN": dict.fromkeys(("gary", "hammond", "evansville", "merrillville", "valparaiso",
+                         "michigan city", "crown point", "portage", "east chicago"), "central"),
+    "KY": dict.fromkeys(("bowling green", "owensboro", "paducah", "hopkinsville", "madisonville",
+                         "murray"), "central"),
+    "MI": dict.fromkeys(("iron mountain", "menominee", "ironwood"), "central"),
+    "TN": dict.fromkeys(("knoxville", "chattanooga", "johnson city", "kingsport", "bristol",
+                         "cleveland", "oak ridge", "maryville", "morristown"), "eastern"),
+    "KS": dict.fromkeys(("goodland", "sharon springs", "tribune", "syracuse"), "mountain"),
+    "NE": dict.fromkeys(("scottsbluff", "sidney", "alliance", "ogallala", "chadron"), "mountain"),
+    "ND": dict.fromkeys(("dickinson", "bowman", "beach"), "mountain"),
+    "SD": dict.fromkeys(("rapid city", "spearfish", "sturgis", "belle fourche", "hot springs"), "mountain"),
+    "TX": dict.fromkeys(("el paso", "horizon city", "socorro", "canutillo", "anthony", "fabens"), "mountain"),
+    "ID": dict.fromkeys(("coeur d'alene", "lewiston", "moscow", "sandpoint", "post falls"), "pacific"),
+    "OR": dict.fromkeys(("ontario", "nyssa", "vale"), "mountain"),
+    "NV": dict.fromkeys(("west wendover",), "mountain"),
+    "AK": dict.fromkeys(("adak", "atka"), "hawaii"),
+}
+"""Cities of a state that spans two zones in its minority zone (the larger cities only)."""
+
+
+def address_time_zone(city: str | None, state_code: str | None) -> str | None:
+    """The US time zone of a verified address: the state's zone, or the minority zone for a
+    listed city of a state that spans two ("El Paso, TX" is Mountain, "Austin, TX" Central)."""
+    if not state_code:
+        return None
+    code = state_code.upper()
+    minority = _MINORITY_CITIES.get(code, {}).get(" ".join((city or "").casefold().split()))
+    return minority or _STATE_ZONES.get(code)

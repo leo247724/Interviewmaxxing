@@ -56,6 +56,8 @@
   "consent_sms_messages": null,
   "interview_accommodations": null,
   "metro_area": null,
+  "middle_name": null,
+  "time_zone": null,
   "answer_policies": {
     "claims_experience_asked": null,
     "meets_experience_thresholds": null,

@@ -861,15 +861,19 @@ def test_a_low_scoring_wording_decision_keeps_the_hold(
     assert trace["confidence"] == pytest.approx(confidence)
 
 
-@pytest.mark.parametrize("mapping,label", [(("o1", 0.98), "No, I will not require sponsorship"),
+@pytest.mark.parametrize("mapping,label", [(("o1", 0.98), "Not at this time"),
                                            (("NONE", 0.99), None)])
 def test_an_exact_wording_answer_takes_the_first_path_without_a_wording_request(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
     mapping: tuple[str, float], label: str | None,
 ) -> None:
+    # Round 15: options whose polarity is plain ("No, I will not require sponsorship") take the
+    # person's own answer without a mapping call (``_stated_sponsorship``); the mapping and its
+    # NONE hold remain for options polarity cannot place.
     provider = ChoiceProvider({"wording": ("q0", 0.99), "equivalent_0": mapping})
-    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job,
-                                         sponsorship_field(SPONSORSHIP))
+    field = choice_field(SPONSORSHIP, SemanticType.SPONSORSHIP, "Yes, I will require sponsorship",
+                         "Not at this time")
+    packet, _, resolver = resolve_choice(provider, fictional_candidate, mock_job, field)
     assert not provider.asked("wording") and not stage_traces(resolver, "question_equivalence")
     assert provider.asked("equivalent_0")
     if label is None:
@@ -3459,8 +3463,6 @@ def test_another_visa_still_derives_an_authorization_answer(
 @pytest.mark.parametrize("label,semantic,pick,expected", [
     (AUTHORIZED_US, SemanticType.WORK_AUTHORIZATION, None, "Yes"),
     ("are you authorized to work in the us?", SemanticType.WORK_AUTHORIZATION, None, "Yes"),
-    ("Please let us know: will you need us to sponsor your visa?", SemanticType.SPONSORSHIP,
-     ("o1", 0.98), "No"),  # the pronoun is not the country
     ("Are you authorized to work in America?", SemanticType.WORK_AUTHORIZATION, ("o0", 0.98), "Yes"),
     ("Are you authorized to work in the US or Canada?", SemanticType.WORK_AUTHORIZATION,
      ("UNKNOWN", 0.97), None),
@@ -3481,6 +3483,24 @@ def test_the_table_reads_the_united_states_only_as_written_and_alone(
     [trace] = code_free(resolver, "us_citizen", "status_derivation")
     assert trace["via"] == ("table" if table else "jev")
     assert [shown(a) for a in packet.answers] == ([expected] if expected else [])
+
+
+@pytest.mark.parametrize("location,via", [(None, "table"), ("Remote - US", "table"), ("London, United Kingdom", "jev")])
+def test_the_pronoun_is_not_the_country_but_a_generic_sponsorship_question_is_a_us_one(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, location: str | None, via: str,
+) -> None:
+    # Round 15: "us" is still not the United States (the table reads the question alone as no
+    # U.S. question), but a sponsorship question that names no country, for a job not located
+    # abroad, is a U.S. one (saved jobs are U.S. or U.S.-remote): the table answers it.
+    field = status_field("Please let us know: will you need us to sponsor your visa?", SemanticType.SPONSORSHIP)
+    assert _status_table(field, "us_citizen", _option_keys(field)) is None
+    provider = ChoiceProvider({"status": ("o1", 0.98)})
+    packet, _, resolver = resolve_choice(provider, with_status(fictional_candidate, "us_citizen"),
+                                         mock_job.model_copy(update={"location": location}), field)
+    assert bool(provider.asked("status")) is (via == "jev")
+    [trace] = code_free(resolver, "us_citizen", "status_derivation")
+    assert trace["via"] == via
+    assert [shown(a) for a in packet.answers] == ["No"]
 
 
 @pytest.mark.parametrize("label,options,code,pick,expected", [
@@ -3733,8 +3753,9 @@ def test_the_persons_own_answer_that_does_not_fit_is_never_replaced_by_a_derived
     if case == "work_authorization":
         fields = [status_field(WORK_AUTH, SemanticType.WORK_AUTHORIZATION, *AUTHORIZED)]
         reference, stored = "sa.work_auth_us", "Yes"
-    elif case == "sponsorship":
-        fields = [status_field(SPONSORSHIP, SemanticType.SPONSORSHIP, *SPONSORSHIP_OPTIONS)]
+    elif case == "sponsorship":  # round 15: a plain "No, I will not …" option would take the "No"
+        fields = [status_field(SPONSORSHIP, SemanticType.SPONSORSHIP, "Yes, I will require sponsorship",
+                               "Not at this time")]
         reference, stored = "sa.sponsorship", "No"
     elif case == "statement":  # the fixture's own consent, saved as true
         fields = [status_field("I consent to the processing of my data for recruiting purposes",
