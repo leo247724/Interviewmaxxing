@@ -71,10 +71,16 @@ The run opens the application URL like any run (same browser profile lock, store
 pinned resume and selected-job check), then for each form step:
 
 1. It looks up the step's approved packet. A step that was not approved stops the run.
-2. **Before filling**, it compares the form with the approved step: every question must be
-   there with the same fingerprint (label, help text, placeholder, control type and
-   options), the same required flag and the same options, no question may be new (required
-   or optional), and the final step must still be the approved final step.
+2. **Before filling**, it compares the form with the approved step: every required approved
+   question must be there with the same fingerprint (label, help text, placeholder, control
+   type and options), no required question may be new or newly unanswered, and the final
+   step must still be the approved final step. Optional questions, and voluntary
+   self-identification or how-did-you-hear questions (pronouns, gender, race, ethnicity,
+   veteran, disability, "How did you hear…", which sites such as Ashby render
+   conditionally), do not withhold it: one that is gone, or whose options or wording
+   changed, is left unanswered, and a new optional question is left unanswered. Each such
+   omission is named in the outcome ("Left unanswered: …") and on the receipt's signals
+   ("submitted without …").
 3. It fills the approved packet unchanged: same packet id, values and provenance. Only its
    binding to this inspection is updated: the step URL (a multi-step form puts a new draft
    id in it) and each answer's semantic type, which is the runtime's reading of an
@@ -104,7 +110,9 @@ pinned resume and selected-job check), then for each form step:
 | --- | --- | --- |
 | Confirmation tied to this job | `SUBMITTED`, receipt saved | used |
 | Submit dispatched, no tied confirmation, or interrupted during the submit | `SUBMISSION_UNKNOWN` (never retried; `reconcile`) | — |
-| A step that was not approved; an approved page the site skipped; a new, missing or changed question; changed options or required flag; the final step moved; a value that does not read back; a lookup that no longer commits; an approved option now disabled | `NEEDS_INPUT`: "The form no longer matches the approved application: …" | withdrawn |
+| The site refused the submit it received, e.g. Ashby's "We couldn't submit your application. Your application submission was flagged as possible spam." | `FAILED_RETRYABLE`: "Rejected by the site: …" (the attempt is `NOT_SUBMITTED` with the banner as its signal; nothing was received; ledger outcome `rejected`) | kept; the next run submits it again, e.g. from a real browser |
+| This browser cannot attach files (OpenCLI) and the approved packet attaches one | `NEEDS_INPUT` before any fill or submit, naming the file ("Attach 'resume.pdf' …; never sent without it"); with `--act` the run waits for you to attach it, then verifies the attached bytes | kept |
+| A step that was not approved; an approved page the site skipped; a new required question; a missing or changed required question; a question that turned required without an approved answer; the final step moved; a value that does not read back; a lookup that no longer commits; an approved option now disabled | `NEEDS_INPUT`: "The form no longer matches the approved application: …" | withdrawn |
 | The site opened a draft it kept at a later page and the browser could not go back to the earlier approved pages | `NEEDS_INPUT` before anything is filled: "The site resumed a draft it kept at step N, so the approved answers of step M could not be checked or filled. … submit this application in the browser yourself …" (stop reason `site resumed a kept draft`; `status` says "kept draft" and suggests no `resume`) | withdrawn; submit it in the browser yourself (preparing it again reopens the same draft) |
 | The site showed the form again with validation errors after the submit | `NEEDS_INPUT`: "… the site did not accept the approved answers (…)" (a `validation.rejected` event makes the next preparation ask again) | withdrawn |
 | Sign-in, CAPTCHA, or a custom control you set yourself while preparing | `NEEDS_INPUT` with the action (or, with `--act` in a visible browser, the run waits for you and continues) | kept |
@@ -220,8 +228,9 @@ application, at most `--slots` at a time, each slot with its own browser profile
  "message": "…", "exit_code": 0, "started_at": "…", "finished_at": "…", "duration_s": 12.3}
 ```
 
-`outcome` is `submitted` (with the receipt's id, its attempt id), `uncertain`, `blocked`,
-`needs_input` or `error`. It is read back from the store after the process ends, so a
+`outcome` is `submitted` (with the receipt's id, its attempt id), `rejected` (the site
+refused it and received nothing; the message carries the site's reason), `uncertain`,
+`blocked`, `needs_input` or `error`. It is read back from the store after the process ends, so a
 submission stopped by the timeout while submitting is `uncertain`, never `error`. Prepare
 lines and submission lines share the file without being mistaken for each other. Running the
 same ledger id again never launches an application it records as submitted or uncertain.
@@ -239,6 +248,36 @@ alone). `prepare-batch --retry` never re-prepares an application that still has 
 approval (skipped as `approved (left to submit-approved)`), and its ledger reader does not
 count submission lines as unreadable. `batch-report` adds a Submissions table (counts by outcome, receipts, uncertain
 applications) and no longer says "nothing was submitted" once one was.
+
+## Rejections and a real-browser retry
+
+A page that refuses the submit it received (Ashby's red "We couldn't submit your
+application … flagged as possible spam" banner and its "Try these steps" list) is a
+definite non-submission: the attempt is recorded as `NOT_SUBMITTED`, the application goes
+back to `FAILED_RETRYABLE`, and the approval stands. `uncertain` is reserved for pages that
+show neither a confirmation nor a refusal. An application that became `SUBMISSION_UNKNOWN`
+before this rule is settled by `interviewmaxxing reconcile APP` when the page text its run
+saved right after the submit (unchanged, by its recorded digest) shows such a refusal.
+
+Recommended sequence (the spam flag answers headless browsers; a real browser is the
+retry):
+
+```bash
+interviewmaxxing prepare-batch --inventory FILE --workers 3 --batch-id B      # headless
+interviewmaxxing approve APP ...                                               # after review
+IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit-approved --batch B --slots 2 --yes
+# rejected ones, from your own Chrome through OpenCLI (one at a time):
+IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit-approved --batch B --yes \
+  --browser opencli --opencli-profile PROFILE --slots 1
+```
+
+The next run launches every `rejected` (and `blocked`, `needs_input`, `error`) application
+that is still approved; submitted and uncertain ones never run again. OpenCLI's Browser
+Bridge cannot attach files, so an approved packet that attaches a résumé stops before any
+submit as `needs_input`, naming the file; submit those one at a time in the visible window
+and attach the file when asked: `IMX_ALLOW_SUBMISSION=1 interviewmaxxing submit APP --yes
+--browser opencli --opencli-profile PROFILE --act`. The run verifies the attached file's
+bytes against the approved one and never sends the application without it.
 
 ## Limitations
 

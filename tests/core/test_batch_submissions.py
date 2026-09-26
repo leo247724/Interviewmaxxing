@@ -64,7 +64,7 @@ FAKE_SUBMIT = textwrap.dedent('''\
     import json, os, sys, time
     from pathlib import Path
 
-    from interviewmaxxing_core import (ApplicationState as S, ApplicationStore,
+    from interviewmaxxing_core import (ApplicationState as S, ApplicationStore, NotSubmittedNext,
                                        SubmissionObservation, SubmissionOutcome)
 
     assert sys.argv[1] == "submit" and "--yes" in sys.argv and "--json" in sys.argv
@@ -89,6 +89,21 @@ FAKE_SUBMIT = textwrap.dedent('''\
         return claim, store.begin_submission(claim, packet_id=store.approved_packet(app_id))
 
     time.sleep(0.2)
+    if kind == "rejected_unless_opencli":
+        if "--browser" in sys.argv and sys.argv[sys.argv.index("--browser") + 1] == "opencli":
+            kind = "submitted"
+        else:  # what the runner records when the site shows its refusal banner
+            claim, attempt = begin()
+            refusal = ("We couldn't submit your application. Your application submission was "
+                       "flagged as possible spam.")
+            store.record_submission_outcome(claim, attempt.id, SubmissionObservation(
+                outcome=SubmissionOutcome.NOT_SUBMITTED,
+                signals=["the site refused the submission: " + repr(refusal)],
+                next_state=NotSubmittedNext.FAILED_RETRYABLE,
+                detail="the site refused the submission: " + refusal))
+            store.release(claim)
+            outcome("FAILED_RETRYABLE", "Rejected by the site: " + repr(refusal) + ". Nothing was "
+                    "received; the approval stands.", 3)
     if kind == "submitted":
         claim, attempt = begin()
         store.record_submission_outcome(claim, attempt.id, SubmissionObservation(
@@ -416,7 +431,8 @@ def test_submit_approved_runs_the_batch_through_submit(paths, fake, tmp_path, mo
 
 
 @pytest.mark.parametrize(("kind", "code"), [("uncertain", EXIT_UNCERTAIN),
-                                            ("changed", EXIT_INCOMPLETE)])
+                                            ("changed", EXIT_INCOMPLETE),
+                                            ("rejected_unless_opencli", EXIT_INCOMPLETE)])
 def test_submit_approved_exit_status(paths, fake, tmp_path, monkeypatch, capsys, kind, code):
     ids = _approved_batch(paths, ["one"])
     _plan(tmp_path, {ids["one"]: kind})
@@ -546,3 +562,35 @@ def test_a_kept_draft_is_listed_with_its_manual_remedy(paths, fake, tmp_path):
     assert report.submissions is not None and report.submissions.kept_drafts == [ids["kept"]]
     assert (f"the site resumed a draft it kept (submit each in the browser yourself; preparing it "
             f"again reopens the same draft): {ids['kept']}") in render_report_markdown(report)
+
+
+def test_a_rejected_submission_is_submitted_again_by_the_next_run_from_another_browser(
+    paths, fake, tmp_path
+):
+    ids = _approved_batch(paths, ["spam"])
+    _plan(tmp_path, {ids["spam"]: "rejected_unless_opencli"})
+    ledger = paths.home / "batches" / "b1" / "ledger.jsonl"
+
+    first = asyncio.run(run_submissions(_options(paths, fake), approved_targets(
+        paths, "default", source_batch="b1"), source_batch="b1"))
+
+    [entry] = read_submissions(ledger)
+    assert (entry.outcome, entry.state) == ("rejected", S.FAILED_RETRYABLE)
+    assert "flagged as possible spam" in entry.message
+    assert first.totals == {"rejected": 1}
+    assert "rejected (the site refused them and received nothing" in render_submissions_markdown(first)
+    targets = approved_targets(paths, "default", source_batch="b1")  # still approved
+    assert [t.application_id for t in targets] == [ids["spam"]]
+
+    second = asyncio.run(run_submissions(_options(paths, fake, browser="opencli",
+                                                  opencli_profile="fictional-profile"),
+                                         targets, source_batch="b1"))
+
+    assert second.totals == {"submitted": 1} and second.launched == 1
+    first_argv, second_argv = (line["argv"] for line in _log(tmp_path))
+    assert "--browser" not in first_argv
+    assert second_argv[-4:] == ["--browser", "opencli", "--opencli-profile", "fictional-profile"]
+    assert [e.attempt for e in read_submissions(ledger)] == [1, 2]
+    rejected = ApplyOutcome(application_id="app_x", state=S.FAILED_RETRYABLE,
+                            message="Rejected by the site: 'flagged as possible spam'.")
+    assert classify_submission(rejected, 3) == "rejected"

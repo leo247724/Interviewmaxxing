@@ -142,6 +142,35 @@ class SubmissionRefused(RuntimeError):
     """The runtime refused an action that could submit (or resubmit) an application."""
 
 
+REFUSAL_SIGNAL = "the site refused the submission"
+"""How an observation names an explicit refusal of a dispatched submit (``site_refusal``)."""
+_SITE_REFUSAL = re.compile(
+    r"\b(?:we |)(?:couldn['\u2019]t|could not|were unable to|was unable to|cannot|can['\u2019]t) "
+    r"submit your application\b|"
+    r"\b(?:application |)submission was flagged as (?:possible |potential |likely |)spam\b|"
+    r"\bflagged as (?:possible |potential |likely |)spam\b",
+    re.IGNORECASE,
+)
+
+
+def site_refusal(text: str) -> str | None:
+    """The site's own statement that it refused an application it was sent, e.g. Ashby's
+    "We couldn't submit your application. Your application submission was flagged as
+    possible spam.": the sentences around the first match (at most 240 characters), or
+    None. Such a page is a definite non-submission, never an uncertain outcome."""
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+    hits = [i for i, sentence in enumerate(sentences) if _SITE_REFUSAL.search(sentence)]
+    if not hits:
+        return None
+    first = last = hits[0]
+    while last + 1 in hits:  # the refusal and its reason, e.g. "... flagged as possible spam."
+        last += 1
+    match = _SITE_REFUSAL.search(sentences[first])
+    assert match is not None
+    snippet = " ".join([sentences[first][match.start():], *sentences[first + 1:last + 1]])
+    return snippet if len(snippet) <= 240 else snippet[:239] + "…"
+
+
 class AmbiguousAction(RuntimeError):
     """The page offers no unambiguous control for the requested action."""
 
@@ -3087,6 +3116,19 @@ class GenericApplicationBrowser:
                 return [f"acceptance text {statement!r}", *ties], (refs[0] if refs else None)
         return [], None
 
+    @staticmethod
+    def _refused(refusal: str, url: str, evidence: list[EvidenceRef]) -> SubmissionObservation:
+        """The site said it did not take the application (``site_refusal``): definitely not
+        received, so it may be sent again, never an uncertain outcome."""
+        return SubmissionObservation(
+            outcome=SubmissionOutcome.NOT_SUBMITTED,
+            signals=[f"{REFUSAL_SIGNAL}: {refusal!r}"],
+            observed_url=url,
+            evidence=evidence,
+            next_state=NotSubmittedNext.FAILED_RETRYABLE,
+            detail=f"{REFUSAL_SIGNAL}: {refusal}",
+        )
+
     def _judge(self, pending: _PendingSubmit, model: PageModel, same_document: bool) -> SubmissionObservation:
         snapshot = model.snapshot
         url = snapshot.url
@@ -3114,6 +3156,9 @@ class GenericApplicationBrowser:
                     next_state=NotSubmittedNext.NEEDS_INPUT,
                     detail="rejected by the site's field validation",
                 )
+            refusal = site_refusal(" ".join([snapshot.body_text, messages]))
+            if refusal is not None and not uncertain and not server_error:
+                return self._refused(refusal, url, evidence)
             observed = ["observed: the form is shown again"]
             if status is not None:
                 observed.append(f"observed: HTTP {status}")
@@ -3141,6 +3186,10 @@ class GenericApplicationBrowser:
                 evidence=evidence,
                 detail="site confirmation tied to this application",
             )
+        refusal = site_refusal(" ".join([snapshot.body_text, *(r.text for r in snapshot.regions),
+                                         *(h.text for h in snapshot.headings), snapshot.title or ""]))
+        if refusal is not None and not signals:
+            return self._refused(refusal, url, evidence)
         heading = next((h.text for h in snapshot.headings), snapshot.title or "no heading")
         status = self.driver.last_status
         observed = [f"observed: page kind {model.inspection.kind.value}", f"observed: heading {heading!r}"]
