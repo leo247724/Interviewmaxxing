@@ -389,8 +389,8 @@ def test_uncertain_consistency_uses_full_revision_review_and_invalidates_on_chan
     candidate = candidate_with(fictional_candidate, [first, second])
     writer = ReviewingWriter([{"text": "I have paid media experience.", "fact_ids": [first.id]}])
     ctx = context(candidate, mock_job)
-    packet, resolver, _ = resolve(ctx, Retriever([first]), writer, DecisionsProvider(consistency=0.94))
-    assert packet.is_complete and packet.answers[0].confidence == 0.94
+    packet, resolver, _ = resolve(ctx, Retriever([first]), writer, DecisionsProvider(consistency=0.85))
+    assert packet.is_complete and packet.answers[0].confidence == 0.85
     assert writer.reviews[0]["purpose"] == "evidence_consistency"
     assert writer.reviews[0]["job"] == {}
     assert {fact["id"] for fact in writer.reviews[0]["facts"]} == {first.id, second.id}
@@ -468,7 +468,10 @@ def test_middle_probability_interval_escalates_instead_of_decisive_rejection(
     packet, _, _ = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
         Retriever([first]), writer, DecisionsProvider(consistency=score, support=score, complete=score))
     assert packet.is_complete and packet.answers[0].confidence == score
-    assert [review["purpose"] for review in writer.reviews] == ["evidence_consistency", "draft_grounding"]
+    # Round 7 (addendum 2): a consistency verdict at or above 0.90 needs no evidence review;
+    # an uncertain grounding score still gets the draft's review.
+    assert [review["purpose"] for review in writer.reviews] == (
+        ["draft_grounding"] if score >= 0.90 else ["evidence_consistency", "draft_grounding"])
 
 
 @pytest.mark.parametrize("first_verdict", ["UNSUPPORTED", "INCOMPLETE"])

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ from typing import Any, Literal
 
 from interviewmaxxing_browser.ai import CallBudget, build_ai_runtime
 from interviewmaxxing_browser.ai.knowledge_runtime import build_knowledge_store
+from interviewmaxxing_browser.ai.providers import REVIEW_MODELS, WRITER_MODEL
 from interviewmaxxing_candidate import LocalCandidateStore
 from interviewmaxxing_candidate.files import read_json, write_json_private
 from interviewmaxxing_core import (
@@ -79,15 +81,20 @@ def job_from_listing(listing: JobListing) -> JobRecord:
 
 async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question: str,
                         purpose: Literal["answer", "cover_letter"], env_file: Path,
-                        connection_file: Path, max_usd: float = 5.0) -> dict[str, Any]:
+                        connection_file: Path, max_usd: float = 5.0,
+                        review_model: str | None = None) -> dict[str, Any]:
     """A synthetic, local question for drafting, never a browser-ready inspection. The fixed
-    budget covers a cover letter's whole round-6 flow: its rubric review and corrective
-    rewrites, the story passages' review and up to three reviewed no-slop rewrites (limits on
-    reservations, which are upper bounds; the receipt records the actual cost)."""
+    budget covers a cover letter's whole flow: the evidence review, the draft and its one
+    corrective rewrite, the no-slop rewrites and the final review of each text that could ship
+    (limits on reservations, which are upper bounds; the receipt records the actual cost, by
+    purpose, under ``cost``). ``review_model`` is the model of the reviews and the no-slop
+    rewrite (round 7, addendum 2 item 5); the draft is always Opus."""
     budget = CallBudget(max_calls=80, max_usd=max_usd)
     router, resolver = build_ai_runtime(env_file=env_file,
-        writer_model="anthropic/claude-opus-5.5", budget=budget,
+        writer_model=WRITER_MODEL, budget=budget,
         rag_connection_file=connection_file)
+    if review_model is not None and resolver.writer is not None:
+        resolver.writer = dataclasses.replace(resolver.writer, review_model=review_model)
     now = utc_now()
     form = ApplicationForm(url=job.application_url, fields=[ApplicationField(
         id="local-draft", label=question, control_type=ControlType.TEXTAREA,
@@ -116,6 +123,9 @@ async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question
         "problems": problems,
         "routing": report.model_dump(mode="json") if report else None,
         "provider": budget.metadata(),
+        "cost": resolver.provider_usage() | {
+            "review_model": getattr(resolver.writer, "reviewer", None),
+            "letter_reviews": sum(1 for receipt in budget.receipts if receipt.purpose.endswith("_letter_review"))},
         "retrieval": getattr(resolver, "retrieval_receipts", []),
         "narratives": getattr(resolver, "narrative_traces", []),
     }
@@ -137,6 +147,10 @@ def main() -> int:
     parser.add_argument("--job-id", help="draft: take the target job record from the application store")
     parser.add_argument("--question")
     parser.add_argument("--cover-letter", action="store_true")
+    parser.add_argument("--review-model", choices=REVIEW_MODELS,
+                        help="draft: the model of the reviews and the no-slop rewrite (default: the writer's, Opus)")
+    parser.add_argument("--max-usd", type=float, default=5.0,
+                        help="draft: the call budget's reservation limit in USD (reservations are upper bounds)")
     parser.add_argument("--output", type=Path, help="New private draft receipt JSON; text saved beside it")
     args = parser.parse_args()
     try:
@@ -221,7 +235,8 @@ def main() -> int:
                     raise ValueError("--question or --cover-letter is required")
                 result = asyncio.run(prepare_draft(candidate=candidate, job=job, question=question,
                     purpose="cover_letter" if args.cover_letter else "answer",
-                    env_file=args.env_file, connection_file=args.connection_file))
+                    env_file=args.env_file, connection_file=args.connection_file,
+                    max_usd=args.max_usd, review_model=args.review_model))
                 result["job_source"] = "application_store" if from_store else "listing"
                 args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 write_json_private(args.output, result)
@@ -230,7 +245,8 @@ def main() -> int:
                     with os.fdopen(fd, "w") as output:
                         output.write(result["text"] + "\n")
                 print(json.dumps({"status": result["status"], "receipt": str(args.output),
-                                  "submitted": False, "elapsed_seconds": result["elapsed_seconds"]}))
+                                  "submitted": False, "elapsed_seconds": result["elapsed_seconds"],
+                                  "calls": result["cost"]["calls"], "usd": result["cost"]["known_cost_usd"]}))
                 return 0 if result["status"] == "READY" and not result["problems"] else 2
         print(json.dumps(result, default=str))
         return 0

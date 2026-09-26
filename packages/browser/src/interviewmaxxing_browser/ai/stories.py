@@ -222,7 +222,7 @@ def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
                       model: str, min_probability: float, cache: dict[str, float],
                       lock: threading.RLock, max_cache_entries: int,
                       max_facts: int, question: str | None = None,
-                      review: StoryReview | None = None,
+                      review: StoryReview | None = None, review_below: float | None = None,
                       ) -> tuple[float, list[dict[str, Any]]]:
     """Drop a story chunk that contradicts a verified structured fact; the resume is
     canonical. Hold only when the question itself asks about the contradicted point.
@@ -235,7 +235,9 @@ def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
     1 - ``min_probability`` (a real contradiction); the uncertain band between goes to one
     independent ``review`` for all such chunks, which keeps the ones it does not find
     contradicted (round 6: uncertainty is not contradiction; without a reviewer, or when
-    the review fails, the uncertain chunks are dropped as before). Verdicts are cached
+    the review fails, the uncertain chunks are dropped as before). With ``review_below``, a
+    chunk scoring at least that is kept without the review (round 7, addendum 2: the review is
+    for the uncertain band only, 0.05 < p < 0.90). Verdicts are cached
     per runtime under the chunk and its exact comparison set. Returns the minimum
     probability of the kept chunks and the kept chunks; the trace records the dropped
     ids, their probabilities and the review outcome, never text."""
@@ -327,7 +329,8 @@ def story_consistency(*, context: PacketContext, chunks: list[dict[str, Any]],
                     cache[verdict_keys[key]] = scores[key]
                     cache[verdict_keys[key] + ":asks"] = asks[key]
     contradicted = [key for key in keyed if scores[key] <= 1 - min_probability]
-    uncertain = [key for key in keyed if 1 - min_probability < scores[key] < min_probability]
+    ceiling = min_probability if review_below is None else review_below
+    uncertain = [key for key in keyed if 1 - min_probability < scores[key] < ceiling]
     review_outcome: dict[str, Any] | None = None
     if uncertain:
         try:
