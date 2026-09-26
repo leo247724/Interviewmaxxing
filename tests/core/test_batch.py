@@ -233,9 +233,10 @@ def test_environment_strips_parent_imx_and_pins_paths(fake, paths, monkeypatch):
     assert env["IMX_CANDIDATE_ID"] == "default"
     assert env["IMX_BROWSER_DIR"] == str(paths.home / "browser-workers" / "w2")
     assert env["KEEP_ME"] == "1"
+    assert env["IMX_JOBS_DB"] == str(paths.home / "jobs" / "jobs.sqlite3")  # --job-listing-id
     assert {k for k in env if k.startswith("IMX_")} == {
         "IMX_HOME", "IMX_STATE_DB", "IMX_PROFILE_DIR", "IMX_ARTIFACTS_DIR", "IMX_CANDIDATE_ID",
-        "IMX_BROWSER_DIR"}
+        "IMX_BROWSER_DIR", "IMX_JOBS_DB"}
 
 
 # --- inventory ----------------------------------------------------------------------------------

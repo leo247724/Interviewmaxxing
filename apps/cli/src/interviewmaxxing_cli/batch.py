@@ -32,8 +32,8 @@ Guarantees:
   before its ledger line is written, a row with a ``pipeline_id`` has its application
   linked to that Saved card (``PipelineItem.application_id``, the link the service's
   handoff writes), and a job that no longer accepts applications moves its card from
-  Saved to Closed with a dated history note. Cards are never created, another
-  application's link is never overwritten, and no card is ever moved to Applied.
+  Saved to Closed with a dated history note. Cards are never created and another
+  application's link is never overwritten; preparing never moves a card to Applied.
 
 ``build_report`` reads the ledgers back (``interviewmaxxing batch-report``): outcomes,
 holds grouped into categories and by question wording (with the ``answer`` line that
@@ -50,9 +50,17 @@ families already prepared or held (``prepared_or_held``).
 Submitting approved applications (``run_submissions``, ``interviewmaxxing
 submit-approved``) is a separate entry point with its own gates: it runs only
 applications the user approved, one ``interviewmaxxing submit APP --yes --json``
-subprocess each, on the same slot harness (per-slot ``IMX_BROWSER_DIR``, bounded
-parallelism, timeouts, process-group kills). It passes ``IMX_ALLOW_SUBMISSION=1`` to
-those subprocesses only because its own caller was already gated by it and ``--yes``.
+subprocess each, on the same slot harness (bounded parallelism, timeouts,
+process-group kills). Its slots have their own browser profiles
+(``$IMX_HOME/browser-workers/s<slot>``), never a prepare worker's ``w<slot>``, so a
+submission run never waits on the profile lock of a prepare batch running beside it. It
+passes ``IMX_ALLOW_SUBMISSION=1`` to those subprocesses only because its own caller was
+already gated by it and ``--yes``. A submission the site confirmed (``submitted`` with a
+receipt) moves the application's pipeline card from Saved to Applied with a dated note
+naming the application and the receipt (``sync_submission_card``); no other outcome
+moves a card, and a card already in Applied or Closed is left alone. A submission that
+did not run (``blocked``: the profile was busy, another run held the claim) keeps its
+approval, so running ``submit-approved`` again submits it.
 Each finished submission appends a ``kind: "submission"`` line (``SubmissionEntry``)
 to ``<batch dir>/ledger.jsonl``; prepare lines and submission lines never parse as
 each other, so both kinds can share a batch's ledger. The outcome of a submission is
@@ -173,6 +181,14 @@ _LAUNCH_STATES: frozenset[ApplicationState] = frozenset(
 stopped mid-fill, e.g. by a timeout, is left in PACKET_READY or FILLING)."""
 SAVED_LANE = "saved"
 CLOSED_LANE = "closed"
+APPLIED_LANE = "applied"
+SUBMIT_SLOT_PREFIX = "s"
+"""Submission slots use ``browser-workers/s<slot>``; prepare workers use ``w<slot>``, so a
+``submit-approved`` never shares a browser profile (and its lock) with a running
+``prepare-batch``."""
+CARDS_BY_BATCH_ENV = "IMX_SUBMIT_CARDS_BY_BATCH"
+"""Set to ``1`` in each ``submit`` subprocess of ``submit-approved``: the batch moves the
+confirmed submission's card itself (and records it in its ledger), so ``submit`` does not."""
 LINK_ATTEMPTS = 3
 """Reads and revision-checked writes of one card before a concurrent edit wins."""
 NOTE_REASON_LIMIT = 200
@@ -628,6 +644,7 @@ class BatchOptions(Contract):
         env["IMX_STATE_DB"] = str(self.paths.state_db)
         env["IMX_ARTIFACTS_DIR"] = str(self.paths.artifacts_dir)
         env["IMX_BROWSER_DIR"] = str(self.worker_browser_dir(slot))
+        env[JOBS_DB_ENV] = str(default_jobs_db(self.paths))  # --job-listing-id reads it
         return env
 
 
@@ -991,10 +1008,16 @@ def default_jobs_db(paths: LocalPaths) -> Path:
 
 
 def listing_argv(row: BatchRow) -> list[str]:
-    """The saved listing's details for the run: ``--job-location``, ``--job-title`` and
+    """The saved listing's details for the run: ``--job-listing-id`` for a row keyed by a
+    saved listing (not by its URL), then ``--job-location``, ``--job-title`` and
     ``--job-company`` for the non-blank ones. The runner writes the location on the job
-    (``ApplicationStore.record_listing``), and the title and company where it has none."""
+    (``ApplicationStore.record_listing``), and the title and company where it has none;
+    ``apply``/``resume`` read the listing's full description from the jobs store
+    (``$IMX_JOBS_DB``, which each worker is given) and the runner indexes it as the job's
+    evidence for the writer."""
     argv: list[str] = []
+    if row.listing_id.strip() and not row.listing_id.startswith("url:"):
+        argv += ["--job-listing-id", row.listing_id.strip()]
     for flag, value in (("--job-location", row.location), ("--job-title", row.title),
                         ("--job-company", row.company)):
         if value.strip():
@@ -1007,6 +1030,11 @@ class SavedListing:
     location: str = ""
     title: str = ""
     company: str = ""
+    description: str = ""
+    """The listing's description when it is FULL (``description_completeness``), else
+    empty: only a full description is job evidence."""
+    description_url: str = ""
+    """Where the description was observed: the listing's source URL, else its posting URL."""
 
 
 class ListingReader:
@@ -1052,8 +1080,12 @@ class ListingReader:
             return None
         if not isinstance(data, dict):
             return None
+        full = data.get("description_completeness") == "FULL"
         return SavedListing(location=_text(data.get("location")), title=_text(data.get("title")),
-                            company=_text(data.get("company")))
+                            company=_text(data.get("company")),
+                            description=_text(data.get("description")) if full else "",
+                            description_url=(_text(data.get("source_url"))
+                                             or _text(data.get("posting_url"))))
 
     def close(self) -> None:
         if self._conn is not None:
@@ -1745,6 +1777,12 @@ class SubmissionEntry(Contract):
     started_at: datetime
     finished_at: datetime
     duration_s: float = Field(ge=0.0)
+    applied_synced: bool | None = None
+    """For a confirmed submission (``submitted`` with a receipt): True when the card linked
+    to the application was moved from Saved to Applied, False (with
+    ``applied_sync_reason``) when it could not be. None otherwise: not confirmed, no card
+    links the application, or the card is already in Applied or Closed."""
+    applied_sync_reason: str | None = None
 
 
 def read_submission_lines(path: Path, *, count_unparsed: bool = True
@@ -1822,6 +1860,13 @@ class SubmitBatchOptions(BatchOptions):
             raise ValueError("--browser opencli drives one owned Chrome session; use --slots 1")
         super().check()
 
+    def worker_browser_dir(self, slot: int) -> Path:
+        """``$IMX_HOME/browser-workers/s<slot>``: a submission slot never shares a browser
+        profile, or its one-run lock, with a prepare worker (``w<slot>``), so
+        ``submit-approved`` can run beside a ``prepare-batch``. A sign-in kept in a
+        prepare worker's profile is not in a submission slot's."""
+        return self.paths.home / WORKERS_DIR / f"{SUBMIT_SLOT_PREFIX}{slot}"
+
     def submit_argv(self, application_id: str) -> list[str]:
         return [*(self.command or default_command()), "submit", application_id, "--yes",
                 "--json", *self.dynamic_argv()]
@@ -1829,6 +1874,7 @@ class SubmitBatchOptions(BatchOptions):
     def submit_environment(self, slot: int) -> dict[str, str]:
         env = self.environment(slot)
         env[ALLOW_SUBMISSION_ENV] = "1"
+        env[CARDS_BY_BATCH_ENV] = "1"
         return env
 
 
@@ -1912,6 +1958,82 @@ def _stored_outcome(paths: LocalPaths, entry: SubmissionEntry) -> SubmissionEntr
     return entry.model_copy(update=update)
 
 
+def _submitted_note(application_id: str, receipt_id: str, reference: str | None,
+                    submitted_at: datetime, by: str) -> str:
+    """The card history note of a confirmed submission."""
+    shown = f", confirmation {_truncate(reference, 80)}" if reference else ""
+    return (f"Submitted on {submitted_at.astimezone(UTC):%Y-%m-%d} (UTC) by {by}; the site "
+            f"confirmed it (application {application_id}, receipt {receipt_id}{shown})")
+
+
+def move_submitted_card(paths: LocalPaths, candidate_id: str, application_id: str, *,
+                        receipt_id: str, reference: str | None, submitted_at: datetime,
+                        by: str) -> tuple[bool | None, str | None]:
+    """Move every pipeline card linked to a confirmed submission's application from Saved
+    to Applied, through the revision-checked ``move_item`` with a dated note naming the
+    application and the receipt; only the lane changes. Returns ``(applied_synced,
+    applied_sync_reason)``: True when a card moved, False with the reason when a card could
+    not be (in a lane other than Saved, Applied and Closed; no Applied lane; it kept
+    changing; an error), None when there is nothing to move (no pipeline database, no card
+    links the application, or its card is already in Applied or Closed). Never creates a
+    card or the pipeline database, and never raises."""
+    try:
+        db = _pipeline_db(paths)
+    except _Refused:
+        return None, None
+    try:
+        from interviewmaxxing_pipeline import PipelineStore, RevisionConflict
+
+        note = _submitted_note(application_id, receipt_id, reference, submitted_at, by)
+        moved, problem = False, None
+        with PipelineStore.open(db) as store:
+            lanes = store.lanes(candidate_id)
+            applied, closed = _lane_id(lanes, APPLIED_LANE), _lane_id(lanes, CLOSED_LANE)
+            saved = _lane_id(lanes, SAVED_LANE)
+            linked = [c.id for c in store.list_items(candidate_id)
+                      if c.application_id == application_id]
+            for card_id in linked:
+                for _ in range(LINK_ATTEMPTS):
+                    card = store.get_item(candidate_id, card_id)
+                    if card.application_id != application_id or card.lane in (applied, closed):
+                        break  # re-linked meanwhile, or already where it belongs: left alone
+                    if applied is None:
+                        problem = problem or "board has no Applied lane"
+                        break
+                    if card.lane != saved:
+                        problem = problem or f"card not in Saved (in {card.lane})"
+                        break
+                    try:
+                        store.move_item(candidate_id, card.id, applied,
+                                        expected_revision=card.revision, note=note)
+                    except RevisionConflict:
+                        continue
+                    moved = True
+                    break
+                else:
+                    problem = problem or "card kept changing"
+    except Exception as exc:  # the ledger line must still be written
+        return False, f"move error: {type(exc).__name__}"
+    if problem is not None:
+        return False, problem
+    return (True, None) if moved else (None, None)
+
+
+def sync_submission_card(paths: LocalPaths, candidate_id: str,
+                         entry: SubmissionEntry) -> SubmissionEntry:
+    """The entry with ``applied_synced``/``applied_sync_reason`` set once its application's
+    card is moved to Applied (``move_submitted_card``). Only a confirmed submission
+    (``submitted`` with a receipt) moves a card; any other outcome leaves the entry as it
+    is."""
+    if entry.outcome != "submitted" or not entry.receipt_id:
+        return entry
+    synced, reason = move_submitted_card(
+        paths, candidate_id, entry.application_id, receipt_id=entry.receipt_id,
+        reference=entry.confirmation_reference, submitted_at=entry.finished_at,
+        by=f"submit-approved {entry.batch_id}")
+    return entry.model_copy(update={"applied_synced": synced, "applied_sync_reason": reason})
+
+
 async def _submit_one(options: SubmitBatchOptions, target: SubmissionTarget, *, attempt: int,
                       slot: int, source_batch: str | None) -> SubmissionEntry:
     started_at = _now()
@@ -1990,6 +2112,10 @@ class SubmissionSummary(Contract):
     ledger_lines_ignored: int = Field(default=0, ge=0)
     """Unreadable lines of this ledger (``read_submission_lines``); their applications
     count as not submitted by this ledger."""
+    cards_applied: int = Field(default=0, ge=0)
+    """Confirmed submissions whose card was moved from Saved to Applied."""
+    card_problems: dict[str, int] = Field(default_factory=dict)
+    """Why confirmed submissions' cards could not be moved to Applied, counted."""
     kept_drafts: list[str] = Field(default_factory=list)
     """The ``needs_input`` applications whose site resumed a draft it kept at a later page
     (``runner.KEPT_DRAFT_MESSAGE``): the approval is withdrawn, and preparing them again
@@ -2024,6 +2150,10 @@ def summarize_submissions(batch_id: str, entries: Sequence[SubmissionEntry], *,
                                        company=e.company, title=e.title)
                   for e in latest.values() if e.outcome == "submitted"],
         ledger_path=str(ledger_path), ledger_lines_ignored=ledger_lines_ignored,
+        cards_applied=sum(1 for e in latest.values() if e.applied_synced is True),
+        card_problems=dict(Counter(e.applied_sync_reason for e in latest.values()
+                                   if e.applied_synced is False and e.applied_sync_reason)
+                           .most_common()),
         kept_drafts=[e.application_id for e in latest.values()
                      if e.outcome == "needs_input" and e.message.startswith(KEPT_DRAFT_MESSAGE)],
     )
@@ -2071,7 +2201,9 @@ async def run_submissions(options: SubmitBatchOptions, targets: Sequence[Submiss
                                           slot=slot, source_batch=source_batch)
             finally:
                 slots.put_nowait(slot)
-            record(entry)
+            # A confirmed submission moves its Saved card to Applied (round 6).
+            record(await asyncio.to_thread(sync_submission_card, options.paths,
+                                           options.candidate_id, entry))
 
     workers = [asyncio.create_task(worker()) for _ in range(max(1, min(options.workers, len(queue))))]
     try:
@@ -2105,6 +2237,10 @@ def format_submission(entry: SubmissionEntry) -> str:
     if entry.receipt_id:
         line += f" [receipt {entry.receipt_id}"
         line += f", reference {entry.confirmation_reference}]" if entry.confirmation_reference else "]"
+    if entry.applied_synced is True:
+        line += " [card moved to Applied]"
+    elif entry.applied_synced is False:
+        line += " [card not moved to Applied]"
     return line
 
 
@@ -2132,6 +2268,10 @@ def render_submissions_markdown(summary: SubmissionSummary) -> str:
             f"{r.application_id} ({r.receipt_id}"
             + (f"; {r.confirmation_reference})" if r.confirmation_reference else ")")
             for r in summary.receipts)]
+    if summary.cards_applied or summary.card_problems:
+        lines += ["", f"- pipeline cards moved to Applied: {summary.cards_applied}"
+                  + ("; not moved: " + counted(summary.card_problems)
+                     if summary.card_problems else "")]
     kept = set(summary.kept_drafts)
     for outcome, advice in (("uncertain", "never resubmitted; interviewmaxxing reconcile APP"),
                             ("needs_input", "interviewmaxxing status APP; prepare, review and "
@@ -3123,6 +3263,7 @@ def render_report_markdown(report: BatchReport, *, top: int = 10) -> str:
 
 __all__ = [
     "BROWSER_ONLY_SKIP",
+    "CARDS_BY_BATCH_ENV",
     "HELD_OR_PREPARED",
     "HOLD_CATEGORIES",
     "OUTCOMES",
@@ -3179,6 +3320,7 @@ __all__ = [
     "list_batches",
     "listing_argv",
     "load_inventory",
+    "move_submitted_card",
     "plan",
     "prepared_or_held",
     "private_dirs",
@@ -3199,6 +3341,7 @@ __all__ = [
     "summarize",
     "summarize_submissions",
     "sync_pipeline_card",
+    "sync_submission_card",
     "with_saved_listings",
     "write_summary",
 ]

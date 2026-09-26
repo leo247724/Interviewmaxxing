@@ -407,12 +407,27 @@ def _interrupted(paths: LocalPaths, application_id: str | None) -> int:
 # --- commands --------------------------------------------------------------------
 
 
-def _listing(args: argparse.Namespace) -> Any:
-    """``--job-location/--job-title/--job-company`` as ``runner.ListingDetails``."""
+def _listing(args: argparse.Namespace, paths: LocalPaths) -> Any:
+    """``--job-location/--job-title/--job-company`` and ``--job-listing-id`` as
+    ``runner.ListingDetails``. The listing is read from the jobs store
+    (``batch.default_jobs_db``); only a FULL description is kept, for the runner to index
+    as the job's evidence. A listing that is not there adds nothing."""
     from .runner import ListingDetails
 
+    description = description_url = None
+    if args.job_listing_id:
+        from .batch import ListingReader, default_jobs_db
+
+        reader = ListingReader(default_jobs_db(paths))
+        try:
+            saved = reader.get(args.job_listing_id)
+        finally:
+            reader.close()
+        if saved is not None and saved.description:
+            description, description_url = saved.description, saved.description_url or None
     return ListingDetails(location=args.job_location, title=args.job_title,
-                          company=args.job_company)
+                          company=args.job_company, listing_id=args.job_listing_id,
+                          description=description, description_url=description_url)
 
 
 def _listing_flags(p: argparse.ArgumentParser) -> None:
@@ -422,6 +437,11 @@ def _listing_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--job-title", metavar="TEXT", help="the listing's title, if the job has none")
     p.add_argument("--job-company", metavar="TEXT",
                    help="the listing's company, if the job has none")
+    p.add_argument("--job-listing-id", metavar="LISTING_ID",
+                   help="the saved listing (jobs store, $IMX_JOBS_DB) whose FULL description "
+                        "is indexed as the job's evidence before any question is answered, so "
+                        "the writer has the posting when the page shows none (needs "
+                        "--ai-routing --rag-connection-file)")
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
@@ -439,7 +459,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     runner = _runner(args)
     try:
         outcome = _run(lambda: runner.apply(args.url, candidate_id=candidate_id,
-                                            listing=_listing(args)))
+                                            listing=_listing(args, paths)))
     except (KeyboardInterrupt, asyncio.CancelledError):
         with ApplicationStore.open(paths.state_db) as store:
             app = store.find_application(candidate_id, args.url)
@@ -455,7 +475,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     runner = _runner(args)
     try:
-        outcome = _run(lambda: runner.resume(args.application_id, listing=_listing(args)))
+        outcome = _run(lambda: runner.resume(args.application_id, listing=_listing(args, paths)))
     except (KeyboardInterrupt, asyncio.CancelledError):
         return _interrupted(paths, args.application_id)
     _print_outcome(outcome, as_json=args.json)
@@ -630,7 +650,27 @@ def cmd_submit(args: argparse.Namespace) -> int:
     _print_outcome(outcome, as_json=args.json)
     if outcome.message.startswith((NOT_AUTHORIZED_MESSAGE, BUSY_MESSAGE, CLAIMED_MESSAGE)):
         return EXIT_BLOCKED  # nothing was run
+    _move_submitted_card(paths, app.candidate_id, outcome, as_json=args.json)
     return _exit_code(outcome)
+
+
+def _move_submitted_card(paths: LocalPaths, candidate_id: str, outcome: ApplyOutcome, *,
+                         as_json: bool) -> None:
+    """After a confirmed submission, the application's pipeline card goes from Saved to
+    Applied (``batch.move_submitted_card``). Under ``submit-approved`` the batch moves it
+    and records it in its ledger instead (``CARDS_BY_BATCH_ENV``)."""
+    from .batch import CARDS_BY_BATCH_ENV, move_submitted_card
+
+    receipt = outcome.receipt
+    if outcome.state is not S.SUBMITTED or receipt is None or os.environ.get(CARDS_BY_BATCH_ENV) == "1":
+        return
+    moved, reason = move_submitted_card(
+        paths, candidate_id, outcome.application_id, receipt_id=receipt.attempt_id,
+        reference=receipt.confirmation_reference, submitted_at=receipt.confirmed_at, by="submit")
+    if moved is False:
+        print(f"Pipeline card not moved to Applied: {reason}.", file=sys.stderr)
+    elif moved and not as_json:
+        print("Pipeline card moved from Saved to Applied.")
 
 
 def cmd_submit_approved(args: argparse.Namespace) -> int:

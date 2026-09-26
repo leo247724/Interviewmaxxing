@@ -202,14 +202,36 @@ once the application is known, and `approve` prints the approval with its `form_
 reduced to the page address (step URLs carry per-session draft tokens; the store keeps them
 exactly).
 
+## The pipeline card
+
+A submission the site confirmed (`SUBMITTED` with a receipt) moves the application's linked
+pipeline card (`application_id`) from Saved to Applied through the revision-checked
+`move_item`, with a dated history note naming the application, the receipt and the site's
+confirmation reference:
+
+```text
+Submitted on 2026-09-25 (UTC) by submit; the site confirmed it (application app_example, receipt sub_example, confirmation MOCK-4012)
+```
+
+`submit APP --yes` moves it and prints "Pipeline card moved from Saved to Applied." (a card it
+could not move is named on stderr); `submit-approved` moves it itself after each confirmed
+submission (the note says `by submit-approved <batch id>`) and records the result in its
+ledger, so its `submit` processes leave it alone (`IMX_SUBMIT_CARDS_BY_BATCH=1`). An
+uncertain, blocked, needs-input or failed submission never moves a card; a card already in
+Applied or Closed is left alone, and one in any other lane stays there with the reason
+recorded. No card and no pipeline database is ever created. The rules are those of the
+prepare batch's Closed move ([mass-preparation.md](mass-preparation.md#a-confirmed-submission-moves-the-card-to-applied)).
+
 ## Ledger and report
 
 `submit-approved` selects the candidate's applications that have a valid approval and a
 pre-submission state: those in the named prepare batch's ledger (`--batch`), or all of them
 (`--all-approved`). It runs one `interviewmaxxing submit APP --yes --json` process per
 application, at most `--slots` at a time, each slot with its own browser profile
-(`$IMX_HOME/browser-workers/w<slot>`), and kills a process group that exceeds
-`--per-job-timeout`. Each result is appended to `$IMX_HOME/batches/<id>/ledger.jsonl`, where
+(`$IMX_HOME/browser-workers/s<slot>`, created `0700` like a prepare worker's, but never a
+prepare worker's `w<slot>`: the runner holds one OS lock per profile, so a submission run
+beside a running `prepare-batch` never finds its profile busy), and kills a process group
+that exceeds `--per-job-timeout`. Each result is appended to `$IMX_HOME/batches/<id>/ledger.jsonl`, where
 `<id>` is `--batch-id`, else the `--batch` id, else `approved-<UTC time>`:
 
 ```json
@@ -217,6 +239,7 @@ application, at most `--slots` at a time, each slot with its own browser profile
  "approved_packet_id": "pkt_…", "listing_id": "lst_…", "company": "…", "title": "…",
  "application_url": "…", "attempt": 1, "worker_slot": 0, "state": "SUBMITTED",
  "outcome": "submitted", "receipt_id": "sub_…", "confirmation_reference": "…",
+ "applied_synced": true, "applied_sync_reason": null,
  "message": "…", "exit_code": 0, "started_at": "…", "finished_at": "…", "duration_s": 12.3}
 ```
 
@@ -225,6 +248,10 @@ application, at most `--slots` at a time, each slot with its own browser profile
 submission stopped by the timeout while submitting is `uncertain`, never `error`. Prepare
 lines and submission lines share the file without being mistaken for each other. Running the
 same ledger id again never launches an application it records as submitted or uncertain.
+A `blocked` submission did not run (another run was using the slot's profile, or held the
+application): the application keeps its approval, so `submit-approved --batch X` run again
+submits it, once. `applied_synced` and `applied_sync_reason` say whether a confirmed
+submission's pipeline card moved to Applied ([The pipeline card](#the-pipeline-card)).
 Submission lines that cannot be read are counted (`ledger_lines_ignored` in the summary,
 `submissions.lines_ignored` in `batch-report`) and shown: lines marked `kind: "submission"`
 that do not validate and, in the summary, lines cut short by a crash that may have been
