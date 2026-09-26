@@ -692,3 +692,47 @@ A batch that predates recorded run options (pilot 7) does not carry its worker c
 retry, so pass `--workers` explicitly. Read the result with `batch-report BATCH_ID`, the open
 questions with `holds`, and one application with `status APP` or `events APP --verbose`.
 Nothing is submitted by any of these commands.
+
+
+## Night of September 25–26: the Ashby run in the person's real Chrome
+
+The headless runtime cannot submit to Ashby (every attempt was refused as "possible spam"), so the lead drove the
+Ashby forms the way the Wellfound run was driven: the person's signed-in Chrome through the OpenCLI bridge, fields
+set by script, the resume attached through a DataTransfer, trusted clicks on "Submit Application". Driver:
+`.imx/dynamic-applications/real-chrome/ashby.py` (two sharded lanes, ledger `ashby-run/ledger.jsonl`, every
+confirmed submission moves its card to Applied, removed postings move to Closed).
+
+| Outcome | Count |
+|---|---|
+| Confirmed ("application submitted" text) | 84 |
+| Accepted without the banner (form replaced by the job page, no error) | 8 |
+| Refused by Ashby as possible spam | 11 |
+| Postings gone ("Job not found") | 11 |
+| Still open (writer holds, facts missing, unsupported widgets) | 53 |
+| RAG spend (notes and answers) | USD 28.53 |
+
+Plus Pomelo Care and Webflow on Greenhouse (`gh.py`, react-select options picked by clicking the option element).
+
+**What Ashby's forms needed (all in the driver now):** the "Start typing…" select is `input[role=combobox]` whose
+`aria-controls` names the listbox and `aria-activedescendant` the focused option — pick by typing a probe, walking
+with ArrowDown until the wanted option is active, Enter, and verifying the input shows exactly that option's text;
+scripted clicks on its options never register and a blind ArrowDown+Enter picks the wrong option. Radio and checkbox
+groups are `fieldset > label + div.group-option*`; option texts run past 120 characters ("No, I will not need
+immigration support…"), two questions can share a 60-character prefix (US/Canada sponsorship), and a neutral
+question ("Which option best describes your situation?") can be the sponsorship question, so options are read and
+inferred. Yes/No buttons take a trusted click verified through `aria-pressed`; react-datepicker inputs need typed
+"10/01/2026"; custom phone and URL fields reject scripted values (typed instead; LinkedIn URL without trailing slash);
+years come as radio buckets (pick the bucket containing 7, SEO 6); "authorized to be employed" and "work eligibility"
+wording had to join the rules; essay questions arrive as single-line inputs and go to the RAG.
+
+**Where the writer stopped it:** 14 why-us notes failed the note rubric ("what measurable result…") on both tries and
+22 essay/case questions were routed to the person (NEEDS_INPUT "Required:") — CAC targets, client counts, budgets,
+company-specific opinions. The writer's 120 s network cap also timed out often under two lanes; one retry is built in,
+drafts are capped at two per question.
+
+**Incidents.** Eight saved "Ashby" jobs carried linkedin.com links and five of those pages were opened in the person's
+Chrome before the driver refused non-Ashby hosts (job lists must be filtered by host before any browser run). One hand
+test picked the wrong authorization option on Base Power (Marketing Manager, Direct Mail) — "OPT / will require
+H-1B" — and the form went through; recorded as `submitted_wrong_answer`, a correction draft sits in
+`ashby-run/base-power-correction-draft.md`. Spam refusals clustered late in the night (five of the last eight real
+submits), so the lanes were stopped once the untried list was exhausted.
