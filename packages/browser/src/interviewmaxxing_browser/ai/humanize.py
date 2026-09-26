@@ -787,8 +787,9 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
                   purpose: Literal["answer", "cover_letter", "motivation"], draft: NarrativeDraft,
                   job: dict[str, str], voice_samples: list[str], findings: list[Finding],
                   max_length: int | None, attempt: int, rejected: str | None = None) -> NarrativeDraft:
-    """One bounded Opus rewrite of a grounded draft; the same budget, transport and
-    structured schema as the writer, recorded under the purpose ``humanize``."""
+    """One bounded rewrite of a grounded draft by the writer's review model at the humanize
+    effort (low by default, round 7); the same budget, transport and structured schema as the
+    writer, recorded under the purpose ``humanize``."""
     if purpose not in ("answer", "cover_letter", "motivation"):
         raise AIHold("Unsupported narrative purpose")
     if any(not isinstance(sample, str) for sample in voice_samples):
@@ -800,7 +801,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
                              else "job" if i.startswith("job:") else "") for i in cited], [])
     wire = unalias_draft(draft, {alias: identifier for identifier, alias in aliases.items()}) if aliases else draft
     payload = {
-        "model": writer.model, "max_tokens": request_max_tokens,
+        "model": writer.reviewer, "max_tokens": request_max_tokens,
         "reasoning": reasoning,
         "provider": {"require_parameters": True, "allow_fallbacks": False},
         "messages": [
@@ -843,7 +844,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
         if (isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0):
             cost = float(raw_cost)
-        if resolved != writer.model:
+        if resolved != writer.reviewer:
             status = "MODEL_MISMATCH"
             raise AIHold("Humanizer returned an unexpected model")
         choice = raw["choices"][0]
@@ -870,7 +871,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
     except (ValueError, KeyError, IndexError, TypeError):
         raise AIHold("Humanizer returned invalid structured output") from None
     finally:
-        writer.budget.record(CallReceipt("humanize", writer.model, resolved,
+        writer.budget.record(CallReceipt("humanize", writer.reviewer, resolved,
             time.monotonic() - started, cost, reserve, status, requested_reasoning_effort=effort))
 
 

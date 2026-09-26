@@ -807,6 +807,70 @@ an age in (`age_revealed`). The story corpus keeps the age as he wrote it; the t
 without the number ("the far less senior buyer asking for the spend the radio and TV veterans had
 held for years").
 
+### Addenda 2-3: the first draft is the letter, cut to the calls that matter
+
+The owner found USD 0.66-0.98 per letter too much: Opus was 99% of the bill, spent on repeated
+reviews, improvement drafts and length rewrites. Every cover-letter field still gets a letter,
+optional or required. The flow is now:
+
+1. **The draft**, by Opus at high effort (`--writer-effort`), with every rule the later passes used
+   to enforce in its prompt: the rubric's line rules with the length as a hard count
+   (`LETTER_WORD_BUDGET`: 300-360 words, budgeted by paragraph), the no-slop lint as instructions
+   (`NO_SLOP_RULE`), the voice rule, the ten fixes and the age rule. A cover letter's request
+   keeps its 6000-token answer allowance plus 4000 tokens of room for reasoning past its budget
+   (`OVERRUN_TOKENS`; batch 4's corrective rewrite was cut at 8560 and its retry cost a whole
+   call). Tokens not written cost nothing.
+2. **The code checks and Jev**, nearly free. A failed code check, a sentence Jev scores at or
+   below `LETTER_GROUNDING_FLOOR` (0.20; in batches 1-4 the reviews rejected the sentences Jev
+   scored 0.17-0.19 and supported those at 0.23 and above) or a letter Jev finds incomplete is a
+   HARD line: it gets the letter's **one** corrective rewrite (`LETTER_ATTEMPTS` = 2), at high
+   effort. Scores between the floor and certainty are left to the review.
+3. **The no-slop rewrite only when the lint finds something**, at low effort (`humanize_effort`).
+   Its rewrite answers to `check_rewrite`, the same code checks and Jev; a rewrite that fails them
+   is retried or discarded, never reviewed.
+4. **One review, on the text that ships** (`_final_letter_review`): grounding and the rubric in one
+   call. SUPPORTED with a rubric PASS is READY. A grounding rejection or a failed HARD line gets the
+   one corrective rewrite (the rubric issues are its feedback, `RUBRIC_REWRITE_FEEDBACK`), which is
+   checked, humanized and reviewed again. The rewrite is skipped when the reviewer asks the owner
+   for an element no source states, since a rewrite cannot supply it. A failure after the rewrite
+   holds with the reviewer's question or its first issue. There are no improvement passes, and an
+   ungraded draft never ships in place of a failed rewrite.
+
+**The evidence review runs only for the uncertain band.** It ran on every letter because of two
+things:
+- Four story sentences the owner had confirmed as facts counted as "global claims". Each is tied
+  to one resume role, but contains an "only", "no" or "not", so each was compared with every
+  selected fact and every story passage. `_global_claim` now leaves a role-scoped story sentence
+  (`resume_role_id` evidence and a "(...; resume: ...)" value) global only for a career-wide word
+  (never, ever, always, haven't, throughout my career). With this change, the owner's profile has
+  no global claims.
+- The review threshold was 0.95. A consistency verdict at or above `EVIDENCE_REVIEW_BELOW` (0.90)
+  is now accepted without the review, for a fact and for a story passage alike (trace status
+  `ACCEPTED_WITHOUT_REVIEW`). Only the band from 0.05 to 0.90 goes to one merged review.
+
+Verdicts are reused across letters for the same person in one process:
+- each passage's review verdict, keyed by its content and its comparison facts;
+- the fact review, keyed by the profile revision;
+- Jev's per-sentence grounding, keyed by the sentence and its evidence.
+
+**The review model.** `NarrativeWriter.review_model` (`rag_answers.py draft --review-model`) is the
+model for the reviews and the no-slop rewrite. The default is the writer's model, Opus; Sonnet 5
+(`anthropic/claude-sonnet-5`) is the measured alternative. The model check follows it, receipts
+name its family (`sonnet_letter_review`), and the provenance note says which model reviewed. The
+draft is always Opus. The runner keeps the default until the owner decides.
+
+**Cost by purpose.** A `rag_answers.py draft` receipt has a `cost` section (`provider_usage`):
+- calls and USD in total and by purpose;
+- the efforts used and configured;
+- the review model;
+- the number of letter reviews.
+
+`--max-usd` bounds its reservations. Expected spend per letter, from addendum 3's arithmetic:
+- first pass: draft about USD 0.14, review about 0.08, and the no-slop rewrite when needed about
+  0.03, so about USD 0.22-0.25;
+- with the one corrective rewrite: about USD 0.40;
+- the evidence review, when Jev is uncertain: about 0.08 more.
+
 ## Verification
 
 Mocked tests cover isolated retrieval, changed and revoked facts, source separation,

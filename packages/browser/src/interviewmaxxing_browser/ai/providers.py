@@ -85,6 +85,10 @@ ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analy
 cited sentences fit in 2000 tokens; a 400-word cover letter needs 6000, since its twenty
 sentences each cite story and job ids of some 45 tokens apiece (round 6: 4000 cut the live
 corrective rewrite at its limit)."""
+OVERRUN_TOKENS: dict[str, int] = {"cover_letter": 4000}
+"""Room above a cover letter's reasoning budget and answer allowance: at high effort the model
+may reason past its budget (round 6, batch 4: a corrective rewrite was cut at 8560 tokens and
+its retry cost a whole second call). Tokens not written cost nothing (round 7, addendum 2)."""
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
@@ -93,10 +97,11 @@ FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
 """More per WRITER-routed field: a live "why you're a good fit" narrative exhausted 12
 calls before its draft and finished its form at 29 calls and USD 0.34."""
 FORM_LETTER_CALLS, FORM_LETTER_USD = 24, 2.50
-"""What a cover letter reserves on top of a writer field's allowance (WP12 round 6 addendum):
-the rubric review and up to two corrective rewrites, the story passages' review, and up to
-three no-slop rewrites, each independently reviewed. Reservations are upper bounds (the
-request size and the whole answer allowance at the output price); actual spend is lower."""
+"""What a cover letter reserves on top of a writer field's allowance (WP12 round 6 addendum;
+since round 7 the flow is smaller: the evidence review when Jev is uncertain, the draft and at
+most one corrective rewrite, their no-slop rewrites and one final review each). Reservations are
+upper bounds (the request size and the whole answer allowance at the output price); actual spend
+is lower."""
 FORM_CAP_CALLS, FORM_CAP_USD = 200, 4.00
 """The budget's total cap, so four narrative fields at about 30 calls / USD 0.35 each never
 reach it; each cover letter raises it by its own allowance (``FORM_LETTER_*``)."""
@@ -110,9 +115,39 @@ FIT_GIVEN_RULE = (
     "mentioned. Every claim still cites its evidence; invent no claim or number. ")
 """The owner's rule for cover letters, motivation and narrative answers (WP12 round 5,
 addendum 2): fit is given, the writer builds the case and never judges or hedges it."""
+LETTER_WORD_BUDGET = (
+    "HARD WORD COUNT: 300-360 words in total, counting every word of every sentence including the "
+    "greeting line, never fewer than 280 and never more than 400. Budget it by paragraph: greeting "
+    "3 words, hook 40-60, proof 110-150 (in one or two paragraphs), why this company 70-100, close "
+    "30-45. Count the words of your sentences before you return the draft; if the total is outside "
+    "300-360, cut or add from the supplied evidence until it is inside. ")
+"""The letter's length as a hard instruction with the count in the prompt, so the draft lands inside
+the rubric's range first time and no LETTER_LENGTH rewrite is spent (round 7, addendum 2 item 3)."""
+NO_SLOP_RULE = (
+    "Write it so the no-AI-slop lint finds nothing and no rewrite is needed: lead with the point; no "
+    "throat-clearing ('Here's the thing', 'Let me be clear', 'To be clear'), faux insight ('what nobody "
+    "tells you', 'the real story was'), binary contrasts ('It's not X, it's Y', 'not just X but Y'), "
+    "negative listing ('Not a X. Not a Y.'), colon reveals (a phrase, a colon, then the reveal), a "
+    "capital letter after a colon, dramatic fragments or three short sentences in a row, rhetorical or "
+    "self-answered questions ('The result?'), sentences opening with 'And', trailing -ing analysis "
+    "(', highlighting', ', underscoring', ', showcasing'), importance puffery ('a testament to', 'plays a "
+    "vital role', 'game-changer'), weasel attribution ('experts agree'), metadiscourse ('it's worth "
+    "noting', 'in other words', 'as you can see'), empty phrases ('at the end of the day', 'when it "
+    "comes to', 'in terms of', 'in order to', 'going forward'), empty adverbs (truly, honestly, "
+    "fundamentally, importantly, just, literally, simply, actually, crucially), fake-strong verbs "
+    "('serves as', 'acts as', 'functions as'), a kicker or recap last line ('In conclusion', "
+    "'Ultimately', 'That's the whole game'), two paragraphs opening with the same words, two "
+    "consecutive sentences opening with the same three words, more than one name for the role, bold, "
+    "bullets or emoji, and never these words: delve, foster, facilitate, empower, streamline, robust, "
+    "cutting-edge, tapestry, realm, beacon, multifaceted, meticulous, intricate, paramount, "
+    "transformative, elevate, embark, supercharge, harness, ever-evolving. No portable sentence: tie "
+    "each one to its cited specifics so it could not go to another employer. ")
+"""The humanizer's lint as writer instructions (round 7, addendum 3: the quality goes into the draft,
+so the no-slop rewrite runs only when the lint still finds something)."""
 COVER_LETTER_RULES = (
     "Write the cover letter the owner's rubric describes: 280-380 words (never more than 400), "
     "plain first-person prose in these paragraphs, with consecutive zero-based paragraph indices. "
+    + LETTER_WORD_BUDGET +
     "(0) The greeting line alone: 'Dear <name>,' when job_evidence names the hiring manager or "
     "recruiter, otherwise 'Dear Hiring Manager,'; it cites nothing. "
     "(1) The hook, 2-3 sentences. Its first sentence states the proof's headline result with its "
@@ -587,6 +622,14 @@ def _has_job_description(job_evidence: list[dict[str, str]], job: dict[str, str]
                for item in job_evidence)
 
 
+WRITER_MODEL = "anthropic/claude-opus-5.5"
+REVIEW_MODELS = (WRITER_MODEL, "anthropic/claude-sonnet-5")
+"""Models the reviews and the no-slop rewrite may use (``--review-model``, round 7 addendum 2
+item 5): Opus by default; Sonnet 5 is the cheaper option measured against it. The draft is
+always written by the writer's model."""
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
 @dataclass
 class NarrativeWriter:
     api_key: ApiKey
@@ -600,29 +643,50 @@ class NarrativeWriter:
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     """Effort for reviews and, when ``narrative_effort`` is unset, for narratives."""
     narrative_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
-    """Effort for cover letters, narrative answers and their humanizing rewrite; the
-    runtime factory sets it to high by default (``--writer-effort``)."""
+    """Effort for cover letters and narrative answers; the runtime factory sets it to high
+    by default (``--writer-effort``)."""
+    humanize_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    """Effort for the no-slop rewrite (round 7, addendum 2 item 4): it runs only when the lint
+    finds something, and ``check_rewrite``, Jev and the final review guard what it returns."""
+    review_model: str | None = None
+    """The model of the reviews and the no-slop rewrite (``--review-model``); unset, the
+    writer's model."""
 
     def __post_init__(self) -> None:
-        if self.model != "anthropic/claude-opus-5.5":
+        if self.model != WRITER_MODEL:
             raise ValueError("This runtime requires explicitly configured anthropic/claude-opus-5.5")
-        if (not isinstance(self.reasoning_effort, str)
-                or self.reasoning_effort not in ("low", "medium", "high", "xhigh", "max")):
+        if self.review_model is not None and self.review_model not in REVIEW_MODELS:
+            raise ValueError("Review model must be one of " + ", ".join(REVIEW_MODELS))
+        if not isinstance(self.reasoning_effort, str) or self.reasoning_effort not in _EFFORTS:
             raise ValueError("Writer reasoning effort must be low, medium, high, xhigh or max")
         if self.narrative_effort is not None and (
-                not isinstance(self.narrative_effort, str)
-                or self.narrative_effort not in ("low", "medium", "high", "xhigh", "max")):
+                not isinstance(self.narrative_effort, str) or self.narrative_effort not in _EFFORTS):
             raise ValueError("Writer narrative effort must be low, medium, high, xhigh or max")
+        if not isinstance(self.humanize_effort, str) or self.humanize_effort not in _EFFORTS:
+            raise ValueError("Writer humanize effort must be low, medium, high, xhigh or max")
         if (isinstance(self.timeout_seconds, bool)
                 or not isinstance(self.timeout_seconds, (int, float))
                 or not 0 < self.timeout_seconds <= 120 or isinstance(self.max_tokens, bool)
                 or not isinstance(self.max_tokens, int) or not 1 <= self.max_tokens <= 8000):
             raise ValueError("Writer timeout or output limit exceeds policy")
 
+    @property
+    def reviewer(self) -> str:
+        """The model the reviews and the no-slop rewrite call."""
+        return self.review_model or self.model
+
+    def call_label(self, purpose: str) -> str:
+        """A review's receipt purpose, named after its model family: ``opus_letter_review``,
+        or ``sonnet_letter_review`` with the cheaper reviewer."""
+        family = self.reviewer.split("/")[-1].split("-")
+        return (family[1] if len(family) > 1 else family[0]) + "_" + purpose
+
     def effort_for(self, purpose: str) -> Literal["low", "medium", "high", "xhigh", "max"]:
-        """Narratives (answer, cover letter, humanize) use the narrative effort when set;
-        reviews and everything else keep the base effort."""
-        if purpose in ("answer", "cover_letter", "motivation", "case_analysis", "humanize") and self.narrative_effort is not None:
+        """Narratives (answer, cover letter) use the narrative effort when set; the no-slop
+        rewrite its own (low by default); reviews and everything else the base effort."""
+        if purpose == "humanize":
+            return self.humanize_effort
+        if purpose in ("answer", "cover_letter", "motivation", "case_analysis") and self.narrative_effort is not None:
             return self.narrative_effort
         return self.reasoning_effort
 
@@ -631,7 +695,8 @@ class NarrativeWriter:
         (writing, motivation, cover letters and the no-slop rewrite): an explicit reasoning
         budget by effort (``REASONING_BUDGET_TOKENS``) and a request limit that leaves the
         purpose's whole answer allowance (``ANSWER_TOKENS``, bounded by ``max_tokens``) after
-        it. The retry after a length cut enlarges both (``RETRY_REASONING_FACTOR``,
+        it, plus a cover letter's room for reasoning past its budget (``OVERRUN_TOKENS``). The
+        retry after a length cut enlarges both (``RETRY_REASONING_FACTOR``,
         ``RETRY_ANSWER_FACTOR``). Reviews keep ``reasoning.effort``: their verdicts are short."""
         effort = self.effort_for(purpose)
         budget = REASONING_BUDGET_TOKENS[effort]
@@ -639,7 +704,7 @@ class NarrativeWriter:
         if retry:
             budget = int(budget * RETRY_REASONING_FACTOR)
             answer = answer * RETRY_ANSWER_FACTOR
-        return {"max_tokens": budget}, budget + answer
+        return {"max_tokens": budget}, budget + answer + OVERRUN_TOKENS.get(purpose, 0)
 
     def write(self, *, question: str, facts: list[dict[str, Any]], job: dict[str, str],
               max_length: int | None, job_evidence: list[dict[str, str]] | None = None,
@@ -768,7 +833,7 @@ class NarrativeWriter:
             "voice_samples are STYLE ONLY, never a factual source or a source of IDs. "
             "Use them only for cadence, register and phrasing; resume style is provisional "
             "and should become natural prose. Do not copy factual claims from samples. "
-            + VOICE_RULE + AGE_RULE +
+            + VOICE_RULE + AGE_RULE + NO_SLOP_RULE +
             "Do not invent motivation, qualifications, dates, quantities, preferences, "
             "eligibility, consent or employer claims. Never borrow the posting's wording into a "
             "first-person claim: describe the applicant's work only in the words its facts and "
@@ -1072,7 +1137,7 @@ class NarrativeWriter:
             # rubric grade left a letter ungraded).
             limit = review_max_tokens if attempt == 1 else min(2 * review_max_tokens, 8000)
             payload = {
-                "model": self.model, "max_tokens": limit,
+                "model": self.reviewer, "max_tokens": limit,
                 "reasoning": {"effort": effort},
                 "provider": {"require_parameters": True, "allow_fallbacks": False},
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -1106,7 +1171,7 @@ class NarrativeWriter:
                 if (isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                         and math.isfinite(raw_cost) and raw_cost >= 0):
                     cost = float(raw_cost)
-                if resolved != self.model:
+                if resolved != self.reviewer:
                     status = "MODEL_MISMATCH"
                     raise AIHold("Review returned an unexpected model")
                 choice = raw["choices"][0]
@@ -1137,7 +1202,7 @@ class NarrativeWriter:
             except (ValueError, KeyError, IndexError, TypeError):
                 raise AIHold("Review returned invalid structured output") from None
             finally:
-                self.budget.record(CallReceipt("opus_" + purpose, self.model, resolved,
+                self.budget.record(CallReceipt(self.call_label(purpose), self.reviewer, resolved,
                     time.monotonic() - started, cost, reserve, status,
                     requested_reasoning_effort=effort))
         raise AssertionError("unreachable")

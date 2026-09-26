@@ -715,10 +715,18 @@ _VOLUME_HOOK = re.compile(r"\d[\d,.]*\+?\s+(?:[A-Za-z-]+\s+){0,3}(?:leads|calls|
                           r"sign-?ups|downloads|contacts|inquiries|enquiries|followers)\b", re.IGNORECASE)
 _MONEY_OR_CASES = re.compile(r"[$\u20ac\u00a3]\s?\d|\d\s?%|\b\d+\s+figures?\b|\brevenue\b|\bsigned\s+cases?\b|"
                              r"\bcost\s+per\b|\bCPA\b|\bROAS\b", re.IGNORECASE)
-IMPROVEMENT_LENGTH_FEEDBACK = (
-    "Keep the letter at 280-380 words in its paragraphs: where you cut a sentence, tell more of the "
-    "proof's own story from its passage (the constraint, the fight, what changed) instead of adding "
-    "other work.")
+RUBRIC_REWRITE_FEEDBACK = (
+    "The independent review graded the letter against the owner's rubric and found the HARD lines "
+    "below failed: fix each one using only the supplied facts, passages and job evidence, keep "
+    "everything else, and keep the letter at 300-360 words (where you cut a sentence, tell more of the "
+    "proof's own story from its passage instead of adding other work).")
+GROUNDING_FLOOR_FEEDBACK = (
+    "Jev found the sentences below unsupported by their own citations: drop each one, or cite the fact "
+    "or passage that states it, and keep the rest.")
+LETTER_INCOMPLETE_FEEDBACK = (
+    "The letter lacks part of the owner's shape: a greeting line, a hook, one proof from a cited "
+    "passage (constraint, change, result), a paragraph naming something specific to this employer "
+    "from the job evidence with a first move, and a two-sentence close.")
 FACTS_UNCITED_FEEDBACK = (
     "Cite at least one verified fact (an entry not keyed story or contact_links) for the claims it "
     "states: a passage's claim that a verified fact also states cites both.")
@@ -734,18 +742,24 @@ _TALK = re.compile(r"\b(?:talk|call|walk\s+you\s+through|conversation|chat|meet|
 CONTACT_ID = "contact:links"
 """The cover letter's close cites the applicant's profile links (LinkedIn, website) under
 this id: a transient stand-in from the identity, never a fact in packet provenance."""
-LETTER_ATTEMPTS = 3
-"""A cover letter gets two corrective rewrites for its deterministic rubric lines and its
-grounding; every other narrative gets one."""
+LETTER_ATTEMPTS = 2
+"""A cover letter's draft and at most one corrective rewrite, spent only on a HARD line: a code
+check, a sentence Jev scores at or below ``LETTER_GROUNDING_FLOOR``, or the final review's
+rejection (round 7, addendum 3: the first draft is the letter; no improvement passes). Every
+other narrative also gets one."""
+LETTER_GROUNDING_FLOOR = 0.20
+"""A cover-letter sentence Jev scores at or below this is a HARD grounding failure, rewritten
+before any review: in batches 1-4 the reviews rejected the sentences Jev scored 0.17-0.19 and
+supported those at 0.23 and above. Scores between go to the one final review, which grounds
+every sentence of the text that ships."""
+EVIDENCE_REVIEW_BELOW = 0.90
+"""A narrative's evidence consistency verdicts (a selected fact against its competitors, a story
+passage against the facts) at or above this need no independent review: the review runs only
+for the uncertain band between ``1 - MIN_PROBABILITY`` and this (round 7, addendum 2 item 2)."""
 FACT_REVIEW_QUESTION = (
     "Do these verified candidate facts contain any direct factual contradiction? "
     "Independent employment, education, project and skill claims may coexist; "
     "use their canonical group relations and retain explicit global counterclaims.")
-RUBRIC_PASSES = 2
-"""Improvement drafts for the letter review's rubric findings on a grounded cover letter; an
-improvement that fails a check is dropped and the grounded letter stands. The second pass runs
-only when the first one cut the open issues (a converging letter), so most letters stay near the
-lead's target of 15 calls and USD 0.60."""
 DROP_REJECTED_FEEDBACK = (
     "The independent review rejected the sentences named below: drop each rejected sentence "
     "instead of rephrasing it, keep the other sentences and their citations, and add nothing new.")
@@ -1231,9 +1245,25 @@ def _quantity_kinds(fact: CandidateFact) -> frozenset[str]:
     return frozenset(kinds)
 
 
+_CAREER_WIDE = re.compile(r"\b(?:never|ever|always)\b|\b(?:haven't|hasn't)\b"
+                          r"|throughout (?:my |the )?career|entire career", re.I)
+
+
+def _role_scoped(fact: CandidateFact) -> bool:
+    """A sentence of the applicant's story tied to one resume role: its evidence names the
+    role (``resume_role_id: ...``) and its value ends with the role's context."""
+    return (any(line.startswith("resume_role_id: ") for line in fact.evidence)
+            and re.search(r"\([^()]*\bresume:[^()]*\)\s*$", str(fact.value)) is not None)
+
+
 def _global_claim(fact: CandidateFact) -> bool:
     # Keep broad positive/negative assertions in cross-employer conflict checks.
     # This only widens checking; no assertion is established by this lexical rule.
+    if _role_scoped(fact):
+        # "only", "no" or "not" in a sentence tied to one role scopes nothing beyond it; a
+        # career-wide word still does (round 7, addendum 2: four such story sentences were
+        # compared with every fact and passage and kept every evidence verdict uncertain).
+        return bool(_CAREER_WIDE.search(str(fact.value)))
     return bool(re.search(r"\b(?:never|ever|always|only|exclusively|no|not|none|zero|without|lack|lacks)\b"
                           r"|\b(?:don't|doesn't|didn't|haven't|hasn't)\b"
                           r"|throughout (?:my |the )?career|entire career",
@@ -1541,15 +1571,16 @@ class DynamicPacketResolver:
     """Per-runtime Jev consistency scores keyed by one selected fact and its exact
     comparison set, so another field on the same form reuses the verdict."""
     max_consistency_verdicts: int = 256
-    _story_reviews: dict[str, frozenset[str]] = dataclass_field(default_factory=dict, init=False, repr=False)
+    _story_reviews: dict[str, bool] = dataclass_field(default_factory=dict, init=False, repr=False)
+    """Per-runtime independent reviews of story passages Jev left uncertain, one verdict per
+    passage keyed by its content and its comparison facts: whether the review found it
+    contradicted (round 7: reused across letters for the same person)."""
     _settled_sentences: dict[str, bool] = dataclass_field(default_factory=dict, init=False, repr=False)
     """Sentences (text and citations) an independent review supported in this runtime: a later
     review of a draft repeating them is told they are settled, so repeat reviews agree."""
     _sentence_verdicts: dict[str, float] = dataclass_field(default_factory=dict, init=False, repr=False)
     """Jev's grounding score per sentence, keyed by its text, citations and cited evidence: a
-    sentence the rubric pass or the no-slop rewrite repeats is not asked again (round 6)."""
-    """Per-runtime independent reviews of story passages Jev left uncertain, keyed by the
-    passages and their comparison facts: the story ids each review found contradicted."""
+    sentence a corrective rewrite or the no-slop rewrite repeats is not asked again (round 6)."""
     max_concurrency: int = 3
     """Fields resolved at once within one form (each phase), bounding provider calls,
     rate limits and memory; 1 resolves them one after another."""
@@ -1610,7 +1641,7 @@ class DynamicPacketResolver:
                          "reasoning_effort": dict(sorted(efforts.items()))}
         effort_for = getattr(self.writer, "effort_for", None)
         if callable(effort_for):  # the configured efforts, whether or not they were used
-            usage["writer_effort"] = {"narrative": effort_for("answer"),
+            usage["writer_effort"] = {"narrative": effort_for("answer"), "humanize": effort_for("humanize"),
                                       "review": effort_for("draft_grounding")}
         return usage
 
@@ -4935,6 +4966,7 @@ class DynamicPacketResolver:
                     "fact_ids": [fact_id for fact_id, _ in dropped_now],
                     "reason": "contradicts verified facts about the same role",
                     "probabilities": dict(dropped_now), "status": "CONTINUED"})
+            lowest = min(scores.values(), default=1.0)
             self._trace({"stage": "consistency", "selected_fact_ids": {key: fact.id for key, fact in relevant.items()},
                 "canonical_alternative_ids": [fact.id for fact in chunk], "probabilities": scores,
                 "dropped_story_fact_ids": [fact_id for fact_id, _ in dropped_now],
@@ -4942,9 +4974,12 @@ class DynamicPacketResolver:
                 "tiered_first": sum(1 for fact in others if tier(fact) == 0),
                 "cached": sorted(set(relevant) - set(asking)),
                 "comparison_ids": {key: [fact.id for fact in facts] for key, facts in comparisons.items()},
-                "status": "CONSISTENT" if min(scores.values(), default=1.0) >= MIN_PROBABILITY else "HELD"})
+                "status": "CONSISTENT" if lowest >= MIN_PROBABILITY else
+                          "ACCEPTED_WITHOUT_REVIEW" if allow_strong_review and lowest >= EVIDENCE_REVIEW_BELOW
+                          else "HELD"})
             confidence = min([confidence, *scores.values()])
-            if confidence < MIN_PROBABILITY:
+            if confidence < MIN_PROBABILITY and not (allow_strong_review and confidence >= EVIDENCE_REVIEW_BELOW):
+                # Only the uncertain band goes to the independent review (round 7, addendum 2).
                 if allow_strong_review and confidence > 1 - MIN_PROBABILITY and reviewed is not None:
                     # This revision's evidence was already reviewed; the story facts this
                     # field could drop are dropped above.
@@ -5030,17 +5065,18 @@ class DynamicPacketResolver:
 
     def _letter_review(self, context: PacketContext, draft: NarrativeDraft, *, evidence: list[CandidateFact],
                        job_evidence: list[dict[str, str]]) -> tuple[str, list[str], str]:
-        """A cover letter draft's one independent review (round 6): its grounding, as the draft
-        review, and its grade against the owner's rubric, in one call. A grounding failure
-        raises as ``_strong_review`` does; otherwise the rubric grade (PASS or FAIL) and its
-        issues are returned."""
+        """A cover letter's one independent review (round 6; since round 7 on the text that
+        ships): its grounding and its grade against the owner's rubric, in one call. A grounding
+        failure raises as ``_strong_review`` does; otherwise the rubric grade (PASS or FAIL), its
+        issues and the owner question are returned."""
         review = getattr(self.writer, "review", None)
         if not callable(review):
             raise AIHold("Narrative is not fully supported or complete at the current confidence; "
                          "a stronger independent reviewer is not configured")
         settled = [index for index, sentence in enumerate(draft.sentences) if _sentence_key(sentence) in self._settled_sentences]
         entry = self._trace({"stage": "strong_review", "purpose": "letter_review",
-                             "fact_ids": [fact.id for fact in evidence], "settled": settled, "status": "REVIEWING"})
+                             "fact_ids": [fact.id for fact in evidence], "settled": settled, "status": "REVIEWING",
+                             "review_model": getattr(self.writer, "reviewer", None)})
         try:
             result = review(question="Review this cover letter's grounding and grade it against the rubric.",
                 facts=[_fact_evidence(fact) | {"experience_context": _experience_context(context, fact,
@@ -5498,7 +5534,8 @@ class DynamicPacketResolver:
         try:
             return story_consistency(context=context, chunks=story_chunks,
                 decide=self.decisions.decide, trace=self._trace, model=self.decisions.model,
-                min_probability=MIN_PROBABILITY, cache=self._consistency_verdicts,
+                min_probability=MIN_PROBABILITY, review_below=EVIDENCE_REVIEW_BELOW,
+                cache=self._consistency_verdicts,
                 lock=self._lock, max_cache_entries=self.max_consistency_verdicts,
                 max_facts=self.max_facts, question=field.question_text,
                 review=lambda chunks, comparisons: self._story_review(chunks, comparisons, pending=pending))
@@ -5513,27 +5550,34 @@ class DynamicPacketResolver:
         free of contradiction, with the verified facts each was compared with, in one
         request (round 6: uncertainty is not contradiction). Returns the keys of the
         passages it finds contradicted: those a CONFLICT names, all of them when a CONFLICT
-        names none or for any verdict other than SUPPORTED. Cached per runtime for the same
-        passages and comparison facts. Raises ``AIHold`` without a reviewer or when the
-        call fails, and the caller then drops the uncertain passages."""
+        names none or for any verdict other than SUPPORTED. Each passage's verdict is cached
+        per runtime under its content and its comparison facts, so a later letter for the same
+        person sends only the passages not reviewed yet (round 7, addendum 2 item 6). Raises
+        ``AIHold`` without a reviewer or when the call fails, and the caller then drops the
+        uncertain passages."""
         review = getattr(self.writer, "review", None)
         if not callable(review):
             raise AIHold("A stronger independent reviewer is not configured")
+        every = transient_story_facts(list(chunks.values()))
+        keys = {key: _digest({"question": STORY_REVIEW_QUESTION, "story": _fact_evidence(every[chunk["id"]]),
+                              "facts": [_fact_evidence(fact) for fact in sorted(comparisons[key], key=lambda f: f.id)]})
+                for key, chunk in chunks.items()}
+        with self._lock:
+            known = {key: self._story_reviews[digest] for key, digest in keys.items() if digest in self._story_reviews}
+        if known:
+            self._trace({"stage": "story_review_cache", "story_ids": sorted(chunks[key]["id"] for key in known),
+                         "contradicted_ids": sorted(chunks[key]["id"] for key, found in known.items() if found),
+                         "status": "CACHED"})
+        contradicted = {key for key, found in known.items() if found}
+        chunks = {key: chunk for key, chunk in chunks.items() if key not in known}
+        if not chunks:
+            return contradicted
         facts = {fact.id: fact for key in chunks for fact in comparisons[key]}
         stories = transient_story_facts(list(chunks.values()))
         story_ids = set(stories)
         # A fact-consistency review the field still needs is asked in the same call (round 6:
         # one evidence review per letter instead of two).
         fact_review = next((item for item in pending or [] if item.get("outcome") is None), None)
-        revision = _digest({"question": STORY_REVIEW_QUESTION,
-                            "stories": [_fact_evidence(stories[identifier]) for identifier in sorted(stories)],
-                            "facts": [_fact_evidence(facts[identifier]) for identifier in sorted(facts)]})
-        with self._lock:
-            cached = self._story_reviews.get(revision) if fact_review is None else None
-        if cached is not None:
-            self._trace({"stage": "story_review_cache", "story_ids": sorted(story_ids),
-                         "contradicted_ids": sorted(cached), "status": "CACHED"})
-            return {key for key, chunk in chunks.items() if chunk["id"] in cached}
         question = STORY_REVIEW_QUESTION if fact_review is None else (
             "Two checks in one review. First: " + FACT_REVIEW_QUESTION + " Second: " + STORY_REVIEW_QUESTION
             + " For a passage that contradicts the facts, reference_ids name the passage; for facts that "
@@ -5563,10 +5607,11 @@ class DynamicPacketResolver:
             fact_review["outcome"] = (("SUPPORTED",) if result.verdict == "SUPPORTED" or named
                                       else ("HOLD", list(result.issues), fact_ids))
         with self._lock:
-            if len(self._story_reviews) >= 64:
-                self._story_reviews.pop(next(iter(self._story_reviews)))
-            self._story_reviews[revision] = found
-        return {key for key, chunk in chunks.items() if chunk["id"] in found}
+            for key, chunk in chunks.items():
+                while len(self._story_reviews) >= 256:
+                    self._story_reviews.pop(next(iter(self._story_reviews)))
+                self._story_reviews[keys[key]] = chunk["id"] in found
+        return contradicted | {key for key, chunk in chunks.items() if chunk["id"] in found}
 
     def _write_narrative(self, context: PacketContext, field: ApplicationField, *,
                          purpose: Literal["answer", "cover_letter", "motivation"], relevant: list[CandidateFact],
@@ -5652,54 +5697,25 @@ class DynamicPacketResolver:
         scores = self._ground_draft(context, field, draft, purpose=purpose, supplied=supplied,
             supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=trace,
             rewrite_attempt=rewrite_attempt)
-        if purpose == "cover_letter":
-            def improve(issues: list[str]) -> tuple[NarrativeDraft, dict[str, Any]]:
-                """The writer's draft for the rubric's issues, held to every check the first
-                draft passed; any failure raises and the grounded draft stands."""
-                assert self.writer is not None
-                improved = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
-                    max_length=field.max_length, job_evidence=job_evidence, voice_samples=voice_samples,
-                    purpose=purpose, review_feedback=[*issues[:7], IMPROVEMENT_LENGTH_FEEDBACK], guidance=guidance,
-                    on_attempt=attempts.append)
-                if improved.status != "READY":
-                    raise AIHold("The rubric rewrite needs input")
-                failed = findings_of(improved)
-                if failed:
-                    raise AIHold("The rubric rewrite fails " + ", ".join(code for code, _ in failed))
-                grounding: dict[str, Any] = {}
-                improved_scores = self._ground_draft(context, field, improved, purpose=purpose, supplied=supplied,
-                    supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=grounding,
-                    rewrite_attempt=1)
-                return improved, improved_scores | {"trace": {key: grounding.get(key) for key in
-                    ("status", "grounding", "independent_review", "rubric_review")}}
-
-            draft, scores = self._letter_rubric(draft, scores, trace=trace, improve=improve)
-            trace["sentences"] = [sentence.model_dump(mode="json") for sentence in draft.sentences]
         humanized: list[dict[str, Any]] = []
-        rubric_state = trace.get("rubric")
-        failing = (purpose == "cover_letter" and isinstance(rubric_state, dict)
-                   and rubric_state.get("status") != "PASSED")
-        if self.humanize and isinstance(self.writer, NarrativeWriter) and not failing:
+        if self.humanize and isinstance(self.writer, NarrativeWriter):
             def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
-                # Cached; same evidence. The first check allowed the Opus evidence review, so
-                # this one must too: without it an uncertain Jev verdict that review already
-                # cleared holds, and every rewrite is discarded.
+                # Cached; same evidence. The first check allowed the evidence review, so this
+                # one must too: without it an uncertain Jev verdict that review already cleared
+                # holds, and every rewrite is discarded.
                 self._check_additive_consistency(context, relevant, allow_strong_review=True)
-                # Every humanized draft gets the independent review, not only an uncertain
-                # score: the rewrite is new prose over the same citations.
+                if purpose == "cover_letter":
+                    # A letter's rewrite answers to the same code checks and Jev as its draft;
+                    # the one review grades whatever ships (round 7, addendum 3).
+                    failed = findings_of(candidate)
+                    if failed:
+                        entry.update(status="REJECTED_CHECKS", rejected_for=[code for code, _ in failed])
+                        raise _CorrectableDraftRejection("UNSUPPORTED", [issue for _, issue in failed][:8])
+                # Any other humanized answer gets the independent review, not only at an
+                # uncertain score: the rewrite is new prose over the same citations.
                 self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
                     supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence,
-                    trace=entry, rewrite_attempt=rewrite_attempt, force_review=True)
-                graded = entry.get("rubric_review")
-                rubric = trace.get("rubric")
-                if (isinstance(graded, dict) and graded.get("rubric") == "FAIL"
-                        and isinstance(rubric, dict) and rubric.get("status") == "PASSED"):
-                    # Grade what ships: a rewrite that fails a HARD line the draft passed is
-                    # tried again with the issues, and the draft stands if it keeps failing.
-                    entry["status"] = "REJECTED_RUBRIC"
-                    raise _CorrectableDraftRejection("UNSUPPORTED", list(graded.get("review_issues") or [])[:8]
-                                                     or ["The rewrite fails a rubric line the draft passed."],
-                                                     from_review=True)
+                    trace=entry, rewrite_attempt=rewrite_attempt, force_review=purpose != "cover_letter")
 
             def trace_humanize(entry: dict[str, Any]) -> dict[str, Any]:
                 humanized.append(self._trace(entry))
@@ -5722,12 +5738,17 @@ class DynamicPacketResolver:
         story_refs = [fid for fid in cited if fid in stories]
         if not refs:
             raise AIHold("Narrative must cite relevant verified candidate facts")
+        if purpose == "cover_letter":
+            self._final_letter_review(context, draft, evidence=evidence, job_evidence=job_evidence, trace=trace,
+                graded="humanized" if humanized and humanized[0].get("status") == "REWRITTEN" else "draft",
+                last=rewrite_attempt >= LETTER_ATTEMPTS - 1)
         job_refs = list(dict.fromkeys(eid for s in draft.sentences for eid in s.job_evidence_ids))
+        reviewer = self._reviewer_label()
         note = "Opus draft with per-sentence citations and question completeness checked by Jev"
-        if consistency_confidence < MIN_PROBABILITY:
-            note += "; independent Opus review confirmed evidence consistency"
+        if consistency_confidence < EVIDENCE_REVIEW_BELOW:
+            note += f"; independent {reviewer} review confirmed evidence consistency"
         if scores["strong"]:
-            note += "; independent Opus review confirmed uncertain grounding/completeness"
+            note += f"; independent {reviewer} review confirmed uncertain grounding/completeness"
         if job_refs:
             note += "; job context (not candidate facts): " + json.dumps([
                 {"id": eid, "source_version": supplied_job[eid]["source_version"]} for eid in job_refs],
@@ -5740,15 +5761,6 @@ class DynamicPacketResolver:
             # A discarded no-slop rewrite is never silent (round 6 addendum): the answer says
             # which attempts failed and why, by status code.
             note += "; no-AI-slop rewrite discarded: " + ", ".join(humanized[0]["discarded"])
-        final = next((attempt.get("rubric_review") for attempt in reversed(humanized[0]["attempts"])
-                      if attempt.get("status") == "REWRITTEN"), None) if humanized else None
-        rubric_trace = trace.get("rubric")
-        if isinstance(final, dict) and isinstance(rubric_trace, dict):
-            # The letter that ships is the humanized one: its own review graded it.
-            issues = list(final.get("review_issues") or [])
-            rubric_trace.update(status="PASSED" if final.get("rubric") == "PASS" else "RESIDUAL",
-                                issue_count=len(issues), review_issues=issues, graded="humanized",
-                                owner_question=final.get("owner_question") or "")
         rubric = trace.get("rubric")
         if purpose == "cover_letter":
             # Grade what ships (the judge's fifth fix): READY only when the shipped text's own
@@ -5762,7 +5774,7 @@ class DynamicPacketResolver:
                 reason = question or (issues[0] if issues else "The cover letter has no rubric grade")
                 raise AIHold("The cover letter does not pass the owner's rubric: " + reason,
                              missing_information=[question] if question else [])
-            note += "; rubric review passed"
+            note += f"; rubric review passed (one independent {reviewer} review of the text that ships)"
         trace["status"] = "READY"
         return PacketAnswer(field_id=field.id, semantic_type=field.semantic_type,
             value=value, confidence=min([consistency_confidence, *scores["grounding"], *relevance_scores]),
@@ -5825,54 +5837,39 @@ class DynamicPacketResolver:
                                              facts=facts, evidence=evidence))
         return findings
 
-    @staticmethod
-    def _letter_rubric(draft: NarrativeDraft, scores: dict[str, Any], *, trace: dict[str, Any],
-                       improve: Callable[[list[str]], tuple[NarrativeDraft, dict[str, Any]]],
-                       ) -> tuple[NarrativeDraft, dict[str, Any]]:
-        """The owner's rubric on a grounded cover letter (round 6 addendum), graded by the
-        draft's one independent review (``rubric_review``). A failed HARD line gets up to
-        ``RUBRIC_PASSES`` improvement drafts (``improve``: the writer with the issues, then
-        every draft check and the grounding with its own graded review); an improvement that
-        fails any of them is dropped and the grounded letter stands, so the rubric never costs
-        a letter. Issues still open stay in the trace and the note (``RESIDUAL``)."""
-        graded = trace.get("rubric_review")
-        if not isinstance(graded, dict):
-            trace["rubric"] = {"status": "NOT_REVIEWED", "passes": []}
-            return draft, scores
-        passes: list[dict[str, Any]] = []
-        trace["rubric"] = {"status": "REVIEWING", "passes": passes}
-        for number in range(RUBRIC_PASSES + 1):
-            issues = list(graded.get("review_issues") or [])
-            passes.append({"rubric": graded.get("rubric"), "issue_count": len(issues), "review_issues": issues})
-            trace["rubric"].update(issue_count=len(issues), review_issues=issues,
-                                   owner_question=graded.get("owner_question") or "")
-            if graded.get("rubric") == "PASS":
-                trace["rubric"]["status"] = "PASSED"
-                return draft, scores
-            if number == RUBRIC_PASSES:
-                break
-            try:
-                improved, improved_scores = improve(issues)
-            except AIHold as exc:
-                passes[-1].update(improvement="DROPPED", reason=type(exc).__name__,
-                                  failed=str(exc)[:200] if str(exc).startswith("The rubric rewrite") else None)
-                break
-            grounding = improved_scores.pop("trace", None) or {}
-            passes[-1].update(improvement="ACCEPTED",
-                              grounding={key: grounding.get(key) for key in ("status", "independent_review")})
-            draft, scores = improved, improved_scores
-            graded = grounding.get("rubric_review") or {"rubric": "PASS", "review_issues": []}
-            if (number + 1 < RUBRIC_PASSES and graded.get("rubric") != "PASS"
-                    and len(graded.get("review_issues") or []) >= len(issues)):
-                # Not converging: grade this draft and stop rather than spend another pass.
-                issues = list(graded.get("review_issues") or [])
-                passes.append({"rubric": graded.get("rubric"), "issue_count": len(issues), "review_issues": issues,
-                               "improvement": "STOPPED_NOT_CONVERGING"})
-                trace["rubric"].update(issue_count=len(issues), review_issues=issues,
-                                       owner_question=graded.get("owner_question") or "")
-                break
-        trace["rubric"]["status"] = "RESIDUAL"
-        return draft, scores
+    def _reviewer_label(self) -> str:
+        """The review model's family name for provenance notes: Opus unless ``--review-model``
+        chose Sonnet (round 7, addendum 2 item 5)."""
+        model = getattr(self.writer, "reviewer", None) or getattr(self.writer, "model", "") or ""
+        return "Sonnet" if "sonnet" in str(model) else "Opus"
+
+    def _final_letter_review(self, context: PacketContext, draft: NarrativeDraft, *,
+                             evidence: list[CandidateFact], job_evidence: list[dict[str, str]],
+                             trace: dict[str, Any], graded: str, last: bool) -> None:
+        """A cover letter's one independent review, on the text that ships (round 7, addendum 3):
+        its grounding and its grade against the owner's rubric in one call, after the code checks,
+        Jev and the no-slop pass. A grounding rejection raises for the one corrective rewrite
+        (``_CorrectableDraftRejection``); a failed HARD line does too, unless it is the last
+        attempt or the reviewer asks the owner for an element no supplied source states (a
+        rewrite cannot supply it), and the gate then holds. The grade lands in
+        ``trace["rubric"]``; without a reviewer there is none and the letter cannot ship."""
+        if not callable(getattr(self.writer, "review", None)):
+            trace["rubric"] = {"status": "NOT_REVIEWED"}
+            return
+        try:
+            rubric, issues, question = self._letter_review(context, draft, evidence=evidence,
+                                                           job_evidence=job_evidence)
+        except _CorrectableDraftRejection as exc:
+            trace.update(status="REVIEW_REJECTED", review_verdict=exc.verdict, review_issues=list(exc.issues))
+            trace["rubric"] = {"status": "NOT_GRADED", "graded": graded}
+            raise
+        trace["independent_review"] = "SUPPORTED"
+        trace["rubric"] = {"status": "PASSED" if rubric == "PASS" else "FAILED", "graded": graded,
+                           "issue_count": len(issues), "review_issues": issues, "owner_question": question,
+                           "review_model": getattr(self.writer, "reviewer", None)}
+        if rubric != "PASS" and not question and not last:
+            trace["status"] = "RUBRIC_REJECTED"
+            raise _CorrectableDraftRejection("RUBRIC_FAIL", [RUBRIC_REWRITE_FEEDBACK, *issues[:7]])
 
     def _ground_draft(self, context: PacketContext, field: ApplicationField, draft: NarrativeDraft, *,
                       purpose: Literal["answer", "cover_letter", "motivation"], supplied: dict[str, CandidateFact],
@@ -5880,9 +5877,11 @@ class DynamicPacketResolver:
                       job_evidence: list[dict[str, str]], trace: dict[str, Any],
                       rewrite_attempt: int, force_review: bool = False) -> dict[str, Any]:
         """Citations, per-sentence grounding and question completeness by Jev, then the
-        independent Opus review when a score is uncertain; a failure holds. Returns the
-        grounding scores and whether the strong review ran. ``supplied`` may include
-        story passages (unverified stand-ins) next to the verified facts."""
+        independent review when a score is uncertain; a failure holds. A cover letter is judged
+        by Jev alone here, a failure being correctable, and gets its one review on the text that
+        ships (``_final_letter_review``). Returns the grounding scores and whether the strong
+        review ran. ``supplied`` may include story passages (unverified stand-ins) next to the
+        verified facts."""
         platform_question = _abm_platform_question(field.question_text)
         if any(set(s.fact_ids) - supplied.keys() for s in draft.sentences):
             trace["status"] = "CITATIONS_INVALID"
@@ -5986,6 +5985,21 @@ class DynamicPacketResolver:
                            for i in range(len(draft.sentences))]
         complete = answers["complete"]
         completeness_score = complete.noul if isinstance(complete, NoulAnswer) else 0.0
+        if purpose == "cover_letter":
+            # Jev alone judges a letter before it ships (round 7, addendum 3): a sentence at or
+            # below the floor, or a letter Jev finds incomplete, is a HARD line for the one
+            # corrective rewrite; every score between goes to the final review of the text that
+            # ships, which grounds every sentence again.
+            low = [index for index, score in enumerate(sentence_scores) if score <= LETTER_GROUNDING_FLOOR]
+            if low:
+                trace.update(status="GROUNDING_REJECTED", rejected_sentences=low)
+                raise _CorrectableDraftRejection("UNSUPPORTED", [GROUNDING_FLOOR_FEEDBACK, *(
+                    f"Sentence {index + 1}: '{draft.sentences[index].text[:300]}'" for index in low[:7])])
+            if completeness_score <= 1 - MIN_PROBABILITY:
+                trace["status"] = "INCOMPLETE"
+                raise _CorrectableDraftRejection("INCOMPLETE", [LETTER_INCOMPLETE_FEEDBACK])
+            trace["status"] = "GROUNDED"
+            return {"grounding": [a.noul for a in answers.values() if isinstance(a, NoulAnswer)], "strong": False}
         if min(sentence_scores, default=0.0) <= 1 - MIN_PROBABILITY:
             trace["status"] = "GROUNDING_REJECTED"
             raise AIHold("Narrative contains a claim not fully supported by verified facts")
@@ -5995,17 +6009,7 @@ class DynamicPacketResolver:
                          + (ABM_MISSING_DETAIL if platform_question else " ".join(_required_details(field, purpose))))
         strong_grounding = (force_review or rewrite_attempt > 0
                             or min([completeness_score, *sentence_scores]) < MIN_PROBABILITY)
-        if purpose == "cover_letter" and callable(getattr(self.writer, "review", None)):
-            # One review per letter draft: grounding and the owner's rubric together.
-            try:
-                graded = self._letter_review(context, draft, evidence=evidence, job_evidence=job_evidence)
-            except _CorrectableDraftRejection as exc:
-                trace.update(status="REVIEW_REJECTED", review_verdict=exc.verdict, review_issues=list(exc.issues))
-                raise
-            trace["independent_review"] = "SUPPORTED"
-            trace["rubric_review"] = {"rubric": graded[0], "review_issues": graded[1], "owner_question": graded[2]}
-            strong_grounding = True
-        elif strong_grounding:
+        if strong_grounding:
             try:
                 self._strong_review(context, question=field.question_text,
                     facts=[_fact_evidence(fact) | {"experience_context": _experience_context(context, fact, set(supplied))}

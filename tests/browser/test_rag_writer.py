@@ -16,6 +16,7 @@ from interviewmaxxing_browser.ai.providers import (
     FORM_CAP_USD,
     FORM_WRITER_CALLS,
     FORM_WRITER_USD,
+    OVERRUN_TOKENS,
     REASONING_BUDGET_TOKENS,
     AIHold,
     CallBudget,
@@ -268,7 +269,8 @@ def test_cover_letter_renders_three_paragraphs_and_fits_default_call_budget() ->
     assert not draft.text.startswith("Dear")
     assert budget.calls == 1 and budget.reserved_usd < budget.max_usd
     assert budget.receipts[0].status == "OK"
-    assert provider.requests[0]["max_tokens"] == 1024 + 6000  # low-effort reasoning + the letter
+    # low-effort reasoning + the letter + room for reasoning past its budget (round 7)
+    assert provider.requests[0]["max_tokens"] == 1024 + 6000 + 4000 and OVERRUN_TOKENS == {"cover_letter": 4000}
     assert provider.timeouts == [120.0]
     assert json.loads(provider.requests[0]["messages"][1]["content"])["purpose"] == "cover_letter"
 
@@ -1204,11 +1206,13 @@ def test_narrative_calls_send_a_reasoning_budget_and_keep_the_answers_room(
                    job_evidence=JOB_EVIDENCE, purpose=purpose, on_attempt=attempts.append)  # type: ignore[arg-type]
     [request] = provider.requests
     assert request["reasoning"] == {"max_tokens": 2560}  # high: at least the 80% of 3000 OpenRouter gave
-    assert request["max_tokens"] == 2560 + answer_tokens and ANSWER_TOKENS[purpose] == answer_tokens
+    overrun = OVERRUN_TOKENS.get(purpose, 0)  # a cover letter's room for reasoning past its budget
+    assert request["max_tokens"] == 2560 + answer_tokens + overrun and ANSWER_TOKENS[purpose] == answer_tokens
     assert attempts == [{"attempt": 1, "status": "OK", "finish_reason": "stop",
-                         "reasoning_budget_tokens": 2560, "max_tokens": 2560 + answer_tokens}]
-    assert instance.narrative_budget(purpose) == ({"max_tokens": 2560}, 2560 + answer_tokens)
-    assert instance.narrative_budget(purpose, retry=True) == ({"max_tokens": 3840}, 3840 + 2 * answer_tokens)
+                         "reasoning_budget_tokens": 2560, "max_tokens": 2560 + answer_tokens + overrun}]
+    assert instance.narrative_budget(purpose) == ({"max_tokens": 2560}, 2560 + answer_tokens + overrun)
+    assert instance.narrative_budget(purpose, retry=True) == ({"max_tokens": 3840},
+                                                              3840 + 2 * answer_tokens + overrun)
     assert REASONING_BUDGET_TOKENS == {"low": 1024, "medium": 1536, "high": 2560, "xhigh": 5120, "max": 10240}
 
 
