@@ -389,8 +389,8 @@ def test_uncertain_consistency_uses_full_revision_review_and_invalidates_on_chan
     candidate = candidate_with(fictional_candidate, [first, second])
     writer = ReviewingWriter([{"text": "I have paid media experience.", "fact_ids": [first.id]}])
     ctx = context(candidate, mock_job)
-    packet, resolver, _ = resolve(ctx, Retriever([first]), writer, DecisionsProvider(consistency=0.94))
-    assert packet.is_complete and packet.answers[0].confidence == 0.94
+    packet, resolver, _ = resolve(ctx, Retriever([first]), writer, DecisionsProvider(consistency=0.85))
+    assert packet.is_complete and packet.answers[0].confidence == 0.85
     assert writer.reviews[0]["purpose"] == "evidence_consistency"
     assert writer.reviews[0]["job"] == {}
     assert {fact["id"] for fact in writer.reviews[0]["facts"]} == {first.id, second.id}
@@ -468,7 +468,10 @@ def test_middle_probability_interval_escalates_instead_of_decisive_rejection(
     packet, _, _ = resolve(context(candidate_with(fictional_candidate, [first, second]), mock_job),
         Retriever([first]), writer, DecisionsProvider(consistency=score, support=score, complete=score))
     assert packet.is_complete and packet.answers[0].confidence == score
-    assert [review["purpose"] for review in writer.reviews] == ["evidence_consistency", "draft_grounding"]
+    # Round 7 (addendum 2): a consistency verdict at or above 0.90 needs no evidence review;
+    # an uncertain grounding score still gets the draft's review.
+    assert [review["purpose"] for review in writer.reviews] == (
+        ["draft_grounding"] if score >= 0.90 else ["evidence_consistency", "draft_grounding"])
 
 
 @pytest.mark.parametrize("first_verdict", ["UNSUPPORTED", "INCOMPLETE"])
@@ -3706,14 +3709,6 @@ def test_a_derived_total_answers_until_the_person_states_one(
     assert answer.value.label == "No" and answer.provenance.reference_ids == ["derived_total"]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "round 11 bug: the stated total does not replace the derived one in the factual pass that "
-    "DynamicPacketResolver.resolve runs first: interviewmaxxing_generation/resolver.py "
-    "_FieldResolver._years/_fact_value read candidate.verified_facts() without prefer_stated, so "
-    "'How many years of experience do you have?' (YEARS_EXPERIENCE text, applicant-current source) "
-    "with the stated 8 beside a derived 5 is unresolved as two disagreeing values (the stated 8 alone "
-    "is copied without a call) and only a fact_value Jev call can still answer it; expected: '8' "
-    "citing the stated total, no call"))
 def test_a_years_count_question_copies_the_stated_total_beside_a_derived_one_without_a_call(
     fictional_candidate: CandidateProfile, mock_job: JobRecord,
 ) -> None:
@@ -3726,6 +3721,24 @@ def test_a_years_count_question_copies_the_stated_total_beside_a_derived_one_wit
     [answer] = packet.answers
     assert answer.value == TextValue(text="8")
     assert answer.provenance.reference_ids == ["user_years_total"]
+
+
+def test_a_paid_media_years_question_copies_the_stated_area_beside_a_derived_one_without_a_call(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    # Round 14: the factual pass reads the facts through prefer_stated, so the derived 4
+    # never disagrees with the stated 7 (the live wording, a text box typed YEARS_EXPERIENCE).
+    derived_area = r11_fact(fictional_candidate, "years_experience.paid_media", 4,
+                            fid="derived_years_paid_media", source=R11_DERIVED)
+    provider = FactScreenerProvider("UNKNOWN", scope="APPLICANT_CURRENT")
+    packet, _, resolver = screen_facts(
+        r11_candidate(fictional_candidate, derived_area), mock_job,
+        fact_form("How many years of paid media experience do you have?", control=ControlType.TEXT,
+                  semantic=SemanticType.YEARS_EXPERIENCE), provider)
+    assert not provider.asked("fact_value") and not fact_traces(resolver)
+    [answer] = packet.answers
+    assert answer.value == TextValue(text="7")
+    assert answer.provenance.reference_ids == ["user_years_paid_media"]
 
 
 def test_the_consistency_check_never_compares_a_stated_total_with_the_derived_one_it_replaced(

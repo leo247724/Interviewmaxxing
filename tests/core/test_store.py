@@ -287,6 +287,7 @@ def test_confirmed_submission_writes_receipt_and_blocks_resubmission(
         "application.requested",
         "application.inspecting",
         "job.identity_bound",
+        "job.location_bound",  # the page's "Remote (US)", the job had none (round 5)
         "packet.saved",
         "application.packet_ready",
         "application.filling",

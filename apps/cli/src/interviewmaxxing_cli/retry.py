@@ -45,7 +45,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,6 +74,7 @@ from .batch import (
     read_ledger_lines,
     require_ledgers,
     run_batch,
+    with_saved_listings,
 )
 from .triage import (
     candidate_saved_answers,
@@ -171,7 +172,8 @@ def _row(entry: LedgerEntry, application_id: str | None) -> BatchRow:
     return BatchRow(listing_id=entry.listing_id, pipeline_id=entry.pipeline_id,
                     company=entry.company, title=entry.title,
                     application_url=entry.application_url, backend=entry.backend,
-                    status=entry.status, application_id=application_id)
+                    status=entry.status, application_id=application_id,
+                    location=entry.location)
 
 
 def _selection_reason(current: str, answered: int, *, browser_only: bool, rerun_all: bool,
@@ -195,7 +197,8 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                outcomes: Collection[str] = RETRY_OUTCOMES, include_explicit: bool = False,
                rerun_all: bool = False, user_actions: bool = False,
                backends: Collection[str] | None = None, limit: int | None = None,
-               only_apps: Collection[str] | None = None) -> RetryPlan:
+               only_apps: Collection[str] | None = None,
+               jobs_db: Path | None = None) -> RetryPlan:
     """Select the applications of ``batch_id``'s ledger to run again (see the module
     docstring), in ledger order; with ``only_apps``, only those applications (a listing
     counts when its line or the store's application for its URL is one of them).
@@ -300,6 +303,11 @@ def plan_retry(paths: LocalPaths, batch_id: str, *, candidate_id: str,
                        user_actions=user_actions, only_apps=only, considered=considered,
                        selected=len(items), selected_by=dict(reasons.most_common()),
                        skipped=dict(skipped.most_common()), ledger_lines_ignored=ignored)
+    if jobs_db is not None and items:
+        # A row keeps its ledger line's listing location; an older line without one takes
+        # its saved listing's from the jobs store (round 5).
+        rows, _ = with_saved_listings([item.row for item in items], jobs_db)
+        items = [replace(item, row=row) for item, row in zip(items, rows, strict=True)]
     return RetryPlan(retry_of=batch_id, items=tuple(items), stats=stats)
 
 

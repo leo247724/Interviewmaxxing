@@ -143,6 +143,27 @@ and `--yes`, and submits exactly what you approved
 Preparation runs the site's intermediate steps: a multi-step form may store a
 draft on the employer's side before the final step, as with a single `apply`.
 
+## The Wellfound lane (sign-in-gated, one worker)
+
+Wellfound applications run in the person's own signed-in Chrome through the OpenCLI Browser
+Bridge profile, one worker, prepare-only. The person's account was verified signed in on
+September 25, 2026 (candidate navigation, active Apply controls). Nothing is submitted: the
+application modal's "Send application" is the dialog's submit and is never clicked.
+
+```sh
+interviewmaxxing prepare-batch --inventory /abs/private/application-urls.json \
+  --backends wellfound --browser opencli --opencli-profile PROFILE --workers 1 \
+  --per-job-timeout 600 --limit 30 --batch-id wellfound-20260925 \
+  --captcha-solver 2captcha --captcha-budget-usd 2.00 --ai-routing --env-file /abs/env.local \
+  --writer-model anthropic/claude-opus-5.5 --rag-connection-file /abs/private/connection.json
+```
+
+Two things observed live and read-only on one posting are being fixed in WP1 round 15: under
+OpenCLI the "Apply" control needs a DOM click (its coordinate click and Enter do nothing), and
+the application is one note textarea to a named recruiter plus "Send application", a dialog
+shape the form rule has to accept. Until that round lands, this lane stops on every job with
+"Could not reach the application form".
+
 ## Inventory format
 
 A JSON list of objects (an export of `public.application_urls`, see
@@ -170,6 +191,41 @@ counted as `skipped_invalid_url`. `listing_id` identifies a row in the ledger; a
 row without one is keyed by its normalized URL. `pipeline_id` is the id of the
 job's Saved card (`pipe_...`), used to link the application to it (see
 [Pipeline cards](#pipeline-cards)); a row without one is prepared but not linked.
+
+### Where a batch job's location comes from
+
+The inventory has no location column. `prepare-batch` looks each row's listing up by
+`listing_id` in the jobs store: `$IMX_JOBS_DB`, else `$IMX_HOME/jobs/jobs.sqlite3`. The
+store's `listings` table has every saved listing's JSON, and a listing id replaced by a
+merge resolves to the surviving one. The lookup opens one read-only connection and
+never creates or changes the store. The listing's `location` ("Austin, TX", "Austin,
+Texas Metropolitan Area", "Remote", …) goes to the run as `apply --job-location TEXT`,
+and so does its `title` and `company` where the row has none. The row's own `title` and
+`company` go as `--job-title` and `--job-company`. The start line says how many rows
+got a location ("N with their saved listing's location"). A row without a listing, or
+whose listing states no location, runs as before.
+
+The runner writes these on the application's job right after recording the request
+(`ApplicationStore.record_listing`), before anything reads the job:
+
+- A **listing location** fills a job without one. It also replaces a location a page
+  gave (a JSON-LD locality bound with the job's identity, or one bound before sources
+  were recorded). The first listing location is kept.
+- A **page's locality** is written only when the job has no location. A remote posting
+  whose JSON-LD names the company's Austin office therefore stays remote, and an Austin
+  hybrid posting keeps "Austin, TX (Hybrid)" over the page's bare "Austin". The metro
+  rule reads the job's location and title (Austin metro: on-site or hybrid; elsewhere:
+  Remote), so this is what makes it answer Austin jobs correctly.
+- **Title and company** from the listing only fill a job without them; the page's own
+  still win when the job's identity is bound.
+
+Each location write is recorded on the application as `job.location_bound`: `job_id`,
+`location`, `source` (`listing` or `page`) and `previous`. When a job is merged into
+another with the same ATS identity, its listing location replaces the other job's page
+locality. The ledger line keeps the location the run was given (`location`).
+`--retry` passes it again, and a line written before this field existed takes its
+listing's location from the jobs store. The service's application handoff writes the
+linked card's `locationCommute` (else its listing's location) the same way.
 
 ## Command
 
@@ -332,6 +388,9 @@ Everything lives under `$IMX_HOME/batches/<batch id>/` (directory `0700`, files 
     card, `--no-sync-closed` was given, or the card was already in Closed.
   - `closed_sync_reason`: why the card was not moved, when `closed_synced` is
     `false`.
+  - `location`: the saved listing's location the run was given (`--job-location`; see
+    [Where a batch job's location comes from](#where-a-batch-jobs-location-comes-from)),
+    passed again by `--retry`; empty when the row had none.
   - `provider_cost_usd` and `provider_calls`: the application's known AI provider
     cost (USD) and number of provider calls so far, summed over every
     `provider.budget` event the runner recorded for it. They are read from the state

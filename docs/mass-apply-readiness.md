@@ -413,6 +413,32 @@ holds, from the traces:
 5. *Genuine gaps*: programmatic/DSP, MMM/MTA, incrementality tests, orthodontics, 500-account
    portfolios. Honest Nos the person gives once through the sheet.
 
+**Sixth merge wave (September 25, evening, j-workspace 4d5e186): WP1 round 14.** Questions that
+appear during the fill are answered in the same run (Greenhouse's EEO block, Teamtailor's late
+LinkedIn field), Paylocity's address line and its work-history dates come from the profile's most
+recent role under the route gate, Radix-style ARIA checkbox and radio groups are questions with
+options, the "double-check" statement is an attestation decided by the person's certification,
+Jobvite's data-consent page is accepted from the person's own privacy acknowledgement (preparation
+records `consent.accepted`; the consent is recorded at Jobvite even in a prepare-only run), and
+CAPTCHAs are solved through the person's 2Captcha account behind `--captcha-solver 2captcha`
+(reCAPTCHA v2, v3 and Enterprise, hCaptcha, Turnstile; USD 2.00 per batch by default; a final-step
+CAPTCHA is answered only in the approved submit, never in preparation; an invisible reCAPTCHA wired
+to the submit button is left to the person). Gates on the combined tree: 6058 passed, 9 skipped, 3 xfailed in 18.9 minutes, 25 e2e, ruff and mypy clean. Retry eight is
+scripted with the solver on and waits for the OpenRouter top-up.
+
+**Wellfound (September 25, evening).** The person created a Wellfound account and it is signed in
+inside the OpenCLI Browser Bridge profile `jgd7jms9` (verified read-only: candidate navigation,
+"Ready to interview", active Apply controls on a saved job). Two things stand between the account
+and the 30 saved Wellfound jobs, both observed live and read-only on one posting: OpenCLI's click on
+"Apply" and "Apply now" does nothing (no dialog, no request), while a DOM click opens the
+application modal at once; and that modal is one note textarea to a named recruiter plus a
+"Send application" submit, a shape the dialog rule does not yet accept. WP1 round 15 carries both
+(a DOM-click fallback for apply controls on OpenCLI, the dialog rule, the note routed to the writer
+as a short letter). The lane is `.imx/dynamic-applications/lanes/wellfound-opencli.sh`:
+`prepare-batch --backends wellfound --browser opencli --opencli-profile jgd7jms9 --workers 1`.
+Wellfound's own checklist still says the profile is missing key information (skills first), so
+recruiters cannot find it yet. Nothing was sent: the modal was closed without a note.
+
 **Fifth merge wave (September 25, 17:30, j-workspace 480fed4).** WP12 round 6 (cover letters graded
 on the text that ships: one combined grounding-plus-rubric review per draft, per-requirement fact
 retrieval with the long-form stories as the spine, the rubric's line rules checked in code with
@@ -593,6 +619,10 @@ years-of-experience facts from the resume timeline.
 5. **Sign-in-gated backends.** LinkedIn Easy Apply is out of scope (the person applies
    by hand). Wellfound (30), Indeed (10), Workday (51; the account step is left to the
    person, WP7) and iCIMS (8) still need the person's browser session or an account.
+   *Status, September 25 evening:* the person's Wellfound account exists and is signed in
+   inside the OpenCLI profile; the lane script is written; WP1 round 15 makes the apply
+   control and the note dialog work under OpenCLI. Indeed, iCIMS and the Workday accounts
+   still need the person.
 6. **Submission stays disabled by design.** WP8's approve → authorize → submit path is
    mock-only; the reviewer's rule stands: no `submit-approved` on a real employer before
    the cloud rounds land and a review pass covers 551717e..HEAD.
@@ -605,8 +635,18 @@ years-of-experience facts from the resume timeline.
 9. **Provider credits are a hard stop.** Every Jev decision, writer call and review goes
    through the OpenRouter account in `env.local`; when it ran dry on September 25 the
    letter loop stopped with HTTP 402 and every narrative field would hold the same way.
-   Check the balance (`GET /api/v1/credits`) before a batch; the full inventory with one
-   letter per form is USD 200–360 at the measured rates.
+   Check the balance (`GET /api/v1/credits`) before a batch. Measured on the round-6 letter
+   flow a letter that ships is USD 0.50–1.00 (two shipped letters: USD 0.66 and 0.98; Opus
+   drafts and three Opus reviews are 99 percent of it), so the earlier USD 200–360 estimate
+   for the inventory was low; WP12 round 7 cuts the letter to one draft, one review on the
+   shipped text and a conditional humanizer (target USD 0.22–0.25 first pass), and every
+   optional cover letter is still written.
+10. **The listing's location does not reach batch jobs.** WP2 round 14 traced it: a batch
+   job's `location` comes only from the apply page's JSON-LD, which most apply pages lack,
+   so the metro rule reads most batch jobs as remote and would answer "Remote" on an Austin
+   hybrid posting unless the question names Austin. The jobs store has every saved
+   listing's location. WP9 round 5 carries it into the run (`apply --job-location`, kept
+   over the page's locality, through retries). The mass run waits for it.
 
 ## How to run the next batch
 

@@ -193,3 +193,54 @@ def test_shared_apply_url_cannot_link_another_known_jobs_receipt(links: Any, via
     [entry] = h.client.get("/pipeline").json["entries"]
     assert entry["application"]["confirmationReference"] == "A-RECEIPT"
     assert h.runs == []
+
+
+# --- WP9 round 5: the card's location reaches the job before any run ---------------------------
+
+
+def _held_dispatch(h: Harness) -> list[str]:
+    """Dispatches are recorded, never run: only what the handoff wrote is checked."""
+    started: list[str] = []
+    h.service.dispatcher.submit = lambda application_id, *args, **kwargs: started.append(
+        application_id)
+    return started
+
+
+def _job_location(paths: LocalPaths, application_id: str) -> tuple[str | None, list[str]]:
+    from interviewmaxxing_core import ApplicationStore
+    from interviewmaxxing_core.store import LOCATION_EVENT
+
+    with ApplicationStore.open(paths.state_db) as store:
+        job = store.get_job(store.get_application(application_id).job_id)
+        return job.location, [e.metadata["source"] for e in store.list_events(application_id)
+                              if e.event == LOCATION_EVENT]
+
+
+def test_the_cards_location_reaches_the_job_before_dispatch(
+        links: Any, isolated_imx_home: LocalPaths) -> None:
+    h, repo, resume_id = links
+    entry_id = card(h, listingId=next(iter(repo.items)))
+    with h.app.pipeline.store() as store:  # the person noted the hybrid schedule on the card
+        item = store.get_item("default", entry_id)
+        store.update_item("default", entry_id, PipelineUpdate(
+            tracking=item.tracking.model_copy(update={"location_commute": "Round Rock, TX (Hybrid)"})),
+            expected_revision=item.revision)
+    started = _held_dispatch(h)
+    result = h.client.post("/applications", body(h, resume_id, pipelineEntryId=entry_id))
+    assert result.status == 201, result.json
+    assert started == [result.json["id"]]
+    assert _job_location(isolated_imx_home, result.json["id"]) == (
+        "Round Rock, TX (Hybrid)", ["listing"])
+
+
+def test_a_listing_only_handoff_takes_the_listings_location(
+        links: Any, isolated_imx_home: LocalPaths) -> None:
+    h, repo, resume_id = links
+    started = _held_dispatch(h)
+    result = h.client.post("/applications", body(h, resume_id, listingId=next(iter(repo.items))))
+    assert result.status == 201 and started == [result.json["id"]], result.json
+    assert _job_location(isolated_imx_home, result.json["id"]) == ("Austin, TX", ["listing"])
+    unlinked = h.client.post("/applications", {**body(h, resume_id),
+                                               "applicationUrl": SITE_URL + "-other"})
+    assert unlinked.status == 201, unlinked.json
+    assert _job_location(isolated_imx_home, unlinked.json["id"]) == (None, [])

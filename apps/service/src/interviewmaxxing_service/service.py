@@ -51,7 +51,7 @@ from interviewmaxxing_pipeline import PipelineItem
 
 from . import errors
 from .answers import current_questions, plan_answers, unanswered_required
-from .application_links import ApplicationLinks
+from .application_links import ApplicationLink, ApplicationLinks
 from .candidate import (
     CandidateDataInvalid,
     CandidateGateway,
@@ -537,6 +537,11 @@ class PresentationService:
                 raise errors.conflict(BUSY_MESSAGE)
             result = store.record_request(cid, url)  # durable before any work starts
             app = result.application
+            location = self._card_location(link)
+            if location is not None:
+                # The card's location is kept on the job over a page's locality: the metro
+                # rule reads it (round 5, ``record_listing``).
+                store.record_listing(app.id, location=location, actor="service")
             created = result.disposition.value == "NEW"
             dispatch = (
                 app.state in RUNNABLE_STATES
@@ -573,6 +578,26 @@ class PresentationService:
                     after=self._after_run,
                 )
             return self._view(store, store.get_application(app.id)), created
+
+    def _card_location(self, link: ApplicationLink | None) -> str | None:
+        """The linked card's ``locationCommute``, else its listing's location; None
+        without a link or when neither states one (or they cannot be read)."""
+        links = self.application_links
+        if link is None or links is None:
+            return None
+        try:
+            if link.entry_id is not None:
+                with links.pipeline.store() as pipeline:
+                    card = pipeline.get_item(links.pipeline.candidate_id, link.entry_id)
+                if card.tracking.location_commute and card.tracking.location_commute.strip():
+                    return card.tracking.location_commute.strip()
+            if link.listing_id is not None:
+                listing = links.get_listing(link.listing_id)
+                if listing is not None and listing.location and listing.location.strip():
+                    return listing.location.strip()
+        except Exception as exc:
+            log.warning("reading the linked card's location failed: %s", type(exc).__name__)
+        return None
 
     def list_applications(self) -> ApplicationListView:
         """Every application of the configured candidate, most recently updated first,

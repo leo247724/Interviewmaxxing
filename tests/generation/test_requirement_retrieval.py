@@ -304,10 +304,10 @@ def test_a_long_description_sends_its_requirement_chunks_in_order(profile, mock_
     assert len(store.retrieve(candidate=profile, job=mock_job, query="What retail media have you run?").job_evidence) <= 4
 
 
-def _story(number: int, title: str, body: str) -> StoryChunk:
-    text = f"Story {number:02d}: {title} | employer: fictional employer | period: 2024 | themes: work\n{body}"
+def _story(number: int, title: str, body: str, employer: str = "fictional employer") -> StoryChunk:
+    text = f"Story {number:02d}: {title} | employer: {employer} | period: 2024 | themes: work\n{body}"
     return StoryChunk(id="story:" + hashlib.sha256(text.encode()).hexdigest(), story_id=f"s{number}",
-                      number=number, kind="story", title=title, employer="fictional employer", period="2024",
+                      number=number, kind="story", title=title, employer=employer, period="2024",
                       themes=("work",), text=text)
 
 
@@ -384,3 +384,64 @@ def test_the_long_form_story_leads_over_a_linkedin_bullet(profile, mock_job) -> 
     # The bullet matches the priority's words more closely; the long-form story still leads.
     assert [c["title"] for c in result.story_chunks][:2] == ["The dashboard that lied", "Tracking bullet"]
     assert result.receipt["story_priority_ids"][0] == long_form.id
+
+
+
+# --- round 7: verified twins for story figures; the long-form story for the lead's employer ----
+
+
+def test_a_story_figure_brings_the_verified_claim_that_states_it(profile, mock_job) -> None:
+    from interviewmaxxing_generation.knowledge.store import figure_values, verified_twins
+
+    twin = fact("resume_claim_budget", "Directed a $400K+ monthly search budget for a fictional law firm's "
+                                       "intake campaigns.")
+    other = fact("resume_claim_other", "Ran $400K of print ads for a fictional furniture chain.")
+    passage = ("The pitch at the fictional law firm meant 400k per month in search spend for intake campaigns, "
+               "and signed cases rose 143% once the budget moved.")
+    assert figure_values(passage) == {400000.0, 143.0}
+    assert figure_values("in 2024 we had 5 stores, $1.5M and 58%") == {1500000.0, 58.0}
+    twins, unpaired = verified_twins(passage, [other, twin])
+    assert [f.id for f in twins] == ["resume_claim_budget"] and unpaired == {143.0}
+
+    profile = profile.model_copy(update={"facts": [*profile.facts, twin, other]})
+    db, embedder = ConceptPg(), ConceptEmbedder()
+    store = PgKnowledgeStore(db, embedder)
+    store.index_candidate(profile)
+    store.index_stories(profile.id, [_story(1, "The intake budget", passage, employer="fictional law firm")],
+                        version="a" * 64)
+    store.index_job(profile.id, mock_job, "You will own search campaigns and report results.", "https://example.invalid/r")
+    result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True, limit=3)
+    story_id = result.story_chunks[0]["id"]
+    # The twin reaches the writer first, whatever the requirements rank; the unpaired figure is counted.
+    assert result.facts[0].id == "resume_claim_budget"
+    assert result.receipt["story_figure_twins"] == {story_id: ["resume_claim_budget"]}
+    assert result.receipt["story_unpaired_figures"] == {story_id: 1}
+    assert result.receipt["fact_selection"]["pinned_ids"] == ["resume_claim_budget"]
+    assert "400k" not in json.dumps(result.receipt) and "143" not in json.dumps(result.receipt)
+
+
+def test_the_long_form_story_about_the_lead_employer_is_promoted(profile, mock_job) -> None:
+    from interviewmaxxing_generation.knowledge.stories import DEFAULT_STORY_SOURCE
+
+    db, embedder = ConceptPg(), ConceptEmbedder()
+    store = PgKnowledgeStore(db, embedder)
+    store.index_candidate(profile)
+    bullets = [_story(n, f"Tracking bullet {n}", "Rebuilt tracking tracking tracking tracking for orders.",
+                      employer="Glaze Agency") for n in range(1, 11)]
+    long_form = _story(20, "The dashboard that lied", "The agency dashboard looked great while the ledger showed "
+                                                      "thin months, and the owner trusted the dashboard.",
+                       employer="Glaze Agency")
+    elsewhere = _story(30, "Another firm's flowers", "Ran florist email for another firm's shops.",
+                       employer="Oven Works")
+    store.index_stories(profile.id, bullets, version="b" * 64, source_id="candidate-stories-linkedin",
+                        replace_others=False)
+    store.index_stories(profile.id, [elsewhere, long_form], version="c" * 64, source_id=DEFAULT_STORY_SOURCE,
+                        replace_others=False)
+    store.index_job(profile.id, mock_job, "You will build tracking so every order is counted.",
+                    "https://example.invalid/tracking-role")
+    result = store.retrieve(candidate=profile, job=mock_job, query="Cover letter", narrative=True)
+    # Ten bullets outrank it for the priority, so round 6's lead rule cannot reach it; the lead
+    # bullet's employer brings the long-form story about the same employer to the front.
+    assert result.story_chunks[0]["id"] == long_form.id
+    assert result.receipt["story_long_form_promoted"] == long_form.id
+    assert len(result.story_chunks) <= 4

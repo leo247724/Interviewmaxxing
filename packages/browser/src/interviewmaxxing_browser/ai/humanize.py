@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .providers import (
+    AGE_RULE,
     VOICE_RULE,
     AIHold,
     CallReceipt,
@@ -199,6 +200,30 @@ def attribution_clauses(text: str, names: Sequence[str]) -> list[str]:
         r"|\bwhere\s+I(?:'ve|\s+have)?\s+done\s+my\s+best\s+work\b"
         r"|\bworks\s+the\s+way\s+my\s+\w+\s+(?:has|does|did)\b", text, re.IGNORECASE)]
     return [clause.strip()[:120] for clause in found]
+
+
+_AGE = re.compile(
+    r"\b\d{2}[- ]?(?:year|yr)s?[- ]old\b"
+    r"|\b(?:twenty|thirty|forty|fifty|sixty)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?[- ]"
+    r"(?:year[- ]old|something)\b"
+    r"|\b\d0-something\b|\b\d0s-something\b"
+    r"|\b(?:aged?|at\s+the\s+age\s+of)\s+(?:1[6-9]|[2-6]\d)\b"
+    r"|\bat\s+(?:1[6-9]|[2-6]\d)(?=\s*[,.;!?)]|\s+(?:I|I'd|I'm|I've|when|and|with)\b|$)"
+    r"|\b(?:I\s+was|I'm|I\s+am|when\s+I\s+was)\s+(?:only\s+|just\s+|barely\s+)?(?:1[6-9]|[2-6]\d)"
+    r"(?=\s*[,.;!?)]|\s+(?:and|when|at)\b|$)"
+    r"|\bborn\s+in\s+(?:19|20)\d{2}\b"
+    r"|\b(?:fresh|straight|right)\s+out\s+of\s+(?:high\s+school|school|college|university|grad\s+school)\b"
+    r"|\bthe\s+youngest\s+(?:(?:person|one|member|hire|buyer|manager|marketer|employee|lead|analyst)\s+)?"
+    r"(?:in\s+the\s+(?:room|company|office|department)|on\s+the\s+(?:team|floor)|at\s+the\s+(?:firm|company|table)|there)\b"
+    r"|\bin\s+my\s+(?:early|mid|late)?[- ]?(?:teens|twenties|thirties|forties|fifties|20s|30s|40s|50s)\b",
+    re.IGNORECASE)
+"""Phrases that state or give away the applicant's age (the owner's decision, round 7)."""
+
+
+def age_revealed(text: str) -> list[str]:
+    """The phrases in a narrative that state or give away the applicant's age: "a 26-year-old",
+    "at 24", "I was 26", "born in 1999", "fresh out of school", "the youngest in the room"."""
+    return [match.group(0).strip()[:80] for match in _AGE.finditer(text)]
 
 
 def fit_commentary(text: str) -> list[str]:
@@ -371,13 +396,18 @@ def _openers(sentences: list[str]) -> list[str]:
     return [" ".join(_WORD.findall(sentence.casefold())[:3]) for sentence in sentences]
 
 
-def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[str] = "") -> list[Finding]:
+def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[str] = "",
+         posting: Sequence[str] = (), employers: Sequence[Sequence[str]] = ()) -> list[Finding]:
     """The banned constructions present in a draft, by stable pattern name; with the
     person's ``statements``, also a run of more than ``MAX_QUOTED_WORDS`` words copied from
     one of them (``quoted_statement``). ``company`` is the name, or the names, the letter uses
     for the employer (the posting's, not the record's legal name): sentences restating the
     posting (``job_restated``, by their words, never by what they cite: a company fact or an
-    offer to talk may cite job evidence alone) and attribution clauses are found with it."""
+    offer to talk may cite job evidence alone) and attribution clauses are found with it.
+    ``posting`` is the job description's text: a sentence copying more than
+    ``MAX_QUOTED_WORDS`` of its words (its About or mission line) is ``job_restated`` too.
+    ``employers`` are the names each of the applicant's employers goes by: one named twice in
+    a paragraph is ``repeated_employer`` (round 7)."""
     names = [company] if isinstance(company, str) else [name for name in company if name]
     company = names[0] if names else ""
     findings: list[Finding] = []
@@ -420,6 +450,9 @@ def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[s
     hedges = fit_hedges(text)
     if hedges:
         findings.append(Finding("fit_hedge", len(hedges), tuple(hedges[:4])))
+    ages = age_revealed(text)
+    if ages:
+        findings.append(Finding("age_revealed", len(ages), tuple(ages[:4])))
     if sentences and _KICKERS.search(sentences[-1]):
         findings.append(Finding("fake_profundity", 1, (sentences[-1][:120],)))
     last_paragraph = paragraphs[-1] if paragraphs else ""
@@ -427,8 +460,9 @@ def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[s
         findings.append(Finding("summary_recap", 1, (last_paragraph[:120],)))
     elif len(paragraphs) >= 3 and not re.search(r"\d", last_paragraph) and _CLOSING_RECAP.search(last_paragraph):
         findings.append(Finding("closing_recap", 1, (last_paragraph[:120],)))
-    # The cover-letter genre (round 6).
-    restated = [sentence for sentence in sentences if restates_job(sentence, names)]
+    # The cover-letter genre (round 6), and the posting's own sentences pasted in (round 7).
+    restated = [sentence for sentence in sentences if restates_job(sentence, names)
+                or any(len(quoted_run(sentence, source)) > MAX_QUOTED_WORDS for source in posting)]
     if restated:
         findings.append(Finding("job_restated", len(restated), tuple(s[:120] for s in restated[:4])))
     if sentences and stock_opener(sentences[0]):
@@ -459,6 +493,12 @@ def lint(text: str, *, statements: Sequence[str] = (), company: str | Sequence[s
     if ranges or repeats:
         findings.append(Finding("repeated_dates", len(ranges) + len(repeats),
                                 tuple([r.strip() for r in ranges] + repeats)[:4]))
+    for variants in employers:
+        pattern = re.compile("|".join(rf"(?<![\w]){re.escape(name)}(?![\w])" for name in variants if name))
+        crowded = [paragraph[:120] for paragraph in paragraphs if len(pattern.findall(paragraph)) > 1]
+        if crowded:
+            findings.append(Finding("repeated_employer", len(crowded), tuple(crowded[:4])))
+            break
     if text.casefold().count("the bottom line") > 1:
         findings.append(Finding("blog_tic", text.casefold().count("the bottom line"), ("the bottom line",)))
     cycled = {" ".join(match.group(1).casefold().split()) for match in _POSTING_NAME.finditer(text)}
@@ -521,6 +561,31 @@ def _number_values(text: str) -> set[float]:
     return values
 
 
+_SCOPED = re.compile(r"\b([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*)(?:'s)?\s+(clients|customers|accounts|campaigns|"
+                     r"teams|firms|brands|users|programs|partners|stores|sites|products)\b")
+
+
+def _narrows_scope(original: NarrativeDraft, rewritten: NarrativeDraft) -> bool:
+    """Whether a rewrite narrows a claim's scope: a named group in a fact sentence ("Adscriptly
+    clients") that its rewritten sentence, with the same fact ids, turns into a pointer ("those
+    clients") and so to a subset named elsewhere (round 7, the judge's tenth fix)."""
+    rewritten_by_facts: dict[frozenset[str], str] = {}
+    for sentence in rewritten.sentences:
+        if sentence.fact_ids:
+            key = frozenset(sentence.fact_ids)
+            rewritten_by_facts[key] = rewritten_by_facts.get(key, "") + " " + sentence.text
+    for sentence in original.sentences:
+        after = rewritten_by_facts.get(frozenset(sentence.fact_ids), "") if sentence.fact_ids else ""
+        for match in _SCOPED.finditer(sentence.text):
+            name, noun = match.group(1), match.group(2)
+            if name.split()[0].casefold() in ("the", "a", "an", "my", "our", "i"):
+                continue
+            if (name not in after and re.search(rf"\b(?:those|these|the|that|this|such)\s+{noun}\b", after,
+                                                 re.IGNORECASE)):
+                return True
+    return False
+
+
 def _keeps_company_fact(original: NarrativeDraft, rewritten: NarrativeDraft) -> bool:
     """The company paragraph's sentences that cite job evidence (the fact only true of this
     employer, its pairing with the applicant's work) survive a rewrite, as their own sentence
@@ -566,6 +631,8 @@ def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
         return "not_ready"
     if quotes_statement(rewritten.text, statements):
         return "quoted_statement"
+    if age_revealed(rewritten.text):
+        return "age_revealed"
     original_facts, original_jobs = _cited(original)
     facts, jobs = _cited(rewritten)
     if facts - supplied_ids or jobs - job_ids or jobs - original_jobs:
@@ -579,6 +646,8 @@ def check_rewrite(original: NarrativeDraft, rewritten: NarrativeDraft, *,
         return "dropped_citation"  # the job evidence a fact sentence paired with it
     if len(_job_only(rewritten)) > len(_job_only(original)):
         return "added_job_sentence"
+    if _narrows_scope(original, rewritten):
+        return "narrowed_scope"
     if _number_values(rewritten.text) - _number_values(original.text):
         return "new_number"
     words, before = len(rewritten.text.split()), len(original.text.split())
@@ -609,6 +678,9 @@ REJECTION_FEEDBACK = {
                         "on it.",
     "dropped_structure": "Keep the company paragraph's fact about the employer and its pairing with the "
                          "applicant's work: reword those sentences, never delete them.",
+    "narrowed_scope": "Keep each claim's scope as the draft states it: a named group ('Adscriptly clients') "
+                      "stays named, never 'those clients'.",
+    "age_revealed": "Never state or imply the applicant's age, birth year or career stage by age.",
     "moved_citation": "Keep each fact sentence's exact fact_ids together on one sentence; do not split, "
                       "merge or repeat fact citation sets.",
     "added_job_sentence": "Do not add a sentence that cites only job evidence; fold job priorities into the "
@@ -665,7 +737,11 @@ _RULES = (
     "fragments, capitals after a colon that neither grammar, a proper noun, a title nor code "
     "requires, decorative bold and bullets, and synonym cycling of the posting's name (pick one "
     "name for the role and keep it). repeated_dates: give an employer's dates once, as a year or "
-    "'since <Month YYYY>' where it first appears, and no month-to-month range. "
+    "'since <Month YYYY>' where it first appears, and no month-to-month range. repeated_employer: "
+    "name each of the applicant's employers once per paragraph. A job_restated sentence copied from "
+    "the posting's About or mission line becomes one plain clause in the posting's nouns. Never "
+    "narrow a claim's scope: a named group ('Adscriptly clients') stays named, never 'those "
+    "clients'. "
     "A greeting line ('Dear Hiring Manager,') stays as it is, and a cover letter's closing "
     "paragraph keeps both its sentences: the profile link and the offer to talk. "
     "When rejected_rewrite is supplied, your previous rewrite broke that constraint: fix it. Never "
@@ -682,7 +758,7 @@ _RULES = (
     "('decided', not 'made a decision'). Keep the specific numbers, names, tools, dates and "
     "results exactly as the draft states them. Keep first person and plain words. Match the "
     "vocabulary and cadence of voice_samples, which are the applicant's own writing; they are "
-    "style only, never a source of claims. " + VOICE_RULE + "Cut any blog_tic finding. "
+    "style only, never a source of claims. " + VOICE_RULE + AGE_RULE + "Cut any blog_tic finding. "
     "Make the minimum effective edit: leave sentences "
     "that are already plain alone. "
     "Hard constraints: (0) Keep each fact-citing sentence's exact set of fact_ids together on "
@@ -711,8 +787,9 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
                   purpose: Literal["answer", "cover_letter", "motivation"], draft: NarrativeDraft,
                   job: dict[str, str], voice_samples: list[str], findings: list[Finding],
                   max_length: int | None, attempt: int, rejected: str | None = None) -> NarrativeDraft:
-    """One bounded Opus rewrite of a grounded draft; the same budget, transport and
-    structured schema as the writer, recorded under the purpose ``humanize``."""
+    """One bounded rewrite of a grounded draft by the writer's review model at the humanize
+    effort (low by default, round 7); the same budget, transport and structured schema as the
+    writer, recorded under the purpose ``humanize``."""
     if purpose not in ("answer", "cover_letter", "motivation"):
         raise AIHold("Unsupported narrative purpose")
     if any(not isinstance(sample, str) for sample in voice_samples):
@@ -724,7 +801,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
                              else "job" if i.startswith("job:") else "") for i in cited], [])
     wire = unalias_draft(draft, {alias: identifier for identifier, alias in aliases.items()}) if aliases else draft
     payload = {
-        "model": writer.model, "max_tokens": request_max_tokens,
+        "model": writer.reviewer, "max_tokens": request_max_tokens,
         "reasoning": reasoning,
         "provider": {"require_parameters": True, "allow_fallbacks": False},
         "messages": [
@@ -767,7 +844,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
         if (isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0):
             cost = float(raw_cost)
-        if resolved != writer.model:
+        if resolved != writer.reviewer:
             status = "MODEL_MISMATCH"
             raise AIHold("Humanizer returned an unexpected model")
         choice = raw["choices"][0]
@@ -794,7 +871,7 @@ def rewrite_draft(writer: NarrativeWriter, *, question: str,
     except (ValueError, KeyError, IndexError, TypeError):
         raise AIHold("Humanizer returned invalid structured output") from None
     finally:
-        writer.budget.record(CallReceipt("humanize", writer.model, resolved,
+        writer.budget.record(CallReceipt("humanize", writer.reviewer, resolved,
             time.monotonic() - started, cost, reserve, status, requested_reasoning_effort=effort))
 
 
@@ -811,7 +888,8 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
                    supplied_ids: set[str], job_ids: set[str],
                    ground: Callable[[NarrativeDraft, dict[str, Any]], None],
                    trace: Callable[[dict[str, Any]], dict[str, Any]],
-                   statements: Sequence[str] = (), names: Sequence[str] = ()) -> NarrativeDraft:
+                   statements: Sequence[str] = (), names: Sequence[str] = (),
+                   posting: Sequence[str] = (), employers: Sequence[Sequence[str]] = ()) -> NarrativeDraft:
     """Rewrite a grounded draft under the no-slop rules, ground the rewrite again with
     ``ground`` (which raises a hold on failure) and lint the result. A rewrite rejected by
     ``check_rewrite`` or by the grounding is tried again with the reason as feedback, and
@@ -826,7 +904,7 @@ def humanize_draft(writer: NarrativeWriter, *, question: str,
     employer = list(names) or [job.get("company", "")]
 
     def findings_for(current: NarrativeDraft) -> list[Finding]:
-        return lint(current.text, statements=statements, company=employer)
+        return lint(current.text, statements=statements, company=employer, posting=posting, employers=employers)
 
     before = findings_for(draft)
     record = trace({"stage": "humanize", "question": question, "purpose": purpose,
@@ -896,7 +974,7 @@ def _retryable(exc: AIHold) -> bool:
 __all__ = [
     "FIT_HEDGE_FEEDBACK", "HUMANIZE_PROMPT_VERSION", "LETTER_PARAGRAPHS", "LETTER_WORDS",
     "MAX_QUOTED_WORDS", "MAX_REWRITES", "QUOTED_STATEMENT_FEEDBACK", "REJECTION_FEEDBACK",
-    "Finding", "check_rewrite", "citations", "findings_summary", "fit_commentary", "fit_hedges",
-    "greeting", "humanize_draft", "lint", "portable", "quoted_run", "quotes_statement",
+    "Finding", "age_revealed", "check_rewrite", "citations", "findings_summary", "fit_commentary",
+    "fit_hedges", "greeting", "humanize_draft", "lint", "portable", "quoted_run", "quotes_statement",
     "restates_job", "rewrite_draft", "stock_closer", "stock_opener",
 ]

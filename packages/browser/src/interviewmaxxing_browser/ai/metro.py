@@ -61,6 +61,12 @@ _COUNTRIES = frozenset({
     "united kingdom", "uk", "england", "ireland", "germany", "france", "spain", "portugal",
     "netherlands", "india", "australia", "brazil", "argentina", "colombia", "philippines",
     "singapore", "japan", "israel", "poland", "sweden"})
+_COUNTRY_CODES = frozenset({"usa", "us", "u.s", "u.s.a", "uk"})
+_COUNTRY_CODE = re.compile(r"(?<![\w.])(?:U\.?S\.?(?:A\.?)?|UK)(?![\w.])")
+"""A country code, which names a country only in capitals: "US", "U.S.", "USA", "UK", never
+the pronoun "us" in "work on-site with us" (round 14)."""
+_US = frozenset({"united states", "united states of america", "usa", "us", "u.s", "u.s.a"})
+"""The country of a US metro, too broad to place the work when a question names it."""
 _GENERIC = frozenset({
     "multiple", "multiple locations", "locations", "location", "various", "various locations",
     "hybrid", "remote", "onsite", "on-site", "in-office", "office", "offices", "hq",
@@ -130,39 +136,70 @@ def names_place(label: str) -> bool:
             or bool(us_states_named(label)))
 
 
-def _other_place(text: str, *, places: Sequence[str], capitalized: bool) -> str | None:
+def _country_named(text: str, *, broad: frozenset[str]) -> str | None:
+    """A country ``text`` names, not one of ``broad``: a name in any case ("Canada"), a
+    code only in capitals ("UK", "U.S.")."""
+    lowered = " ".join(text.casefold().split())
+    for country in sorted(_COUNTRIES - _COUNTRY_CODES - broad):
+        if re.search(rf"(?<![\w.]){re.escape(country)}(?![\w.])", lowered):
+            return country
+    codes: list[str] = _COUNTRY_CODE.findall(text)
+    for code in codes:
+        key = code.casefold().rstrip(".")
+        if key not in broad:
+            return key
+    return None
+
+
+def _other_place(text: str, *, places: Sequence[str], capitalized: bool,
+                 own_state: str | None = None, own_country: bool = False) -> str | None:
     """A place ``text`` names that is not in the metro: a "City, ST", a US state, a country,
     one of ``places`` (candidates the caller found) or, with ``capitalized``, a capitalized
-    run that is no generic word."""
+    run that is no generic word. A question's reading (round 14) passes the person's
+    ``own_state`` and ``own_country``, too broad to be a place ("on-site in Texas", "in the
+    US"): the job's location then says where the work is."""
+    broad = _US if own_country else frozenset()
+
+    def other_state(name: str) -> bool:
+        code = us_state_code(name)
+        return code is not None and code != own_state
+
     city_state = next((m.group(0) for m in _CITY_STATE.finditer(text)
                        if us_state_code(m.group(2)) is not None), None)
     if city_state is not None:
         return city_state
-    states = us_states_named(text)
+    states = us_states_named(text) - ({own_state} if own_state is not None else set())
     if states:
         return sorted(states)[0]
     for candidate in places:
-        if question_key(candidate) not in _GENERIC and question_key(candidate) not in _COUNTRIES:
+        key = question_key(candidate)
+        if key not in _GENERIC and key not in _COUNTRIES and (us_state_code(candidate) is None
+                                                               or other_state(candidate)):
             return candidate
     runs: list[str] = _CAPITALIZED.findall(text) if capitalized else []
     for run in runs:
         key = question_key(run)
         if key in _COUNTRIES:
-            return run
+            if key not in broad:
+                return run
+            continue
+        if us_state_code(run) is not None and not other_state(run):
+            continue
         if key and key not in _GENERIC and not any(word in _GENERIC for word in key.split()):
             return run
-    lowered = " ".join(text.casefold().split())
-    return next((country for country in _COUNTRIES
-                 if re.search(rf"(?<![\w.]){re.escape(country)}(?![\w.])", lowered)), None)
+    return _country_named(text, broad=broad)
 
 
 def read_place(text: str | None, metro: Metro, *, places: Sequence[str] = (),
-               remote: bool = False, capitalized: bool = False) -> PlaceReading:
+               remote: bool = False, capitalized: bool = False,
+               question: bool = False) -> PlaceReading:
     """Where ``text`` is, for the person's ``metro``: IN_METRO when it names a metro place;
     with ``remote``, REMOTE when it says remote or anywhere; OUTSIDE when it names another
     place; UNKNOWN otherwise. A question's wording is read without ``remote`` (a question
     that says "this is not a remote role" is not a remote job) and without ``capitalized``
-    (its capitalized words are mostly not places): the caller passes the places it found."""
+    (its capitalized words are mostly not places): the caller passes the places it found.
+    With ``question`` (round 14) the person's own state and country place nothing ("on-site
+    in Texas" is UNKNOWN for a person in Austin, TX; "in Colorado" is OUTSIDE)."""
     if not text or not text.strip():
         return PlaceReading(MetroVerdict.UNKNOWN)
     named = metro_place_named(text, metro)
@@ -170,7 +207,9 @@ def read_place(text: str | None, metro: Metro, *, places: Sequence[str] = (),
         return PlaceReading(MetroVerdict.IN_METRO, named)
     if remote and _REMOTE.search(text):
         return PlaceReading(MetroVerdict.REMOTE)
-    other = _other_place(text, places=places, capitalized=capitalized)
+    other = _other_place(text, places=places, capitalized=capitalized,
+                         own_state=metro.state if question else None,
+                         own_country=question and metro.state is not None)
     if other is not None:
         return PlaceReading(MetroVerdict.OUTSIDE, other)
     return PlaceReading(MetroVerdict.UNKNOWN)

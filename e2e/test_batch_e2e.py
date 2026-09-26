@@ -280,3 +280,62 @@ def test_retry_after_answering_each_shared_question_once(ats: MockServer, cli: C
     assert ats.submissions("attestation")["accepted_count"] == 0
     for job in RETRY_JOBS:
         assert ats.submissions(job)["accepted_count"] == 0, job
+
+
+def test_the_saved_listings_location_reaches_every_batch_job(ats: MockServer, cli: Cli,
+                                                               home: Path, profile: Path,
+                                                               tmp_path: Path):
+    """WP9 round 5: prepare-batch looks each row's listing up in the jobs store and passes
+    its location to the run (``apply --job-location``). The job keeps it (these apply pages
+    state no place), the ledger records it, and a retry passes it again. Nothing is
+    submitted."""
+    from datetime import UTC, datetime
+
+    from interviewmaxxing_core.store import LOCATION_EVENT
+    from interviewmaxxing_jobs.sources.base import make_listing
+    from interviewmaxxing_jobs.store import JobStore
+
+    places = {"standard": "Round Rock, TX (Hybrid)", "missing-required": "Remote (US)"}
+    jobs = JobStore(home / "jobs" / "jobs.sqlite3")  # the fictional saved listings
+    catalog = {job["job_id"]: job for job in ats.get("/__test__/jobs")["jobs"]}
+    rows = []
+    for n, (job, place) in enumerate(places.items()):
+        posting = f"https://jobs.linkedin.test/view/49000000{n}"
+        saved = jobs.upsert(make_listing(
+            source="linkedin", source_listing_id=f"49000000{n}", posting_url=posting,
+            source_url=posting, title=catalog[job]["title"], company=catalog[job]["company"],
+            location=place, observed_at=datetime(2026, 9, 25, tzinfo=UTC), query_id="qry_e2e",
+            evidence="fictional listing"))
+        rows.append({"listing_id": saved.id, "company": catalog[job]["company"],
+                     "title": catalog[job]["title"], "source_application_url": ats.url(job),
+                     "backend": "mock", "status": "resolved"})
+    jobs.close()
+    inventory = tmp_path / "located-inventory.json"
+    inventory.write_text(json.dumps(rows))
+
+    first = cli("prepare-batch", "--inventory", str(inventory), "--workers", "2",
+                "--batch-id", "located", "--json", timeout=600)
+    assert first.code == 0, first.stderr
+    assert "2 with their saved listing's location" in first.stderr
+    assert first.json()["totals"] == {"prepared": 1, "needs_input": 1}
+    lines = [json.loads(x) for x in (home / "batches" / "located" / "ledger.jsonl")
+             .read_text().splitlines()]
+    by_job = {line["application_url"].split("/jobs/")[1].split("/")[0]: line for line in lines}
+    assert {job: line["location"] for job, line in by_job.items()} == places
+    with ApplicationStore.open(home / "state" / "imx.sqlite3") as store:
+        for job, line in by_job.items():
+            app = store.get_application(line["application_id"])
+            assert store.get_job(app.job_id).location == places[job], job
+            assert [(e.metadata["source"], e.metadata["location"])
+                    for e in store.list_events(app.id) if e.event == LOCATION_EVENT] == [
+                ("listing", places[job])]
+
+    retried = cli("prepare-batch", "--retry", "located", "--batch-id", "located-r1", "--all",
+                  "--json", timeout=600)
+    assert retried.code == 0, retried.stderr
+    assert retried.json()["retry"]["selected"] == 1  # the held one; the prepared one never
+    [again] = [json.loads(x) for x in (home / "batches" / "located-r1" / "ledger.jsonl")
+               .read_text().splitlines()]
+    assert (again["location"], again["retry_of"]) == ("Remote (US)", "located")
+    for job in places:
+        assert ats.submissions(job)["accepted_count"] == 0, job

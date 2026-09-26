@@ -66,6 +66,7 @@ import asyncio
 import json
 import os
 import signal
+import sqlite3
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -252,6 +253,9 @@ class BatchRow(Contract):
     application_id: str | None = None
     """Set for a retry: the stored application that ``interviewmaxxing resume`` continues.
     None runs ``interviewmaxxing apply`` on the URL."""
+    location: str = ""
+    """The saved listing's location (``with_saved_listings``: the jobs store, by
+    ``listing_id``; a retry: the ledger line), passed to the run as ``--job-location``."""
 
 
 def _text(value: Any) -> str:
@@ -354,6 +358,9 @@ class LedgerEntry(Contract):
     application_url: str
     backend: str = ""
     status: str = ""
+    location: str = ""
+    """The saved listing's location the run was given (``--job-location``); a retry
+    passes it again."""
     attempt: int = Field(ge=1)
     worker_slot: int | None = None
     application_id: str | None = None
@@ -580,8 +587,9 @@ class BatchOptions(Contract):
                 *self.dynamic_argv()]
 
     def job_argv(self, row: BatchRow) -> list[str]:
-        return self.resume_argv(row.application_id) if row.application_id else self.argv(
-            row.application_url)
+        base = (self.resume_argv(row.application_id) if row.application_id
+                else self.argv(row.application_url))
+        return [*base, *listing_argv(row)]
 
     def run_options(self) -> BatchRunOptions:
         """What ``summary.json`` records so that ``prepare-batch --retry`` runs this
@@ -968,6 +976,117 @@ def render_retry_markdown(retry: RetryStats) -> list[str]:
         lines += ["| " + previous + " | " + " | ".join(str(counts.get(k, 0)) for k in columns)
                   + " |" for previous, counts in retry.transitions.items()]
     return lines
+
+
+# --- saved listings ----------------------------------------------------------------------
+
+JOBS_DB_ENV = "IMX_JOBS_DB"
+
+
+def default_jobs_db(paths: LocalPaths) -> Path:
+    """The jobs store holding the saved listings (``interviewmaxxing_jobs.store``):
+    ``$IMX_JOBS_DB``, else ``$IMX_HOME/jobs/jobs.sqlite3``."""
+    explicit = os.environ.get(JOBS_DB_ENV, "").strip()
+    return Path(explicit).expanduser() if explicit else paths.home / "jobs" / "jobs.sqlite3"
+
+
+def listing_argv(row: BatchRow) -> list[str]:
+    """The saved listing's details for the run: ``--job-location``, ``--job-title`` and
+    ``--job-company`` for the non-blank ones. The runner writes the location on the job
+    (``ApplicationStore.record_listing``), and the title and company where it has none."""
+    argv: list[str] = []
+    for flag, value in (("--job-location", row.location), ("--job-title", row.title),
+                        ("--job-company", row.company)):
+        if value.strip():
+            argv += [flag, value.strip()]
+    return argv
+
+
+@dataclass(frozen=True, slots=True)
+class SavedListing:
+    location: str = ""
+    title: str = ""
+    company: str = ""
+
+
+class ListingReader:
+    """Read-only access to the jobs store's saved listings: one connection opened on first
+    use in read-only mode, and only when the store exists (never created or migrated).
+    The jobs package is not a CLI dependency, so its tables are read directly:
+    ``listing_aliases`` resolves a listing id replaced by a merge to the surviving one
+    (as ``JobStore.get_listing`` does) and ``listings.data`` is the listing's JSON.
+    Anything unreadable reads as no listing."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._conn: sqlite3.Connection | None = None
+        self.unavailable = False
+
+    def _connect(self) -> sqlite3.Connection | None:
+        if self._conn is None and not self.unavailable:
+            if not self.path.is_file():
+                self.unavailable = True
+                return None
+            try:
+                self._conn = sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
+            except sqlite3.Error:
+                self.unavailable = True
+        return self._conn
+
+    def get(self, listing_id: str) -> SavedListing | None:
+        conn = self._connect()
+        if conn is None or not listing_id:
+            return None
+        try:
+            current, seen = listing_id, {listing_id}
+            while True:
+                alias = conn.execute("SELECT listing_id FROM listing_aliases WHERE alias_id = ?",
+                                     (current,)).fetchone()
+                if alias is None or alias[0] in seen:
+                    break
+                current = alias[0]
+                seen.add(current)
+            row = conn.execute("SELECT data FROM listings WHERE id = ?", (current,)).fetchone()
+            data = json.loads(row[0]) if row is not None else None
+        except (sqlite3.Error, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        return SavedListing(location=_text(data.get("location")), title=_text(data.get("title")),
+                            company=_text(data.get("company")))
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+
+def with_saved_listings(rows: Sequence[BatchRow], path: Path) -> tuple[list[BatchRow], int]:
+    """``rows`` with the location of their saved listing (the jobs store at ``path``, by
+    ``listing_id``), and its title and company where the row has none, with the number of
+    rows that got a listing location. A row that already has a location (a retry's, from
+    its ledger line), is keyed by its URL (``url:...``), or has no listing or no location
+    there runs as before. One read-only connection for all rows."""
+    reader = ListingReader(path)
+    updated: list[BatchRow] = []
+    found = 0
+    try:
+        for row in rows:
+            listing = (None if row.location or row.listing_id.startswith("url:")
+                       else reader.get(row.listing_id))
+            if listing is None:
+                updated.append(row)
+                continue
+            changes = {"location": listing.location} if listing.location else {}
+            found += bool(listing.location)
+            if listing.title and not row.title:
+                changes["title"] = listing.title
+            if listing.company and not row.company:
+                changes["company"] = listing.company
+            updated.append(row.model_copy(update=changes) if changes else row)
+    finally:
+        reader.close()
+    return updated, found
 
 
 # --- state reads -------------------------------------------------------------------------
@@ -3024,10 +3143,12 @@ __all__ = [
     "Exclusion",
     "HoldCategory",
     "LedgerEntry",
+    "ListingReader",
     "MissingItem",
     "PipelineCounts",
     "ReadyApplication",
     "RetryStats",
+    "SavedListing",
     "StateReader",
     "SubmissionEntry",
     "SubmissionOutcomeName",
@@ -3050,11 +3171,13 @@ __all__ = [
     "default_batch_dir",
     "default_batch_id",
     "default_command",
+    "default_jobs_db",
     "default_submission_batch_id",
     "format_entry",
     "format_submission",
     "latest_submissions",
     "list_batches",
+    "listing_argv",
     "load_inventory",
     "plan",
     "prepared_or_held",
@@ -3076,5 +3199,6 @@ __all__ = [
     "summarize",
     "summarize_submissions",
     "sync_pipeline_card",
+    "with_saved_listings",
     "write_summary",
 ]

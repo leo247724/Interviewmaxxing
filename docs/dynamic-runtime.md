@@ -15,6 +15,18 @@ review with `NEEDS_INPUT` and `preparation.ready`; no receipt is minted. OpenCLI
 keeps the owned review tab available to the user. Missing facts, consent,
 attestations, ambiguous controls and ungrounded writing stop earlier.
 
+`apply` and `resume` also take the saved listing's details: `--job-location TEXT`,
+`--job-title TEXT` and `--job-company TEXT`. The runner writes them on the job right
+after the request is recorded (`ApplicationStore.record_listing`), before any step reads
+the job. The location fills a job without one and replaces a location a page gave. A
+page's JSON-LD locality is only written on a job without one, so it never replaces the
+listing's. Title and company only fill a job without them. Each location write is
+recorded as `job.location_bound` (source `listing` or `page`). The metro rule reads the
+job's location and title. A listing's "Round Rock, TX (Hybrid)" makes an Austin-metro
+work-mode question Hybrid, and "Remote (US)" makes it Remote, even when the apply page
+states no place or names the company's Austin office. `prepare-batch` passes each row's
+listing details from the jobs store ([mass-preparation.md](mass-preparation.md)).
+
 To inspect a URL without entering any candidate information:
 
 ```sh

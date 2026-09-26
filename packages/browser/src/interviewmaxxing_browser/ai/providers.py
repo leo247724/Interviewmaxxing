@@ -85,19 +85,23 @@ ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analy
 cited sentences fit in 2000 tokens; a 400-word cover letter needs 6000, since its twenty
 sentences each cite story and job ids of some 45 tokens apiece (round 6: 4000 cut the live
 corrective rewrite at its limit)."""
+OVERRUN_TOKENS: dict[str, int] = {"cover_letter": 4000}
+"""Room above a cover letter's reasoning budget and answer allowance: at high effort the model
+may reason past its budget (round 6, batch 4: a corrective rewrite was cut at 8560 tokens and
+its retry cost a whole second call). Tokens not written cost nothing (round 7, addendum 2)."""
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
 """What every resolved form is allowed on top of what the budget already used."""
 FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
-FORM_WRITER_CALLS, FORM_WRITER_USD = 24, 0.75
 """More per WRITER-routed field: a live "why you're a good fit" narrative exhausted 12
 calls before its draft and finished its form at 29 calls and USD 0.34."""
 FORM_LETTER_CALLS, FORM_LETTER_USD = 24, 2.50
-"""What a cover letter reserves on top of a writer field's allowance (WP12 round 6 addendum):
-the rubric review and up to two corrective rewrites, the story passages' review, and up to
-three no-slop rewrites, each independently reviewed. Reservations are upper bounds (the
-request size and the whole answer allowance at the output price); actual spend is lower."""
+"""What a cover letter reserves on top of a writer field's allowance (WP12 round 6 addendum;
+since round 7 the flow is smaller: the evidence review when Jev is uncertain, the draft and at
+most one corrective rewrite, their no-slop rewrites and one final review each). Reservations are
+upper bounds (the request size and the whole answer allowance at the output price); actual spend
+is lower."""
 FORM_CAP_CALLS, FORM_CAP_USD = 200, 4.00
 """The budget's total cap, so four narrative fields at about 30 calls / USD 0.35 each never
 reach it; each cover letter raises it by its own allowance (``FORM_LETTER_*``)."""
@@ -111,38 +115,75 @@ FIT_GIVEN_RULE = (
     "mentioned. Every claim still cites its evidence; invent no claim or number. ")
 """The owner's rule for cover letters, motivation and narrative answers (WP12 round 5,
 addendum 2): fit is given, the writer builds the case and never judges or hedges it."""
+LETTER_WORD_BUDGET = (
+    "HARD WORD COUNT: 300-360 words in total, counting every word of every sentence including the "
+    "greeting line, never fewer than 280 and never more than 400. Budget it by paragraph: greeting "
+    "3 words, hook 40-60, proof 110-150 (in one or two paragraphs), why this company 70-100, close "
+    "30-45. Count the words of your sentences before you return the draft; if the total is outside "
+    "300-360, cut or add from the supplied evidence until it is inside. ")
+"""The letter's length as a hard instruction with the count in the prompt, so the draft lands inside
+the rubric's range first time and no LETTER_LENGTH rewrite is spent (round 7, addendum 2 item 3)."""
+NO_SLOP_RULE = (
+    "Write it so the no-AI-slop lint finds nothing and no rewrite is needed: lead with the point; no "
+    "throat-clearing ('Here's the thing', 'Let me be clear', 'To be clear'), faux insight ('what nobody "
+    "tells you', 'the real story was'), binary contrasts ('It's not X, it's Y', 'not just X but Y'), "
+    "negative listing ('Not a X. Not a Y.'), colon reveals (a phrase, a colon, then the reveal), a "
+    "capital letter after a colon, dramatic fragments or three short sentences in a row, rhetorical or "
+    "self-answered questions ('The result?'), sentences opening with 'And', trailing -ing analysis "
+    "(', highlighting', ', underscoring', ', showcasing'), importance puffery ('a testament to', 'plays a "
+    "vital role', 'game-changer'), weasel attribution ('experts agree'), metadiscourse ('it's worth "
+    "noting', 'in other words', 'as you can see'), empty phrases ('at the end of the day', 'when it "
+    "comes to', 'in terms of', 'in order to', 'going forward'), empty adverbs (truly, honestly, "
+    "fundamentally, importantly, just, literally, simply, actually, crucially), fake-strong verbs "
+    "('serves as', 'acts as', 'functions as'), a kicker or recap last line ('In conclusion', "
+    "'Ultimately', 'That's the whole game'), two paragraphs opening with the same words, two "
+    "consecutive sentences opening with the same three words, more than one name for the role, bold, "
+    "bullets or emoji, and never these words: delve, foster, facilitate, empower, streamline, robust, "
+    "cutting-edge, tapestry, realm, beacon, multifaceted, meticulous, intricate, paramount, "
+    "transformative, elevate, embark, supercharge, harness, ever-evolving. No portable sentence: tie "
+    "each one to its cited specifics so it could not go to another employer. ")
+"""The humanizer's lint as writer instructions (round 7, addendum 3: the quality goes into the draft,
+so the no-slop rewrite runs only when the lint still finds something)."""
 COVER_LETTER_RULES = (
     "Write the cover letter the owner's rubric describes: 280-380 words (never more than 400), "
     "plain first-person prose in these paragraphs, with consecutive zero-based paragraph indices. "
+    + LETTER_WORD_BUDGET +
     "(0) The greeting line alone: 'Dear <name>,' when job_evidence names the hiring manager or "
     "recruiter, otherwise 'Dear Hiring Manager,'; it cites nothing. "
     "(1) The hook, 2-3 sentences. Its first sentence states the proof's headline result with its "
-    "employer, or the problem that work solved: it carries a digit or a named problem. ONE headline "
-    "metric: no budgets, revenue or volume figures beside it. Never open with an application line "
-    "('I am writing to apply', 'I am applying'), excitement or passion, a description of the role, "
-    "a count of years or a date range. "
-    "(2) The proof: ONE campaign or project, told as the constraint, what the applicant changed and "
-    "the result of that change, drawn from a story passage (entries keyed story; they are listed "
-    "best match first, the applicant's long-form stories before LinkedIn bullets) that states a "
-    "result; a passage with a constraint and a change but no stated result is not a proof. The "
-    "hook's headline result is this campaign's result: build the proof backwards from the result a "
-    "passage states, with the constraint and the change that passage ties to it. The result is the "
-    "result of that change: never join a result of another lever with 'while' or 'meanwhile'. The "
-    "proof tells how the hook's result happened and does not repeat its number as a bare figure. "
-    "Write 'The tradeoff was...' only when a cited passage states a cost someone bore; otherwise "
-    "name only the constraint the passage states, and never infer, interpret or characterize one. "
-    "Other employers or projects appear only as clauses, with no dates or numbers of their own. "
-    "The proof may take two paragraphs. "
-    "(3) Why this company: 3-5 sentences. The first states one fact true only of this employer, in "
-    "job_evidence's own words with nothing added (what it sells or builds, its product line or "
-    "market, a specific initiative): something most postings for the same job would not contain. "
-    "The role's own channel, a common tool or a description of the team is not such a fact. This "
-    "sentence may cite job evidence alone. The next sentences tie that fact to the proof's own "
-    "work (the same employer and campaign), the job's priority always the object of what he did; "
-    "the last says what he would do first there, built from work the cited facts or passages show "
-    "he has done, and its object is a priority named in job_evidence, in that chunk's words and "
-    "citing it. This paragraph brings in no other employer's work. In the whole letter any other "
-    "employer or project is at most one short clause, with no dates or numbers of its own. "
+    "employer, or the problem that work solved: it carries a digit or a named problem. The headline "
+    "result is the money or cases result whenever the passage has one (revenue, cost per "
+    "acquisition, signed cases), never lead or call volume. ONE headline metric: budgets, team "
+    "sizes and volume figures that are not the result are dropped, not moved into the proof. Never "
+    "open with an application line ('I am writing to apply', 'I am applying'), excitement or "
+    "passion, a description of the role, a count of years or a date range. "
+    "(2) The proof: ONE campaign or project, told once, as the constraint, what the applicant "
+    "changed and the result of that change, drawn from a story passage (entries keyed story; they "
+    "are listed best match first, the applicant's long-form stories before LinkedIn bullets) that "
+    "states a result; a passage with a constraint and a change but no stated result is not a proof. "
+    "Build the proof backwards from the result a passage states, with the constraint and the change "
+    "that passage ties to it, and end it on that result with its number, never a vague 'well below "
+    "what the prior agency delivered'. The result is the result of that change: never join a result "
+    "of another lever with 'while' or 'meanwhile'. Write 'The tradeoff was...' only when a cited "
+    "passage states a cost someone bore; otherwise name only the constraint the passage states, and "
+    "never infer, interpret or characterize one. A second project or tool, even at the same "
+    "employer and however it is worded (lead-scoring agents beside a tracking rebuild), is at most "
+    "one clause; other employers appear only as clauses with no dates or numbers of their own. "
+    "After the proof paragraph the proof appears only as a clause: the company paragraph and the "
+    "close never tell it again, though the close may offer to walk through it. The proof may take "
+    "two paragraphs. "
+    "(3) Why this company: 3-5 sentences. The first states the company fact as one plain clause in "
+    "the posting's own nouns: what it sells or builds, its product lines, its market (for example "
+    "'a telehealth company selling testosterone, weight-loss and growth-hormone care'); never the "
+    "posting's About or mission sentence pasted in, and never its marketing triads. It must be "
+    "something most postings for the same job would not contain; the role's own channel, a common "
+    "tool or a description of the team is not such a fact, and this sentence may cite job evidence "
+    "alone. The next sentences link that fact to the first move, never retelling the proof. The "
+    "first move is the applicant's own sentence true only of this employer: build it from the job "
+    "chunk whose priority best matches the proof, name the role's channel or product the way the "
+    "posting does (a direct-mail role says 'direct mail'), cite that chunk and make its object a "
+    "priority the chunk names, in the chunk's words, built from work the cited facts or passages "
+    "show he has done. This paragraph brings in no other employer's work. "
     "(4) The close, exactly 2 sentences: first where to see the work (the LinkedIn or portfolio URL "
     "of the fact keyed contact_links, copied exactly and cited), then one confident sentence "
     "offering to talk through something specific from the proof. No gratitude: never 'Thank you "
@@ -158,17 +199,19 @@ COVER_LETTER_RULES = (
     "first appears: current work 'since <Month YYYY>', past work by when it started ('starting in "
     "2024') or not at all; never a date range ('from 2022 to 2023', 'March 2024 to May 2025') and "
     "never one year for work that spanned more (a result from 2024-03 to 2025-05 did not happen 'in "
-    "2024'). No 'I also...' sentence: outside the company fact, every body sentence serves the "
-    "proof campaign. Each "
+    "2024'). Name each of the applicant's employers at most once per paragraph; after that, a "
+    "sentence about the same work needs no name. Each "
     "sentence states only what its own citations state: no bridging or interpreting sentence ('The "
     "conversion work happened on the page.', '..., which kept the sales team inside the campaign'), "
     "and name the role as job_evidence names it, or not at all (the job title metadata may differ). "
-    "Keep each figure's unit exactly as its source states it: a figure whose "
-    "unit the source omits is given in the source's own words or left out, never printed bare. "
+    "When a story passage states a figure, cite beside it the verified fact that states the same "
+    "figure and print the figure the way that fact prints it ('$400K+ a month', never a bare "
+    "'400k'); a figure no verified fact states is given with the unit words its passage uses, or "
+    "left out. "
     "Weave the story as natural evidence, never labelled ('Story 1') or listed. Match the posting's "
     "own words only where the evidence makes them true, and never name a tool the applicant has "
-    "not used. No comma-separated platform or tool inventories. Every first-person claim names its "
-    "employer. Leave out requirements the evidence does not cover. Banned: passionate, "
+    "not used. No comma-separated platform or tool inventories. Every first-person claim has an "
+    "unambiguous employer. Leave out requirements the evidence does not cover. Banned: passionate, "
     "results-driven, leverage, utilize, synergy, dynamic, fast-paced environment, team player, hit "
     "the ground running, perfect fit, 'excited to bring my expertise', 'It's not X, it's Y' "
     "contrasts, three-item lyric lists, a fake-profound last line, em dashes, and the connectives "
@@ -184,28 +227,39 @@ LETTER_RUBRIC_LINES = (
     "carries a digit or a named problem; never 'I am writing to apply', excitement, passion, a "
     "description of the role or a years count. (3) One proof, one campaign, not the career: "
     "constraint, then what he changed, then the result of that change (a result of another lever "
-    "joined by 'while' fails); other employers or projects only as clauses without dates or "
-    "numbers of their own; never two headline metrics from different campaigns stacked. (4) Why "
-    "this company: 3-5 sentences naming one fact true only of this employer that passes a rarity "
-    "test (most postings for the same job would not contain it; the role's own channel, a common "
-    "tool or a team description fails), stated in the posting's words with nothing added, and one "
-    "sentence on what he would do first. (5) A close of exactly 2 sentences: the portfolio or "
+    "joined by 'while' fails), told once: after its paragraph it appears only as a clause, and a "
+    "retelling in the company paragraph or the close fails; other employers or projects only as "
+    "clauses without dates or numbers of their own, and a second project at the same employer is "
+    "judged by its content, not its wording ('I also'), and gets one clause at most; never two "
+    "headline metrics from different campaigns stacked. (4) Why this company: 3-5 sentences naming "
+    "one fact true only of this employer that passes a rarity test (most postings for the same job "
+    "would not contain it; the role's own channel, a common tool or a team description fails), as "
+    "one plain clause in the posting's nouns (the About or mission sentence pasted in, with its "
+    "triads, fails), and one sentence on what he would do first. (5) A close of exactly 2 sentences: the portfolio or "
     "LinkedIn and that he can talk; no gratitude, never 'Thank you for considering my application' "
     "or 'I would welcome the chance to discuss'. (6) The 40-employer test: it could not be sent to "
-    "40 employers; at most one sentence restates the posting (the company fact of line 4 is not a "
-    "restatement), and a job priority is only ever the object of what he did. (7) Not the resume "
+    "40 employers: (a) at most one sentence restates the posting (the company fact of line 4 is not "
+    "a restatement); (b) no clause makes the employer the one who asks or compares it to his work, "
+    "and a job priority is only ever the object of what he did; (c) at least one sentence of his "
+    "own (the proof, a bridge or the first move) says something true only of this employer, and "
+    "the restated company fact does not count toward it. (7) Not the resume "
     "restated: it says what the CV cannot (the lie in the data, the fight, the tradeoff, why this "
-    "team); no comma-separated platform inventories; an employer's dates once, no date ranges in "
-    "the body. (8) The proof names its constraint, and a tradeoff only when a cited passage states "
-    "a cost someone bore. (9) No hedge, disclaimer, self-assessment, attribution or fit commentary: "
+    "team), judged against the resume bullets and LinkedIn passages (facts and passages whose "
+    "evidence names the resume or LinkedIn), never against the long-form stories: a body claim "
+    "such a bullet states nearly word for word restates the resume; no comma-separated platform "
+    "inventories; an employer's dates once, no date ranges in the body. (8) The proof names its "
+    "constraint, and a tradeoff only when a cited passage states a cost someone bore. (9) No hedge, disclaimer, self-assessment, attribution or fit commentary: "
     "'<employer> wants / asks / names / expects / holds this role accountable for', 'as the role "
     "asks', 'the kind of X that <employer> names', '<employer>'s team works the way my practice "
     "has', '... the same way', 'where I've done my best work', 'relates to', 'maps to', 'could "
     "apply', 'well suited'. (11) None of: passionate, leverage, utilize, synergy, dynamic "
     "landscape, 'I am writing to apply', 'excited to bring my expertise', 'It's not X, it's Y', "
     "three-item lyric lists, a fake-profound last line, em dashes, 'In that same role' / 'In the "
-    "same practice' / 'Separately,'. Judge lines 7 and 8 against what the supplied passages and "
-    "facts state: when none states a tradeoff, the proof's stated constraint is enough. Your fixes "
+    "same practice' / 'Separately,', and never the applicant's age, birth year or a phrase that gives "
+    "it away ('as a 26-year-old', 'fresh out of school'). Judge line 8 against what the supplied "
+    "passages and facts state: "
+    "when none states a tradeoff, the proof's stated constraint is enough (this is for line 8 "
+    "only). Your fixes "
     "may only cut, move, reword or use supplied content: never ask for a claim, tradeoff, motive "
     "or characterization the supplied sources do not state, never suggest the posting's words as "
     "material for the applicant's own work, and never suggest removing the company fact. When a "
@@ -223,6 +277,13 @@ VOICE_RULE = (
     "'insanely', 'skyrocket' or 'explosive', no 'It's no secret that...' opener, no rhetorical "
     "'You might be wondering:'. ")
 """The owner's register from his 2017 blog posts (WP12 round 6, addendum 3), without their tics."""
+AGE_RULE = (
+    "Never state or imply the applicant's age, birth year or career stage by age ('as a "
+    "26-year-old', 'at 24', 'fresh out of school', 'the youngest in the room', 'in my twenties'), "
+    "even when a passage does: keep the tension without the number (for example 'the far less "
+    "senior buyer asking for the spend the radio and TV veterans had held for years'). ")
+"""The owner's decision (WP12 round 7 addendum, 2026-09-25): his age never appears in any
+narrative; the story corpus keeps it as he wrote it."""
 CASE_DATA_MISSING = "The table referenced is not in the recorded question"
 """What a case-study answer holds for when the data it must compute from was not recorded."""
 MAX_CASE_SENTENCES = 14
@@ -561,6 +622,14 @@ def _has_job_description(job_evidence: list[dict[str, str]], job: dict[str, str]
                for item in job_evidence)
 
 
+WRITER_MODEL = "anthropic/claude-opus-5.5"
+REVIEW_MODELS = (WRITER_MODEL, "anthropic/claude-sonnet-5")
+"""Models the reviews and the no-slop rewrite may use (``--review-model``, round 7 addendum 2
+item 5): Opus by default; Sonnet 5 is the cheaper option measured against it. The draft is
+always written by the writer's model."""
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
 @dataclass
 class NarrativeWriter:
     api_key: ApiKey
@@ -574,29 +643,50 @@ class NarrativeWriter:
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     """Effort for reviews and, when ``narrative_effort`` is unset, for narratives."""
     narrative_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
-    """Effort for cover letters, narrative answers and their humanizing rewrite; the
-    runtime factory sets it to high by default (``--writer-effort``)."""
+    """Effort for cover letters and narrative answers; the runtime factory sets it to high
+    by default (``--writer-effort``)."""
+    humanize_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    """Effort for the no-slop rewrite (round 7, addendum 2 item 4): it runs only when the lint
+    finds something, and ``check_rewrite``, Jev and the final review guard what it returns."""
+    review_model: str | None = None
+    """The model of the reviews and the no-slop rewrite (``--review-model``); unset, the
+    writer's model."""
 
     def __post_init__(self) -> None:
-        if self.model != "anthropic/claude-opus-5.5":
+        if self.model != WRITER_MODEL:
             raise ValueError("This runtime requires explicitly configured anthropic/claude-opus-5.5")
-        if (not isinstance(self.reasoning_effort, str)
-                or self.reasoning_effort not in ("low", "medium", "high", "xhigh", "max")):
+        if self.review_model is not None and self.review_model not in REVIEW_MODELS:
+            raise ValueError("Review model must be one of " + ", ".join(REVIEW_MODELS))
+        if not isinstance(self.reasoning_effort, str) or self.reasoning_effort not in _EFFORTS:
             raise ValueError("Writer reasoning effort must be low, medium, high, xhigh or max")
         if self.narrative_effort is not None and (
-                not isinstance(self.narrative_effort, str)
-                or self.narrative_effort not in ("low", "medium", "high", "xhigh", "max")):
+                not isinstance(self.narrative_effort, str) or self.narrative_effort not in _EFFORTS):
             raise ValueError("Writer narrative effort must be low, medium, high, xhigh or max")
+        if not isinstance(self.humanize_effort, str) or self.humanize_effort not in _EFFORTS:
+            raise ValueError("Writer humanize effort must be low, medium, high, xhigh or max")
         if (isinstance(self.timeout_seconds, bool)
                 or not isinstance(self.timeout_seconds, (int, float))
                 or not 0 < self.timeout_seconds <= 120 or isinstance(self.max_tokens, bool)
                 or not isinstance(self.max_tokens, int) or not 1 <= self.max_tokens <= 8000):
             raise ValueError("Writer timeout or output limit exceeds policy")
 
+    @property
+    def reviewer(self) -> str:
+        """The model the reviews and the no-slop rewrite call."""
+        return self.review_model or self.model
+
+    def call_label(self, purpose: str) -> str:
+        """A review's receipt purpose, named after its model family: ``opus_letter_review``,
+        or ``sonnet_letter_review`` with the cheaper reviewer."""
+        family = self.reviewer.split("/")[-1].split("-")
+        return (family[1] if len(family) > 1 else family[0]) + "_" + purpose
+
     def effort_for(self, purpose: str) -> Literal["low", "medium", "high", "xhigh", "max"]:
-        """Narratives (answer, cover letter, humanize) use the narrative effort when set;
-        reviews and everything else keep the base effort."""
-        if purpose in ("answer", "cover_letter", "motivation", "case_analysis", "humanize") and self.narrative_effort is not None:
+        """Narratives (answer, cover letter) use the narrative effort when set; the no-slop
+        rewrite its own (low by default); reviews and everything else the base effort."""
+        if purpose == "humanize":
+            return self.humanize_effort
+        if purpose in ("answer", "cover_letter", "motivation", "case_analysis") and self.narrative_effort is not None:
             return self.narrative_effort
         return self.reasoning_effort
 
@@ -605,7 +695,8 @@ class NarrativeWriter:
         (writing, motivation, cover letters and the no-slop rewrite): an explicit reasoning
         budget by effort (``REASONING_BUDGET_TOKENS``) and a request limit that leaves the
         purpose's whole answer allowance (``ANSWER_TOKENS``, bounded by ``max_tokens``) after
-        it. The retry after a length cut enlarges both (``RETRY_REASONING_FACTOR``,
+        it, plus a cover letter's room for reasoning past its budget (``OVERRUN_TOKENS``). The
+        retry after a length cut enlarges both (``RETRY_REASONING_FACTOR``,
         ``RETRY_ANSWER_FACTOR``). Reviews keep ``reasoning.effort``: their verdicts are short."""
         effort = self.effort_for(purpose)
         budget = REASONING_BUDGET_TOKENS[effort]
@@ -613,7 +704,7 @@ class NarrativeWriter:
         if retry:
             budget = int(budget * RETRY_REASONING_FACTOR)
             answer = answer * RETRY_ANSWER_FACTOR
-        return {"max_tokens": budget}, budget + answer
+        return {"max_tokens": budget}, budget + answer + OVERRUN_TOKENS.get(purpose, 0)
 
     def write(self, *, question: str, facts: list[dict[str, Any]], job: dict[str, str],
               max_length: int | None, job_evidence: list[dict[str, str]] | None = None,
@@ -742,7 +833,7 @@ class NarrativeWriter:
             "voice_samples are STYLE ONLY, never a factual source or a source of IDs. "
             "Use them only for cadence, register and phrasing; resume style is provisional "
             "and should become natural prose. Do not copy factual claims from samples. "
-            + VOICE_RULE +
+            + VOICE_RULE + AGE_RULE + NO_SLOP_RULE +
             "Do not invent motivation, qualifications, dates, quantities, preferences, "
             "eligibility, consent or employer claims. Never borrow the posting's wording into a "
             "first-person claim: describe the applicant's work only in the words its facts and "
@@ -1046,7 +1137,7 @@ class NarrativeWriter:
             # rubric grade left a letter ungraded).
             limit = review_max_tokens if attempt == 1 else min(2 * review_max_tokens, 8000)
             payload = {
-                "model": self.model, "max_tokens": limit,
+                "model": self.reviewer, "max_tokens": limit,
                 "reasoning": {"effort": effort},
                 "provider": {"require_parameters": True, "allow_fallbacks": False},
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -1080,7 +1171,7 @@ class NarrativeWriter:
                 if (isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                         and math.isfinite(raw_cost) and raw_cost >= 0):
                     cost = float(raw_cost)
-                if resolved != self.model:
+                if resolved != self.reviewer:
                     status = "MODEL_MISMATCH"
                     raise AIHold("Review returned an unexpected model")
                 choice = raw["choices"][0]
@@ -1111,7 +1202,7 @@ class NarrativeWriter:
             except (ValueError, KeyError, IndexError, TypeError):
                 raise AIHold("Review returned invalid structured output") from None
             finally:
-                self.budget.record(CallReceipt("opus_" + purpose, self.model, resolved,
+                self.budget.record(CallReceipt(self.call_label(purpose), self.reviewer, resolved,
                     time.monotonic() - started, cost, reserve, status,
                     requested_reasoning_effort=effort))
         raise AssertionError("unreachable")
