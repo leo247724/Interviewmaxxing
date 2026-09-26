@@ -203,7 +203,7 @@ def test_consent_criteria_name_their_wording_and_the_prompt_version_is_bumped() 
     provider = Jev()
     classify(provider, question(AGENCY, SemanticType.CUSTOM_SELECT, "Yes", "No"))
     [request] = provider.requests
-    assert request["state"]["version"] == "full-form-routing-v13"
+    assert request["state"]["version"] == "full-form-routing-v14"
     semantic = request["questions"]["s0"]
     for word in ("consent", "agree", "acknowledge", "authorize", "permission", "certify",
                  "declare", "sign"):
