@@ -85,10 +85,6 @@ ANSWER_TOKENS: dict[str, int] = {"answer": 2000, "motivation": 2000, "case_analy
 cited sentences fit in 2000 tokens; a 400-word cover letter needs 6000, since its twenty
 sentences each cite story and job ids of some 45 tokens apiece (round 6: 4000 cut the live
 corrective rewrite at its limit)."""
-OVERRUN_TOKENS: dict[str, int] = {"cover_letter": 4000}
-"""Room above a cover letter's reasoning budget and answer allowance: at high effort the model
-may reason past its budget (round 6, batch 4: a corrective rewrite was cut at 8560 tokens and
-its retry cost a whole second call). Tokens not written cost nothing (round 7, addendum 2)."""
 RETRY_REASONING_FACTOR, RETRY_ANSWER_FACTOR = 1.5, 2
 """The one retry after a length cut: half more reasoning and twice the answer allowance."""
 FORM_BASE_CALLS, FORM_BASE_USD = 24, 0.30
@@ -119,8 +115,7 @@ LETTER_WORD_BUDGET = (
     "HARD WORD COUNT: 300-360 words in total, counting every word of every sentence including the "
     "greeting line, never fewer than 280 and never more than 400. Budget it by paragraph: greeting "
     "3 words, hook 40-60, proof 110-150 (in one or two paragraphs), why this company 70-100, close "
-    "30-45. Count the words of your sentences before you return the draft; if the total is outside "
-    "300-360, cut or add from the supplied evidence until it is inside. ")
+    "30-45. ")
 """The letter's length as a hard instruction with the count in the prompt, so the draft lands inside
 the rubric's range first time and no LETTER_LENGTH rewrite is spent (round 7, addendum 2 item 3)."""
 NO_SLOP_RULE = (
@@ -221,6 +216,48 @@ COVER_LETTER_RULES = (
     "at all, or nothing true only of this employer can be named from job_evidence. ")
 """The cover-letter instructions: the owner's rubric (RUBRIC.md, 2026-09-25) line by line, with
 the open-career-skills cover-letter rules that fit it (WP12 round 6, addendum)."""
+NOTE_RULES = (
+    "This cover-letter field is a short note (for example 'Write a note to <recruiter> at <Company>'), "
+    "so write the owner's short form: HARD WORD COUNT 120-180 words in total, never more than 190, "
+    "plain first-person prose in 1-3 paragraphs with consecutive zero-based paragraph indices, and NO "
+    "greeting line and no sign-off. (1) The hook, 1-2 sentences: the first carries the proof's one "
+    "headline figure (the money or cases result whenever the passage has one, never lead or call "
+    "volume) with its employer, or the problem that work solved; never an application line, excitement, "
+    "passion, a description of the role, a count of years or a date range. (2) One proof in 2-3 "
+    "sentences, told once as the constraint, what the applicant changed and the result of that change, "
+    "drawn from a story passage (entries keyed story, best match first) that states the result; no "
+    "second project and no other employer's work. (3) ONE sentence true only of this employer, with "
+    "the first move: the posting's own nouns for what it sells or builds, joined to what he would do "
+    "first, built from work the cited facts or passages show he has done and citing both the job chunk "
+    "and that work; never the posting's About or mission sentence, never a comparison of the employer "
+    "to his work. (4) A one-line close offering to walk them through the proof ('I can walk you through "
+    "...'): no gratitude, no 'I would welcome the chance', no link. Date an employer once or not at all, "
+    "no date ranges; name each employer once; when a story passage states a figure, cite beside it the "
+    "verified fact that states it and print the figure its way. Never state or imply the applicant's "
+    "age. Banned: passionate, results-driven, leverage, utilize, synergy, dynamic, 'excited to', "
+    "'perfect fit', em dashes, 'It's not X, it's Y'. Return NEEDS_INPUT only when job_evidence lacks the "
+    "actual description or no supplied fact or passage relates to the posting at all. ")
+"""The short form for a note-shaped cover-letter field (round 7, the lead's addendum for the
+Wellfound notes): the owner's rubric scaled to 120-180 words."""
+NOTE_RUBRIC_LINES = (
+    "This is the owner's SHORT form, a note: do not judge whether the applicant fits the role. HARD "
+    "lines: (1) 120-180 words, ceiling 190, no greeting line. (2) A hook of 1-2 sentences whose first "
+    "sentence carries one figure or a named problem; never 'I am writing to apply', excitement, "
+    "passion, a description of the role or a years count. (3) One proof in 2-3 sentences: constraint, "
+    "then what he changed, then the result of that change, told once; no second project, no other "
+    "employer's work. (4) One sentence true only of this employer (the posting's nouns, never its About "
+    "or mission sentence pasted in) with the first move, built from his cited work. (5) A one-line "
+    "close offering to walk them through the proof; no gratitude. (6) Not portable: it could not be sent "
+    "to another employer; no clause makes the employer the one who asks or compares it to his work. "
+    "(7) No hedge, disclaimer, self-assessment or fit commentary. (8) None of: passionate, leverage, "
+    "utilize, synergy, 'I am writing to apply', 'excited to bring my expertise', 'It's not X, it's Y', "
+    "three-item lyric lists, a fake-profound last line, em dashes, and never the applicant's age, birth "
+    "year or a phrase that gives it away. Your fixes may only cut, move, reword or use supplied content: "
+    "never ask for a claim, tradeoff or number the supplied sources do not state and never suggest the "
+    "posting's words as material for the applicant's own work. When a HARD line needs an element no "
+    "supplied source states, set owner_question to one short question for the applicant that would "
+    "supply it; otherwise leave owner_question empty. ")
+"""The short form's HARD lines as the one review grades them (round 7, the lead's note addendum)."""
 LETTER_RUBRIC_LINES = (
     "The owner's rubric: do not judge whether the applicant fits the role (every saved job fits). "
     "HARD lines: (1) 280-380 words, ceiling 400. (2) A hook of 2-3 sentences whose first sentence "
@@ -695,16 +732,17 @@ class NarrativeWriter:
         (writing, motivation, cover letters and the no-slop rewrite): an explicit reasoning
         budget by effort (``REASONING_BUDGET_TOKENS``) and a request limit that leaves the
         purpose's whole answer allowance (``ANSWER_TOKENS``, bounded by ``max_tokens``) after
-        it, plus a cover letter's room for reasoning past its budget (``OVERRUN_TOKENS``). The
-        retry after a length cut enlarges both (``RETRY_REASONING_FACTOR``,
-        ``RETRY_ANSWER_FACTOR``). Reviews keep ``reasoning.effort``: their verdicts are short."""
+        it; that request limit is what bounds Opus's reasoning (round 7: with 4000 tokens more room
+        a live letter draft reasoned into it and cost USD 0.24 instead of 0.15). The retry after a
+        length cut enlarges both (``RETRY_REASONING_FACTOR``, ``RETRY_ANSWER_FACTOR``). Reviews
+        keep ``reasoning.effort``: their verdicts are short."""
         effort = self.effort_for(purpose)
         budget = REASONING_BUDGET_TOKENS[effort]
         answer = min(self.max_tokens, ANSWER_TOKENS.get(purpose, self.max_tokens))
         if retry:
             budget = int(budget * RETRY_REASONING_FACTOR)
             answer = answer * RETRY_ANSWER_FACTOR
-        return {"max_tokens": budget}, budget + answer + OVERRUN_TOKENS.get(purpose, 0)
+        return {"max_tokens": budget}, budget + answer
 
     def write(self, *, question: str, facts: list[dict[str, Any]], job: dict[str, str],
               max_length: int | None, job_evidence: list[dict[str, str]] | None = None,
@@ -712,9 +750,14 @@ class NarrativeWriter:
               purpose: Literal["answer", "cover_letter", "motivation", "case_analysis"] = "answer",
               review_feedback: list[str] | None = None,
               guidance: list[str] | None = None,
-              on_attempt: Callable[[dict[str, Any]], None] | None = None) -> NarrativeDraft:
+              on_attempt: Callable[[dict[str, Any]], None] | None = None,
+              shape: Literal["letter", "note"] = "letter") -> NarrativeDraft:
+        """``shape`` is a cover letter's form: the owner's full rubric letter, or the short form
+        for a note-shaped field (``NOTE_RULES``, round 7)."""
         if purpose not in ("answer", "cover_letter", "motivation", "case_analysis"):
             raise AIHold("Unsupported narrative purpose")
+        if shape not in ("letter", "note"):
+            raise AIHold("Unsupported cover letter shape")
         effort = self.effort_for(purpose)
         if (max_length is not None and (isinstance(max_length, bool)
                 or not isinstance(max_length, int) or max_length < 1)):
@@ -760,7 +803,7 @@ class NarrativeWriter:
                              + " needs explicit facts: " + "; ".join(missing),
                              missing_information=missing)
         if purpose == "cover_letter":
-            writing_instructions = COVER_LETTER_RULES
+            writing_instructions = COVER_LETTER_RULES if shape == "letter" else NOTE_RULES
         elif purpose == "motivation":
             writing_instructions = (
                 "Write a concise first-person answer (at most 8 sentences, one or two paragraphs) "
@@ -950,12 +993,13 @@ class NarrativeWriter:
                 if len(draft.text) > (max_length or 4000):
                     raise AIHold("Writer response exceeds field length")
                 if purpose == "cover_letter":
-                    # Hard bounds only: the rubric's 280-400 words and its paragraph shape are
-                    # checked by the resolver, which gets a corrective rewrite (round 6).
-                    if not 200 <= len(draft.text.split()) <= 450:
-                        raise AIHold("Cover letter must contain 200-450 words")
-                    if not 3 <= len({s.paragraph for s in draft.sentences}) <= 7:
-                        raise AIHold("Cover letter must contain 3-7 paragraphs")
+                    # Hard bounds only: the rubric's 280-400 words (a note's 120-190) and its
+                    # paragraph shape are checked by the resolver, which gets a corrective rewrite.
+                    words, paragraphs = len(draft.text.split()), len({s.paragraph for s in draft.sentences})
+                    if shape == "letter" and not (200 <= words <= 450 and 3 <= paragraphs <= 7):
+                        raise AIHold("Cover letter must contain 200-450 words in 3-7 paragraphs")
+                    if shape == "note" and not (80 <= words <= 240 and 1 <= paragraphs <= 4):
+                        raise AIHold("A cover note must contain 80-240 words in 1-4 paragraphs")
                     if not any(s.fact_ids for s in draft.sentences) or not any(
                             s.job_evidence_ids for s in draft.sentences):
                         raise AIHold("Cover letter must cite verified resume facts and the job description")
@@ -993,11 +1037,12 @@ class NarrativeWriter:
                job_evidence: list[dict[str, str]] | None = None,
                sentences: list[CitedSentence] | None = None,
                purpose: Literal["evidence_consistency", "draft_grounding", "letter_review"] = "draft_grounding",
-               settled: Sequence[int] | None = None,
+               settled: Sequence[int] | None = None, shape: Literal["letter", "note"] = "letter",
                ) -> GroundingReview | LetterReview:
         """Independently review ambiguous evidence; the caller controls when escalation is
         allowed. ``letter_review`` reviews a cover letter's grounding and grades it against
-        the owner's rubric in one call (``LetterReview``)."""
+        the owner's rubric in one call (``LetterReview``), the note's short-form lines for a
+        ``note``."""
         if purpose not in ("evidence_consistency", "draft_grounding", "letter_review"):
             raise AIHold("Unsupported review purpose")
         job_evidence = job_evidence or []
@@ -1097,7 +1142,8 @@ class NarrativeWriter:
         if purpose == "letter_review":
             instructions += (
                 "The verdict, issues and reference_ids judge grounding only, as above. Separately, "
-                "grade the cover letter in rubric and rubric_issues. " + LETTER_RUBRIC_LINES +
+                "grade the cover letter in rubric and rubric_issues. "
+                + (NOTE_RUBRIC_LINES if shape == "note" else LETTER_RUBRIC_LINES) +
                 "Return rubric PASS when every HARD line passes; otherwise rubric FAIL with one "
                 "rubric issue per failed line: name the line number, quote the failing sentence and "
                 "say what to change using only the supplied facts, story passages and job evidence, "

@@ -68,7 +68,6 @@ from interviewmaxxing_core.answer_policies import (
 )
 from interviewmaxxing_core.forms import CHOICE_CONTROLS, MULTI_CHOICE_CONTROLS
 from interviewmaxxing_core.preferences import names_work_mode, stated_metro_area
-from interviewmaxxing_generation.knowledge.store import figure_values
 from interviewmaxxing_generation.questions import (
     QuestionText,
     motivation_question,
@@ -166,6 +165,8 @@ from .humanize import (
     LETTER_PARAGRAPHS,
     LETTER_WORDS,
     MAX_QUOTED_WORDS,
+    NOTE_PARAGRAPHS,
+    NOTE_WORDS,
     QUOTED_STATEMENT_FEEDBACK,
     age_revealed,
     attribution_clauses,
@@ -175,6 +176,7 @@ from .humanize import (
     humanize_draft,
     quoted_run,
     quotes_statement,
+    restates_job,
     stock_closer,
     stock_opener,
 )
@@ -742,6 +744,21 @@ _TALK = re.compile(r"\b(?:talk|call|walk\s+you\s+through|conversation|chat|meet|
 CONTACT_ID = "contact:links"
 """The cover letter's close cites the applicant's profile links (LinkedIn, website) under
 this id: a transient stand-in from the identity, never a fact in packet provenance."""
+NOTE_FIELD = re.compile(r"\b(?:a|your|short|personal|quick)\s+note\b|\bnote\s+to\b|^\s*notes?\s*$",
+                        re.IGNORECASE | re.MULTILINE)
+"""A cover-letter field that asks for a note by its label or placeholder ("Write a note to Jane at
+Acme."), never "Please note" or "Note:" in its help text (round 7, the lead's note addendum)."""
+SHORT_LETTER_CHARS = 2400
+"""A cover-letter field whose max_length is below this cannot hold the rubric's 300-360-word letter
+(about 1900-2300 characters): it gets the short form too."""
+NOTE_LENGTH_FEEDBACK = (
+    f"Write the note in {NOTE_WORDS[0]}-180 words (never more than {NOTE_WORDS[1]}) in "
+    f"{NOTE_PARAGRAPHS[0]}-{NOTE_PARAGRAPHS[1]} paragraphs: a hook with one figure, one proof in 2-3 "
+    "sentences, one sentence true only of this employer with the first move, a one-line close.")
+NOTE_GREETING_FEEDBACK = "A note has no greeting line or sign-off: open with the hook."
+NOTE_CLOSING_FEEDBACK = (
+    "Close with one line offering to walk them through the proof ('I can walk you through ...'); no "
+    "gratitude, no 'I would welcome the chance' line.")
 LETTER_ATTEMPTS = 2
 """A cover letter's draft and at most one corrective rewrite, spent only on a HARD line: a code
 check, a sentence Jev scores at or below ``LETTER_GROUNDING_FLOOR``, or the final review's
@@ -1329,6 +1346,15 @@ def _fact_evidence(fact: CandidateFact) -> dict[str, Any]:
             "source": fact.source, "evidence": fact.evidence}
 
 
+def letter_shape(field: ApplicationField) -> Literal["letter", "note"]:
+    """A cover-letter field's form: the short ``note`` when its label or placeholder asks for a
+    note or its max_length cannot hold the rubric's letter, otherwise the full ``letter``."""
+    asked = "\n".join(part for part in (field.label, field.placeholder) if part)
+    if NOTE_FIELD.search(asked) or (field.max_length is not None and field.max_length < SHORT_LETTER_CHARS):
+        return "note"
+    return "letter"
+
+
 def applicant_employers(context: PacketContext) -> list[list[str]]:
     """The names each of the applicant's employers goes by in a letter, longest first: the
     profile's company name, without a legal or generic suffix, and a distinctive first word
@@ -1371,7 +1397,7 @@ def _proof_chunk_guidance(story_chunks: Sequence[dict[str, Any]], job_evidence: 
 
 def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Sequence[Any],
                      job_evidence: Sequence[dict[str, str]], facts: Sequence[CandidateFact],
-                     evidence: Sequence[CandidateFact]) -> list[tuple[str, str]]:
+                     evidence: Sequence[CandidateFact], note: bool = False) -> list[tuple[str, str]]:
     """The judge's batch 2-4 rules the code can check on a cover letter (round 7): the proof
     told once (PROOF_RETOLD), the company fact never the posting's own sentence
     (COMPANY_FACT_COPIED), a money or cases hook (HOOK_VOLUME), each employer named once per
@@ -1379,7 +1405,7 @@ def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Seq
     (FIGURE_UNPAIRED)."""
     findings: list[tuple[str, str]] = []
     paragraphs = sorted({s.paragraph for s in body})
-    if len(paragraphs) >= 4:
+    if len(paragraphs) >= 4 and not note:
         hook, company = paragraphs[0], paragraphs[-2]
         proof_stories = {fid for s in body if hook < s.paragraph < company
                          for fid in s.fact_ids if fid.startswith("story:")}
@@ -1407,12 +1433,15 @@ def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Seq
     for sentence in body:
         if not any(fid.startswith("story:") for fid in sentence.fact_ids):
             continue
-        figures = figure_values(sentence.text)
-        for fact in verified:
-            value = str(fact.value)
-            if (fact.id not in sentence.fact_ids and figure_values(value) & figures
-                    and _words(value) & _words(sentence.text) and fact.id not in missing):
-                missing.append(fact.id)
+        beside = [fact for fact in verified if fact.id in sentence.fact_ids]
+        for figure in _headline_figures(sentence.text):
+            if any(figure in _headline_figures(str(fact.value), loose=True) for fact in beside):
+                continue  # the figure stands beside a verified fact that states it
+            # A twin states the same figure about the same work (two shared content words, as
+            # retrieval pairs them); a figure no verified fact states stays as the passage has it.
+            missing += [fact.id for fact in verified
+                        if figure in _headline_figures(str(fact.value), loose=True) and fact.id not in missing
+                        and len(_words(str(fact.value)) & _words(sentence.text)) >= 2][:2]
     if missing:
         findings.append(("FIGURE_UNPAIRED", "For each figure a story passage states, cite beside it the verified "
                          f"fact that states the same figure ({', '.join(missing[:6])}) and print the figure the way "
@@ -1422,6 +1451,26 @@ def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Seq
 
 def _words(text: str) -> set[str]:
     return {word for word in re.findall(r"[a-z]+", text.casefold()) if len(word) >= 4}
+
+
+_HEADLINE = re.compile(r"(?<![\w.])([$\u20ac\u00a3])?(\d+(?:,\d{3})*(?:\.\d+)?)\s*([kKmMbB](?![a-z]))?(\s*%|\s+percent\b)?")
+
+
+def _headline_figures(text: str, *, loose: bool = False) -> set[tuple[float, bool]]:
+    """The figures a sentence states worth pairing with a verified claim, as (value, percent):
+    money (a currency sign or a k/m/b unit), a percentage, or a count of 100 or more; never a
+    calendar year or a small bare count, which a batch-5 letter's "10" paired with every fact
+    stating a 10 (round 7). ``loose`` also takes a fact's small counts, so a twin is found by
+    value whatever its form."""
+    figures: set[tuple[float, bool]] = set()
+    for currency, number, unit, percent in _HEADLINE.findall(text):
+        value = float(number.replace(",", "")) * {"k": 1e3, "m": 1e6, "b": 1e9}.get(unit.lower(), 1.0)
+        year = not (currency or unit or percent) and 1900 <= value <= 2100 and "." not in number
+        if year or value <= 0:
+            continue
+        if currency or unit or percent or value >= 100 or (loose and value >= 10):
+            figures.add((round(value, 6), bool(percent)))
+    return figures
 
 
 def _sentence_key(sentence: Any) -> str:
@@ -5064,7 +5113,8 @@ class DynamicPacketResolver:
                 self._settled_sentences[_sentence_key(sentence)] = True
 
     def _letter_review(self, context: PacketContext, draft: NarrativeDraft, *, evidence: list[CandidateFact],
-                       job_evidence: list[dict[str, str]]) -> tuple[str, list[str], str]:
+                       job_evidence: list[dict[str, str]],
+                       shape: Literal["letter", "note"] = "letter") -> tuple[str, list[str], str]:
         """A cover letter's one independent review (round 6; since round 7 on the text that
         ships): its grounding and its grade against the owner's rubric, in one call. A grounding
         failure raises as ``_strong_review`` does; otherwise the rubric grade (PASS or FAIL), its
@@ -5082,7 +5132,8 @@ class DynamicPacketResolver:
                 facts=[_fact_evidence(fact) | {"experience_context": _experience_context(context, fact,
                        {f.id for f in evidence})} for fact in evidence], job_evidence=job_evidence,
                 job={"title": context.job.title or "", "company": context.job.company or ""},
-                sentences=draft.sentences, purpose="letter_review", **({"settled": settled} if settled else {}))
+                sentences=draft.sentences, purpose="letter_review", **({"settled": settled} if settled else {}),
+                **({"shape": "note"} if shape == "note" else {}))
         except AIHold:
             entry["status"] = "REVIEW_HELD"
             raise
@@ -5371,7 +5422,9 @@ class DynamicPacketResolver:
                 item["experience_context"] = links
             writer_facts.append(item)
         writer_facts.extend(story_evidence(story_chunks))
-        contact = _contact_fact(context) if purpose == "cover_letter" else None
+        # A note-shaped field gets the owner's short form, whose one-line close carries no link.
+        shape: Literal["letter", "note"] = letter_shape(field) if purpose == "cover_letter" else "letter"
+        contact = _contact_fact(context) if purpose == "cover_letter" and shape == "letter" else None
         if contact is not None:
             writer_facts.append({"id": contact.id, "key": contact.key, "value": contact.value})
         feedback: list[str] | None = None
@@ -5382,7 +5435,7 @@ class DynamicPacketResolver:
                     writer_facts=writer_facts, job_evidence=job_evidence, voice_samples=voice_samples,
                     consistency_confidence=consistency_confidence, relevance_scores=relevance_scores,
                     review_feedback=feedback, rewrite_attempt=attempt, story_chunks=story_chunks,
-                    contact=contact)
+                    contact=contact, shape=shape)
             except _CorrectableDraftRejection as exc:
                 if attempt == attempts - 1:
                     raise
@@ -5620,7 +5673,8 @@ class DynamicPacketResolver:
                          relevance_scores: list[float], review_feedback: list[str] | None,
                          rewrite_attempt: int,
                          story_chunks: list[dict[str, Any]] | None = None,
-                         contact: CandidateFact | None = None) -> PacketAnswer:
+                         contact: CandidateFact | None = None,
+                         shape: Literal["letter", "note"] = "letter") -> PacketAnswer:
         assert self.writer is not None
         story_chunks = story_chunks or []
         stories = transient_story_facts(story_chunks)
@@ -5629,6 +5683,7 @@ class DynamicPacketResolver:
             "facts": [_fact_evidence(fact) for fact in relevant],
             "job_evidence_ids": [evidence["id"] for evidence in job_evidence],
             **story_trace(story_chunks), "status": "WRITING",
+            **({"shape": shape} if purpose == "cover_letter" else {}),
             "rewrite_attempt": rewrite_attempt, "review_feedback": review_feedback or []})
         job = {"title": context.job.title or "", "company": context.job.company or ""}
         enumeration = _enumeration_question(field.question_text)
@@ -5642,7 +5697,8 @@ class DynamicPacketResolver:
             draft = self.writer.write(question=field.question_text, facts=writer_facts, job=job,
                 max_length=field.max_length, job_evidence=job_evidence,
                 voice_samples=voice_samples, purpose=purpose, review_feedback=review_feedback,
-                guidance=guidance, on_attempt=attempts.append)
+                guidance=guidance, on_attempt=attempts.append,
+                **({"shape": shape} if purpose == "cover_letter" else {}))
         except AIHold as exc:
             trace.update(status="WRITER_HELD", missing_information=list(getattr(exc, "missing_information", ())))
             raise
@@ -5672,7 +5728,7 @@ class DynamicPacketResolver:
                 rejections.append(("STATEMENT_QUOTED", QUOTED_STATEMENT_FEEDBACK))
             rejections.extend(self._letter_findings(context, candidate, purpose=purpose, job_evidence=job_evidence,
                                                     stories=bool(stories), contact=contact is not None,
-                                                    facts=relevant, evidence=evidence))
+                                                    facts=relevant, evidence=evidence, shape=shape))
             cited = {fid for s in candidate.sentences for fid in s.fact_ids}
             if (purpose == "cover_letter" and cited and cited <= set(supplied)
                     and not cited & {fact.id for fact in relevant}):
@@ -5696,7 +5752,7 @@ class DynamicPacketResolver:
             raise _CorrectableDraftRejection("UNSUPPORTED", [issue for _, issue in rejections])
         scores = self._ground_draft(context, field, draft, purpose=purpose, supplied=supplied,
             supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence, trace=trace,
-            rewrite_attempt=rewrite_attempt)
+            rewrite_attempt=rewrite_attempt, shape=shape)
         humanized: list[dict[str, Any]] = []
         if self.humanize and isinstance(self.writer, NarrativeWriter):
             def ground_again(candidate: NarrativeDraft, entry: dict[str, Any]) -> None:
@@ -5715,7 +5771,8 @@ class DynamicPacketResolver:
                 # uncertain score: the rewrite is new prose over the same citations.
                 self._ground_draft(context, field, candidate, purpose=purpose, supplied=supplied,
                     supplied_job=supplied_job, evidence=evidence, job_evidence=job_evidence,
-                    trace=entry, rewrite_attempt=rewrite_attempt, force_review=purpose != "cover_letter")
+                    trace=entry, rewrite_attempt=rewrite_attempt, force_review=purpose != "cover_letter",
+                    shape=shape)
 
             def trace_humanize(entry: dict[str, Any]) -> dict[str, Any]:
                 humanized.append(self._trace(entry))
@@ -5728,7 +5785,7 @@ class DynamicPacketResolver:
                 names=employer_names(context.job.company or "", " ".join(e["text"] for e in job_evidence))
                 if context.job.company else (),
                 posting=[e["text"] for e in job_evidence] if purpose == "cover_letter" else (),
-                employers=applicant_employers(context) if purpose == "cover_letter" else ())
+                employers=applicant_employers(context) if purpose == "cover_letter" else (), shape=shape)
         value = TextValue(text=draft.text)
         from interviewmaxxing_core import answer_problems
         if answer_problems(field, value):
@@ -5741,7 +5798,7 @@ class DynamicPacketResolver:
         if purpose == "cover_letter":
             self._final_letter_review(context, draft, evidence=evidence, job_evidence=job_evidence, trace=trace,
                 graded="humanized" if humanized and humanized[0].get("status") == "REWRITTEN" else "draft",
-                last=rewrite_attempt >= LETTER_ATTEMPTS - 1)
+                last=rewrite_attempt >= LETTER_ATTEMPTS - 1, shape=shape)
         job_refs = list(dict.fromkeys(eid for s in draft.sentences for eid in s.job_evidence_ids))
         reviewer = self._reviewer_label()
         note = "Opus draft with per-sentence citations and question completeness checked by Jev"
@@ -5785,14 +5842,18 @@ class DynamicPacketResolver:
     def _letter_findings(context: PacketContext, draft: NarrativeDraft, *, purpose: str,
                          job_evidence: list[dict[str, str]], stories: bool = False,
                          contact: bool = False, facts: Sequence[CandidateFact] = (),
-                         evidence: Sequence[CandidateFact] = ()) -> list[tuple[str, str]]:
+                         evidence: Sequence[CandidateFact] = (),
+                         shape: Literal["letter", "note"] = "letter") -> list[tuple[str, str]]:
         """The owner's letter rules the code can check (round 6 and its rubric): the employer
         as the job description names it; job priorities paired with the applicant's work
-        rather than restated (at most one sentence citing job evidence alone); for a cover
-        letter, the greeting line, 280-400 words in the rubric's paragraphs, a hook whose
-        first sentence cites the applicant's work and carries a digit or a story's named
-        problem, a proof drawn from a story passage when one was supplied, and a close of at
-        most two sentences with the profile links and no stock courtesy."""
+        rather than restated (at most one sentence citing job evidence alone, besides a
+        letter's company fact); for a cover letter, the greeting line, 280-400 words in the
+        rubric's paragraphs, a hook whose first sentence cites the applicant's work and carries
+        a digit or a story's named problem, a proof drawn from a story passage when one was
+        supplied, and a close of at most two sentences with the profile links and no stock
+        courtesy. A note (round 7) is held to the same lines scaled to its short form: no
+        greeting line, 120-190 words in 1-3 paragraphs, the same hook and proof, and a one-line
+        close offering to talk; the proof's told-once check needs the letter's paragraphs."""
         if purpose not in ("cover_letter", "motivation") or not draft.sentences:
             return []
         findings: list[tuple[str, str]] = []
@@ -5810,31 +5871,48 @@ class DynamicPacketResolver:
             findings.append(("EMPLOYER_NAME", f"Name the employer as the job description names it; "
                              f"'{company}' is not the name it uses."))
         job_only = [s for s in draft.sentences if s.job_evidence_ids and not s.fact_ids]
+        if purpose == "cover_letter" and shape == "letter" and job_only:
+            # The rubric's line 6(a): at most one sentence restates the posting, and the company
+            # fact (the company paragraph's first sentence citing job evidence alone whose subject
+            # is the employer's own work, not the posting or the role) is not a restatement (a live
+            # batch-5 letter was rewritten for one of each, round 7).
+            company_paragraph = sorted({s.paragraph for s in draft.sentences})[-2:-1]
+            posting_names = employer_names(company, described) if company else []
+            fact_sentence = next((s for s in job_only if s.paragraph in company_paragraph
+                                  and not restates_job(s.text, posting_names)), None)
+            job_only = [s for s in job_only if s is not fact_sentence]
         if len(job_only) > 1:
             findings.append(("JOB_RESTATED", JOB_RESTATED_FEEDBACK))
         if purpose == "cover_letter":
+            note = shape == "note"
             salutation = (greeting(draft.sentences[0].text) and not draft.sentences[0].fact_ids
                           and not draft.sentences[0].job_evidence_ids)
             body = draft.sentences[1:] if salutation else list(draft.sentences)
-            if not salutation:
-                findings.append(("GREETING", LETTER_GREETING_FEEDBACK))
+            if salutation == note:  # a letter needs its greeting line; a note has none
+                findings.append(("GREETING", NOTE_GREETING_FEEDBACK if note else LETTER_GREETING_FEEDBACK))
             paragraphs = len({s.paragraph for s in draft.sentences})
-            if (not LETTER_WORDS[0] <= len(draft.text.split()) <= LETTER_WORDS[1]
-                    or not LETTER_PARAGRAPHS[0] <= paragraphs <= LETTER_PARAGRAPHS[1]):
-                findings.append(("LETTER_LENGTH", LETTER_LENGTH_FEEDBACK))
+            (low, high), (first_count, last_count) = ((NOTE_WORDS, NOTE_PARAGRAPHS) if note
+                                                      else (LETTER_WORDS, LETTER_PARAGRAPHS))
+            if not low <= len(draft.text.split()) <= high or not first_count <= paragraphs <= last_count:
+                findings.append(("LETTER_LENGTH", NOTE_LENGTH_FEEDBACK if note else LETTER_LENGTH_FEEDBACK))
             if body:
                 first = body[0]
                 named = bool(re.search(r"\d", first.text)) or any(fid.startswith("story:") for fid in first.fact_ids)
                 if stock_opener(first.text) or not first.fact_ids or not named:
                     findings.append(("OPENING", LETTER_OPENING_FEEDBACK))
-                close = [s for s in body if s.paragraph == body[-1].paragraph]
-                if (stock_closer(close[-1].text) or len(close) != 2 or not any(_TALK.search(s.text) for s in close)
-                        or (contact and not any(CONTACT_ID in s.fact_ids for s in close))):
-                    findings.append(("CLOSING", LETTER_CLOSING_FEEDBACK))
+                if note:
+                    if stock_closer(body[-1].text) or not _TALK.search(body[-1].text):
+                        findings.append(("CLOSING", NOTE_CLOSING_FEEDBACK))
+                else:
+                    close = [s for s in body if s.paragraph == body[-1].paragraph]
+                    if (stock_closer(close[-1].text) or len(close) != 2
+                            or not any(_TALK.search(s.text) for s in close)
+                            or (contact and not any(CONTACT_ID in s.fact_ids for s in close))):
+                        findings.append(("CLOSING", LETTER_CLOSING_FEEDBACK))
             if stories and not any(fid.startswith("story:") for s in draft.sentences for fid in s.fact_ids):
                 findings.append(("STORY_MISSING", LETTER_STORY_FEEDBACK))
             findings.extend(_round7_findings(context, draft, body=body, job_evidence=job_evidence,
-                                             facts=facts, evidence=evidence))
+                                             facts=facts, evidence=evidence, note=note))
         return findings
 
     def _reviewer_label(self) -> str:
@@ -5845,7 +5923,8 @@ class DynamicPacketResolver:
 
     def _final_letter_review(self, context: PacketContext, draft: NarrativeDraft, *,
                              evidence: list[CandidateFact], job_evidence: list[dict[str, str]],
-                             trace: dict[str, Any], graded: str, last: bool) -> None:
+                             trace: dict[str, Any], graded: str, last: bool,
+                             shape: Literal["letter", "note"] = "letter") -> None:
         """A cover letter's one independent review, on the text that ships (round 7, addendum 3):
         its grounding and its grade against the owner's rubric in one call, after the code checks,
         Jev and the no-slop pass. A grounding rejection raises for the one corrective rewrite
@@ -5858,7 +5937,7 @@ class DynamicPacketResolver:
             return
         try:
             rubric, issues, question = self._letter_review(context, draft, evidence=evidence,
-                                                           job_evidence=job_evidence)
+                                                           job_evidence=job_evidence, shape=shape)
         except _CorrectableDraftRejection as exc:
             trace.update(status="REVIEW_REJECTED", review_verdict=exc.verdict, review_issues=list(exc.issues))
             trace["rubric"] = {"status": "NOT_GRADED", "graded": graded}
@@ -5875,7 +5954,8 @@ class DynamicPacketResolver:
                       purpose: Literal["answer", "cover_letter", "motivation"], supplied: dict[str, CandidateFact],
                       supplied_job: dict[str, dict[str, str]], evidence: list[CandidateFact],
                       job_evidence: list[dict[str, str]], trace: dict[str, Any],
-                      rewrite_attempt: int, force_review: bool = False) -> dict[str, Any]:
+                      rewrite_attempt: int, force_review: bool = False,
+                      shape: Literal["letter", "note"] = "letter") -> dict[str, Any]:
         """Citations, per-sentence grounding and question completeness by Jev, then the
         independent review when a score is uncertain; a failure holds. A cover letter is judged
         by Jev alone here, a failure being correctable, and gets its one review on the text that
@@ -5916,7 +5996,11 @@ class DynamicPacketResolver:
             # posting's named priorities, never full coverage, a personal reason or a judgment
             # of fit; the generic check scored every letter 0.33-0.43 and sent it to review.
             grounding_questions["complete"] = NoulQuestion(instructions=
-                ("Is this a complete cover letter in the owner's shape: a greeting line, a hook, one proof "
+                ("Is this a complete short note in the owner's shape: a hook with one figure, one proof told "
+                 "from the applicant's cited work (the constraint, what the applicant changed and the result), "
+                 "one sentence naming something specific to this employer from the job evidence with a first "
+                 "step, and a one-line close offering to talk?" if purpose == "cover_letter" and shape == "note"
+                 else "Is this a complete cover letter in the owner's shape: a greeting line, a hook, one proof "
                  "told from the applicant's cited work (the constraint, what the applicant changed and the "
                  "result), a paragraph naming something specific to this employer from the job evidence with "
                  "a first step, and a short close?" if purpose == "cover_letter" else
