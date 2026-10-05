@@ -1182,9 +1182,17 @@ class NarrativeWriter:
             # One retry after a length cut, with twice the output allowance (round 6: a cut
             # rubric grade left a letter ungraded).
             limit = review_max_tokens if attempt == 1 else min(2 * review_max_tokens, 8000)
+            reasoning: dict[str, Any] = {"effort": effort}
+            if effort in ("xhigh", "max"):
+                # At xhigh/max effort the reasoning took the whole capped output and every grade ended
+                # at its length limit (2026-10-01: 22 of 28 max-effort drafts). Give the reviewer an
+                # explicit reasoning budget, as narrative calls have, plus the full answer room.
+                thinking = REASONING_BUDGET_TOKENS[effort] if attempt == 1 else int(REASONING_BUDGET_TOKENS[effort] * RETRY_REASONING_FACTOR)
+                reasoning = {"max_tokens": thinking}
+                limit = thinking + limit
             payload = {
                 "model": self.reviewer, "max_tokens": limit,
-                "reasoning": {"effort": effort},
+                "reasoning": reasoning,
                 "provider": {"require_parameters": True, "allow_fallbacks": False},
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "response_format": {"type": "json_schema", "json_schema": {

@@ -87,6 +87,31 @@ export interface LinkedSelectionView {
   decidedAt: string;
 }
 
+export type AutoApplyStatus =
+  | "submitted"
+  | "ready"
+  | "held"
+  | "blocked"
+  | "unsupported"
+  | "not_attempted"
+  | "closed";
+
+/**
+ * How the autonomous apply lane sees a card: which backend (ATS driver) would
+ * handle it, where it stands, and what is holding it up. Read only.
+ */
+export interface AutoApplyView {
+  /** Machine id, e.g. "greenhouse", "ashby", "custom". */
+  backend: string;
+  /** Human label, e.g. "Greenhouse", "Employer site". */
+  backendLabel: string;
+  status: AutoApplyStatus;
+  /** e.g. "none", "needs_facts", "captcha"; unknown values are shown humanized. */
+  bottleneck: string;
+  detail: string | null;
+  at: string | null;
+}
+
 export interface PipelineEntryView {
   id: string;
   lane: string;
@@ -101,6 +126,8 @@ export interface PipelineEntryView {
   selection: LinkedSelectionView | null;
   provenance: PipelineProvenanceView | null;
   history: PipelineHistoryItem[];
+  /** Autonomous-apply state; absent from older services. */
+  autoApply?: AutoApplyView | null;
   createdAt: string;
   updatedAt: string;
 }

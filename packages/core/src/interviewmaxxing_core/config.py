@@ -9,6 +9,7 @@ Variable               Default                          Contents
 ``IMX_HOME``           ``~/.interviewmaxxing``          Root of everything below
 ``IMX_PROFILE_DIR``    ``$IMX_HOME/profile``            Candidate profile and resume
 ``IMX_STATE_DB``       ``$IMX_HOME/state/imx.sqlite3``  Requests, applications, events
+``IMX_PIPELINE_DB``    ``<IMX_STATE_DB dir>/pipeline``  Pipeline board (``pipeline.sqlite3``)
 ``IMX_ARTIFACTS_DIR``  ``$IMX_HOME/artifacts``          Evidence, one dir per app id
 ``IMX_BROWSER_DIR``    ``$IMX_HOME/browser``            Persistent browser profile
 ``IMX_CANDIDATE_ID``   ``default``                      Candidate used by ``apply``
@@ -36,6 +37,8 @@ class LocalPaths:
     artifacts_dir: Path
     browser_dir: Path
     candidate_id: str = DEFAULT_CANDIDATE_ID
+    pipeline_db: Path | None = None
+    """Explicit pipeline database; ``None`` keeps it beside ``state_db``."""
 
     @classmethod
     def from_env(
@@ -56,6 +59,7 @@ class LocalPaths:
             artifacts_dir=pick("IMX_ARTIFACTS_DIR", root / "artifacts"),
             browser_dir=pick("IMX_BROWSER_DIR", root / "browser"),
             candidate_id=env.get("IMX_CANDIDATE_ID") or DEFAULT_CANDIDATE_ID,
+            pipeline_db=Path(env["IMX_PIPELINE_DB"]).expanduser() if env.get("IMX_PIPELINE_DB") else None,
         )
 
     def application_artifacts(self, application_id: str) -> Path:

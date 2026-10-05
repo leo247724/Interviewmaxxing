@@ -11,6 +11,11 @@ dependencies = [
     "interviewmaxxing-jobs==0.1.0",
     "interviewmaxxing-selection==0.1.0",
     "pydantic>=2.8,<3",
+    "livekit-agents[elevenlabs,openai,silero]>=1.4,<2",
+    "livekit-api>=1,<2",
+    "python-dotenv>=1,<2",
+    "httpx>=0.28,<1",
+    "pypdf>=6,<7",
 ]
 
 [project.scripts]

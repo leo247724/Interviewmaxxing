@@ -5,7 +5,7 @@ import type { PipelineEntryView, PipelineLaneView } from "@/lib/pipeline/types";
 import type { ApplicationSummaryView } from "@/lib/service/types";
 import { compensationSummary } from "@/lib/pipeline/fields";
 import { formatShortDate } from "./dates";
-import { EntryBadges } from "./Badges";
+import { AutoApplyMarks, EntryBadges } from "./Badges";
 
 export function EntryCard({
   entry,
@@ -55,6 +55,7 @@ export function EntryCard({
         <span className="card__company">{fields.company ?? "Company not recorded"}</span>
         <span className="card__role">{fields.role ?? "Role not recorded"}</span>
       </h3>
+      <AutoApplyMarks entry={entry} showStatus={entry.lane === "saved"} />
       {(fields.workArrangement || fields.locationCommute) && <p className="card__location">
         {fields.workArrangement && <span>{fields.workArrangement}</span>}
         {fields.locationCommute && <span>{fields.locationCommute}</span>}

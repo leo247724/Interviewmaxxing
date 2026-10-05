@@ -334,10 +334,13 @@ _OWN_INTEREST = re.compile(
     r"|\bwhat (?:excites|excited|interests|interested|draws|drew|attracts|attracted|appeals to|"
     r"appealed to|inspires|inspired|motivates|motivated) you\b"
     r"|\btell (?:us|me) (?:a (?:bit|little) )?(?:more )?about yourself\b"
-    r"|\byour (?:interest|excitement|motivation) (?:in|for|to)\b", re.IGNORECASE)
+    r"|\byour (?:interest|excitement|motivation) (?:in|for|to)\b"
+    r"|\bresonates? with you\b|^about (?:you|yourself)\W*$", re.IGNORECASE)
 """The applicant's interest in or motivation for the job, beyond ``motivation_question``: "Why
 did you decide to apply to this role at ClickUp?", "why you're applying to work at Yondr",
-"What excited you about this role?", "Tell us about yourself & your interest in Smalls."."""
+"What excited you about this role?", "Tell us about yourself & your interest in Smalls.". Goal 3
+(2026-10-01): "Why does Solace's mission resonate with you?", "Which Omniscient company principle
+resonates with you the most?" and the bare label "About you" (WunderGraph)."""
 _OWN_INTEREST_NAMED = re.compile(
     r"\b[Ww]hy\s+[A-Z][\w&.'\u2019-]*(?:\s+[A-Z][\w&.'\u2019-]*)*\s*(?:&|\+|and)\s*(?:this|the|your)\s+"
     r"(?:role|position|job|team|opportunity)\b")
@@ -351,14 +354,29 @@ _OWN_PRACTICE = re.compile(
     r"|\bhow you(?:['\u2019]re| are| have| currently| typically| usually)? (?:use|using|used|leverage|"
     r"leveraging|leveraged|incorporate|incorporating|integrate|integrating|apply|applying|applied)\b"
     r"|\b(?:a|one) (?:specific |recent |particular |concrete )?(?:time|example|instance|situation) "
-    r"(?:when |where |in which )?you(?:['\u2019]ve| have)? (?:used|leveraged|applied|built|automated)\b",
+    r"(?:when |where |in which )?you(?:['\u2019]ve| have)? (?:used|leveraged|applied|built|automated)\b"
+    r"|\byour (?:preferred|favou?rite|go-to) (?:\w+ )?(?:ai|llms?|models?|tools?)\b",
     re.IGNORECASE)
 """How the applicant uses something in their own work ("How do you use AI to 10x your
-output?", "How are you currently using AI in your workflows?"); with ``_AI_OR_TOOLS``."""
+output?", "How are you currently using AI in your workflows?", goal 3: "Which is your preferred
+LLM for your professional work?"); with ``_AI_OR_TOOLS``."""
 _AI_OR_TOOLS = re.compile(
     r"\b(?:ai|artificial intelligence|gen(?:erative)?[- ]?ai|llms?|large language models?|"
     r"machine learning|chatgpt|gpt[\w.-]*|copilot|claude|gemini|automations?|tools?|tooling|workflows?)\b",
     re.IGNORECASE)
+_OWN_ACCOUNT = re.compile(
+    r"\b(?:most proud of|proudest)\b"
+    r"|\b(?:something|one thing|anything) (?:new )?you(?:['\u2019]ve| have)? (?:recently )?learn(?:ed|t)\b"
+    r"|\bhow (?:has|have) your (?:approach|strategy|process|thinking|playbook|methodology)\b[^?]{0,80}?"
+    r"\b(?:evolved|changed|shifted|adapted)\b"
+    r"|\bwhat are you (?:really |especially |particularly |truly )?(?:good|great|strongest|best) at\b",
+    re.IGNORECASE)
+"""The applicant's own account of their work (goal 3, 2026-10-01; live holds "The question does
+not have a verified candidate-narrative source scope" or "… meaning is not sufficiently clear"):
+"What is the thing you are most proud of?" (CoLab), "What's something you've learned recently
+that you're excited about?" (Rally), "… how has your approach to content strategy evolved?"
+(elk), "What are you really good at professionally?" (Omniscient). Never a weakness ("What are
+you not good at …") or a hypothetical; the writer still grounds every sentence in verified facts."""
 _NOT_OWN_NARRATIVE = re.compile(
     r"\b(?:salar(?:y|ies)|compensation|pay|wages?|rates?|relocat\w*|availab\w*|start date|"
     r"notice period|hours|travel\w*|schedul\w*|shifts?|remote\w*|hybrid|on-?site|in-?office|visas?|"
@@ -473,7 +491,7 @@ def _own_narrative(fld: ApplicationField) -> bool:
     if _NOT_OWN_NARRATIVE.search(text) is not None or _consent_wording(fld, sections=False):
         return False
     return (motivation_question(text) or _OWN_INTEREST.search(text) is not None
-            or _OWN_INTEREST_NAMED.search(text) is not None
+            or _OWN_INTEREST_NAMED.search(text) is not None or _OWN_ACCOUNT.search(text) is not None
             or (_OWN_PRACTICE.search(text) is not None and _AI_OR_TOOLS.search(text) is not None))
 
 

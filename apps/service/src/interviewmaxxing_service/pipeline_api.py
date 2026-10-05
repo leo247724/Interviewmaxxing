@@ -43,6 +43,7 @@ from interviewmaxxing_pipeline import (
 
 from . import errors
 from .discovery_models import (
+    AutoApplyView,
     ImportCounts,
     ImportInput,
     ImportPreviewRow,
@@ -61,6 +62,28 @@ from .discovery_models import (
     PipelineUpdateInput,
 )
 from .views import SAFE_ID, confirmation_of, iso
+import json as _json
+import os as _os
+
+_APPLY_STATUS = {"path": _os.path.expanduser("~/.interviewmaxxing/state/apply-status.json"), "mtime": 0.0, "data": {}}
+
+
+def apply_status(item_id: str):
+    """The card's autonomous-apply record from the sidecar file (re-read when it changes); None when absent."""
+    try:
+        st = _os.stat(_APPLY_STATUS["path"])
+        if st.st_mtime != _APPLY_STATUS["mtime"]:
+            with open(_APPLY_STATUS["path"]) as f: _APPLY_STATUS["data"] = _json.load(f)
+            _APPLY_STATUS["mtime"] = st.st_mtime
+    except (OSError, ValueError):
+        return None
+    rec = _APPLY_STATUS["data"].get(item_id)
+    if not rec: return None
+    try:
+        return AutoApplyView(backend=rec.get("backend", "unknown"), backend_label=rec.get("backend_label", "Unknown"), status=rec.get("status", "not_attempted"),
+                             bottleneck=rec.get("bottleneck", "none"), detail=rec.get("detail"), at=rec.get("at"))
+    except ValidationError:
+        return None
 
 PREVIEW_TTL_S = 30 * 60
 MAX_PREVIEWS = 8
@@ -233,6 +256,7 @@ class PipelineApi:
             lane=item.lane,
             revision=item.revision,
             fields=item.tracking.by_key(),
+            auto_apply=apply_status(item.id),
             application_url=item.application_url,
             listing_id=item.listing_id,
             origin=origin,

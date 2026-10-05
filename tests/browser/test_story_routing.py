@@ -2873,3 +2873,165 @@ def test_a_motivation_question_the_store_reads_itself_keeps_its_own_query(candid
                       "fact_ids": ["fact.bakery"]}])
     resolve(context(candidate, mock_job, question="Why Pacvue?"), retriever, writer, jev)
     assert retriever.calls[0]["query"] == "Why Pacvue?"
+
+
+@pytest.mark.parametrize(("sentence", "claims", "cited", "missing"), [
+    (
+        "At the consulting firm I generated deals worth $100,000.",
+        {"budget": "At the consulting firm I managed $100K monthly ad budgets."},
+        [], [],
+    ),
+    (
+        "At the consulting firm I managed $100,000 monthly ad budgets.",
+        {"budget": "At the consulting firm I managed $100K monthly ad budgets."},
+        [], ["budget"],
+    ),
+    (
+        "At the consulting firm I generated deals worth $100,000.",
+        {"budget": "At the consulting firm I managed $100K monthly ad budgets.",
+         "deal": "At the consulting firm I generated $100K deals."},
+        ["budget"], ["deal"],
+    ),
+    (
+        "At the consulting firm I generated deals worth $100,000.",
+        {"deal": "At the consulting firm I generated $100K deals."},
+        ["deal"], [],
+    ),
+    (
+        "At the consulting firm I generated $100,000.",
+        {"budget": "At the consulting firm I managed $100K monthly ad budgets."},
+        [], ["budget"],  # Unknown scope retains the existing conservative check.
+    ),
+    (
+        "At the consulting firm I managed a $200,000 budget and closed $100,000 deals.",
+        {"budget": "At the consulting firm I managed $100K monthly ad budgets."},
+        [], [],  # The other quantity's budget label must not define the deal's scope.
+    ),
+])
+def test_story_figure_pairing_distinguishes_deal_value_from_ad_budget(
+    candidate, mock_job, sentence, claims, cited, missing,
+):
+    from interviewmaxxing_browser.ai.routing import _round7_findings
+
+    facts = [fact(candidate, text, fid=f"fact.{key}") for key, text in claims.items()]
+    draft = NarrativeDraft.model_validate(ready([{
+        "text": sentence, "paragraph": 0,
+        "fact_ids": ["story:consulting", *(f"fact.{key}" for key in cited)],
+    }]))
+    findings = _round7_findings(
+        letter_context(candidate, mock_job), draft, body=draft.sentences,
+        job_evidence=[], facts=facts, evidence=facts,
+    )
+    pairing = [message for code, message in findings if code == "FIGURE_UNPAIRED"]
+    assert bool(pairing) == bool(missing)
+    if missing:
+        assert all(f"fact.{key}" in pairing[0] for key in missing)
+        assert all(f"fact.{key}" not in pairing[0] for key in claims if key not in missing)
+
+
+# --- goal 3 (2026-10-01): the applicant's own past work is a narrative, not a case study ------
+
+OWN_WORK_CASE_WORDINGS = [
+    # Live, onX, Osano and AnswerThis held as case analyses ("The table referenced is not in the
+    # recorded question"): the generic endings "learn from the results", "based on the data" and
+    # "an existing case study" matched the case wording, but each asks for the applicant's own work.
+    "Tell us about a media or content strategy you owned where there were more worthwhile opportunities than "
+    "you could realistically pursue. What were you trying to accomplish, how did you decide where to invest and "
+    "what not to pursue, and what did you learn from the results?",
+    "Tell us about a time campaign or channel performance wasn't meeting expectations. How did you identify the "
+    "problem, and what did you change based on the data?",
+    "Share one paid acquisition result: company, platforms, actual monthly budget, timeframe, outcome and what "
+    "you personally implemented. A few bullets or an existing case study are enough.",
+    "Share one SEO acquisition result: company, baseline, timeframe, outcome and what you personally built. A few "
+    "bullets or an existing case study are enough. An AEO example is optional.",
+]
+
+
+@pytest.mark.parametrize("question", OWN_WORK_CASE_WORDINGS)
+def test_the_applicants_own_past_work_is_not_a_case_study(question: str) -> None:
+    from interviewmaxxing_browser.ai.case_analysis import case_analysis_question
+
+    assert not case_analysis_question(question)
+    # Data recorded with the question keeps the case reading (the earlier behaviour).
+    assert case_analysis_question(question, data_shown=True)
+
+
+@pytest.mark.parametrize("question", [
+    "Here are results from a campaign you ran. Based on the data above, what would you change?",
+    "Tell us about a time you used the attached dataset. What did you learn from these results?",
+    "Using the table below, describe a strategy you owned and what you learned from the results.",
+    "Calculate CPA for each channel, then tell us about a time you cut a channel based on the data.",
+    "Review the following data and share one result you personally implemented.",
+])
+def test_own_work_wording_that_points_at_shown_data_stays_a_case_study(question: str) -> None:
+    from interviewmaxxing_browser.ai.case_analysis import case_analysis_question
+
+    assert case_analysis_question(question)
+
+
+def test_an_own_work_question_ending_in_the_results_reaches_the_narrative_writer(candidate, mock_job):
+    writer = Writer([{"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.",
+                      "fact_ids": ["fact.bakery"]}])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=OWN_WORK_CASE_WORDINGS[0]),
+                                    Retriever([candidate.facts[0]]), writer, Jev())
+    assert packet.is_complete and ctx.problems(packet) == []
+    [call] = writer.calls
+    assert call["purpose"] != "case_analysis" and [f["id"] for f in call["facts"]] == ["fact.bakery"]
+    assert not any(t["stage"] == "case_analysis" for t in resolver.narrative_traces)
+    assert packet.answers[0].provenance.reference_ids == ["fact.bakery"]
+
+
+def test_an_own_work_question_without_grounding_facts_still_holds(candidate, mock_job):
+    """Leaving the case path never loosens grounding: the narrative writer still needs facts."""
+    writer = Writer([{"text": "I managed paid search for a regional bakery chain.", "fact_ids": ["fact.bakery"]}])
+    packet, _, ctx = resolve(context(candidate, mock_job, question=OWN_WORK_CASE_WORDINGS[1]),
+                             Retriever([]), writer, Jev())
+    assert held(packet, ctx) and not writer.calls
+    assert "no relevant verified candidate facts" in packet.missing_inputs[0].prompt
+
+
+def test_an_own_work_question_with_its_table_recorded_is_still_computed_from_it(candidate, mock_job):
+    from interviewmaxxing_core import question_content_ref
+
+    ctx = context(candidate, mock_job, question=OWN_WORK_CASE_WORDINGS[0])
+    field_ = ctx.form.fields[0].model_copy(update={"section_context": [CASE_TABLE]})
+    ctx = replace(ctx, form=ctx.form.model_copy(update={"fields": [field_]}))
+    data_id = question_content_ref(ctx.form.fields[0])
+    writer = Writer(case_sentences(data_id))
+    packet, resolver, ctx = resolve(ctx, Retriever([candidate.facts[0]]), writer, Jev())
+    assert packet.is_complete and writer.calls[0]["purpose"] == "case_analysis"
+    assert next(t for t in resolver.narrative_traces if t["stage"] == "case_analysis")["status"] == "READY"
+
+
+@pytest.mark.parametrize("question", [
+    "Why does Solace's mission resonate with you?",
+    "Which Omniscient company principle resonates with you the most?",
+    "About you",
+])
+def test_resonates_and_about_you_are_motivation_narratives_whatever_their_scope(candidate, mock_job, question):
+    # Goal 3: Solace and WunderGraph held on "The question does not have a verified
+    # candidate-narrative source scope"; Omniscient's principle question on its explicit reading.
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.94)
+    retriever = Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE])
+    writer = Writer([
+        {"text": "Your description puts paid search at the center of the role.", "job_evidence_ids": [JOB_EVIDENCE["id"]]},
+        {"text": "I managed paid search for a regional bakery chain and grew online orders by 35%.", "fact_ids": ["fact.bakery"]},
+    ])
+    packet, _, ctx = resolve(context(candidate, mock_job, question=question), retriever, writer, jev)
+    assert packet.is_complete and ctx.problems(packet) == []
+    assert writer.calls[0]["purpose"] == "motivation"
+    assert not any("candidate_narrative" in r["questions"] for r in jev.requests)
+
+
+@pytest.mark.parametrize("question", [
+    "Why does relocating to Austin resonate with you?",  # a preference stays the person's own answer
+    "About your availability",
+    "About your employer",
+])
+def test_resonates_and_about_wordings_with_a_preference_or_other_subject_keep_the_hold(candidate, mock_job, question):
+    jev = Jev(scope="EXPLICIT_ANSWER", scope_probability=0.94)
+    writer = Writer([{"text": "I grew online orders by 35%.", "fact_ids": ["fact.bakery"]}])
+    packet, resolver, ctx = resolve(context(candidate, mock_job, question=question),
+                                    Retriever([candidate.facts[0]], job_evidence=[JOB_EVIDENCE]), writer, jev)
+    assert held(packet, ctx) and not writer.calls
+    assert not any(t["stage"] == "motivation_narrative" for t in resolver.narrative_traces)

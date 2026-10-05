@@ -4,7 +4,7 @@ Next.js 16 / React 19 / TypeScript frontend for Interviewmaxxing. It has four vi
 
 - **Desk:** the supplied-URL application flow (`ARCHITECTURE.md` §2 and §17). This development build requires verified `TEST_ONLY` readiness and a loopback application URL before starting or resuming browser execution. The desk shows progress, asks for missing required answers or direct user statements, and ends with a receipt or an accurate blocked/uncertain state.
 - **Pipeline:** the user's own tracker, using the 23-column reference workbook schema.
-- **Jobs:** search across job sources, with Jev APPLY/SKIP/REVIEW decisions.
+- **Jobs view removed (2026-09-30):** this is an agentic applier, not a job finder; the job-search API contracts in `lib/jobs` remain for the desk hand-off.
 - **Review:** the review-and-submit lane. The Prepared queue lists every application stopped at its final review step (or held only by a step in the browser); each one's review page shows every answer with where it came from, and approves, changes answers, prepares again and, only when the service allows it and the person confirms, submits (see [Review lane](#review-lane)).
 
 Recommendations and tracked cards never apply by themselves. Applying always goes through the desk and its single backend duplicate check.

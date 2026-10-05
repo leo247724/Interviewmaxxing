@@ -471,10 +471,12 @@ _INTEREST_WORDING = re.compile(
     r"|\bwhat (?:excited|interested|drew|attracted) you (?:about|to)\b"
     r"|\btell (?:us|me) (?:a (?:bit|little) )?(?:more )?about yourself\b"
     r"|\byour interest in (?:joining|working|applying)\b"
-    r"|\binterest(?:ed)? in (?:joining|working (?:at|for|with))\b", re.IGNORECASE)
+    r"|\binterest(?:ed)? in (?:joining|working (?:at|for|with))\b"
+    r"|\bresonates? with you\b|^about (?:you|yourself)\W*$", re.IGNORECASE)
 """Interest and motivation wordings the generation predicate misses (round 15, the first
 mass slice): "Why did you decide to apply to this role at ClickUp?", "why you're applying to
-work at Yondr", "What excited you about this role?", "Tell us about yourself"."""
+work at Yondr", "What excited you about this role?", "Tell us about yourself"; goal 3
+(2026-10-01): "Why does Solace's mission resonate with you?", the bare label "About you"."""
 _INTEREST_NAMED = re.compile(
     r"\b[Ww]hy\s+[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\s*(?:&|\+|and)\s*(?:this|the|your)\s+"
     r"(?:role|position|job|team|opportunity)\b"
@@ -1647,18 +1649,46 @@ def _round7_findings(context: PacketContext, draft: NarrativeDraft, *, body: Seq
             findings.append(("EMPLOYER_REPEATED", EMPLOYER_REPEATED_FEEDBACK))
             break
     verified = [fact for fact in facts if not fact.id.startswith(("story:", CONTACT_ID))]
+
+    def quantity_scopes(text: str, figure: tuple[float, bool]) -> set[str]:
+        # Equal dollar amounts are not necessarily the same claim. Use the nearest explicit
+        # metric beside each occurrence, not employer words elsewhere in the sentence.
+        # Unknown/ambiguous scopes keep the existing conservative citation check.
+        labels = list(re.finditer(
+            r"\b(?P<budget>budgets?|(?:ad|advertising|media)\s+spend)\b|"
+            r"\b(?P<deal>deals?(?:\s+sizes?)?|contract\s+values?)\b", text, re.IGNORECASE))
+        scopes: set[str] = set()
+        for number in _HEADLINE.finditer(text):
+            if figure not in _headline_figures(number.group(), loose=True):
+                continue
+            nearby: list[tuple[int, str]] = []
+            for label in labels:
+                gap = text[min(number.end(), label.end()):max(number.start(), label.start())]
+                if len(gap) <= 80 and not re.search(r"[;.!?]", gap):
+                    nearby.append((len(gap), "budget" if label.group("budget") else "deal"))
+            if nearby:
+                nearest = min(distance for distance, _ in nearby)
+                scopes.update(scope for distance, scope in nearby if distance == nearest)
+        return scopes
+
+    def same_quantity(text: str, other: str, figure: tuple[float, bool]) -> bool:
+        if figure not in _headline_figures(other, loose=True):
+            return False
+        left, right = quantity_scopes(text, figure), quantity_scopes(other, figure)
+        return not left or not right or bool(left & right)
+
     missing: list[str] = []
     for sentence in body:
         if not any(fid.startswith("story:") for fid in sentence.fact_ids):
             continue
         beside = [fact for fact in verified if fact.id in sentence.fact_ids]
         for figure in _headline_figures(sentence.text):
-            if any(figure in _headline_figures(str(fact.value), loose=True) for fact in beside):
+            if any(same_quantity(sentence.text, str(fact.value), figure) for fact in beside):
                 continue  # the figure stands beside a verified fact that states it
             # A twin states the same figure about the same work (two shared content words, as
             # retrieval pairs them); a figure no verified fact states stays as the passage has it.
             missing += [fact.id for fact in verified
-                        if figure in _headline_figures(str(fact.value), loose=True) and fact.id not in missing
+                        if same_quantity(sentence.text, str(fact.value), figure) and fact.id not in missing
                         and len(_words(str(fact.value)) & _words(sentence.text)) >= 2][:2]
     if missing:
         findings.append(("FIGURE_UNPAIRED", "For each figure a story passage states, cite beside it the verified "
@@ -2337,7 +2367,7 @@ class DynamicPacketResolver:
                 and field.input_type in (None, "text")
                 and field.semantic_type not in EXPLICIT_ANSWER_REQUIRED
                 and gate.semantic_type not in EXPLICIT_ANSWER_REQUIRED
-                and case_analysis_question(field.question_text))
+                and case_analysis_question(field.question_text, data_shown=data_present(field)))
 
     def _generate(self, context: PacketContext, field: ApplicationField,
                   gate: FieldRouteDecision) -> PacketAnswer:

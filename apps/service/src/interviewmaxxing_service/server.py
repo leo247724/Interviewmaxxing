@@ -37,6 +37,8 @@ from .discovery_models import (
     PipelineUpdateInput,
     SearchPreferencesInput,
 )
+from .interviews import MAX_AUDIO_BYTES, MAX_JSON_BYTES, InterviewApi
+from .interviews_models import InterviewCreate, InterviewDocument, InterviewTurn
 from .models import (
     AnswerInput,
     ApproveInput,
@@ -66,6 +68,11 @@ _RECONCILE: TypeAdapter[
 _APP = r"(?P<app>[^/]+)"
 Route = tuple[str, re.Pattern[str], str]
 ROUTES: list[Route] = [
+    ("GET", re.compile(r"^/interviews$"), "interviews_list"),
+    ("GET", re.compile(r"^/interviews/context$"), "interviews_context"),
+    ("POST", re.compile(r"^/interviews$"), "interviews_create"),
+    ("GET", re.compile(r"^/interviews/(?P<sid>[^/]+)$"), "interviews_get"),
+    *[("POST", re.compile(r"^/interviews/(?P<sid>[^/]+)/" + action + "$"), "interviews_" + action) for action in ("documents", "start", "connect", "turns", "finish", "ingest")],
     ("GET", re.compile(r"^/healthz$"), "health"),
     ("GET", re.compile(r"^/candidate$"), "candidate"),
     ("POST", re.compile(r"^/resumes$"), "upload"),
@@ -96,6 +103,11 @@ ROUTES: list[Route] = [
     ("POST", re.compile(r"^/jobs/(?P<listing>[^/]+)/track$"), "track"),
 ]
 _TEMPLATES = {
+    "interviews_list": "/interviews",
+    "interviews_create": "/interviews",
+    "interviews_context": "/interviews/context",
+    "interviews_get": "/interviews/{id}",
+    **{"interviews_" + action: "/interviews/{id}/" + action for action in ("documents", "start", "connect", "turns", "finish", "ingest")},
     "health": "/healthz",
     "candidate": "/candidate",
     "upload": "/resumes",
@@ -163,6 +175,7 @@ class ServiceHandler(BaseHTTPRequestHandler):
     config: ServiceConfig
     pipeline: PipelineApi | None
     jobs: JobsApi | None
+    interviews: InterviewApi | None
 
     # --- logging --------------------------------------------------------------------
 
@@ -321,6 +334,60 @@ class ServiceHandler(BaseHTTPRequestHandler):
             pass
 
     # --- routes ---------------------------------------------------------------------------
+
+    def _interviews(self) -> InterviewApi:
+        if self.interviews is None:
+            raise errors.unavailable("Interview practice is unavailable.")
+        return self.interviews
+
+    def _r_interviews_list(self) -> None:
+        self._send_json(200, self._interviews().list())
+
+    def _r_interviews_context(self) -> None:
+        self._send_json(200, self._interviews().preparation())
+
+    def _r_interviews_create(self) -> None:
+        body = self._json(InterviewCreate, limit=MAX_JSON_BYTES)
+        self._send_json(201, self._interviews().create(body.model_dump(exclude_unset=True)))
+
+    def _r_interviews_get(self, sid: str) -> None:
+        self._send_json(200, self._interviews().get(sid))
+
+    def _r_interviews_documents(self, sid: str) -> None:
+        api = self._interviews()
+        if self._content_type() == "application/octet-stream":
+            encoded = self.headers.get(FILENAME_HEADER, "")
+            if not encoded.isascii():
+                raise errors.invalid("Encode the filename as percent-encoded UTF-8.")
+            try:
+                name = unquote(encoded, encoding="utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise errors.invalid("The filename is not valid UTF-8.") from exc
+            result = api.upload(sid, self.headers.get("X-Imx-Kind", "prior_recording"), name, self._read_body(MAX_AUDIO_BYTES))
+        else:
+            body = self._json(InterviewDocument, limit=MAX_JSON_BYTES)
+            result = api.add_document(sid, body.kind, body.name, body.text)
+        self._send_json(200, result)
+
+    def _r_interviews_ingest(self, sid: str) -> None:
+        self._json(EmptyBody)
+        self._send_json(200, self._interviews().ingest(sid))
+
+    def _r_interviews_start(self, sid: str) -> None:
+        self._json(EmptyBody)
+        self._send_json(200, self._interviews().start(sid))
+
+    def _r_interviews_connect(self, sid: str) -> None:
+        self._json(EmptyBody)
+        self._send_json(200, self._interviews().connect(sid))
+
+    def _r_interviews_turns(self, sid: str) -> None:
+        body = self._json(InterviewTurn, limit=MAX_JSON_BYTES)
+        self._send_json(200, self._interviews().turn(sid, body.answer, body.requestId, body.question))
+
+    def _r_interviews_finish(self, sid: str) -> None:
+        self._json(EmptyBody)
+        self._send_json(200, self._interviews().finish(sid))
 
     def _r_health(self) -> None:
         health = self.service.health()
@@ -488,10 +555,11 @@ def make_server(
     *,
     pipeline: PipelineApi | None = None,
     jobs: JobsApi | None = None,
+    interviews: InterviewApi | None = None,
 ) -> LoopbackHTTPServer:
     handler = type(
         "BoundServiceHandler",
         (ServiceHandler,),
-        {"service": service, "config": service.config, "pipeline": pipeline, "jobs": jobs},
+        {"service": service, "config": service.config, "pipeline": pipeline, "jobs": jobs, "interviews": interviews},
     )
     return LoopbackHTTPServer(service.config, handler)

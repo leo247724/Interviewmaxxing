@@ -9,6 +9,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
+from interviewmaxxing_core import LocalPaths
 from interviewmaxxing_pipeline import (
     DEFAULT_BOARD_LANES,
     BoardLane,
@@ -60,6 +61,19 @@ def test_database_is_private_and_separate_from_the_application_store(
     assert default_pipeline_db(isolated_imx_home) == \
         isolated_imx_home.state_db.parent / "pipeline.sqlite3"
     assert default_pipeline_db(isolated_imx_home) != isolated_imx_home.state_db
+
+
+def test_pipeline_db_override_leaves_the_state_dir_alone(isolated_imx_home, tmp_path, monkeypatch):
+    # The Interview Helper runs its own service state but shows the canonical board.
+    shared = tmp_path / "canonical" / "pipeline.sqlite3"
+    monkeypatch.setenv("IMX_PIPELINE_DB", str(shared))
+    paths = LocalPaths.from_env()
+    assert default_pipeline_db(paths) == shared
+    assert paths.state_db == isolated_imx_home.state_db
+    with PipelineStore.from_paths(paths) as store:
+        store.create_item(CAND, _new())
+    assert shared.exists()
+    assert not (isolated_imx_home.state_db.parent / "pipeline.sqlite3").exists()
 
 
 def test_move_records_history_and_never_touches_applications(pipeline, clock):

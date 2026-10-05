@@ -12,6 +12,8 @@ from .application_links import ApplicationLinks
 from .candidate import CandidateGateway
 from .config import ServiceConfig
 from .executor import Dispatcher
+from .interview_providers import InterviewProviders
+from .interviews import InterviewApi
 from .jobs_api import DecisionBackend, JobsApi, ListingRepository, SearchBackend
 from .ownership import ServiceOwnership
 from .pipeline_api import PipelineApi
@@ -28,12 +30,14 @@ class ServiceApp:
     jobs: JobsApi
     state: ServiceState
     ownership: ServiceOwnership
+    interviews: InterviewApi
 
     def server(self) -> LoopbackHTTPServer:
-        return make_server(self.service, pipeline=self.pipeline, jobs=self.jobs)
+        return make_server(self.service, pipeline=self.pipeline, jobs=self.jobs, interviews=self.interviews)
 
     def close(self) -> None:
         try:
+            self.interviews.close()
             self.jobs.shutdown()
             self.service.dispatcher.shutdown()
         finally:
@@ -103,7 +107,10 @@ def build_app(
             track_listing=track_listing,
         )
         return ServiceApp(config=config, service=service, pipeline=pipeline, jobs=jobs, state=state,
-                          ownership=ownership)
+                          ownership=ownership, interviews=InterviewApi(
+                              config.paths.state_db.parent / "interviews.sqlite3", InterviewProviders(),
+                              candidate_id=config.candidate_id, profile_loader=profile_loader,
+                              pipeline=pipeline, listings=listings))
     except BaseException:
         dispatcher.shutdown()
         if state is not None:

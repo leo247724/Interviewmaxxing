@@ -29,7 +29,11 @@ from interviewmaxxing_browser.ai import (
     CallBudget,
     DynamicPacketResolver,
 )
-from interviewmaxxing_browser.ai.answer_policies import POLICY_PROMPT_VERSION
+from interviewmaxxing_browser.ai.answer_policies import (
+    POLICY_PROMPT_VERSION,
+    stated_years,
+    years_reading,
+)
 from interviewmaxxing_browser.ai.providers import NarrativeDraft
 from interviewmaxxing_browser.semantics import classify as classify_semantics
 from interviewmaxxing_candidate.simple_answers import SimpleAnswers
@@ -1577,3 +1581,80 @@ def test_a_fixed_budget_keeps_its_limits(
     budget_run(with_policies(fictional_candidate), mock_job, budget, granted, monkeypatch)
     assert granted == [(6, pytest.approx(0.03))]
     assert (budget.max_calls, budget.max_usd) == (48, 0.50)
+
+
+
+# Narrow open-plus ranges retain the surrounding threshold and evidence guards.
+OPEN_PLUS_QUESTION = "Do you have 5-8+ years of experience in paid media or performance marketing?"
+
+
+@pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
+@pytest.mark.parametrize(("years", "expected"), [(4, False), (5, True), (7, True), (8, True), (9, True)])
+def test_open_plus_range_is_lower_bound_not_closed_interval(dash: str, years: int, expected: bool) -> None:
+    reading = years_reading(OPEN_PLUS_QUESTION.replace("-", dash))
+    assert reading.mentioned and reading.threshold is not None
+    assert (reading.threshold.years, reading.threshold.strict) == (5, False)
+    assert reading.threshold.met_by(years) is expected
+
+
+def test_open_plus_question_uses_existing_seven_paid_eight_performance_facts() -> None:
+    facts = [years_fact("years_experience.paid_media", 7),
+             years_fact("years_experience.performance_marketing", 8)]
+    stated = stated_years(OPEN_PLUS_QUESTION, facts)
+    reading = years_reading(OPEN_PLUS_QUESTION)
+    assert stated.years == 8 and not stated.conflict
+    assert {f.id for f in stated.facts} == {f.id for f in facts}
+    assert reading.threshold is not None and reading.threshold.met_by(stated.years)
+    assert [f.value for f in facts] == [7, 8]
+
+
+@pytest.mark.parametrize("question", [
+    "Do you have 5-8 years of paid media experience?",
+    "Do you have 8-5+ years of paid media experience?",
+    "Do you have 0-8+ years of paid media experience?",
+    "Do you have 5-51+ years of paid media experience?",
+    "Do you have -5-8+ years of paid media experience?",
+    "Do you have less than 5-8+ years of paid media experience?",
+    "Do you have at most 5-8+ years of paid media experience?",
+    "Are you 5-8+ years old?",
+    "Have you done this in the past 5-8+ years?",
+    "Did you work here 5-8+ years ago?",
+    "Do you have 5-8+ years of paid media experience including 2 in paid social?",
+    "Do you have 5-8+ years in paid media and 3+ years in SEO?",
+])
+def test_open_plus_range_preserves_unreadable_and_nonexperience_guards(question: str) -> None:
+    reading = years_reading(question)
+    assert reading.mentioned and reading.threshold is None
+
+
+def test_open_plus_range_with_strict_prefix_holds_without_changing_ordinary_threshold() -> None:
+    reading = years_reading("Do you have more than 5-8+ years of paid media experience?")
+    assert reading.mentioned and reading.threshold is None
+    ordinary = years_reading("Do you have more than 5 years of paid media experience?")
+    assert ordinary.threshold is not None and ordinary.threshold.strict
+    assert not ordinary.threshold.met_by(5) and ordinary.threshold.met_by(6)
+
+
+@pytest.mark.parametrize(("years", "expected"), [(4, "No"), (5, "Yes"), (8, "Yes"), (9, "Yes")])
+def test_open_plus_threshold_policy_uses_existing_packet_path(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, years: int, expected: str,
+) -> None:
+    case = Case(OPEN_PLUS_QUESTION, script=Script(policy=THRESHOLDS),
+                years={"years_experience.paid_media": years})
+    base = fictional_candidate.model_copy(update={"facts": []})
+    result = run_case(case, base, mock_job)
+    answer = result.answer()
+    assert answer is not None and rendered(answer) == expected
+    assert result.ctx.problems(result.packet) == []
+
+
+@pytest.mark.parametrize("facts", [(), (years_fact("years_experience.paid_media", 7, fid="one"),
+                                       years_fact("years_experience.paid_media", 8, fid="two"))])
+def test_open_plus_threshold_does_not_override_missing_or_conflicting_facts(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord, facts: tuple[CandidateFact, ...],
+) -> None:
+    base = fictional_candidate.model_copy(update={"facts": []})
+    result = run_case(Case(OPEN_PLUS_QUESTION, script=Script(policy=THRESHOLDS), years={}, facts=facts),
+                      base, mock_job)
+    assert result.answer() is None and result.hold() is not None
+    assert result.trace()["status"] == ("YEARS_CONFLICT" if facts else "NO_STATED_YEARS")

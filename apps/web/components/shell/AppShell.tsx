@@ -5,12 +5,12 @@ import type { ReactNode } from "react";
 import type { ServiceReadiness } from "@/lib/service/readiness";
 
 export type Connection = "checking" | "connected" | "unavailable";
-export type Section = "desk" | "pipeline" | "jobs" | "review";
+export type Section = "desk" | "pipeline" | "review" | "interviews";
 
 const SECTIONS: { id: Section; label: string; live: string; preview: string }[] = [
-  { id: "jobs", label: "Jobs", live: "/jobs", preview: "/preview/jobs" },
   { id: "pipeline", label: "Pipeline", live: "/pipeline", preview: "/preview/pipeline" },
   { id: "review", label: "Review", live: "/review", preview: "/preview/review" },
+  { id: "interviews", label: "Interviews", live: "/interviews", preview: "/interviews" },
   { id: "desk", label: "Desk", live: "/", preview: "/preview" },
 ];
 
@@ -82,7 +82,7 @@ export function AppShell({
       <div className={`desk desk--${section}`}>
         <header className="masthead">
           <div className="masthead__brand">
-            <svg className="brand-symbol" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M8 22V10h4v8l4-6 4 6v-8h4v12h-4l-4-6-4 6Z" fill="var(--paper-raised)"/></svg>
+            <img className="brand-symbol" src="/logo.png" alt="" width="116" height="96" />
             <span className="wordmark">Interviewmaxxing</span>
           </div>
           <nav className="sections" aria-label="Sections">
@@ -100,11 +100,11 @@ export function AppShell({
               ))}
             </ul>
           </nav>
-          <ConnectionBadge mode={mode} connection={connection} />
+          {section !== "pipeline" && <ConnectionBadge mode={mode} connection={connection} />}
         </header>
 
         <main id="main" className="desk__main" tabIndex={-1}>
-          {mode === "live" && readiness && <ExecutionBanner readiness={readiness} />}
+          {mode === "live" && readiness && section !== "pipeline" && <ExecutionBanner readiness={readiness} />}
           {children}
         </main>
 
@@ -138,7 +138,7 @@ function ExecutionBanner({ readiness }: { readiness: ServiceReadiness }) {
 
 function SectionIcon({ section }: { section: Section }) {
   return <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-    {section === "jobs" ? <><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></> : section === "pipeline" ? <><rect x="2.5" y="4" width="4" height="12" rx="1"/><rect x="8" y="4" width="4" height="8" rx="1"/><rect x="13.5" y="4" width="4" height="10" rx="1"/></> : section === "review" ? <><path d="M3 5.5h8M3 10h8M3 14.5h5"/><path d="m11.5 14 2.2 2.2 3.8-4.7"/></> : <><rect x="3" y="2.5" width="12" height="15" rx="2"/><path d="M6.5 6h5M6.5 9h5M6.5 12H10m3.5.5 2 2 3-4"/></>}
+    {section === "pipeline" ? <><rect x="2.5" y="4" width="4" height="12" rx="1"/><rect x="8" y="4" width="4" height="8" rx="1"/><rect x="13.5" y="4" width="4" height="10" rx="1"/></> : section === "review" ? <><path d="M3 5.5h8M3 10h8M3 14.5h5"/><path d="m11.5 14 2.2 2.2 3.8-4.7"/></> : <><rect x="3" y="2.5" width="12" height="15" rx="2"/><path d="M6.5 6h5M6.5 9h5M6.5 12H10m3.5.5 2 2 3-4"/></>}
   </svg>;
 }
 

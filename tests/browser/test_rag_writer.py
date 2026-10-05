@@ -598,15 +598,19 @@ def test_drafting_and_review_share_the_same_call_limit() -> None:
 def test_writer_and_review_send_and_record_explicit_reasoning_without_changing_caps(effort: Any) -> None:
     provider = MockWriterTransport(ready({"text": "I managed paid campaigns.",
                                         "fact_ids": ["fact:campaigns"]}))
-    budget = CallBudget()
+    budget = CallBudget(max_usd=2.0)  # a max-effort draft and review reserve more than the USD 0.50 default
     instance = NarrativeWriter(ApiKey("synthetic-writer-key", source="test"), MODEL, budget,
                                transport=provider, reasoning_effort=effort)
     instance.write(question="Describe your work", facts=FACTS, job=JOB, max_length=100)
     provider.draft = review_result(reference_ids=["fact:campaigns"])
     instance.review(question="Check", facts=FACTS, job={}, purpose="evidence_consistency")
     budget_tokens = REASONING_BUDGET_TOKENS[effort]
-    assert [request["reasoning"] for request in provider.requests] == [{"max_tokens": budget_tokens}, {"effort": effort}]
-    assert [request["max_tokens"] for request in provider.requests] == [budget_tokens + 2000, 1200]
+    # xhigh/max reviews get an explicit reasoning budget on top of their answer room (2026-10-01: an
+    # effort-only max review spent its whole capped output reasoning and ended at the length limit).
+    review_reasoning = {"max_tokens": budget_tokens} if effort in ("xhigh", "max") else {"effort": effort}
+    review_cap = budget_tokens + 1200 if effort in ("xhigh", "max") else 1200
+    assert [request["reasoning"] for request in provider.requests] == [{"max_tokens": budget_tokens}, review_reasoning]
+    assert [request["max_tokens"] for request in provider.requests] == [budget_tokens + 2000, review_cap]
     assert [request["model"] for request in provider.requests] == [MODEL, MODEL]
     assert provider.timeouts == [120.0, 120.0]
     assert [receipt.requested_reasoning_effort for receipt in budget.receipts] == [effort, effort]

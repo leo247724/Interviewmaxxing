@@ -4,6 +4,22 @@ import { PreviewPipelineService, laneForImported } from "@/lib/pipeline/preview"
 import { parseCell, parseCsv, validateFields } from "@/lib/pipeline/fields";
 import { EMPTY_FIELDS, REFERENCE_COLUMNS } from "@/lib/pipeline/types";
 import { takeHandoff, writeHandoff } from "@/lib/handoff";
+import {
+  EMPTY_FILTERS,
+  FILTER_STORAGE_KEY,
+  autoApplyLine,
+  bottleneckLabel,
+  filterOptions,
+  entryInSummary,
+  everApplied,
+  laneInSummary,
+  matchesAutoApplyFilters,
+  parseStoredFilters,
+  readStoredFilters,
+  summaryCounts,
+  writeStoredFilters,
+} from "@/lib/pipeline/filters";
+import type { AutoApplyView, PipelineEntryView } from "@/lib/pipeline/types";
 
 const HEADER = REFERENCE_COLUMNS.map((column) => column.header).join(",");
 
@@ -58,8 +74,8 @@ describe("field parsing and validation", () => {
 
   it("maps imported wording to a lane conservatively", () => {
     expect(laneForImported("Final round", "Declined by employer")).toBe("closed");
-    expect(laneForImported("Take-home case study", null)).toBe("assessment");
-    expect(laneForImported("Phone screen", null)).toBe("scheduling");
+    expect(laneForImported("Take-home case study", null)).toBe("interview-2");
+    expect(laneForImported("Phone screen", null)).toBe("interviewing");
     expect(laneForImported("Networking coffee", "Waiting")).toBe("saved");
   });
 });
@@ -117,7 +133,7 @@ describe("PreviewPipelineService", () => {
 
     let board = await service.board();
     const harbor = board.entries.find((item) => item.fields.company === "Fictional Harbor")!;
-    expect(harbor.lane).toBe("scheduling");
+    expect(harbor.lane).toBe("interviewing");
     expect(harbor.applicationUrl).toBeNull();
     expect(harbor.application).toBeNull();
     expect(harbor.provenance?.importedValues["Fit / 10"]).toBe("7");
@@ -139,7 +155,7 @@ describe("PreviewPipelineService", () => {
     const after = board.entries.find((item) => item.fields.company === "Fictional Harbor")!;
     expect(after.fields.stage).toBe("Hiring manager interview");
     expect(after.fields.fitScore).toBe(9);
-    expect(after.lane).toBe("scheduling");
+    expect(after.lane).toBe("interviewing");
   });
 
   it("reports malformed rows precisely and imports nothing", async () => {
@@ -202,5 +218,175 @@ describe("desk handoff", () => {
     expect(takeHandoff(storage)).toBeNull();
     store.set("imx.deskHandoff", "{not json");
     expect(takeHandoff(storage)).toBeNull();
+  });
+});
+
+// Fictional autonomous-apply states only.
+function auto(partial: Partial<AutoApplyView>): AutoApplyView {
+  return { backend: "greenhouse", backendLabel: "Greenhouse", status: "held", bottleneck: "none", detail: null, at: null, ...partial };
+}
+type Card = Pick<PipelineEntryView, "lane" | "autoApply">;
+const card = (lane: string, autoApply: AutoApplyView | null = null): Card => ({ lane, autoApply });
+
+describe("summary buttons", () => {
+  const lanes = ["saved", "applied", "interest", "interviewing", "interview-2", "interview-3", "decision", "closed", "offer"];
+
+  it("counts found, interested, interviewing and waiting from the lanes", () => {
+    const cards = [...lanes.map((lane) => card(lane)), card("saved"), card("interview-2"), card("decision")];
+    expect(summaryCounts(cards)).toEqual({ found: 12, applied: 9, interested: 7, interviewing: 4, waiting: 2 });
+    expect(summaryCounts([])).toEqual({ found: 0, applied: 0, interested: 0, interviewing: 0, waiting: 0 });
+  });
+
+  it("limits each summary to its lanes", () => {
+    expect(lanes.filter((lane) => laneInSummary(lane, "found"))).toEqual(lanes);
+    expect(lanes.filter((lane) => laneInSummary(lane, "interested"))).toEqual([
+      "interest",
+      "interviewing",
+      "interview-2",
+      "interview-3",
+      "decision",
+    ]);
+    expect(lanes.filter((lane) => laneInSummary(lane, "interviewing"))).toEqual(["interviewing", "interview-2", "interview-3"]);
+    expect(lanes.filter((lane) => laneInSummary(lane, "waiting"))).toEqual(["decision"]);
+    // An unknown lane only counts toward Total Jobs Found.
+    expect(summaryCounts([card("scheduling")])).toEqual({ found: 1, applied: 0, interested: 0, interviewing: 0, waiting: 0 });
+  });
+
+  it("counts Total Jobs Applied all-time, including closed cards once moved to Applied", () => {
+    const moved = (fromLane: string | null, toLane: string | null) => ({ fromLane, toLane });
+    const applied = { lane: "applied", history: [moved(null, "applied")] };
+    const closedAfterApplying = { lane: "closed", history: [moved(null, "saved"), moved("saved", "applied"), moved("applied", "closed")] };
+    const closedNeverApplied = { lane: "closed", history: [moved(null, "saved"), moved("saved", "closed")] };
+    const saved = { lane: "saved", history: [moved(null, "saved")] };
+    expect(everApplied(applied)).toBe(true);
+    expect(everApplied(closedAfterApplying)).toBe(true);
+    expect(everApplied(closedNeverApplied)).toBe(false);
+    expect(everApplied(saved)).toBe(false);
+    // Later lanes count even without an Applied move on record; missing history is tolerated.
+    expect(everApplied({ lane: "offer", history: [] })).toBe(true);
+    expect(everApplied({ lane: "interest" })).toBe(true);
+    expect(entryInSummary(closedAfterApplying, "applied")).toBe(true);
+    expect(entryInSummary(closedAfterApplying, "interested")).toBe(false);
+    expect(summaryCounts([applied, closedAfterApplying, closedNeverApplied, saved]).applied).toBe(2);
+  });
+});
+
+describe("autonomous-apply filters", () => {
+  const greenhouseHeld = card("saved", auto({ status: "held", bottleneck: "needs_facts" }));
+  const ashbyBlocked = card("saved", auto({ backend: "ashby", backendLabel: "Ashby", status: "blocked", bottleneck: "captcha" }));
+  const ashbyApplied = card("applied", auto({ backend: "ashby", backendLabel: "Ashby", status: "submitted" }));
+  const unknown = card("interviewing");
+  const cards = [greenhouseHeld, ashbyBlocked, ashbyApplied, unknown];
+  const pick = (filters: Partial<typeof EMPTY_FILTERS>) =>
+    cards.filter((item) => matchesAutoApplyFilters(item, { ...EMPTY_FILTERS, ...filters }));
+
+  it("matches everything with no filters", () => {
+    expect(pick({})).toEqual(cards);
+  });
+
+  it("is multi-select within a group and AND across groups", () => {
+    expect(pick({ backends: ["Ashby"] })).toEqual([ashbyBlocked, ashbyApplied]);
+    expect(pick({ backends: ["Ashby", "Unknown"] })).toEqual([ashbyBlocked, ashbyApplied, unknown]);
+    expect(pick({ statuses: ["held", "blocked"] })).toEqual([greenhouseHeld, ashbyBlocked]);
+    expect(pick({ backends: ["Ashby"], statuses: ["held", "blocked"] })).toEqual([ashbyBlocked]);
+    expect(pick({ backends: ["Ashby"], bottlenecks: ["needs_facts"] })).toEqual([]);
+    expect(pick({ statuses: ["blocked"], bottlenecks: ["captcha"] })).toEqual([ashbyBlocked]);
+  });
+
+  it("keeps cards without autoApply out of status and bottleneck filters", () => {
+    expect(pick({ backends: ["Unknown"] })).toEqual([unknown]);
+    expect(pick({ statuses: ["not_attempted"] })).toEqual([]);
+    expect(pick({ bottlenecks: ["none"] })).toEqual([ashbyApplied]);
+  });
+
+  it("offers chips for what is present, backends by count with Unknown last", () => {
+    const options = filterOptions([...cards, card("saved"), card("saved"), card("saved")]);
+    expect(options.backends).toEqual([
+      { value: "Ashby", label: "Ashby", count: 2 },
+      { value: "Greenhouse", label: "Greenhouse", count: 1 },
+      { value: "Unknown", label: "Unknown", count: 4 },
+    ]);
+    expect(options.statuses).toEqual([
+      { value: "submitted", label: "Applied", count: 1 },
+      { value: "held", label: "Held", count: 1 },
+      { value: "blocked", label: "Blocked", count: 1 },
+    ]);
+    // "none" has no label, so it never becomes a chip.
+    expect(options.bottlenecks.map((option) => option.label).sort()).toEqual(["CAPTCHA (you)", "Needs your facts"]);
+  });
+
+  it("labels status and bottleneck for the card line", () => {
+    expect(autoApplyLine({ status: "held", bottleneck: "needs_facts" })).toBe("Held · Needs your facts");
+    expect(autoApplyLine({ status: "ready", bottleneck: "none" })).toBe("Ready to apply");
+    expect(autoApplyLine({ status: "not_attempted", bottleneck: "aggregator_link" })).toBe(
+      "Not attempted · Aggregator link (re-home)",
+    );
+    expect(bottleneckLabel("company_cap")).toBe("Company cap (1/week)");
+    expect(bottleneckLabel("brand_new_reason")).toBe("Brand new reason");
+  });
+
+  it("gives the preview board varied backends and bottlenecks", async () => {
+    const board = await new PreviewPipelineService().board();
+    const options = filterOptions(board.entries);
+    expect(options.backends.length).toBeGreaterThanOrEqual(4);
+    expect(options.backends.at(-1)?.value).toBe("Unknown");
+    expect(options.bottlenecks.length).toBeGreaterThanOrEqual(3);
+    expect(board.entries.filter((entry) => entry.lane === "saved").every((entry) => entry.autoApply)).toBe(true);
+  });
+});
+
+describe("remembered filters", () => {
+  it("round-trips through storage and survives junk or blocked storage", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+    };
+    expect(readStoredFilters(storage)).toEqual({ summary: "found", ...EMPTY_FILTERS, hidden: false });
+    writeStoredFilters({ summary: "waiting", backends: ["Ashby"], statuses: ["held"], bottlenecks: [], hidden: false }, storage);
+    expect(readStoredFilters(storage)).toEqual({
+      summary: "waiting",
+      backends: ["Ashby"],
+      statuses: ["held"],
+      bottlenecks: [],
+      hidden: false,
+    });
+
+    store.set(FILTER_STORAGE_KEY, "{not json");
+    expect(readStoredFilters(storage)).toEqual({ summary: "found", ...EMPTY_FILTERS, hidden: false });
+    expect(parseStoredFilters('{"summary":"bogus","backends":[1,"Lever"],"statuses":"held"}')).toEqual({
+      summary: "found",
+      backends: ["Lever"],
+      statuses: [],
+      bottlenecks: [],
+      hidden: false,
+    });
+
+    const blocked = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(readStoredFilters(blocked)).toEqual({ summary: "found", ...EMPTY_FILTERS, hidden: false });
+    expect(() => writeStoredFilters({ summary: "found", ...EMPTY_FILTERS, hidden: true }, blocked)).not.toThrow();
+  });
+
+  it("remembers whether the filter chips are hidden in the same record", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+    };
+    writeStoredFilters({ summary: "applied", ...EMPTY_FILTERS, statuses: ["held"], hidden: true }, storage);
+    expect(JSON.parse(store.get(FILTER_STORAGE_KEY) ?? "{}")).toMatchObject({ summary: "applied", hidden: true });
+    expect(readStoredFilters(storage)).toEqual({ summary: "applied", ...EMPTY_FILTERS, statuses: ["held"], hidden: true });
+    writeStoredFilters({ summary: "applied", ...EMPTY_FILTERS, hidden: false }, storage);
+    expect(readStoredFilters(storage).hidden).toBe(false);
+    // Only a literal true hides them; records saved before the toggle existed show the chips.
+    expect(parseStoredFilters('{"summary":"found","hidden":"yes"}').hidden).toBe(false);
+    expect(parseStoredFilters('{"summary":"found"}').hidden).toBe(false);
   });
 });

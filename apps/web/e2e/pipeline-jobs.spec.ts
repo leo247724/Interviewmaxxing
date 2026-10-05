@@ -36,14 +36,14 @@ test.describe("pipeline preview", () => {
     await larkspur.getByLabel("Move Larkspur Health to lane").focus();
     await larkspur.getByLabel("Move Larkspur Health to lane").selectOption("decision");
     await larkspur.getByRole("button", { name: "Move" }).press("Enter");
-    const decision = page.locator("section.lane", { has: page.getByRole("heading", { name: /^Decision/ }) });
+    const decision = page.locator("section.lane", { has: page.getByRole("heading", { name: /^Awaiting Decision/ }) });
     await expect(decision.locator("article.card", { hasText: "Larkspur Health" })).toBeVisible();
-    await expect(page.getByRole("status").filter({ hasText: "Moved Larkspur Health to Decision." })).toBeAttached();
+    await expect(page.getByRole("status").filter({ hasText: "Moved Larkspur Health to Awaiting Decision." })).toBeAttached();
 
     await card(page, "Larkspur Health").getByRole("button", { name: "Open Larkspur Health" }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByText(/^History/).click();
-    await expect(dialog.locator(".history")).toContainText("Moved from Interviewing to Decision");
+    await expect(dialog.locator(".history")).toContainText("Moved from 1st round interview to Awaiting Decision");
   });
 
   test("edits all reference fields with validation, then saves", async ({ page }) => {
@@ -100,58 +100,7 @@ test.describe("pipeline preview", () => {
     await expect(tessellate).toContainText("2:30 PM CT");
   });
 
-  test("tracks a new job by hand", async ({ page }) => {
-    await openBoard(page);
-    await page.getByRole("button", { name: "Track a job" }).click();
-    const dialog = page.getByRole("dialog", { name: "Track a job" });
-    await dialog.getByRole("button", { name: "Add to pipeline" }).click();
-    await expect(dialog.locator(".error-summary")).toContainText("company or a role");
-    await dialog.getByLabel("Company", { exact: true }).fill("Fictional Ember Co");
-    await dialog.getByLabel("Role", { exact: true }).fill("Marketing Manager");
-    await dialog.getByLabel("Lane").selectOption("applied");
-    await dialog.getByRole("button", { name: "Add to pipeline" }).click();
-    await expect(dialog).toBeHidden();
-    const applied = page.locator("section.lane", { has: page.getByRole("heading", { name: /^Applied/ }) });
-    await expect(applied.locator("article.card", { hasText: "Fictional Ember Co" })).toContainText("Added by you");
-  });
 
-  test("imports with a preview, blocks bad files and never duplicates on reimport", async ({ page }, info) => {
-    const good = join(tmpdir(), `imx-good-${info.project.name}.csv`);
-    const bad = join(tmpdir(), `imx-bad-${info.project.name}.csv`);
-    writeFileSync(
-      good,
-      'Company,Role,Stage,Status,Fit / 10,Comp low (USD/year)\nFictional Orchard,Brand Marketing Manager,Recruiter screen,"Booked, awaiting time",6,110000\n',
-    );
-    writeFileSync(
-      bad,
-      "Company,Role,Fit / 10,Next interview date\nFictional Pebble,Marketing Director,11,2026-02-30\n",
-    );
-
-    await openBoard(page);
-    await page.getByRole("button", { name: "Import" }).click();
-    const dialog = page.getByRole("dialog", { name: "Import tracker rows" });
-    await dialog.locator("#import-file").setInputFiles(bad);
-    await expect(dialog.locator(".import__counts")).toContainText("1 with problems");
-    await expect(dialog.locator(".import__errors")).toContainText("Fit / 10");
-    await expect(dialog.locator(".import__errors")).toContainText("Next interview date");
-    await expect(dialog.getByRole("button", { name: /^Import \d/ })).toHaveCount(0);
-
-    await dialog.locator("#import-file").setInputFiles(good);
-    await expect(dialog.locator(".import__counts")).toContainText("1 new");
-    await dialog.getByRole("button", { name: "Import 1 row" }).click();
-    await expect(dialog.locator(".import__receipt")).toContainText("1 new, 0 updated, 0 unchanged");
-
-    await dialog.locator("#import-file").setInputFiles(good);
-    await expect(dialog.locator(".import__counts")).toContainText("0 new · 0 updated · 1 unchanged");
-    await dialog.getByRole("button", { name: "Record this import" }).click();
-    await dialog.getByRole("button", { name: "Close" }).click();
-
-    const scheduling = page.locator("section.lane", { has: page.getByRole("heading", { name: /^Scheduling/ }) });
-    await expect(scheduling.locator("article.card", { hasText: "Fictional Orchard" })).toHaveCount(1);
-    await expect(scheduling.locator("article.card", { hasText: "Fictional Orchard" })).toContainText(
-      "Booked, awaiting time",
-    );
-  });
 
   test("asks for an application link before applying, then only prefills the desk", async ({ page }) => {
     await openBoard(page);
@@ -192,170 +141,12 @@ test.describe("pipeline preview", () => {
   });
 });
 
-test.describe("jobs preview", () => {
-  test("starts from the user's defaults with nationwide remote", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    await expect(page.getByRole("region", { name: "Current search preferences" })).toContainText("Performance marketing operator");
-    await page.getByRole("button", { name: "Edit preferences" }).click();
-    await expect(page.getByLabel("Job titles")).toHaveValue("paid media manager\nsenior paid media manager\nperformance marketing manager\ngrowth marketing manager\ndemand generation manager\ndigital marketing manager\nmarketing manager\nmarketing director");
-    await expect(page.getByLabel("Role focus", { exact: true })).toContainText("Judge actual responsibilities");
-    await expect(page.getByLabel("City for onsite and hybrid roles")).toHaveValue("Austin, TX");
-    await expect(page.getByLabel("Onsite", { exact: true })).toBeChecked();
-    await expect(page.getByLabel("Hybrid", { exact: true })).toBeChecked();
-    await expect(page.getByLabel("Where remote roles must allow you to work")).toHaveValue("United States");
-    await expect(page.getByLabel("Minimum pay in US dollars")).toHaveValue("100000");
-    await expect(page.getByLabel("Pay period")).toHaveValue("YEAR");
-    await expect(page.getByText("Remote roles are searched nationwide")).toBeVisible();
-  });
-
-  test("ranks Austin onsite/hybrid well above nationwide remote by default, without dropping remote", async ({
-    page,
-  }) => {
-    await page.goto("/preview/jobs");
-    await page.getByRole("button", { name: "Edit preferences" }).click();
-    await expect(page.getByRole("radio", { name: /Strongly prefer onsite or hybrid/ })).toBeChecked();
-    await expect(
-      page.getByText(
-        "Austin onsite and hybrid roles come first. Remote roles open to United States are still included",
-      ),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Close Search preferences" }).click();
-
-    const tiers = page.locator(".tier__title");
-    await expect(tiers.first()).toContainText("Austin onsite or hybrid");
-    const titles = await tiers.allTextContents();
-    const austinIndex = titles.findIndex((text) => text.includes("Austin onsite or hybrid"));
-    const remoteIndex = titles.findIndex((text) => text.includes("Remote, open to United States"));
-    expect(austinIndex).toBe(0);
-    expect(remoteIndex).toBeGreaterThan(austinIndex);
-    await expect(page.locator(".tier", { hasText: "Remote, open to United States" })).toContainText(
-      "Copperline Credit",
-    );
-    await expect(page.locator(".tier", { hasText: "Location not established" })).toContainText("Lark & Loom");
-
-    const order = await page.locator("article.listing .listing__company").allInnerTexts();
-    expect(order.indexOf("Meridian Loop Software")).toBeLessThan(order.indexOf("Copperline Credit"));
-
-    await page.getByRole("button", { name: "Edit preferences" }).click();
-    await page.getByRole("radio", { name: /Prefer remote/ }).check();
-    await page.getByRole("button", { name: "Save preferences" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Preferences saved" })).toBeVisible();
-    await expect(tiers.first()).toContainText("Remote, open to United States");
-    await expect(page.locator("article.listing", { hasText: "Meridian Loop Software" })).toBeVisible();
-  });
-
-  test("runs a search with honest per-source states", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    await page.getByRole("button", { name: "Search", exact: true }).click();
-    const sources = page.locator(".sources");
-    await expect(sources).toContainText("Searching sources");
-    await expect(sources).toContainText(/Last search/, { timeout: 15_000 });
-    await sources.locator("summary").click();
-    const linkedin = sources.locator(".source", { hasText: "LinkedIn Jobs" });
-    await expect(linkedin).toContainText("Needs you");
-    await expect(linkedin).toContainText("imx-jobs-linkedin");
-    await expect(linkedin).not.toContainText("listing");
-    await expect(sources.locator(".source", { hasText: "Indeed" })).toContainText("Partly done");
-  });
-
-  test("validates search settings before running", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    await page.getByRole("button", { name: "Edit preferences" }).click();
-    await page.getByLabel("Job titles").fill("");
-    await page.getByLabel("Include remote roles open to").uncheck();
-    await page.getByLabel("Include roles in a city").uncheck();
-    await page.getByRole("dialog").getByRole("button", { name: "Search", exact: true }).click();
-    await expect(page.locator(".error-summary")).toBeFocused();
-    await expect(page.locator(".error-summary li")).toHaveCount(2);
-    await expect(page.locator(".sources")).toHaveCount(0);
-  });
-
-  test("shows decisions, holds and unknown facts, and hides closed listings by default", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    const listing = (title: string) => page.locator("article.listing", { hasText: title });
-
-    const meridian = listing("Senior Marketing Manager, Demand Generation");
-    await expect(meridian.locator(".decision__choice")).toHaveText("APPLY");
-    await expect(meridian).toContainText("confidence 81%");
-    await expect(meridian.getByRole("link", { name: /Application page/ })).toHaveAttribute(
-      "href",
-      "https://careers.meridianloop.example.test/jobs/4815/apply",
-    );
-    await expect(meridian.getByRole("link", { name: /Built In/ })).toBeVisible();
-    await expect(meridian.getByRole("link", { name: /Google Jobs/ })).toBeVisible();
-
-    const bluebonnet = listing("Bluebonnet Dental Partners");
-    await expect(bluebonnet.locator(".decision__choice")).toHaveText("SKIP");
-    await expect(bluebonnet).toContainText("Jev chose APPLY");
-    await expect(bluebonnet).toContainText("below your $100,000 minimum");
-
-    const larkloom = listing("Lark & Loom");
-    await expect(larkloom).toContainText("Arrangement not stated");
-    await expect(larkloom).toContainText("Pay not stated");
-    await larkloom.getByRole("button", { name: "Ask Jev" }).click();
-    await expect(larkloom.locator(".decision__choice")).toHaveText("REVIEW");
-    await expect(larkloom.locator(".decision__unresolved")).toContainText("Work arrangement isn't stated");
-
-    await expect(listing("Northwind Cartography")).toHaveCount(0);
-    await page.getByLabel(/Hide 1 closed/).uncheck();
-    await expect(listing("Northwind Cartography")).toContainText("Closed on the source");
-    await expect(listing("Northwind Cartography").getByRole("button", { name: /Apply/ })).toHaveCount(0);
-
-    await page.getByRole("radio", { name: /^Apply \d/ }).check();
-    await expect(page.locator("article.listing")).toHaveCount(1);
-  });
-
-  test("changed preferences mark decisions out of date", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    await page.getByRole("button", { name: "Edit preferences" }).click();
-    await page.getByLabel("Extra keywords").fill("lifecycle");
-    await page.getByRole("button", { name: "Save preferences" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Preferences saved" })).toBeVisible();
-    const meridian = page.locator("article.listing", { hasText: "Meridian Loop Software" });
-    await expect(meridian.locator(".decision__stale")).toBeVisible();
-    await expect(meridian.getByRole("button", { name: "Ask Jev again (preferences changed)" })).toBeVisible();
-  });
-
-  test("tracking adds a card to the pipeline; applying only prefills the desk", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    const tessera = page.locator("article.listing", { hasText: "Tessera Robotics" });
-    await tessera.getByRole("button", { name: "Track in pipeline" }).click();
-    await expect(tessera.getByRole("link", { name: "In your pipeline" })).toBeVisible();
-
-    await tessera.getByRole("button", { name: /^Apply/ }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog.getByLabel(/Application link/)).toHaveValue("https://tessera.example.test/careers/pmm/apply");
-    await dialog.getByRole("button", { name: "Continue to the desk" }).click();
-    await expect(page).toHaveURL(/\/preview$/);
-    await expect(page.getByRole("heading", { name: /From your job search: Tessera Robotics/ })).toBeVisible();
-    await expect(page.getByLabel("Application link")).toHaveValue("https://tessera.example.test/careers/pmm/apply");
-    await expect(page.locator("#case-title")).toHaveCount(0);
-
-    await page.getByRole("link", { name: "Pipeline", exact: true }).click();
-    await expect(card(page, "Tessera Robotics")).toContainText("From job search");
-  });
-
-  test("warns when applying against Jev's decision, without blocking the user", async ({ page }) => {
-    await page.goto("/preview/jobs");
-    const saltgrass = page.locator("article.listing", { hasText: "Saltgrass Outdoor Co." });
-    await saltgrass.getByRole("button", { name: /^Apply/ }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toContainText("current decision is REVIEW");
-    await expect(dialog).toContainText("no application link yet");
-    await expect(dialog.getByLabel(/Application link/)).toHaveValue("");
-  });
-});
-
-test.describe("live pipeline and jobs without a backend", () => {
+test.describe("live pipeline without a backend", () => {
   test("say the service isn't available instead of showing made-up data", async ({ page }) => {
     await page.goto("/pipeline");
     await expect(page.getByRole("heading", { name: "The pipeline couldn't be loaded" })).toBeVisible();
-    await expect(page.getByText("Service not connected")).toBeVisible();
+    // The connection badge is hidden on the pipeline page by design (2026-09-30); the error state alone says the service is down.
     await expect(page.locator("article.card")).toHaveCount(0);
-
-    await page.goto("/jobs");
-    await expect(page.getByRole("heading", { name: "Job search couldn't be loaded" })).toBeVisible();
-    await expect(page.locator("article.listing")).toHaveCount(0);
   });
 
   test("report missing service routes distinctly", async ({ page }) => {
@@ -443,5 +234,90 @@ test.describe("live pipeline and jobs without a backend", () => {
     expect(moveBody).toEqual({ revision: 3, lane: "closed" });
     const applied = page.locator("section.lane", { has: page.getByRole("heading", { name: /^Applied/ }) });
     await expect(applied.locator("article.card", { hasText: "Fictional Live Co" })).toBeVisible();
+  });
+
+  test("summary buttons, backend and apply chips narrow the board and are remembered", async ({ page }) => {
+    await openBoard(page);
+    const totals = page.getByRole("group", { name: "Pipeline totals" }).getByRole("button");
+    await expect(totals).toHaveText([
+      /8\s*Total Jobs Found/,
+      /6\s*Total Jobs Applied/,
+      /4\s*Total Jobs Currently Interested/,
+      /3\s*Total Jobs Currently Interviewing/,
+      /1\s*Total Jobs Waiting for Offer/,
+    ]);
+    const found = totals.nth(0);
+    const applied = totals.nth(1);
+    const interviewing = totals.nth(3);
+    await expect(found).toHaveAttribute("aria-pressed", "true");
+    await expect(applied).toHaveAttribute("title", /^All-time counter/);
+    await expect(interviewing).toHaveAttribute("title", /^Reflects the current lanes/);
+
+    // Total Jobs Applied counts every card that reached Applied or a later lane.
+    await applied.click();
+    await expect(applied).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("article.card")).toHaveCount(6);
+    await expect(page.getByRole("heading", { name: /^Saved/ })).toHaveCount(0);
+    await expect(page.getByRole("status").filter({ hasText: "Showing 6 of 8 cards" })).toBeVisible();
+    await applied.click();
+    await expect(found).toHaveAttribute("aria-pressed", "true");
+
+    await interviewing.click();
+    await expect(interviewing).toHaveAttribute("aria-pressed", "true");
+    await expect(found).toHaveAttribute("aria-pressed", "false");
+    await expect(page.locator("article.card")).toHaveCount(3);
+    await expect(page.getByRole("heading", { name: /^Saved/ })).toHaveCount(0);
+    await expect(page.getByRole("status").filter({ hasText: "Showing 3 of 8 cards" })).toBeVisible();
+    // Clicking the active button again returns to every job.
+    await interviewing.click();
+    await expect(found).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("article.card")).toHaveCount(8);
+
+    // Saved cards carry the backend and the apply line; the detail is a tooltip.
+    const halcyon = card(page, "Halcyon Freight");
+    await expect(halcyon.locator(".mark--backend")).toHaveText("Employer site");
+    await expect(halcyon.locator(".auto-apply__line")).toHaveText("Held · Needs your facts");
+    await expect(halcyon.locator(".auto-apply__status")).toHaveAttribute("title", /notice period/);
+    await expect(card(page, "Larkspur Health").locator(".mark--backend")).toHaveText("Greenhouse");
+    await expect(card(page, "Larkspur Health").locator(".auto-apply__status")).toHaveCount(0);
+    await expect(card(page, "Brightwater Credit Union").locator(".auto-apply")).toHaveCount(0);
+
+    const filters = page.getByRole("region", { name: "Filter cards" });
+    await filters.getByRole("button", { name: /^Greenhouse/ }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Showing 2 of 8 cards" })).toBeVisible();
+    await filters.getByRole("button", { name: /^Unknown/ }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Showing 3 of 8 cards" })).toBeVisible();
+    // Groups combine with AND: no Greenhouse or Unknown card is held.
+    await filters.getByRole("button", { name: /^Held/ }).click();
+    await expect(page.locator("article.card")).toHaveCount(0);
+
+    await page.reload();
+    await expect(filters.getByRole("button", { name: /^Held/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("article.card")).toHaveCount(0);
+    await filters.getByRole("button", { name: "Clear filters" }).click();
+    await expect(page.locator("article.card")).toHaveCount(8);
+    await expect(filters.getByRole("button", { name: /^Held/ })).toHaveAttribute("aria-pressed", "false");
+
+    // Hide filters collapses the chip groups; the count and Clear filters stay while a chip is active.
+    await filters.getByRole("button", { name: /^Greenhouse/ }).click();
+    const toggle = filters.getByRole("button", { name: "Hide filters" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await toggle.click();
+    const show = filters.getByRole("button", { name: "Show filters" });
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await expect(filters.getByRole("button", { name: /^Greenhouse/ })).toBeHidden();
+    await expect(page.getByRole("status").filter({ hasText: "Showing 2 of 8 cards" })).toBeVisible();
+    await expect(filters.getByRole("button", { name: "Clear filters" })).toBeEnabled();
+    // The hidden state is remembered with the chips.
+    await page.reload();
+    await expect(show).toBeVisible();
+    await expect(page.locator("article.card")).toHaveCount(2);
+    // With no chip active, the collapsed bar is just the toggle.
+    await filters.getByRole("button", { name: "Clear filters" }).click();
+    await expect(page.locator("article.card")).toHaveCount(8);
+    await expect(filters.getByRole("button", { name: "Clear filters" })).toHaveCount(0);
+    await show.click();
+    await expect(filters.getByRole("button", { name: /^Greenhouse/ })).toBeVisible();
+    await expect(filters.getByRole("button", { name: "Hide filters" })).toBeVisible();
   });
 });

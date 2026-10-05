@@ -38,6 +38,7 @@ def isolated_imx_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalP
     for name in (
         "IMX_PROFILE_DIR",
         "IMX_STATE_DB",
+        "IMX_PIPELINE_DB",
         "IMX_ARTIFACTS_DIR",
         "IMX_BROWSER_DIR",
         "IMX_CANDIDATE_ID",

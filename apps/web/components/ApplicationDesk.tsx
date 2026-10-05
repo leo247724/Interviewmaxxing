@@ -277,7 +277,7 @@ export function ApplicationDesk({ mode, initialScenario }: { mode: "live" | "pre
         setFormErrors(serviceError.fieldErrors);
         setSubmitCount((count) => count + 1);
         const sourceErrors = [serviceError.fieldErrors.pipelineEntryId, serviceError.fieldErrors.listingId].filter(Boolean);
-        if (sourceErrors.length) setFormAlert(`${sourceErrors.join(" ")} Return to Jobs or Pipeline and choose the current card before starting.`);
+        if (sourceErrors.length) setFormAlert(`${sourceErrors.join(" ")} Return to the Pipeline and choose the current card before starting.`);
       } else {
         setFormAlert(
           serviceError.code === "unavailable"

@@ -7,15 +7,31 @@ import { previewPipeline } from "@/lib/pipeline/previewStore";
 import type { PipelineBoardView, PipelineEntryView, PipelineService } from "@/lib/pipeline/types";
 import { compensationSummary } from "@/lib/pipeline/fields";
 import {
-  focusCounts,
   loadApplicationSummaries,
   markableApplications,
   preparedByEntry,
   preparedListNote,
   visibleEntries,
-  type PipelineFocus,
 } from "@/lib/pipeline/prepared";
+import {
+  EMPTY_FILTERS,
+  SUMMARY_LABELS,
+  SUMMARY_ORDER,
+  filterOptions,
+  filtersActive,
+  entryInSummary,
+  laneInSummary,
+  matchesAutoApplyFilters,
+  readStoredFilters,
+  SUMMARY_DESCRIPTIONS,
+  summaryCounts,
+  writeStoredFilters,
+  type AutoApplyFilters,
+  type PipelineSummary,
+} from "@/lib/pipeline/filters";
+import { AutoApplyFilterBar } from "./AutoApplyFilterBar";
 import { asServiceError, type ServiceError } from "@/lib/service/errors";
+import { InterviewTimeDialog, type InterviewTimeResult } from "./InterviewTimeDialog";
 import { HttpApplicationService } from "@/lib/service/http";
 import { presentationSupport } from "@/lib/service/readiness";
 import { PreviewApplicationService } from "@/lib/service/preview";
@@ -58,9 +74,65 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
   const [connection, setConnection] = useState<Connection>("checking");
   const [layout, setLayout] = useState<"board" | "list">("board");
   const [filter, setFilter] = useState("");
-  const [focus, setFocus] = useState<PipelineFocus>("all");
+  const [summary, setSummary] = useState<PipelineSummary>("found");
+  const [autoFilters, setAutoFilters] = useState<AutoApplyFilters>(EMPTY_FILTERS);
+  const [filtersHidden, setFiltersHidden] = useState(false);
+  // Remembered filters are read after mounting (the server render has no storage) and saved on change.
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
+  // The save runs before the read on mount, so the defaults never overwrite what was stored.
+  useEffect(() => {
+    if (filtersLoaded) writeStoredFilters({ summary, ...autoFilters, hidden: filtersHidden });
+  }, [filtersLoaded, summary, autoFilters, filtersHidden]);
+  useEffect(() => {
+    const stored = readStoredFilters();
+    setSummary(stored.summary);
+    setAutoFilters({ backends: stored.backends, statuses: stored.statuses, bottlenecks: stored.bottlenecks });
+    setFiltersHidden(stored.hidden);
+    setFiltersLoaded(true);
+  }, []);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [editorKey, setEditorKey] = useState(0);
+  // After a card lands in an interview lane, ask for the interview's date and time (saved to the service).
+  const [interviewPrompt, setInterviewPrompt] = useState<string | null>(null);
+  const INTERVIEW_LANES = useMemo(() => new Set(["scheduling", "interviewing", "interview-2", "interview-3"]), []);
+  // Dragging a card near the board's left or right edge scrolls the board, so a card can travel
+  // from the first lane to the last one even when the lanes overflow the viewport.
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const scrollDirection = useRef(0);
+  const scrollFrame = useRef<number | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const stopBoardScroll = useCallback(() => {
+    scrollDirection.current = 0;
+    if (scrollFrame.current !== null) {
+      cancelAnimationFrame(scrollFrame.current);
+      scrollFrame.current = null;
+    }
+  }, []);
+  const scrollBoardStep = useCallback(() => {
+    const element = boardRef.current;
+    if (!element || !scrollDirection.current) {
+      scrollFrame.current = null;
+      return;
+    }
+    element.scrollLeft += scrollDirection.current * 16;
+    scrollFrame.current = requestAnimationFrame(scrollBoardStep);
+  }, []);
+  const handleBoardDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("text/x-imx-entry")) return;
+    const element = boardRef.current;
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const edge = Math.min(120, rect.width / 5);
+    const direction = event.clientX < rect.left + edge ? -1 : event.clientX > rect.right - edge ? 1 : 0;
+    scrollDirection.current = direction;
+    if (direction && scrollFrame.current === null) scrollFrame.current = requestAnimationFrame(scrollBoardStep);
+  }, [scrollBoardStep]);
+  useEffect(() => {
+    const end = () => { setDragging(false); stopBoardScroll(); };
+    window.addEventListener("dragend", end);
+    window.addEventListener("drop", end);
+    return () => { window.removeEventListener("dragend", end); window.removeEventListener("drop", end); stopBoardScroll(); };
+  }, [stopBoardScroll]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -117,6 +189,7 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
       const moved = await service.move(entry.id, { revision: entry.revision, lane });
       replace(moved);
       setAnnouncement(`Moved ${entry.fields.company ?? entry.fields.role} to ${laneLabel(lane)}.`);
+      if (INTERVIEW_LANES.has(lane) && !INTERVIEW_LANES.has(entry.lane)) setInterviewPrompt(moved.id);
     } catch (error) {
       const serviceError = asServiceError(error);
       if (serviceError.code === "conflict") {
@@ -205,9 +278,21 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
   const todayCT = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const upcoming = (entry: PipelineEntryView) => Boolean(entry.fields.nextInterviewDate && entry.fields.nextInterviewDate >= todayCT);
   const focusContext = { prepared, upcoming };
-  const counts = focusCounts(entries, focusContext);
+  const counts = summaryCounts(entries);
+  const options = useMemo(() => filterOptions(entries), [entries]);
   const query = filter.trim().toLowerCase();
-  const visible = visibleEntries(entries, query, focus, focusContext);
+  const visible = visibleEntries(entries, query, "all", focusContext).filter(
+    (entry) => entryInSummary(entry, summary) && matchesAutoApplyFilters(entry, autoFilters),
+  );
+  // A summary's own lanes, plus any other lane holding one of its cards (a closed card that was once applied).
+  const shownLanes = board
+    ? board.lanes.filter(
+        (lane) =>
+          laneInSummary(lane.id, summary) ||
+          entries.some((entry) => entry.lane === lane.id && entryInSummary(entry, summary)),
+      )
+    : [];
+  const narrowed = Boolean(query) || summary !== "found" || filtersActive(autoFilters);
   const listNote = preparedListNote(listError, presentation);
   const editing =
     dialog?.kind === "edit" || dialog?.kind === "apply" ? entries.find((item) => item.id === dialog.entryId) : null;
@@ -225,7 +310,6 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
       colophon="Your tracker. Moving or editing a card never applies, messages anyone or changes an application's state."
     >
       <header className="page-head">
-        <p className="eyebrow">Keep the next step in sight</p>
         <h1 className="display">Pipeline</h1>
         <p className="lede">
           Track your conversations and keep the next step in sight.
@@ -270,17 +354,32 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
               if (await load()) setMoveError(null);
             }}>Refresh board</button>
           </section>}
-          <div className="pipeline-focus" aria-label="Focus the pipeline">
-            {([
-              ["all", "All tracked"],
-              ["actions", "With next actions"],
-              ["interviews", "Upcoming interviews"],
-              ["prepared", "Prepared for review"],
-            ] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={focus === id} onClick={() => setFocus(id)}>
-              <span className="pipeline-focus__count">{counts[id]}</span><span>{label}</span><span className="pipeline-focus__arrow" aria-hidden="true">↗</span>
-            </button>)}
-            <p>Your tracking stages. Confirmed applications keep a separate receipt.</p>
+          <div className="pipeline-focus" role="group" aria-label="Pipeline totals">
+            {SUMMARY_ORDER.map((id) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={summary === id}
+                title={SUMMARY_DESCRIPTIONS[id]}
+                aria-description={SUMMARY_DESCRIPTIONS[id]}
+                onClick={() => setSummary(summary === id ? "found" : id)}
+              >
+                <span className="pipeline-focus__count">{counts[id]}</span>
+                <span>{SUMMARY_LABELS[id]}</span>
+                <span className="pipeline-focus__arrow" aria-hidden="true">↗</span>
+              </button>
+            ))}
           </div>
+          <AutoApplyFilterBar
+            options={options}
+            filters={autoFilters}
+            onChange={setAutoFilters}
+            onClear={() => setAutoFilters(EMPTY_FILTERS)}
+            shown={visible.length}
+            total={entries.length}
+            hidden={filtersHidden}
+            onToggleHidden={() => setFiltersHidden((value) => !value)}
+          />
           {listNote && <p className="pipeline-prepared-note">{listNote}</p>}
           <div className="toolbar">
             <fieldset className="segmented">
@@ -311,21 +410,6 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
                 onChange={(event) => setFilter(event.target.value)}
               />
             </div>
-            <div className="toolbar__actions">
-              <button
-                type="button"
-                className="button button--secondary"
-                onClick={() => {
-                  setEditorKey((key) => key + 1);
-                  setDialog({ kind: "create" });
-                }}
-              >
-                Track a job
-              </button>
-              <button type="button" className="button button--secondary" onClick={() => setDialog({ kind: "import" })}>
-                Import
-              </button>
-            </div>
           </div>
 
           {moveError && (
@@ -333,20 +417,19 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
               {moveError}
             </p>
           )}
-          {(query || focus !== "all") && (
-            <p className="field__hint" role="status">
-              Showing {visible.length} of {entries.length}.
-            </p>
-          )}
-
-          {visible.length === 0 && (query || focus !== "all") && <p className="empty-note">
-            {focus === "prepared" && !query
-              ? "Nothing is prepared for review yet. A prepared application stops at the final review step without submitting, then shows up here."
-              : "No roles match this view. Choose All tracked or clear the search to see the rest."}
+          {visible.length === 0 && narrowed && <p className="empty-note">
+            No roles match this view. Choose Total Jobs Found, clear the filters or clear the search to see the rest.
           </p>}
           {layout === "board" ? (
-            <div className="board">
-              {board.lanes.map((lane) => {
+            <div
+              className={`board${dragging ? " is-dragging" : ""}`}
+              ref={boardRef}
+              onDragStartCapture={() => setDragging(true)}
+              onDragOver={handleBoardDragOver}
+              onDragLeave={(event) => { if (!boardRef.current?.contains(event.relatedTarget as Node | null)) stopBoardScroll(); }}
+              onDrop={stopBoardScroll}
+            >
+              {shownLanes.map((lane) => {
                 const cards = visible.filter((entry) => entry.lane === lane.id);
                 return (
                   <section
@@ -474,6 +557,26 @@ export function PipelineView({ mode }: { mode: "live" | "preview" }) {
         </>
       )}
 
+      <InterviewTimeDialog
+        entry={interviewPrompt ? entries.find((item) => item.id === interviewPrompt) ?? null : null}
+        laneLabel={laneLabel(entries.find((item) => item.id === interviewPrompt)?.lane ?? "interviewing")}
+        onSkip={() => setInterviewPrompt(null)}
+        onSave={async (result: InterviewTimeResult) => {
+          const current = entries.find((item) => item.id === interviewPrompt);
+          if (!current) { setInterviewPrompt(null); return null; }
+          try {
+            const updated = await service.update(current.id, { revision: current.revision, fields: result });
+            replace(updated);
+            setAnnouncement(`Saved the interview time for ${updated.fields.company ?? updated.fields.role}.`);
+            setInterviewPrompt(null);
+            return null;
+          } catch (error) {
+            const serviceError = asServiceError(error);
+            if (serviceError.code === "conflict") await load();
+            return serviceError.message;
+          }
+        }}
+      />
       <Modal
         open={dialog?.kind === "edit" || dialog?.kind === "create"}
         wide

@@ -2,6 +2,7 @@ import type { PipelineEntryView } from "@/lib/pipeline/types";
 import { preparedLabel } from "@/lib/pipeline/prepared";
 import type { ApplicationSummaryView } from "@/lib/service/types";
 import { formatDate } from "@/lib/format";
+import { autoApplyLine } from "@/lib/pipeline/filters";
 
 /**
  * Three kinds of marks, kept visually distinct: the user's own tracking origin,
@@ -64,4 +65,30 @@ export function applicationLabel(state: string) {
     default:
       return "in progress";
   }
+}
+
+/**
+ * The autonomous-apply marks: the backend on every card, and, for Saved cards,
+ * where the apply stands and what holds it up (the detail as a one-line excerpt
+ * with the full text in the tooltip). Cards without autoApply show nothing.
+ */
+export function AutoApplyMarks({ entry, showStatus }: { entry: PipelineEntryView; showStatus: boolean }) {
+  const autoApply = entry.autoApply;
+  if (!autoApply) return null;
+  const line = autoApplyLine(autoApply);
+  return (
+    <div className="auto-apply">
+      <ul className="marks" aria-label="Autonomous apply">
+        <li className="mark mark--backend" title={`Apply backend: ${autoApply.backendLabel}`}>
+          {autoApply.backendLabel}
+        </li>
+      </ul>
+      {showStatus && (
+        <p className={`auto-apply__status auto-apply__status--${autoApply.status}`} title={autoApply.detail ?? line}>
+          <span className="auto-apply__line">{line}</span>
+          {autoApply.detail && <span className="auto-apply__detail">{autoApply.detail}</span>}
+        </p>
+      )}
+    </div>
+  );
 }

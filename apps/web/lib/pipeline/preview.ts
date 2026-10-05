@@ -16,6 +16,7 @@ import {
   type PipelineMoveInput,
   type PipelineService,
   type PipelineUpdateInput,
+  type AutoApplyView,
 } from "./types";
 
 /**
@@ -26,13 +27,13 @@ import {
 export const PREVIEW_LANES: PipelineLaneView[] = [
   { id: "saved", label: "Saved" },
   { id: "applied", label: "Applied" },
-  { id: "scheduling", label: "Scheduling" },
-  { id: "interviewing", label: "Interviewing" },
-  { id: "assessment", label: "Assessment" },
-  { id: "follow-up", label: "Follow-up" },
-  { id: "decision", label: "Decision" },
-  { id: "offer", label: "Offer" },
+  { id: "interest", label: "Application Interest" },
+  { id: "interviewing", label: "1st round interview" },
+  { id: "interview-2", label: "2nd round interview" },
+  { id: "interview-3", label: "3rd round interview" },
+  { id: "decision", label: "Awaiting Decision" },
   { id: "closed", label: "Closed" },
+  { id: "offer", label: "Offer" },
 ];
 
 function fields(partial: Partial<PipelineFields>): PipelineFields {
@@ -106,7 +107,7 @@ const SEEDS: Seed[] = [
   },
   {
     id: "pipe_pv_tessellate",
-    lane: "assessment",
+    lane: "interview-2",
     origin: "import",
     imported: true,
     applicationUrl: null,
@@ -134,7 +135,7 @@ const SEEDS: Seed[] = [
   },
   {
     id: "pipe_pv_brightwater",
-    lane: "scheduling",
+    lane: "interviewing",
     origin: "import",
     imported: true,
     applicationUrl: null,
@@ -158,7 +159,7 @@ const SEEDS: Seed[] = [
   },
   {
     id: "pipe_pv_cinder",
-    lane: "follow-up",
+    lane: "decision",
     origin: "import",
     imported: true,
     applicationUrl: null,
@@ -252,6 +253,69 @@ const SEEDS: Seed[] = [
   },
 ];
 
+/**
+ * Fictional autonomous-apply states for the preview board: varied backends and
+ * bottlenecks. Brightwater has none, so the "Unknown" backend chip appears too.
+ */
+const PREVIEW_AUTO_APPLY: Record<string, AutoApplyView> = {
+  pipe_pv_larkspur: {
+    backend: "greenhouse",
+    backendLabel: "Greenhouse",
+    status: "submitted",
+    bottleneck: "none",
+    detail: "Confirmation page seen after submitting.",
+    at: "2026-09-09T15:12:00Z",
+  },
+  pipe_pv_quarry: {
+    backend: "builtin",
+    backendLabel: "Built In",
+    status: "unsupported",
+    bottleneck: "aggregator_link",
+    detail: "The listing links to the aggregator, not the employer's own form; find the employer's page.",
+    at: "2026-09-10T09:30:00Z",
+  },
+  pipe_pv_tessellate: {
+    backend: "lever",
+    backendLabel: "Lever",
+    status: "submitted",
+    bottleneck: "none",
+    detail: null,
+    at: "2026-09-08T18:45:00Z",
+  },
+  pipe_pv_cinder: {
+    backend: "workday",
+    backendLabel: "Workday",
+    status: "blocked",
+    bottleneck: "login_required",
+    detail: "Workday asks for an account on this tenant before the form opens.",
+    at: "2026-09-11T13:05:00Z",
+  },
+  pipe_pv_halcyon: {
+    backend: "custom",
+    backendLabel: "Employer site",
+    status: "held",
+    bottleneck: "needs_facts",
+    detail: "The form asks for your notice period and the year you finished your degree; neither is on file yet.",
+    at: "2026-09-12T10:20:00Z",
+  },
+  pipe_pv_juniper: {
+    backend: "greenhouse",
+    backendLabel: "Greenhouse",
+    status: "submitted",
+    bottleneck: "none",
+    detail: null,
+    at: "2026-09-10T16:40:00Z",
+  },
+  pipe_pv_northwind: {
+    backend: "ashby",
+    backendLabel: "Ashby",
+    status: "blocked",
+    bottleneck: "captcha",
+    detail: "A CAPTCHA appeared on the final step; solve it in the browser to continue.",
+    at: "2026-09-13T08:55:00Z",
+  },
+};
+
 function headerValues(values: PipelineFields): Record<string, string> {
   const out: Record<string, string> = {};
   for (const { header, field } of REFERENCE_COLUMNS) {
@@ -266,9 +330,10 @@ export function laneForImported(stage: string | null, status: string | null): st
   const text = `${stage ?? ""} ${status ?? ""}`.toLowerCase();
   if (/\b(declin|reject|withdr|closed|not moving)/.test(text)) return "closed";
   if (/\boffer\b/.test(text)) return "offer";
-  if (/(assessment|case study|take-home|exercise)/.test(text)) return "assessment";
-  if (/\binterview/.test(text)) return "interviewing";
-  if (/(screen|schedul|availability)/.test(text)) return "scheduling";
+  if (/\b(3rd|third|final)[ -]?round\b/.test(text)) return "interview-3";
+  if (/\b(2nd|second)[ -]?round\b/.test(text)) return "interview-2";
+  if (/(assessment|case study|take-home|exercise)/.test(text)) return "interview-2";
+  if (/\binterview|screen|schedul|availability/.test(text)) return "interviewing";
   if (/(applied|submitted)/.test(text)) return "applied";
   return "saved";
 }
@@ -298,6 +363,7 @@ export class PreviewPipelineService implements PipelineService {
       const created = "2026-09-08T14:00:00Z";
       this.entries.set(seed.id, {
         ...structuredClone(rest),
+        autoApply: PREVIEW_AUTO_APPLY[seed.id] ? structuredClone(PREVIEW_AUTO_APPLY[seed.id]) : null,
         revision: 1,
         provenance: imported
           ? {

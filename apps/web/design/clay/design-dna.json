@@ -1,0 +1,534 @@
+{
+  "meta": {
+    "name": "clay",
+    "description": "Clay.com marketing site design identity, for restyling an internal dashboard (visual-clone mode).",
+    "source_references": "https://www.clay.com/ (live computed styles, 2026-09-30: RECON/probe/clay-tokens.json, RECON/probe/sections-detail.json, screenshots/original-*.png); https://www.shadcn.io/design/clay (DESIGN.md summary, disagrees with live site on fonts/canvas, see notes); https://www.designmd.co/d/clay returned 403 (not captured)",
+    "created_at": "2026-09-30",
+    "evidence_legend": "SOURCE = measured computed style / :root var on live clay.com; REF = reference page only; GUESS = inferred"
+  },
+  "design_system": {
+    "color": {
+      "palette_type": "warm neutral (oat) base + fruit-named saturated accents per product area",
+      "primary": {
+        "hex": "#000000",
+        "role": "primary CTA bg ('Start free trial'), ink text. SOURCE buttons[1], colors tally #1"
+      },
+      "secondary": {
+        "hex": "#F3F2ED",
+        "role": "secondary CTA bg ('Get a demo', oat-200). hover #DAD4C8 (oat-400). SOURCE buttons[0], hover[6]"
+      },
+      "accent": {
+        "hex": "#CBD810",
+        "role": "lime-300 hero accent CTA ('Get a demo' on hero). SOURCE buttons[3]; other accents: blueberry #395AFA, slushie #3BD3FD, ube #A17BF9, tangerine #FF7714, pomegranate #FB4450, dragonfruit #FF70D2 (SOURCE rootVars terra-swatches)"
+      },
+      "neutral": {
+        "scale": "oat-50 #FFFCFA, oat-100 #FEFDFB (terra) / #F9F8F6, oat-200 #F4F3F0 / #F3F2ED, oat-300 #EEE9DF / #D1CDC7, oat-400 #DAD4C8 / #7B7974 (terra), oat-600 #9F9B93, oat-700 #85817A, oat-800 #55534E, oat-900 #1B1A18 (terra oat-500). SOURCE rootVars",
+        "usage": "#FEFDFB cards/page tint, #F4F3F0 section panels + tabs + dividers, #7B7974 muted text + nav hover, #55534E secondary text, #1B1A18 warm ink"
+      },
+      "semantic": {
+        "success": "#0DAC65 (matcha-500) SOURCE rootVars",
+        "warning": "#FBBD41 (lemon-500) SOURCE rootVars",
+        "error": "#DD2C53 (pomegranate-600) SOURCE rootVars",
+        "info": "#0382F7 (blueberry-500) SOURCE rootVars"
+      },
+      "surface": {
+        "background": "#FFFFFF body / #FEFDFB oat-100 (SOURCE body, bgs tally #1); footer #FFFDF9",
+        "card": "#FEFDFB logo-cards; tinted cards #F0F8FF/#FFF3ED/#FCFEE2/#FFF0FA/#F5F3FF (SOURCE sections-detail)",
+        "elevated": "#FFFFFF with inset oat hairline + soft drop (home-action_scale)"
+      },
+      "contrast_strategy": "dark-on-light dominant; each tinted card uses its own ~#0x2x0x dark ink (e.g. #001433 on blueberry-100)"
+    },
+    "typography": {
+      "type_scale": {
+        "display": {
+          "size": "88px",
+          "weight": "575",
+          "line_height": "1.0 (88px)",
+          "tracking": "-0.04em (-3.52px)",
+          "evidence": "SOURCE headings.h1"
+        },
+        "heading_1": {
+          "size": "72px",
+          "weight": "500",
+          "line_height": "1.0",
+          "tracking": "-0.03em (-2.16px)",
+          "evidence": "SOURCE headings.h2[0]"
+        },
+        "heading_2": {
+          "size": "48px",
+          "weight": "500",
+          "line_height": "1.0",
+          "tracking": "-0.04em (-1.92px)",
+          "evidence": "SOURCE headings.h3"
+        },
+        "heading_3": {
+          "size": "44px / 24px",
+          "weight": "500",
+          "line_height": "1.1",
+          "tracking": "-0.02em",
+          "evidence": "SOURCE h2 CTA 44px; 24px from :root --heading-\u2013-h4 1.5rem"
+        },
+        "body": {
+          "size": "16px",
+          "weight": "400",
+          "line_height": "24px",
+          "tracking": "normal",
+          "evidence": "SOURCE fontSizes tally #1 (1490)"
+        },
+        "body_small": {
+          "size": "14px",
+          "weight": "400-550",
+          "line_height": "1.3-1.4",
+          "tracking": "-0.01em",
+          "evidence": "SOURCE fontSizes 14px/550/19.6px/-0.14px"
+        },
+        "caption": {
+          "size": "12px",
+          "weight": "500",
+          "line_height": "18px",
+          "tracking": "-0.01em",
+          "evidence": "SOURCE fontSizes"
+        },
+        "overline": {
+          "size": "12px (10px in menus)",
+          "weight": "600",
+          "line_height": "1.2",
+          "tracking": "0.09em (1.08px); 3px on some",
+          "evidence": "SOURCE small[0] eyebrow uppercase"
+        }
+      },
+      "font_families": {
+        "heading": "Roobertvf (Roobert variable, 300-900), Arial, sans-serif",
+        "body": "Roobertvf (same)",
+        "mono": "Space Mono (Google Fonts) / 'Roobert mono' declared",
+        "evidence": "SOURCE fontRequests + rootVars --fonts--primary-font-family; fonts tally 2110 Roobertvf. REF claims Plain Black + Inter: NOT what live site renders"
+      },
+      "font_style_notes": "Single grotesk family everywhere; hierarchy via size + tight negative tracking, weights 500-575 for display (never bold 700). Eyebrows uppercase, 600, wide tracking. Inter is loaded but not rendered on home."
+    },
+    "spacing": {
+      "base_unit": "4px (rem scale .25/.5/1/1.25/1.5/2/2.5/3/4/5/6/8rem)",
+      "scale": "SOURCE rootVars --spacing--*",
+      "content_density": "spacious",
+      "section_rhythm": "64px vertical section padding typical (SOURCE sections), 48-96px; :root --layout--section-padding sm 3rem md 4rem lg 6rem xl 8rem"
+    },
+    "layout": {
+      "grid_system": "12-col-ish flex, 2-col splits (text 592px / media 592px)",
+      "max_content_width": "1280px (container-regular, SOURCE containers[3]); nav 1368px within 36px page inset",
+      "columns": "2 / 3 (update cards 416px)",
+      "gutter": "40px main gap, 24px md, 8px sm (SOURCE rootVars grid--gap)",
+      "breakpoints": "Webflow defaults 991/767/479 (GUESS)",
+      "alignment_tendency": "mixed: centered section heads, left-aligned feature copy"
+    },
+    "shape": {
+      "border_radius": {
+        "small": "8-12px (buttons, tabs, inputs 12px; SOURCE)",
+        "medium": "18-24px (logo cards 18, content cards 24; SOURCE)",
+        "large": "32-48px (feature panels 48, tab bkgs 32; SOURCE)",
+        "pill": "1600px / 999rem (SOURCE feature_pill, rootVars rounded)"
+      },
+      "border_usage": "subtle 1px or none; borders often same color as surface (#FFF / tint-100)",
+      "divider_style": "1px #F4F3F0 lines (frame_line) SOURCE"
+    },
+    "elevation": {
+      "shadow_style": "mostly none; inset hairline rings + one soft diffused drop",
+      "levels": {
+        "low": "inset 0 0 0 1px rgba(209,205,199,.6)",
+        "medium": "0 12px 24px -12px rgba(0,0,0,.12), inset 0 0 0 1px rgba(209,205,199,.6)",
+        "high": "0 12px 36px -8px rgba(21,21,24,.10)"
+      },
+      "depth_cues": "color intensity + overlapping rounded panels; white glow 0 24px 64px 24px #FFF behind reps panel"
+    },
+    "iconography": {
+      "style": "Phosphor regular",
+      "stroke_weight": "regular (1.5px feel)",
+      "size_scale": "16-20px",
+      "preferred_set": "@phosphor-icons/web 2.1.1 (SOURCE fontRequests)"
+    },
+    "motion": {
+      "easing": "cubic-bezier(0.165,0.84,0.44,1) (easeOutQuart) for transform; cubic-bezier(0.075,0.82,0.165,1) for bg; ease-out 0.1s for color",
+      "duration_scale": {
+        "micro": "100-150ms",
+        "normal": "300ms",
+        "macro": "400-600ms"
+      },
+      "entrance_pattern": "GSAP scroll reveals (recon: gsap=true) GUESS fade-up",
+      "exit_pattern": "none",
+      "philosophy": "minimal functional, smooth glide"
+    },
+    "components": {
+      "button_style": "12px radius, 500 weight, padding 8x16 (small, 39px) / 9x18 at 18px (large, 47px), 1px transparent border, bg-only hover",
+      "input_style": "white, 20px radius, borderless on oat panel, inset hairline wrapper + soft drop",
+      "card_style": "tinted fill, 24px radius, no border/shadow",
+      "navigation_pattern": "floating white bar 59px, bottom radius 24px, inset 36px, links 16px black -> #7B7974 hover",
+      "modal_style": "GUESS: white 24px radius, oat hairline + high shadow",
+      "list_style": "GUESS: rows separated by 1px #F4F3F0",
+      "component_notes": "Tabs = 44px oat chips (12px radius) that fill with fruit color when active."
+    }
+  },
+  "design_style": {
+    "aesthetic": {
+      "mood": [
+        "playful",
+        "warm",
+        "crafted",
+        "confident"
+      ],
+      "visual_metaphor": "claymation toy world",
+      "era_influence": "2020s tactile 3D",
+      "genre": "playful B2B SaaS",
+      "personality_traits": [
+        "friendly",
+        "energetic",
+        "precise"
+      ],
+      "adjectives": [
+        "warm",
+        "tactile",
+        "saturated",
+        "rounded"
+      ]
+    },
+    "visual_language": {
+      "complexity": "moderate",
+      "ornamentation": "subtle accents",
+      "whitespace_usage": "generous",
+      "visual_weight_distribution": "big display type + large tinted panels",
+      "focal_strategy": "progressive reveal",
+      "contrast_level": "high for text, soft for surfaces",
+      "texture_usage": "3D clay renders only"
+    },
+    "composition": {
+      "hierarchy_method": "scale contrast",
+      "balance_type": "asymmetric",
+      "flow_direction": "top-down, alternating 2-col",
+      "grouping_strategy": "color-coded panels per product area",
+      "negative_space_role": "separates rounded panels on white"
+    },
+    "imagery": {
+      "photo_treatment": "rounded 24px crops",
+      "illustration_style": "3D claymation",
+      "graphic_elements": "fruit-colored chips",
+      "pattern_usage": "none",
+      "image_shape": "rounded rect"
+    },
+    "interaction_feel": {
+      "feedback_style": "color shift",
+      "hover_behavior": "bg darkens one oat step; links fade to muted",
+      "transition_personality": "smooth glide",
+      "loading_style": "GUESS skeleton on oat",
+      "microinteraction_density": "low"
+    },
+    "brand_voice_in_ui": {
+      "tone": "confident, direct",
+      "formality": "casual-professional",
+      "cta_style": "direct imperative",
+      "empty_state_approach": "GUESS friendly one-liner + CTA",
+      "error_tone": "GUESS plain"
+    }
+  },
+  "visual_effects": {
+    "overview": {
+      "effect_intensity": "subtle-accent",
+      "performance_tier": "lightweight",
+      "fallback_strategy": "static images",
+      "primary_technology": "CSS only (+GSAP reveals, video bg in hero)"
+    },
+    "background_effects": {
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "color_palette": "",
+        "speed": "",
+        "density": "",
+        "opacity": "",
+        "blend_mode": ""
+      }
+    },
+    "particle_systems": {
+      "enabled": false,
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "count": "",
+        "shape": "",
+        "size_range": "",
+        "movement_pattern": "",
+        "color_behavior": "",
+        "interaction": "",
+        "spawn_area": ""
+      }
+    },
+    "3d_elements": {
+      "enabled": false,
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "renderer": "",
+        "lighting": "",
+        "camera": "",
+        "materials": "",
+        "geometry": "",
+        "post_processing": [],
+        "interaction_model": ""
+      }
+    },
+    "shader_effects": {
+      "enabled": false,
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "uniforms": "",
+        "vertex_manipulation": "",
+        "fragment_output": "",
+        "noise_type": "",
+        "distortion": ""
+      }
+    },
+    "scroll_effects": {
+      "parallax": {
+        "enabled": false,
+        "layers": "",
+        "depth_range": "",
+        "speed_curve": ""
+      },
+      "scroll_triggered_animations": {
+        "enabled": true,
+        "trigger_points": "",
+        "animation_type": "",
+        "scrub_behavior": "gsap detected"
+      },
+      "scroll_morphing": {
+        "enabled": false,
+        "description": ""
+      }
+    },
+    "text_effects": {
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "split_strategy": "",
+        "animation_per_unit": "",
+        "stagger": "",
+        "effect_style": ""
+      }
+    },
+    "cursor_effects": {
+      "enabled": false,
+      "type": "",
+      "description": "",
+      "params": {
+        "shape": "",
+        "size": "",
+        "blend_mode": "",
+        "trail": "",
+        "interaction_zone": ""
+      }
+    },
+    "image_effects": {
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "filter_pipeline": "",
+        "hover_transform": "",
+        "reveal_animation": "",
+        "distortion_type": ""
+      }
+    },
+    "glassmorphism_neumorphism": {
+      "enabled": false,
+      "style": "",
+      "params": {
+        "blur_radius": "",
+        "transparency": "",
+        "border_treatment": "",
+        "shadow_type": "",
+        "light_source_angle": ""
+      }
+    },
+    "canvas_drawings": {
+      "enabled": false,
+      "type": "",
+      "description": "",
+      "technology": "",
+      "params": {
+        "draw_method": "",
+        "animation_loop": "",
+        "color_scheme": "",
+        "responsiveness": "",
+        "interaction": ""
+      }
+    },
+    "svg_animations": {
+      "enabled": false,
+      "type": "",
+      "description": "",
+      "params": {
+        "animation_method": "",
+        "path_morphing": "",
+        "stroke_animation": "",
+        "filter_effects": ""
+      }
+    },
+    "composite_notes": ""
+  },
+  "_recon_signals": {
+    "fonts": [
+      "webflow-icons",
+      "Canela Web",
+      "Roobert",
+      "Canela",
+      "Roobertvf old",
+      "Roobertvf",
+      "Roobert mono",
+      "Inter",
+      "Abcstefantrial",
+      "Space Mono",
+      "Phosphor",
+      "Phosphor-Fill",
+      "Phosphor-Bold"
+    ],
+    "color_candidates": [
+      "#1d1c1a",
+      "#f8d47a",
+      "#0073e6",
+      "#302f2c",
+      "#3859f9",
+      "#fcbe11",
+      "#cc089e",
+      "#038ff7",
+      "#000",
+      "#85817a",
+      "#9170e6",
+      "#676d7e",
+      "#f4f3f0",
+      "#d1cdc7",
+      "#a0a0a0",
+      "#9f9b93",
+      "#55534e",
+      "#e6e8ec",
+      "#f7f8f9",
+      "#525a69",
+      "#282c35",
+      "#f9f8f6",
+      "#f3f2ed",
+      "#dad4c8"
+    ],
+    "frameworks": {
+      "react": false,
+      "next": false,
+      "vue": false,
+      "nuxt": false,
+      "svelte": false,
+      "astro": false,
+      "three": false,
+      "gsap": true,
+      "lenis": false
+    },
+    "canvas_count": 0,
+    "css_color_vars": [
+      "--loam---web-library_color---neutral--black<deleted|variable-c36ac7e1-8fbe-02c8-b299-0725f37835b2>: #1d1c1a",
+      "--loam---web-library_color---secondary--yellow<deleted|variable-9968a3b0-2914-6749-6f13-da8b7daee1ee>: #f8d47a",
+      "--loam---web-library_color---secondary--blue<deleted|variable-79ac7cfe-5399-ceee-c3b8-67b92fc66a66>: #0073e6",
+      "--loam---web-library---colors--border<deleted|variable-153c7f1c-5103-5586-e137-6fbaee48816e>: #302f2c",
+      "--loam---web-library_swatches---blueberry--400: #3859f9",
+      "--loam---web-library_swatches---lemon--300: #fcbe11",
+      "--loam---web-library_swatches---dragonfruit--400: #cc089e",
+      "--loam---web-library_color---neutral--dark-gray<deleted|variable-de016915-e214-0c44-8dc6-99c5e63efd24>: #302f2c",
+      "--color--blue-500<deleted|variable-ebe93488-89c6-a5cd-d5e1-dded8473b4b5>: #038ff7",
+      "--_swatches---color--black: #000",
+      "--_swatches---color--oat-700: #85817a",
+      "--archive--medium-purple<deleted|variable-7fcb262b>: #9170e6",
+      "--archive--slate-grey<deleted|variable-1ed44f93>: #676d7e",
+      "--loam---web-library_swatches---oat--200: #f4f3f0",
+      "--loam---web-library_swatches---oat--300: #d1cdc7",
+      "--archive--dark-grey<deleted|variable-eb42266a>: #a0a0a0",
+      "--_swatches---color--oat-600: #9f9b93",
+      "--_swatches---color--oat-800: #55534e",
+      "--_swatches---color--grey-200: #e6e8ec",
+      "--_swatches---color--grey-50: #f7f8f9",
+      "--_swatches---color--grey-700: #525a69",
+      "--_swatches---color--grey-900: #282c35",
+      "--_swatches---color--oat-100: #f9f8f6",
+      "--_swatches---color--oat-200: #f3f2ed",
+      "--loam---web-library_terra-swatches---oat--oat-200: #f4f3f0",
+      "--_swatches---color--oat-400: #dad4c8",
+      "--_swatches---color--ube-600: #7934f0",
+      "--_swatches---color--oat-300: #eee9df",
+      "--loam---web-library_swatches---lime--300: #cbd810",
+      "--_swatches---color--tangarine-600: #fa6900",
+      "--loam---web-library_swatches---lemon--200: #fae188",
+      "--_swatches---color--ube-500: #8b5cf6",
+      "--_swatches---color--ube-100: #e9e4ff",
+      "--_swatches---color--grey-100: #eff1f3",
+      "--_swatches---color--grey-300: #d6d9df",
+      "--_swatches---color--blueberry-600: #0667d9",
+      "--_swatches---color--blueberry-900: #002f67",
+      "--loam---web-library_terra-swatches---oat--oat-100: #fefdfb",
+      "--loam---web-library_swatches---oat--400: #7b7974",
+      "--_theme--appearance---border: #e0dedc",
+      "--_swatches---color--grey-500: #979da9",
+      "--_swatches---color--pomegranate-700: #b21a3f",
+      "--_swatches---color--pomegranate-100: #ffebec",
+      "--_swatches---color--matcha-500: #0dac65",
+      "--_swatches---color--blueberry-100: #d7ebfe",
+      "--_swatches---color--matcha-100: #dbffe0",
+      "--_swatches---color--lemon-100: #fff8d2",
+      "--color--grey-medium<deleted|variable-8c6b4a1d-24b1-aa41-3363-37e53d4709f8>: #a2a8b7",
+      "--_swatches---color--grey-600: #717989",
+      "--_swatches---color--blueberry-200: #bee0ff",
+      "--color--green-600<deleted|variable-1be72259-5255-72a7-9424-f413d6a9c046>: #047e4a",
+      "--_swatches---color--matcha-900: #03331d",
+      "--_swatches---color--ube-300: #c1b0ff",
+      "--_swatches---color--ube-200: #d8d0ff",
+      "--_swatches---color--blueberry-500: #0382f7",
+      "--_swatches---color--blueberry-700: #0053b5",
+      "--loam---web-library_swatches---oat--100: #fefdfb",
+      "--_swatches---color--oat-50: #fffcfa",
+      "--_swatches---color--slushie-800: #0089ad",
+      "--_swatches---color--matcha-600: #078a52",
+      "--_swatches---color--oat-500: #c0bbaf",
+      "--_swatches---color--ube-800: #43089f",
+      "--_swatches---color--dragonfruit-500: #ff7ad5",
+      "--_swatches---color--pomegranate-500: #e94d68",
+      "--_swatches---color--grey-400: #bfc4cd",
+      "--_swatches---color--blueberry-800: #01418d",
+      "--_swatches---color--matcha-400: #3ece82",
+      "--_swatches---color--lemon-600: #fdad15",
+      "--_swatches---color--grey-800: #3c414d",
+      "--_swatches---color--grey-950: #16181f",
+      "--loam---web-library_swatches---oat--500: #000",
+      "--_swatches---color--lemon-300: #fadf7c",
+      "--_swatches---color--lemon-700: #d08a11",
+      "--_swatches---color--matcha-300: #84e7a5",
+      "--_swatches---color--matcha-700: #02693e",
+      "--_swatches---color--dragonfruit-900: #8b045c",
+      "--_swatches---color--dragonfruit-600: #ff52c2",
+      "--_swatches---color--blueberry-950: #001e4b",
+      "--_swatches---color--matcha-800: #02492a",
+      "--_swatches---color--pomegranate-600: #dd2c53",
+      "--_swatches---color--tangarine-700: #c34e1b",
+      "--loam---web-library_swatches---ube--400: #6d4cd6",
+      "--_swatches---color--ube-700: #5c15cc",
+      "--_swatches---color--dragonfruit-700: #f90ba6",
+      "--_swatches---color--matcha-200: #bcf4ca",
+      "--_swatches---color--lemon-500: #fbbd41",
+      "--_swatches---color--slushie-900: #005870",
+      "--_swatches---color--dragonfruit-200: #ffd1f1",
+      "--_swatches---color--tangarine-500: #fc8936",
+      "--loam---web-library_swatches---lime--200: #eef673",
+      "--loam---web-library_swatches---slushie--300: #3bd3fd",
+      "--_swatches---color--slushie-300: #a3ebff",
+      "--_swatches---color--slushie-950: #00303d",
+      "--loam---web-library_swatches---ube--200: #c8bbfb",
+      "--loam---web-library_swatches---dragonfruit--500: #45012e",
+      "--loam---web-library_swatches---blueberry--200: #bedffd"
+    ]
+  },
+  "_scaffold_note": "best-effort \u9884\u586b\u6765\u81ea recon\u3002font_families/surface.background/visual_effects \u5df2\u636e\u771f\u5b9e\u4fe1\u53f7\u586b\u5199\uff1bcolor \u7684 primary/secondary/accent \u89d2\u8272\u9700\u4eba\u5de5\u4ece _recon_signals.color_candidates \u6307\u6d3e\uff1b\u6240\u6709 \"\" \u5b57\u6bb5\u9700\u4eba\u5de5 Analyze \u8865\u5168(\u89c1 references/design-dna.md)\u3002\u786e\u8ba4\u65e0\u8bef\u540e\u53ef\u5220\u9664 _recon_signals \u4e0e\u672c\u8bf4\u660e\u3002"
+}

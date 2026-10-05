@@ -34,11 +34,13 @@ from interviewmaxxing_core import (
     ApplicationStore,
     CandidateFact,
     CandidateProfile,
+    ChoiceValue,
     ControlType,
     FactVerification,
     JobListing,
     JobRecord,
     LocalPaths,
+    MultiChoiceValue,
     PacketContext,
     SemanticType,
     TextValue,
@@ -82,7 +84,8 @@ def job_from_listing(listing: JobListing) -> JobRecord:
 async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question: str,
                         purpose: Literal["answer", "cover_letter"], env_file: Path,
                         connection_file: Path, max_usd: float = 5.0,
-                        review_model: str | None = None) -> dict[str, Any]:
+                        review_model: str | None = None, humanize_effort: str | None = None,
+                        review_effort: str | None = None) -> dict[str, Any]:
     """A synthetic, local question for drafting, never a browser-ready inspection. The fixed
     budget covers a cover letter's whole flow: the evidence review, the draft and its one
     corrective rewrite, the no-slop rewrites and the final review of each text that could ship
@@ -95,6 +98,13 @@ async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question
         rag_connection_file=connection_file)
     if review_model is not None and resolver.writer is not None:
         resolver.writer = dataclasses.replace(resolver.writer, review_model=review_model)
+    if resolver.writer is not None and (humanize_effort or review_effort):
+        # 2026-09-29: the person asked for better writing; the no-slop rewrite and the reviews
+        # can run above their low default (the narrative draft already runs at high).
+        resolver.writer = dataclasses.replace(
+            resolver.writer,
+            humanize_effort=humanize_effort or resolver.writer.humanize_effort,
+            reasoning_effort=review_effort or resolver.writer.reasoning_effort)
     now = utc_now()
     form = ApplicationForm(url=job.application_url, fields=[ApplicationField(
         id="local-draft", label=question, control_type=ControlType.TEXTAREA,
@@ -131,10 +141,75 @@ async def prepare_draft(*, candidate: CandidateProfile, job: JobRecord, question
     }
 
 
+async def resolve_field(*, candidate: CandidateProfile, job: JobRecord,
+                        field: ApplicationField, env_file: Path, connection_file: Path,
+                        max_usd: float = 5.0) -> dict[str, Any]:
+    """Resolve one observed enum through the existing grounded packet contract.
+
+    This is preparation only. Exact machine values and labels come from the
+    supplied DOM options; free-text drafts never become choice guesses. The
+    caller must still verify the current browser field before applying a value.
+    """
+    allowed = {ControlType.SELECT, ControlType.RADIO,
+               ControlType.MULTISELECT, ControlType.CHECKBOX_GROUP}
+    if field.control_type not in allowed:
+        raise ValueError("resolve-field requires an observed choice control")
+    observed = field.model_copy(deep=True)
+    budget = CallBudget(max_calls=80, max_usd=max_usd)
+    router, resolver = build_ai_runtime(env_file=env_file, writer_model=WRITER_MODEL,
+        budget=budget, rag_connection_file=connection_file)
+    now = utc_now()
+    document_id = "local-field-resolution"
+    form = ApplicationForm(url=job.application_url, fields=[field.model_copy(deep=True)])
+    start = time.perf_counter()
+    form = await asyncio.to_thread(router.annotate, form, document_id=document_id)
+    application = Application(id=document_id, request_id=document_id,
+        job_id=job.id, candidate_id=candidate.id, state=ApplicationState.INSPECTING,
+        version=1, created_at=now, updated_at=now)
+    context = PacketContext(application=application, candidate=candidate, job=job, form=form)
+    packet = await resolver.resolve(context)
+    report = router.report_for(form)
+    problems = context.problems(packet)
+    routed_field = form.find(observed.id)
+    if routed_field is None or routed_field.fingerprint != observed.fingerprint:
+        problems.append("Routing changed the observed choice question or options")
+    answer = packet.answer_for(observed.id)
+    value = answer.value if answer else None
+    expected_type = (MultiChoiceValue if observed.control_type in
+                     {ControlType.MULTISELECT, ControlType.CHECKBOX_GROUP} else ChoiceValue)
+    if not isinstance(value, expected_type):
+        problems.append("No compatible typed choice answer was resolved")
+    else:
+        choices = [value] if isinstance(value, ChoiceValue) else value.choices
+        exact = {(option.value, option.label) for option in observed.options or []
+                 if not option.disabled and option.value.strip()}
+        if any((choice.value, choice.label) not in exact for choice in choices):
+            problems.append("Resolved choice must match an enabled observed value and label exactly")
+        if len({choice.value for choice in choices}) != len(choices):
+            problems.append("Resolved choices contain duplicate machine values")
+    ready = packet.is_complete and answer is not None and not problems
+    return {
+        "mode": "local_field_resolution", "submitted": False,
+        "job": job.model_dump(mode="json"),
+        "field": observed.model_dump(mode="json"),
+        "observed_field_fingerprint": observed.fingerprint,
+        "elapsed_seconds": time.perf_counter() - start,
+        "status": "READY" if ready else "NEEDS_INPUT",
+        "typedChoiceValue": value.model_dump(mode="json") if ready and value else None,
+        "provenance": answer.provenance.model_dump(mode="json") if ready and answer else None,
+        "reference_ids": list(answer.provenance.reference_ids) if ready and answer else [],
+        "packet": packet.model_dump(mode="json"), "problems": problems,
+        "routing": report.model_dump(mode="json") if report else None,
+        "provider": budget.metadata(), "cost": resolver.provider_usage(),
+        "retrieval": getattr(resolver, "retrieval_receipts", []),
+        "narratives": getattr(resolver, "narrative_traces", []),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("index-profile", "index-job", "index-voice",
-                                             "import-facts", "remove-facts", "draft"))
+                                             "import-facts", "remove-facts", "draft", "resolve-field"))
     parser.add_argument("--ids", help="remove-facts: comma-separated fact ids to remove from the profile")
     parser.add_argument("--home", type=Path)
     parser.add_argument("--candidate-id", default=os.environ.get("IMX_CANDIDATE_ID", "default"))
@@ -145,10 +220,16 @@ def main() -> int:
     parser.add_argument("--application-id", help="draft: take the target job record (employer, title, URL) "
                                                  "from this application, as the runner does")
     parser.add_argument("--job-id", help="draft: take the target job record from the application store")
+    parser.add_argument("--field-file", type=Path,
+                        help="resolve-field: observed ApplicationField JSON with exact options")
     parser.add_argument("--question")
     parser.add_argument("--cover-letter", action="store_true")
     parser.add_argument("--review-model", choices=REVIEW_MODELS,
                         help="draft: the model of the reviews and the no-slop rewrite (default: the writer's, Opus)")
+    parser.add_argument("--humanize-effort", choices=("low", "medium", "high", "xhigh", "max"),
+                        help="draft: reasoning effort of the no-slop rewrite (default low)")
+    parser.add_argument("--review-effort", choices=("low", "medium", "high", "xhigh", "max"),
+                        help="draft: reasoning effort of the grounding and consistency reviews (default low)")
     parser.add_argument("--max-usd", type=float, default=5.0,
                         help="draft: the call budget's reservation limit in USD (reservations are upper bounds)")
     parser.add_argument("--output", type=Path, help="New private draft receipt JSON; text saved beside it")
@@ -212,9 +293,9 @@ def main() -> int:
             result = knowledge.index_voice(candidate.id, text,
                 "voice:" + hashlib.sha256(text.encode()).hexdigest())
         else:
-            from_store = args.command == "draft" and bool(args.application_id or args.job_id)
+            from_store = args.command in ("draft", "resolve-field") and bool(args.application_id or args.job_id)
             if not args.listing_file and not from_store:
-                raise ValueError("--listing-file is required" + ("" if args.command != "draft"
+                raise ValueError("--listing-file is required" + ("" if args.command not in ("draft", "resolve-field")
                                  else " (or --application-id / --job-id)"))
             listing = JobListing.model_validate(read_json(args.listing_file)) if args.listing_file else None
             job = (job_from_store(LocalPaths.from_env(home=args.home), application_id=args.application_id,
@@ -228,6 +309,20 @@ def main() -> int:
             else:
                 if not args.output or args.output.exists() or args.output.with_suffix(".txt").exists():
                     raise ValueError("--output must name a new private receipt path")
+                if args.command == "resolve-field":
+                    if not args.field_file:
+                        raise ValueError("--field-file is required for resolve-field")
+                    field = ApplicationField.model_validate(read_json(args.field_file))
+                    result = asyncio.run(resolve_field(candidate=candidate, job=job, field=field,
+                        env_file=args.env_file, connection_file=args.connection_file,
+                        max_usd=args.max_usd))
+                    result["job_source"] = "application_store" if from_store else "listing"
+                    args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    write_json_private(args.output, result)
+                    print(json.dumps({"status": result["status"], "receipt": str(args.output),
+                                      "submitted": False, "elapsed_seconds": result["elapsed_seconds"],
+                                      "calls": result["cost"]["calls"], "usd": result["cost"]["known_cost_usd"]}))
+                    return 0 if result["status"] == "READY" and not result["problems"] else 2
                 question = args.question or (
                     "Write a concise cover letter connecting this job's priorities naturally to my experience."
                     if args.cover_letter else None)
@@ -236,7 +331,8 @@ def main() -> int:
                 result = asyncio.run(prepare_draft(candidate=candidate, job=job, question=question,
                     purpose="cover_letter" if args.cover_letter else "answer",
                     env_file=args.env_file, connection_file=args.connection_file,
-                    max_usd=args.max_usd, review_model=args.review_model))
+                    max_usd=args.max_usd, review_model=args.review_model,
+                    humanize_effort=args.humanize_effort, review_effort=args.review_effort))
                 result["job_source"] = "application_store" if from_store else "listing"
                 args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 write_json_private(args.output, result)

@@ -105,13 +105,29 @@ export async function proxy(
   const target = new URL(path.map(encodeURIComponent).join("/"), base);
   const headers = new Headers({ Accept: "application/json" });
   let body: Uint8Array | undefined;
+  const interviewDocument = path.length === 3 && path[0] === "interviews" && path[2] === "documents";
 
   if (request.method === "POST") {
     headers.set("Origin", expectedOrigin);
     const contentType = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
     const declared = Number(request.headers.get("content-length") ?? "0");
 
-    if (path.length === 1 && path[0] === "resumes") {
+    if (interviewDocument && contentType === "multipart/form-data") {
+      const limit = 25 * 1024 * 1024;
+      if (declared > limit + 64 * 1024) return errorResponse(413, "invalid", "Interview files must be 25 MB or smaller.");
+      let form: FormData;
+      try { form = await request.formData(); }
+      catch { return errorResponse(400, "invalid", "The interview upload could not be read."); }
+      const file = form.get("file");
+      const kind = form.get("kind");
+      if (!(file instanceof Blob) || !("name" in file) || !file.size) return errorResponse(400, "invalid", "Choose a nonempty interview file.");
+      if (file.size > limit) return errorResponse(413, "invalid", "Interview files must be 25 MB or smaller.");
+      if (typeof kind !== "string" || !["resume", "notes", "linkedin", "prior_transcript", "prior_recording"].includes(kind)) return errorResponse(400, "invalid", "Choose a supported document kind.");
+      body = new Uint8Array(await file.arrayBuffer());
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set(FILENAME_HEADER, encodeURIComponent((file as File).name));
+      headers.set("X-Imx-Kind", kind);
+    } else if (path.length === 1 && path[0] === "resumes") {
       if (contentType !== "multipart/form-data") {
         return errorResponse(415, "invalid", "Upload the resume as a file.", {
           resumeFile: "Choose a file to upload.",
@@ -138,7 +154,7 @@ export async function proxy(
       if (contentType !== "application/json") {
         return errorResponse(415, "invalid", "Send JSON with Content-Type: application/json.");
       }
-      const limit = isImportPath(path) ? config.maxImportBytes : config.maxJsonBytes;
+      const limit = path[0] === "interviews" && (path.length === 1 || interviewDocument) ? 512 * 1024 : isImportPath(path) ? config.maxImportBytes : config.maxJsonBytes;
       if (declared > limit) return errorResponse(413, "invalid", "The request body is too large.");
       body = new Uint8Array(await request.arrayBuffer());
       if (body.byteLength > limit) return errorResponse(413, "invalid", "The request body is too large.");
@@ -154,7 +170,7 @@ export async function proxy(
       body: body as BodyInit | undefined,
       cache: "no-store",
       redirect: "manual",
-      signal: AbortSignal.timeout(config.timeoutMs),
+      signal: AbortSignal.timeout(interviewDocument ? Math.max(config.timeoutMs, 180_000) : path[0] === "interviews" && request.method === "POST" ? Math.max(config.timeoutMs, 90_000) : config.timeoutMs),
     });
   } catch (error) {
     const code = (error as { cause?: { code?: string } })?.cause?.code;

@@ -1,17 +1,11 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Mono, Newsreader, Schibsted_Grotesk } from "next/font/google";
+import { Geist, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
-const display = Newsreader({
+// One grotesk carries every level; hierarchy comes from size and tracking.
+const sans = Geist({
   subsets: ["latin"],
-  style: ["normal", "italic"],
-  axes: ["opsz"],
-  variable: "--font-display",
-});
-
-const body = Schibsted_Grotesk({
-  subsets: ["latin"],
-  variable: "--font-body",
+  variable: "--font-geist",
 });
 
 const mono = IBM_Plex_Mono({
@@ -27,12 +21,12 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#f5f7f4",
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable} ${mono.variable}`}>
+    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body>{children}</body>
     </html>
   );

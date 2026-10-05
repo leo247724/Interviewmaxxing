@@ -79,11 +79,22 @@ class LinkedSelectionView(View):
     decided_at: str
 
 
+class AutoApplyView(View):
+    """Autonomous-apply state of a card, computed from the application ledgers (real-chrome/apply_status.py)."""
+    backend: str
+    backend_label: str
+    status: Literal["submitted", "ready", "held", "blocked", "unsupported", "not_attempted", "closed"]
+    bottleneck: str
+    detail: str | None = None
+    at: str | None = None
+
+
 class PipelineEntryView(View):
     id: str
     lane: str
     revision: int
     fields: dict[str, Any]
+    auto_apply: AutoApplyView | None = None
     """The 23 reference fields under their reference keys; blank is null."""
     application_url: str | None
     listing_id: str | None

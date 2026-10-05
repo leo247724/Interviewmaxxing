@@ -311,3 +311,100 @@ def test_the_source_criteria_name_the_applicants_own_narratives() -> None:
     assert ("Composing cover letter or other personal narrative text, even about the present, is "
             "HISTORICAL_OR_CONTEXTUAL.") in criteria[AC]
     assert "A company or tool named in the applicant's own narrative is not." in criteria[OTHER]
+
+
+# --- Goal 3 (2026-10-01): the applicant's own account of their work ---------------------------
+# The held essay set (goal3/predraft-all-2.json) routed these WRITER at 0.9-1.0 and held them
+# before the writer: Jev's source split stayed under the gate and the resolver's narrative-scope
+# fallback said no ("The question does not have a verified candidate-narrative source scope"),
+# or the semantic split did ("The narrative question meaning is not sufficiently clear"). The
+# readings are the live ones (rounded; the remainder goes to UNCLEAR, never another person).
+
+GOAL3: list[tuple[str, str, dict[str, float], float]] = [
+    ("colab", "What is the thing you are most proud of?",
+     {HIST: 0.52, EXPLICIT: 0.33, UNCLEAR: 0.12, AC: 0.03, OTHER: 0.0}, 0.52),
+    ("rally", "What's something you've learned recently that you're excited about?",
+     {HIST: 0.89, EXPLICIT: 0.06, AC: 0.03, UNCLEAR: 0.02, OTHER: 0.0}, 0.89),
+    ("elk", "With the rise of LLMs and Generative Engine Optimization (GEO), how has your approach to content "
+            "strategy evolved? Specifically, what adjustments are you making to ensure brand visibility within "
+            "AI-generated snapshots and Answer Engines?",
+     {HIST: 0.89, EXPLICIT: 0.08, AC: 0.02, UNCLEAR: 0.0, OTHER: 0.01}, 0.89),
+    ("omniscient_good", "What are you really good at professionally?",
+     {HIST: 0.78, AC: 0.10, UNCLEAR: 0.07, EXPLICIT: 0.05, OTHER: 0.0}, 0.78),
+    ("seer_llm", "Which is your preferred LLM for your professional work? Do you have different use cases for "
+                 "different LLMs? Explain below!",
+     {EXPLICIT: 0.49, HIST: 0.48, AC: 0.02, UNCLEAR: 0.0, OTHER: 0.01}, 0.49),
+    ("solace", "Why does Solace's mission resonate with you?",
+     {HIST: 0.94, EXPLICIT: 0.05, AC: 0.0, UNCLEAR: 0.0, OTHER: 0.01}, 0.94),
+    ("omniscient_principle", "Which Omniscient company principle resonates with you the most?",
+     {EXPLICIT: 0.94, HIST: 0.04, UNCLEAR: 0.02, AC: 0.0, OTHER: 0.0}, 0.94),
+    ("wundergraph", "About you",
+     {HIST: 0.79, AC: 0.14, UNCLEAR: 0.07, EXPLICIT: 0.0, OTHER: 0.0}, 0.79),
+]
+GOAL3_IDS = [case[0] for case in GOAL3]
+
+
+@pytest.mark.parametrize(("field_id", "wording", "probabilities", "confidence"), GOAL3, ids=GOAL3_IDS)
+def test_goal3_own_account_wordings_are_the_applicants_own_narrative(
+    field_id: str, wording: str, probabilities: dict[str, float], confidence: float,
+) -> None:
+    decision = decide(observed(wording, field_id), (probabilities, confidence))
+    assert decision.source_scope is SourceScope.HISTORICAL_OR_CONTEXTUAL
+    assert decision.source_scope_confidence == pytest.approx(1.0 - probabilities[OTHER])
+    assert _scope_passes(decision, SourceScope.HISTORICAL_OR_CONTEXTUAL)
+    assert decision.scoped_from is SourceScope(max(probabilities, key=probabilities.__getitem__))
+
+
+@pytest.mark.parametrize("wording", [
+    "What are you not good at or not interested in doing professionally?",
+    "What's a piece of content you've never gotten to build that you'd like to?",
+    "If you joined Flex tomorrow, what channel would you test first and why?",
+    "Scenario: How would you go about growing a client's SEO if you couldn't create any net new content?",
+    "What's the coolest way you figured out how to make money that other people around you didn't see?",
+    "How has your manager's approach to content strategy evolved?",
+    "What is your manager most proud of?",
+    "Why does relocating to Austin resonate with you?",
+    "About your availability",
+    "Which is your preferred start date?",
+])
+def test_goal3_look_alikes_keep_jev_reading(wording: str) -> None:
+    decision = decide(observed(wording), LIVE[0][2:4])  # the Dovetail reading: explicit 0.41
+    assert decision.scoped_from is None and decision.source_scope is SourceScope.EXPLICIT_ANSWER
+
+
+def test_goal3_own_account_wording_with_another_person_above_the_bound_keeps_jev_reading() -> None:
+    source = ({HIST: 0.52, EXPLICIT: 0.30, UNCLEAR: 0.12, AC: 0.02, OTHER: 0.04}, 0.52)
+    decision = decide(observed("What is the thing you are most proud of?"), source)
+    assert decision.scoped_from is None and decision.source_scope_confidence == 0.52
+    assert not _scope_passes(decision, SourceScope.HISTORICAL_OR_CONTEXTUAL)
+
+
+def test_goal3_own_account_narratives_reach_the_writer_without_a_scope_hold(
+    fictional_candidate: CandidateProfile, mock_job: JobRecord,
+) -> None:
+    evidence = fictional_candidate.verified_facts()[0].model_copy(update={
+        "id": "fact.ai", "key": "experience", "value": "Built documented AI workflows for paid media.",
+        "evidence": ["Built documented AI workflows for paid media."]})
+    candidate = fictional_candidate.model_copy(update={"facts": [evidence], "experience": [], "education": []})
+    control = observed("What are you not good at professionally?", "weakness")
+    fields = [observed(wording, field_id) for field_id, wording, _, _ in GOAL3] + [control]
+    provider = Jev({field_id: {**WRITER_READING, "u": (probabilities, confidence)}
+                    for field_id, _, probabilities, confidence in GOAL3}
+                   | {"weakness": {**WRITER_READING, "u": LIVE[0][2:4]}})
+    r = router(provider)
+    form = r.annotate(ApplicationForm(url="https://synthetic.test/apply", fields=fields),
+                      document_id="goal3-predraft-all-2")
+    context = PacketContext(form=form, candidate=candidate, job=mock_job, application=Application(
+        id="app-goal3", request_id="request-goal3", job_id=mock_job.id, candidate_id=candidate.id,
+        state=ApplicationState.INSPECTING, version=1,
+        created_at="2026-10-01T00:00:00Z", updated_at="2026-10-01T00:00:00Z"))
+    writer = Writer([{"text": evidence.value, "fact_ids": [evidence.id]}])
+    packet = asyncio.run(DynamicPacketResolver(r.decisions, writer, router=r,
+                                               retriever=Retriever([evidence])).resolve(context))
+    assert context.problems(packet) == []
+    answered = {a.field_id: a for a in packet.answers}
+    assert sorted(answered) == sorted(GOAL3_IDS)
+    assert all(answered[i].provenance.reference_ids == [evidence.id] for i in GOAL3_IDS)
+    assert not provider.asked("candidate_narrative")
+    # A weakness question keeps its explicit reading and holds for the person.
+    assert [m.field_id for m in packet.missing_inputs] == ["weakness"]

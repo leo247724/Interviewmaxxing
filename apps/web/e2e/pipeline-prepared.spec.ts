@@ -4,17 +4,17 @@ import { expect, test, type Page } from "@playwright/test";
 
 const PREPARED_HEADLINE = "Prepared for your review — nothing submitted";
 
-const focusButton = (page: Page) => page.getByRole("button", { name: /Prepared for review/ });
+const ashbyChip = (page: Page) => page.getByRole("button", { name: /^Ashby\s*1/ });
 
 test.describe("prepared applications in the preview pipeline", () => {
-  test("the Prepared for review filter finds the card and Review opens it in the desk", async ({ page }) => {
+  test("a backend filter finds the prepared card and Review opens it in the desk", async ({ page }) => {
     await page.goto("/preview/pipeline");
     await expect(page.getByRole("heading", { name: /^Saved/ })).toBeVisible();
+    await expect(page.locator(".mark--prepared")).toHaveCount(1);
 
-    await expect(focusButton(page)).toContainText("1");
-    await focusButton(page).click();
-    await expect(focusButton(page)).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByRole("status").filter({ hasText: "Showing 1 of 8." })).toBeVisible();
+    await ashbyChip(page).click();
+    await expect(ashbyChip(page)).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("status").filter({ hasText: "Showing 1 of 8 cards" })).toBeVisible();
 
     const cards = page.locator("article.card");
     await expect(cards).toHaveCount(1);
@@ -205,7 +205,7 @@ test.describe("prepared applications in the live pipeline (routed fixtures)", ()
     await expect(page.locator(".mark--prepared")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Review/ })).toHaveCount(0);
     await expect(page.locator("article.card", { hasText: "Fictional Plain Co" }).getByRole("button", { name: /^Apply/ })).toBeVisible();
-    await expect(focusButton(page)).toContainText("0");
+    await expect(page.locator(".mark--prepared")).toHaveCount(0);
     await expect(page.getByText("This service doesn't report prepared applications yet, so none are marked.")).toBeVisible();
     // No alarm: no notice or alert about it, only the quiet line.
     await expect(page.locator(".notice, .form-alert")).toHaveCount(0);
@@ -260,7 +260,7 @@ test.describe("prepared applications in the live pipeline (routed fixtures)", ()
     await page.route("**/api/imx/candidate", (route) => route.fulfill({ json: candidate }));
 
     await page.goto("/pipeline");
-    await expect(focusButton(page)).toContainText("1");
+    await expect(page.locator(".mark--prepared")).toHaveCount(1);
     const harbor = page.locator("article.card", { hasText: "Fictional Harbor Co" });
     await expect(harbor.locator(".mark--prepared")).toHaveText("Prepared for review");
     await expect(page.locator("article.card", { hasText: "Fictional Plain Co" }).locator(".mark--prepared")).toHaveCount(0);
@@ -307,7 +307,7 @@ test.describe("prepared applications in the live pipeline (routed fixtures)", ()
     await expect(page.getByText(/presentation version 3\), so none are marked prepared/)).toBeVisible();
     await expect(page.locator(".mark--prepared")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Review/ })).toHaveCount(0);
-    await expect(focusButton(page)).toContainText("0");
+    await expect(page.locator(".mark--prepared")).toHaveCount(0);
 
     await page.evaluate((id) => sessionStorage.setItem("imx.activeApplicationId", id), PREPARED_ID);
     await page.goto("/");

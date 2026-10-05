@@ -42,13 +42,48 @@ _CASE_WORDING = re.compile(
     r"numbers|figures|results|metrics|chart|dataset|campaign\s+data)\b"
     r"|\bcase\s+stud(?:y|ies)\b|\bdata\s+(?:reading|interpretation)\b",
     re.IGNORECASE)
+_DATA_NOUN = (r"(?:information|data|table|tables|numbers|figures|results|metrics|charts?|graphs?|dataset|data\s*set|"
+              r"scenario|case|report|spreadsheet|screenshots?|exhibits?)")
+_SHOWN_DATA = re.compile(
+    r"\b(?:calculate|compute|work\s+out)\b[^.?!]{0,100}?\b(?:for\s+(?:each|every|all)|per\s+(?:channel|campaign|"
+    r"ad\s+set|platform|month|week)|by\s+(?:channel|campaign|platform)|of\s+(?:each|every))\b"
+    rf"|\b(?:above|below|following|attached|provided|enclosed|preceding|shown|given)\s+(?:\w+\s+){{0,2}}?{_DATA_NOUN}\b"
+    rf"|\b{_DATA_NOUN}\s+(?:above|below|provided|shown|attached|here)\b"
+    rf"|\b(?:this|these)\s+(?:\w+\s+)?{_DATA_NOUN}\b"
+    r"|\brespond\s+to\s+the\s+(?:above|following|previous)\b"
+    r"|\b(?:tables?|charts?|graphs?|datasets?|screenshots?|exhibits?)\b",
+    re.IGNORECASE)
+"""Wording that points at data shown with the question ("the table above", "Based on this
+information", "Calculate CPA … for each channel"), not at results of the applicant's own."""
+_OWN_WORK = re.compile(
+    r"\b(?:tell|walk)\s+(?:us|me)\s+(?:about|through)\s+(?:a|an|one)\s+(?:\w+\s+){0,3}?(?:time|example|instance|"
+    r"situation|project|campaign|program|programme|initiative|strategy|launch|experiment)\b"
+    r"|\b(?:describe|share|give\s+(?:us|me))\s+(?:a|an|one)\s+(?:\w+\s+){0,3}?(?:time|example|instance|situation|"
+    r"result|win|story)\b"
+    r"|\ba\s+time\s+(?:when\s+|where\s+|that\s+)?(?:you|your)\b"
+    r"|\byou(?:['\u2019]ve|\s+have)?\s+(?:personally\s+)?(?:owned|led|built|ran|managed|launched|implemented|created|"
+    r"developed|drove|executed|designed|shipped|scaled|identified|delivered)\b"
+    r"|\byou\s+personally\b|\byour\s+own\b",
+    re.IGNORECASE)
+"""Wording that asks for the applicant's own past work ("Tell us about a time …", "a strategy
+you owned", "what you personally implemented", "an existing case study")."""
 _NUMBER = re.compile(r"(?<![\w.])[$€£]?\d[\d,]*(?:\.\d+)?%?")
 _TOKEN = re.compile(r"(?<![\w.])[$€£]?\d[\d,]*(?:\.\d+)?%?|[()+*/\u00f7\u00d7\u2212-]|(?<=\s)x(?=\s)")
 
 
-def case_analysis_question(text: str) -> bool:
-    """A question asking to calculate, analyse or respond to data given with it."""
-    return _CASE_WORDING.search(text) is not None
+def case_analysis_question(text: str, *, data_shown: bool = False) -> bool:
+    """A question asking to calculate, analyse or respond to data given with it.
+
+    Goal 3 (2026-10-01): the generic wordings ("what did you learn from the results?",
+    "what did you change based on the data?", "an existing case study is enough") also end
+    questions about the applicant's own past work ("Tell us about a … strategy you owned …",
+    "Tell us about a time …", "what you personally implemented"); live, onX, Osano and
+    AnswerThis held as case analyses with "The table referenced is not in the recorded
+    question". Such a question is the applicant's narrative unless its wording points at data
+    shown with it (``_SHOWN_DATA``) or the data was recorded with it (``data_shown``)."""
+    if _CASE_WORDING.search(text) is None:
+        return False
+    return data_shown or _SHOWN_DATA.search(text) is not None or _OWN_WORK.search(text) is None
 
 
 def case_data(field: ApplicationField) -> str:

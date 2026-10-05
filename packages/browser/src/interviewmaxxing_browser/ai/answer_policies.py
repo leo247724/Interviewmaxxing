@@ -190,6 +190,11 @@ _YEARS = re.compile(
     r"(?P<unit>years?|yrs?)\b", re.IGNORECASE)
 _RANGE = re.compile(rf"(?<![\w.]){_NUM}\s*(?:-|\u2013|\u2014|to)\s*{_NUM}\s*\+?\s*(?:years?|yrs?)\b",
                     re.IGNORECASE)
+_OPEN_PLUS_RANGE = re.compile(
+    rf"(?<![\w.+-])(?P<low>{_NUM})\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"(?P<high>{_NUM})\s*\+\s*(?:years?|yrs?)\b", re.IGNORECASE)
+"""An ascending open-plus range such as 5-8+ years sets a lower bound of five.
+Only its numeric span is normalized; surrounding guards still inspect the question."""
 _TIMEFRAME_BEFORE = re.compile(r"\b(?:past|last|previous|recent|prior|within)\s*$", re.IGNORECASE)
 _TIMEFRAME_AFTER = re.compile(r"^\s*ago\b", re.IGNORECASE)
 """"In the past 2 years", "within the last 3 years", "2 years ago": when, not how long."""
@@ -235,7 +240,16 @@ def years_reading(question: str) -> YearsReading:
     experience". A timeframe ("in the past 2 years") is not a minimum. The minimum is
     unreadable (``threshold`` None although ``mentioned``) for an age, an upper bound ("less
     than 2 years"), a range ("3-5 years"), two different numbers ("5+ years, including 2 in
-    paid social") or an implausible number."""
+    paid social") or an implausible number. An ascending open-plus range such as
+    "5-8+ years" supplies a minimum of five; closed or descending ranges still hold."""
+    for match in reversed(list(_OPEN_PLUS_RANGE.finditer(question))):
+        lower, upper = _number(match.group("low")), _number(match.group("high"))
+        before = question[max(0, match.start() - 40):match.start()]
+        after = question[match.end():match.end() + 12]
+        if (not 0 < lower <= upper <= 50 or _TIMEFRAME_BEFORE.search(before)
+                or _TIMEFRAME_AFTER.search(after) or _STRICT_BEFORE.search(before)):
+            return YearsReading(mentioned=True, threshold=None)
+        question = question[:match.start()] + f"{lower:g}+ years" + question[match.end():]
     if _RANGE.search(question):
         return YearsReading(mentioned=True, threshold=None)
     found: list[YearsThreshold] = []

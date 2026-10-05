@@ -166,8 +166,9 @@ def _identity(tracking: TrackingFields) -> tuple[str, str]:
 
 
 def default_pipeline_db(paths: LocalPaths) -> Path:
-    """``$IMX_HOME/state/pipeline.sqlite3`` (beside, not inside, the application store)."""
-    return paths.state_db.parent / PIPELINE_DB_NAME
+    """``IMX_PIPELINE_DB`` when set, else ``$IMX_HOME/state/pipeline.sqlite3`` (beside, not inside, the
+    application store)."""
+    return paths.pipeline_db or paths.state_db.parent / PIPELINE_DB_NAME
 
 
 def _check_candidate(candidate_id: str) -> str:
