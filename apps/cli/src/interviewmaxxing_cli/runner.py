@@ -2218,7 +2218,13 @@ class _Run:
         try:
             if not has_expected_job:
                 await self.interaction.progress("Submitting the application")
-            await self.browser.submit()
+            # Approved submissions choose the browser-supported dispatch strategy
+            # before clicking; an uncertain submission is never automatically retried.
+            submit_approved = getattr(self.browser, "submit_approved", None)
+            if self.approved is not None and callable(submit_approved):
+                await submit_approved()
+            else:
+                await self.browser.submit()
             observation = await self.browser.confirm()
         except BaseException as exc:
             # Interrupted or failed after SUBMITTING was recorded: the site may have the

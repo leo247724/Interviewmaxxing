@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from interviewmaxxing_core.greenhouse_email import EmailMatchError, choose_code, greenhouse_job_identity
+from interviewmaxxing_core.greenhouse_email import (
+    EmailMatchError,
+    choose_code,
+    greenhouse_job_identity,
+)
 
 EMAIL = "leo.obrien18@gmail.com"
 DEFAULT_PENDING = Path(__file__).resolve().parents[1] / ".imx/dynamic-applications/real-chrome/gh-run/pending-code.json"

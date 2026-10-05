@@ -24,10 +24,12 @@ Rules this driver enforces:
 * **Evaluation is read-only and allowlisted.** ``evaluate`` runs only the fixed
   read scripts of this package (inspector, control/document state, digests). It is
   not a general JavaScript sandbox; the internal regex lint is only defence in depth.
-* **One fixed script writes** (round 15): ``dom_click`` runs ``element.click()`` on the one
-  element a selector matches, when it is enabled, outside any dialog and submits no form.
-  The runtime uses it only for an apply control whose structured ``click`` left the page
-  unchanged (Wellfound's "Apply" ignores the bridge's click and answers ``click()``).
+* **Two fixed scripts write** (round 15), each ``element.click()`` on the one element a
+  selector matches and nothing else. ``dom_click`` takes only an enabled element outside any
+  dialog that submits no form: the runtime's fallback for an apply control whose structured
+  ``click`` left the page unchanged (Wellfound's "Apply" ignores the bridge's click and
+  answers ``click()``). ``dom_click_submit`` takes only an enabled submit button: the
+  single dispatch for the step's submit, in an approved submission only (``submit_approved``).
 * **Unsupported capabilities are errors, never success.** Selecting several options
   of a multi-select, uploading when Browser Bridge may not set files, pressing keys
   when the CLI refuses them, scrolling a menu list and focusing a window raise
@@ -261,9 +263,21 @@ _DOM_CLICK = (
     "if (el.form && /^(?:submit|image)$/i.test(el.type || '')) return {n: 1, clicked: false, why: 'submits a form'}; "
     "el.click(); return {n: 1, clicked: true}; }"
 )
-"""The one page script that writes (``OpenCliDriver.dom_click``): ``click()`` on the one
-element the selector matches, only when it is enabled, outside any dialog and submits no
-form. Nothing else."""
+"""A page script that writes (``OpenCliDriver.dom_click``): ``click()`` on the one element
+the selector matches, only when it is enabled, outside any dialog and submits no form.
+Nothing else."""
+_DOM_SUBMIT = (
+    "(sel) => { " + DEEP_QUERY + "let els; try { document.querySelector(sel); els = deepAll(sel); } "
+    "catch (e) { return {n: -1}; } if (els.length !== 1) return {n: els.length}; const el = els[0]; "
+    "if (el.disabled || el.getAttribute('aria-disabled') === 'true') return {n: 1, clicked: false, why: 'disabled'}; "
+    "if (!/^(?:BUTTON|INPUT)$/.test(el.tagName) || !/^(?:submit|image)$/i.test(el.type || '')) "
+    "return {n: 1, clicked: false, why: 'is not a submit button'}; "
+    "el.click(); return {n: 1, clicked: true}; }"
+)
+"""The other page script that writes (``OpenCliDriver.dom_click_submit``): ``click()`` on the
+one element the selector matches, only when it is an enabled submit button (``button`` or
+``input`` of type submit). Nothing else. The runtime uses it only in an approved submission
+(``submit_approved``), on the step's own submit control."""
 
 
 # --- driver ---------------------------------------------------------------------------
@@ -404,6 +418,15 @@ class OpenCliDriver:
             raise OpenCliError(f"new tab {page} is not listed in session {self.session}", command="tab")
         self._tab = page
 
+    async def fresh_tab(self) -> None:
+        """Close this driver's own tab, so the next ``goto`` opens the page in a new one
+        (round 15, live on Wellfound: a tab that already showed a page keeps the next job's
+        apply control inert). Only this driver's tab is ever closed; nothing when none is open."""
+        if self._tab is None:
+            return
+        await self._call(self._argv(["tab", "close"], positionals=[self._tab], pin=False))
+        self._tab = None
+
     async def goto(self, url: str) -> int | None:
         if self._tab is None:
             await self._own_tab()
@@ -429,6 +452,19 @@ class OpenCliDriver:
         submit a form (``NotActionable``)."""
         self._mark = self._doc.origin
         result = await self._eval(_DOM_CLICK, selector)
+        if not isinstance(result, dict) or result.get("n") != 1:
+            count = result.get("n") if isinstance(result, dict) else None
+            raise OpenCliTargetError(f"click() {selector}: matched {count} elements")
+        if not result.get("clicked"):
+            raise NotActionable(f"click() {selector} refused: it {result.get('why') or 'cannot be clicked'}")
+
+    async def dom_click_submit(self, selector: str) -> None:
+        """``element.click()`` on the form's submit control ``selector`` matches, through the
+        second fixed writing script (``_DOM_SUBMIT``): the runtime's single dispatch in an
+        approved submission (``submit_approved``), without a preceding structured click.
+        Refused, with nothing clicked, for anything that is not an enabled submit button (``NotActionable``)."""
+        self._mark = self._doc.origin
+        result = await self._eval(_DOM_SUBMIT, selector)
         if not isinstance(result, dict) or result.get("n") != 1:
             count = result.get("n") if isinstance(result, dict) else None
             raise OpenCliTargetError(f"click() {selector}: matched {count} elements")

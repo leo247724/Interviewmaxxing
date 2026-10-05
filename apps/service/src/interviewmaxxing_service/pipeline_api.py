@@ -12,13 +12,15 @@ document with its digest, all or nothing.
 
 from __future__ import annotations
 
+import json as _json
+import os as _os
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import ValidationError
 
@@ -62,23 +64,37 @@ from .discovery_models import (
     PipelineUpdateInput,
 )
 from .views import SAFE_ID, confirmation_of, iso
-import json as _json
-import os as _os
-
-_APPLY_STATUS = {"path": _os.path.expanduser("~/.interviewmaxxing/state/apply-status.json"), "mtime": 0.0, "data": {}}
 
 
-def apply_status(item_id: str):
+class _ApplyStatusCache(TypedDict):
+    path: str
+    mtime: float
+    data: dict[str, Any]
+
+
+_APPLY_STATUS: _ApplyStatusCache = {
+    "path": _os.path.expanduser("~/.interviewmaxxing/state/apply-status.json"),
+    "mtime": 0.0,
+    "data": {},
+}
+
+
+def apply_status(item_id: str) -> AutoApplyView | None:
     """The card's autonomous-apply record from the sidecar file (re-read when it changes); None when absent."""
     try:
         st = _os.stat(_APPLY_STATUS["path"])
         if st.st_mtime != _APPLY_STATUS["mtime"]:
-            with open(_APPLY_STATUS["path"]) as f: _APPLY_STATUS["data"] = _json.load(f)
+            with open(_APPLY_STATUS["path"]) as f:
+                data = _json.load(f)
+            if not isinstance(data, dict):
+                return None
+            _APPLY_STATUS["data"] = data
             _APPLY_STATUS["mtime"] = st.st_mtime
     except (OSError, ValueError):
         return None
     rec = _APPLY_STATUS["data"].get(item_id)
-    if not rec: return None
+    if not isinstance(rec, dict) or not rec:
+        return None
     try:
         return AutoApplyView(backend=rec.get("backend", "unknown"), backend_label=rec.get("backend_label", "Unknown"), status=rec.get("status", "not_attempted"),
                              bottleneck=rec.get("bottleneck", "none"), detail=rec.get("detail"), at=rec.get("at"))

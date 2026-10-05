@@ -134,7 +134,7 @@ async def interview_entrypoint(ctx: Any) -> None:
             context = api.context(sid, new_message.text_content or "")
             await self.update_instructions(interviewer_instructions(context))
 
-    session = AgentSession(
+    session: AgentSession[None] = AgentSession(
         # Agent.default.stt_node never manually flushes streaming STT. Eleven's
         # server VAD must commit final text; local VAD alone can leave partials.
         stt=elevenlabs.STT(api_key=os.environ["ELEVEN_API_KEY"], model="scribe_v2_realtime", enable_logging=False,
@@ -154,10 +154,11 @@ async def interview_entrypoint(ctx: Any) -> None:
     session_started = False
     # A reconnecting browser keeps the same agent and transcript. Disconnect
     # immediately interrupts playback; the server deadline still runs.
-    @ctx.room.on("participant_disconnected")
     def participant_disconnected(participant: Any) -> None:
         if session_started and participant.identity == "candidate-" + sid:
             session.interrupt(force=True)
+
+    ctx.room.on("participant_disconnected", participant_disconnected)
 
     try:
         await ctx.connect()

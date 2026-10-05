@@ -1,16 +1,16 @@
 {
  "backend": "wellfound",
- "schema_version": "0.1.0",
+ "schema_version": "0.3.0",
  "generated_at_utc": "2026-09-23T23:51:51Z",
  "author": "fable_d (claude-fable-5-1) via OpenCLI Browser Bridge 1.8.6, session imx-schema-fable-d, tab 208475FB10C571C38A4060B6048A53D8",
  "purpose": "Schema PRIOR for the dynamic-application runtime. Hints only. Fresh rendered DOM is authoritative. Nothing here is a selector contract or a script.",
- "status": "blocked",
+ "status": "observed",
  "coverage": {
   "inventory_density": 30,
   "attempted_samples": 3,
   "observed_examples": 3,
   "fully_mapped_examples": 0,
-  "note": "3 different employers inspected. Profile jgd7jms9 is logged out of Wellfound; the job page renders fully (description, company, similar jobs) but 'Apply Now' produced no observable response and no navigation to a form or login screen. No application form was observable; not a mapped form. The remaining 27 listings share the same host/page template and were not opened (no new information expected while logged out)."
+  "note": "3 different employers inspected. Profile jgd7jms9 is logged out of Wellfound; the job page renders fully (description, company, similar jobs) but 'Apply Now' produced no observable response and no navigation to a form or login screen. No application form was observable; not a mapped form. The remaining 27 listings share the same host/page template and were not opened (no new information expected while logged out). UPDATE 2026-09-25 (signed in): the job page shows button[data-test=Button] 'Apply' in the job card and 'Apply now' below the description; a DOM click() on it opens the application dialog (one note textarea, 'Send application'). Observed by the lead, read-only; nothing was sent."
  },
  "observed_samples": [
   {
@@ -69,14 +69,55 @@
   "page_shape": {
    "single_page_form": false,
    "forms_on_page": 0,
-   "apply_entry": "button 'Apply Now' (React handler; no href). Also many 'Apply' buttons in the 'Similar Jobs' rail (one per other listing) that must not be confused with the target job's control.",
+   "apply_entry": "Signed in: button[data-test=Button] 'Apply' in the job card and 'Apply now' below the description (React press handlers, no href, no form). OpenCLI's structured click and focus + Enter change nothing (no dialog, no navigation, no request to wellfound.com); element.click() opens the dialog at once with two POST wellfound.com/graphql calls. The 'Similar Jobs' rail carries one 'Apply' per other listing: never this job's.",
    "auth_state_cues": [
-    "header buttons 'Log In' and 'Sign Up'"
+    "signed out: header buttons 'Log In' and 'Sign Up' (Apply inert)",
+    "signed in: candidate navigation, 'Ready to interview', the user menu"
    ],
    "headings_pattern": "<h1 job title>, 'About the job', 'About the company', '<Company>', optional 'Funding'/'Perks'/'Founders', 'Similar Jobs'"
   },
-  "control_families": {},
-  "field_patterns": [],
+  "control_families": {
+   "note_dialog": "div[tabindex=-1][role=dialog][data-test=JobApplication-Modal], no accessible name; text 'Improve your odds' / 'Indicate how you can stand out as a candidate in the note below to improve your odds.'; the questions (below); button[type=submit][data-test=JobApplicationModal--SubmitButton] 'Send application'; a 'Cancel' button; Escape closes it. After the send the dialog STAYS OPEN and says 'SUCCESS! YOUR APPLICATION HAS BEEN SENT.', and the job page's Apply button reads '\u2713 Applied'. Nothing is sent before 'Send application'; an application cannot be undone.",
+   "choice_groups": "A radio group or a checkbox group is wrapped in one <label>: the question (ending '*' when required) on its first line, then one element per option whose innerText is the option (the input's parentElement). Radio names customQuestionAnswers[<id>][jobListingQuestionOptionId]; the pronouns checkboxes have an EMPTY name (ids form-input--customQuestionSets[set<n>][question_<n>]--<option id>)."
+  },
+  "field_patterns": [
+   {
+    "field": "userNote",
+    "control": "textarea",
+    "question": "note to the recruiter at the company (placeholder)",
+    "semantic": "COVER_LETTER",
+    "seen_in": "3 of 30 dialogs"
+   },
+   {
+    "field": "customQuestionAnswers[<id>][answer]",
+    "control": "textarea",
+    "question": "What interests you about working for this company?",
+    "semantic": "motivation narrative",
+    "seen_in": "about 26 of 30 dialogs"
+   },
+   {
+    "field": "customQuestionAnswers[<id>][answer]",
+    "control": "text/number input",
+    "question": "Phone Number, LinkedIn Profile, Please share your salary expectations, Portfolio Link",
+    "note": "required only by the '*' in the label; some carry the help text 'Please limit your answer to 128 characters or less' (no maxlength; a longer value blocks the send silently)"
+   },
+   {
+    "field": "customQuestionAnswers[<id>][jobListingQuestionOptionId]",
+    "control": "radio group in one label",
+    "question": "country, US state (52 options), sponsorship, former employee, data-driven decisions"
+   },
+   {
+    "field": "(empty name)",
+    "control": "checkbox group in one label",
+    "question": "What are your pronouns?*"
+   },
+   {
+    "field": "customQuestionAnswers[<id>][answer]",
+    "control": "text/textarea",
+    "question": "If \"YES\" / If yes, please add \u2026",
+    "note": "optional follow-up; blank must not block the send"
+   }
+  ],
   "step_patterns": [
    {
     "step": "wellfound_job_page_logged_out",
@@ -85,51 +126,61 @@
    },
    {
     "step": "wellfound_login",
-    "observed": false,
-    "gated_by": "auth"
+    "observed": true,
+    "gated_by": null,
+    "note": "Cleared by the owner's signed-in account in the Browser Bridge profile (2026-09-25)."
    },
    {
     "step": "wellfound_application",
-    "observed": false,
-    "gated_by": "auth",
-    "note": "Wellfound applications are known to be profile-based with an optional note to the company (UNVERIFIED here)."
+    "observed": true,
+    "gated_by": null,
+    "note": "The application is the note dialog on the job page (profile-based; one optional note). Observed read-only by the lead on 2026-09-25."
    }
   ],
   "conditional_patterns": [],
   "blockers": [
    {
     "type": "auth",
-    "detail": "Logged out; 'Apply Now' inert. Not bypassed; no account created.",
+    "detail": "Logged out: 'Apply Now' inert.",
     "observed": true,
-    "human_action_needed": "User logs into their Wellfound account in the runtime profile, then the apply flow (expected: profile-backed form + note) must be re-observed."
+    "resolved": true,
+    "resolution": "Owner signed in inside the OpenCLI Browser Bridge profile jgd7jms9 on 2026-09-25.",
+    "human_action_needed": null
+   },
+   {
+    "type": "profile_completion",
+    "detail": "Wellfound may require a complete profile before applying.",
+    "observed": false,
+    "human_action_needed": "The owner completes the Wellfound profile when the site asks."
    }
   ],
   "runtime_observations": [
-   "Verify a click had an effect (URL/dialog/network) before assuming a form opened; on Wellfound logged-out, nothing changes and the runtime should classify auth_required from the 'Log In'/'Sign Up' header cues rather than retrying the click.",
-   "The 'Similar Jobs' rail contains ~9 'Apply' buttons; select the apply control by proximity to the h1 title, never by first match."
+   "OpenCLI: Apply ignores the bridge's click; element.click() opens the dialog, but only in a tab that loaded the job fresh (a reused tab that navigated to the next job keeps the click inert): one fresh tab per job.",
+   "The dialog is the application form; its questions vary (field_patterns).",
+   "The 'Similar Jobs' rail's 'Apply' buttons belong to other listings: never taken as this job's apply control.",
+   "Accepted: the still-open dialog says 'SUCCESS! YOUR APPLICATION HAS BEEN SENT.' and the job's button reads '\u2713 Applied' (observed on all 30 sends)."
   ]
  },
  "inferred": {
   "typical_stages_unverified": [
-   "login (email/password or OAuth)",
-   "profile completeness check",
-   "per-job application: optional note to the company, possibly employer questions",
-   "submit"
+   "profile completeness check (when the site asks)",
+   "per-job application: the note dialog; employer questions not observed"
   ]
  },
  "provider_hint": {
-  "for_jev": "wellfound: without login the page has no form and the Apply Now control is inert. Classify as auth_required when 'Log In'/'Sign Up' are present. After human login, re-observe; expect a profile-backed application with a short note field that should route to the writer with job context.",
+  "for_jev": "wellfound: signed in, the job page's 'Apply' opens a note dialog (one textarea to the recruiter at the company, then 'Send application'). The note is a short cover letter written from the verified facts and the job (target 120-180 words: a hook, one proof, one company sentence; no gratitude, no age, no salutation line).",
   "exact_copy_facts": [],
   "option_choice_from_verified_facts": [],
   "escalate_to_writer_opus": [
-   "(unverified) note to the company"
+   "the note to the recruiter at the company (userNote)"
   ],
   "requires_human_input": [
-   "Wellfound login",
    "profile completion"
   ]
  },
  "edge_cases": [
   "One inventory URL slug ('real-estate-sales-manager-property-owners-clone') does not match its title ('Marketing Manager (AI Property Management)'); Wellfound resolves by numeric id, so slug mismatches are expected and harmless."
- ]
+ ],
+ "updated_at_utc": "2026-09-26T00:00:00Z",
+ "update_note": "WP1 round 15: the owner's Wellfound account is signed in inside the OpenCLI Browser Bridge profile jgd7jms9 (verified read-only by the lead on 2026-09-25: candidate nav, 'Ready to interview', user menu). The lead observed the application dialog read-only on https://wellfound.com/jobs/4696287-growth-marketing-manager; the runtime's own prepare-only run is app_47903140c0c549eaa5d7cd2f07565dec (FAILED_RETRYABLE before round 15). Live facts from the lead's hand-driven OpenCLI run on 2026-09-25 (all 30 applications sent; field map .imx/dynamic-applications/wellfound-run/fields.json) are folded in (0.3.0)."
 }

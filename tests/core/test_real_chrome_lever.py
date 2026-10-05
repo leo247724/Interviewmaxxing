@@ -81,7 +81,8 @@ def test_entrypoint_has_company_guard():
 def test_no_submit_for_required_missing_or_dry():
     field = {'key':'1','name':'q','label':'Unknown required','type':'range','tag':'INPUT','required':True,'value':''}
     st = {'url':URL+'/apply','form':True,'fields':[field],'submit':True}
-    chrome = Mock(); chrome.js.return_value = st
+    chrome = Mock()
+    chrome.js.return_value = st
     ns = functions(READ='snapshot')
     result = ns['fill_job'](chrome, dict(listing_id='id',company='Acme',title='Role',url=URL), None, False)
     assert result['result'] == 'needs_answers'
@@ -185,7 +186,8 @@ def test_fill_passes_job_jurisdiction_to_choice_policy(control):
              'tag':control,'type':control.lower(),'required':True,'value':'',
              'checked':False,'option':'Yes','options':[{'text':'Yes','value':'yes'}]}
     form = {'url':URL+'/apply','form':True,'fields':[field],'submit':True}
-    chrome = Mock(); chrome.js.return_value = form
+    chrome = Mock()
+    chrome.js.return_value = form
     job = dict(listing_id='id',company='Acme',title='Role',url=URL,location='Canada')
     result = functions(READ='snapshot', ashby=ashby)['fill_job'](chrome, job, None, False)
     assert result['result'] == 'needs_answers'

@@ -42,13 +42,13 @@ none on load none cookie consent dialog present; may intercept clicks Flosum pos
 
 [Complete map](workable.json) · [Sample 1](https://apply.workable.com/atak-interactive/j/4D2899C4B9/apply/) · [Sample 2](https://apply.workable.com/arcsite/j/AD29CC0E77/apply/)
 
-## wellfound — blocked
+## wellfound — observed (signed in)
 
-3 different employers inspected. Profile jgd7jms9 is logged out of Wellfound; the job page renders fully (description, company, similar jobs) but 'Apply Now' produced no observable response and no navigation to a form or login screen. No application form was observable; not a mapped form. The remaining 27 listings share the same host/page template and were not opened (no new information expected while logged out).
+Signed in (the owner's account in the OpenCLI Browser Bridge profile jgd7jms9, 2026-09-25), the job page's 'Apply' (job card) and 'Apply now' (below the description) are React buttons that ignore OpenCLI's structured click; a script click() opens the application: a dialog with one note textarea ('Write a note to <recruiter> at <Company>.') and 'Send application'. The runtime clicks the apply control once more by script when its click changed nothing, reads the dialog as the form and writes the note as a short cover letter. The 'Similar Jobs' rail's 'Apply' buttons are other listings' and are never taken.
 
-Logged out; 'Apply Now' inert. Not bypassed; no account created.
+Cleared: the auth blocker (signed in). Still needs the owner: profile completion when Wellfound asks. Submission stays gated (approval, IMX_ALLOW_SUBMISSION=1, --yes); 'Send application' may need the same script click there. Live (all 30 sent by the lead on 2026-09-25): the dialog stays open and says 'SUCCESS! YOUR APPLICATION HAS BEEN SENT.' while the job's button reads '✓ Applied'; the dialogs ask more than a note (the interest question, phone/LinkedIn/salary/portfolio, radio groups and a pronouns checkbox group wrapped in labels, 128-character answers); each job needs a fresh tab.
 
-[Complete map](wellfound.json) · [Sample 1](https://wellfound.com/jobs/3997434-demand-generation-manager) · [Sample 2](https://wellfound.com/jobs/4522318-senior-manager-ecommerce-retention)
+[Complete map](wellfound.json) · [Sample 1](https://wellfound.com/jobs/3997434-demand-generation-manager) · [Sample 2](https://wellfound.com/jobs/4522318-senior-manager-ecommerce-retention) · [Sample 3](https://wellfound.com/jobs/4696287-growth-marketing-manager)
 
 ## rippling — observed
 

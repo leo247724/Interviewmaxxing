@@ -9,8 +9,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
-
 from interviewmaxxing_browser.normalize import extract_job_identity
 from interviewmaxxing_browser.snapshot import DomHeading, DomMeta, DomSnapshot
 
@@ -42,18 +40,15 @@ ROUND_ROCK = {"@type": "Place", "address": {"@type": "PostalAddress", "addressLo
 def test_a_single_job_location_gives_its_locality() -> None:
     identity = extract_job_identity(snapshot(posting(ROUND_ROCK)))
     assert identity is not None and identity.external_job_id == "4012"
-    # Only the locality is kept (the region and country are dropped): the metro rule still
-    # reads "Round Rock" as in the metro, since no other state follows it.
-    assert identity.location == "Round Rock"
+    # WP1 round 15 (item 6): the region and country are kept beside the locality, so the
+    # metro rule tells Round Rock, TX from a Round Rock elsewhere.
+    assert identity.location == "Round Rock, TX, US"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WP1 (normalize.py extract_job_identity): a JobPosting whose jobLocation is a list of places "
-    "(schema.org allows one or more) gives no location, because only a dict is read; the job "
-    "then reads as remote for the metro rule. Expected the first place's locality"))
-def test_a_list_of_job_locations_gives_the_first_locality() -> None:
+def test_a_list_of_job_locations_gives_every_place() -> None:
+    # WP1 round 15 (item 6): a list of places (schema.org allows one or more) is read too.
     identity = extract_job_identity(snapshot(posting([ROUND_ROCK])))
-    assert identity is not None and identity.location == "Round Rock"
+    assert identity is not None and identity.location == "Round Rock, TX, US"
 
 
 def test_a_page_showing_only_a_job_id_gives_no_location() -> None:

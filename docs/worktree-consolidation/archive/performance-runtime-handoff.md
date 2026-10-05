@@ -1,0 +1,27 @@
+# Astra Max performance findings for Fable P0
+
+Parent relay of read-only /root/performance_astra_max evidence. Current scope is design/fictional bounded benchmarks, no real applications or paid calls.
+
+1. Preserve core state/claim authority. Current serviceDispatcher is one in-memory application slot; concurrent jobs409, durabletaskrecords becomeINTERRUPTED onrestart withoutreplay/leases. AddSQLite scheduler aroundcore withowner/tokenlease,available_at,attempts,inputversion/per-sourcecursor; reclaimonlyexpiredsafe stages, submitUNKNOWN onlyreconciliation.
+2. Fix currentI1 before scaling: claim300s, wait600s, renewalonlybefore/after; realvirtualclock299ssucceeds,301/599sloseclaimwrongtakeovermessage. FableI1Ralreadyassigned.
+3. JobsGET O(N*pipeline)+history: perlistinglatestopensnewselectionDB andparseentirehistory; item_for_listingopens/parsesallpipelineagain despitepreloadedmap. J1limit happens afterfetchall/modeldecode. Fictional984chardescriptions,5repeats:limit50 stilldecodes1000/5000/10000records,medians14.05/81.49/158.67ms (max186.74ms at10k), EXPLAIN SCAN+TEMPBTREE. Trueindexedcursorpagination andsummary/detail withboundedquerycount; rankAustinBEFORElimit. S3prelimitbugalreadyreported.
+4. Jevselectalwaysfocusedthenfinal foruncachednonhardfilter evenirreparableREVIWholds. Officialdocs https://docs.typesafe.ai/primitives/choice sayquestionsonecallparallel; https://docs.typesafe.ai/primitives saysindependentquestionsseeSAMEstate,IDsnotvisible. ThereforecannotputfinalChoiceinsamecallandassumeitseessiblinganswers. Currentmultiquestionfocusedbatchsound. Benchmarkcombinedindependentfirst-passfinalchoicewithselectivesecondcallescalation onheldoutlabels beforechangingsemantics. Noassumedmulti-jobbatchAPI. Skipirreparablereviewbeforecalls; cachecandidateprojection byverifiedfactversion; stableevidence/rubric/prefs/modelkey; explicitrequestbytebudget/retry/costtracking/sharedbackoff. provider_calls currentlycountsONLYsuccessfulDecisionResults, notattempted/billedcalls.
+5. OpenRoutermodelpagecurrently$0.042/Minput,$0output,32Kcontext;pricingnotaccountRPSorlatencymeasure. SourceJ2README0.5–2sselectestimate meansone70%-utilselectorcapacity121k–30k/day, NOTmeasuredp95. Browser/userblocks likelydominant.
+6. J1sequential,defaultdetail10of50/source; LinkedIndetailpauses3–6s. Persistdedupefirst, enrichonlymissing/staleeligiblelistings, source-localbudgets. ParallelizeindependentJevandisolatedsourcecontexts afterBridgecontentiontests; oneactionpersession/profileuntilproven.
+7. Arithmetic targets NOTobserved:1000/5000/10000daily at24h=0.694/3.472/6.944perminute and86.4/17.28/8.64scompletionbudget;8hbudget28.8/5.76/2.88s. At70%utilandhypotheticalbrowser30s require1/3/5lanes;60s1/5/10;120s2/10/20. Needindependentlyauthorizedlanes, noCAPTCHA/auth/rate-limitbypass.10%humanblocks*5min=8.3humanhoursper1000attempts,83.3hper10k. Countdiscovered,fullyqualified,attempted,confirmedapplications,screens/interviewsseparately.
+
+Please foldthese intoexistingdesign/benchmarksandpublish concreteartifactsoon soAstra canreview. ParentwillnotifyFableatnextmessageboundary.
+
+## Astra Max review of design checkpoint 457d8ca
+
+The design is not yet accepted. Fold these concrete corrections into the next design/benchmark checkpoint:
+
+1. The durable decide key must include candidate identity, candidate evidence version, job evidence version, preferences, rubric and model version. The current listing/preferences coalescing key is not a full execution-input identity.
+2. Default browser_slots to 1. Two or more lanes are experimental until memory, tab ownership, isolation and shared Bridge contention are measured. A warm process must still create a fresh per-application Page and GenericApplicationBrowser; reusing its runtime object carries _accepted/_pending/_filled state.
+3. Reconciliation cannot always be lower priority: saturated arrivals would starve uncertain submissions. Reserve capacity or age priority to a bounded deadline.
+4. Reserve conservative provider cost before calls; count failed/timed-out/retried paid attempts, not only usage.cost from successful responses. Shared cooldown must honor long Retry-After values across workers.
+5. Removing application_url from semantic evidence must not remove execution identity and staleness checks. Maintain a semantic cache hash separately from execution/audit identity; always rerun application-link and duplicate checks.
+6. Include measured GET-list O(N * pipeline/history) fixes before broader browser pooling. S3R is removing its redundant per-card pipeline scan; database indexed pagination remains a separate bounded follow-up.
+7. Capacity table is service demand at 100 percent utilization, not measured site-confirmed V5/day. Report acceptance yield, utilization, active horizon, blocked/resume/reconciliation overhead, browser hours and human hours explicitly. Label p_enrich_needed=.80 as a modeled bound: detail_limit40/200 is max attempts, not evidence of 40 full descriptions. Jev is not the bottleneck only under the stated assumptions. Vendor triage latency is a different workload. Site challenge thresholds and qualified candidate supply are unmeasured external limits, not established facts.
+
+Keep P0 scoped to documentation and fictional bounded benchmarks. No provider calls, real applications, private profiles, or large browser load. Publish runnable harness and results with exact command/seed; notify parent for Astra Max re-review. Parent relayed these comments from the native reviewer; they are not a claim that the harness has already passed.

@@ -19,10 +19,10 @@ def _rx(pattern: str) -> re.Pattern[str]:
 
 
 ACCEPTANCE = _rx(
-    r"\b(?:application (?:has been |was |is )?(?:successfully )?(?:submitted|received|complete)|"
+    r"\b(?:application (?:has been |was |is )?(?:successfully )?(?:submitted|received|complete|sent)|"
     r"thank(?:s| you) for (?:applying|your application|submitting)|"
     r"we(?:'ve| have) received your application|"
-    r"your application (?:has been|was|is) (?:successfully )?(?:submitted|received|complete)|"
+    r"your application (?:has been|was|is) (?:successfully )?(?:submitted|received|complete|sent)|"
     r"successfully applied|you(?:'ve| have) (?:successfully )?applied)\b"
 )
 """Acceptance *wording*. Use :func:`affirmative_acceptance`, which also rejects
@@ -117,6 +117,15 @@ accepts it before the site shows the form."""
 CONSENT_GATE_ACTION = "accept its data-processing consent"
 """Wording in the message of a consent gate's inspection (``SIGN_IN_REQUIRED``), by which
 ``user_action_needs`` names the user's action."""
+OTHER_LISTINGS = _rx(
+    r"\b(?:similar|related|recommended|suggested|more|other)\s+(?:jobs|roles|positions|openings|"
+    r"listings|opportunities)\b|\bjobs? you (?:may|might) (?:also )?like\b|\bpeople also (?:viewed|applied)\b"
+)
+"""A section heading over other listings ("Similar Jobs", "More jobs at …"): the apply
+controls under it apply to other jobs, never to this page's (round 15, Wellfound's rail)."""
+APPLIED_STATE = _rx(r"^\W*(?:applied|application (?:sent|submitted))\W*$")
+"""A job page's apply control once the application went out ("Applied"; Wellfound):
+the whole control text, never a sentence that merely contains the word."""
 CAPTCHA_TEXT = _rx(
     r"captcha|verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|not a robot|"
     r"characters (?:shown|in the image)|security check|checking your browser"

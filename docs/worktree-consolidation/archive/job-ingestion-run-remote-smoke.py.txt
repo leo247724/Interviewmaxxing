@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+from interviewmaxxing_core import JobSearchQuery, SourceSearchState
+from interviewmaxxing_jobs import JobSearchService, JobStore, OpenCliTransport
+from interviewmaxxing_jobs.sources import AccessProblem
+from interviewmaxxing_jobs.text import known_source_ref
+
+os.umask(0o077)
+receipt_dir = Path(__file__).parent
+protected = 'AC26FE33F87E79B3F43D0CB7EF428BA1'
+profile = 'jgd7jms9'
+sources = ['linkedin', 'builtin', 'indeed', 'google']
+audit = {'model': 'gpt-6-astra', 'effort': 'high', 'commit': 'ab8f22dde35c2b170dfd32588571259bb29043e0',
+         'started_at': datetime.now(UTC).isoformat(), 'profile': profile,
+         'scope': 'Read-only remote-leg acceptance: US-wide remote only; max 3 listings, 1 search page and 1 detail per source',
+         'protected_tab': protected, 'source_pages': [], 'commands': [], 'before': {}, 'after': {}}
+
+def tabs(source):
+    result = subprocess.run(['opencli', '--profile', profile, 'browser', f'imx-jobs-{source}', 'tab', 'list'],
+                            capture_output=True, text=True, check=True, timeout=30)
+    value = json.loads(result.stdout)
+    if protected in result.stdout:
+        raise RuntimeError('Protected assessment tab is unexpectedly in a jobs-owned session; stopped')
+    return value
+
+for source in sources:
+    audit['before'][source] = tabs(source)
+
+class SmokeTransport(OpenCliTransport):
+    def __init__(self):
+        super().__init__(profile=profile, window='background', timeout_s=45)
+        self.searches = {}
+        self.details = {}
+
+    def open(self, session, url):
+        ref = known_source_ref(url)
+        counts = self.details if ref is not None else self.searches
+        limit = 1
+        if counts.get(session, 0) >= limit:
+            raise AccessProblem(SourceSearchState.PARTIAL, 'Bounded smoke stopped before another search/detail page; no further source coverage attempted')
+        counts[session] = counts.get(session, 0) + 1
+        super().open(session, url)
+
+    def _run(self, session, args, *, timeout_s=None):
+        assert session.startswith('imx-jobs-') and protected not in args
+        entry = {'session': session, 'command': args[0]}
+        if args[0] == 'open':
+            entry['url'] = args[1]
+        elif args[0] == 'click':
+            assert args[1] == '[data-share-url]'
+            entry['selector'] = args[1]
+        audit['commands'].append(entry)
+        return super()._run(session, args, timeout_s=timeout_s)
+
+    def evaluate(self, session, script):
+        payload = super().evaluate(session, script)
+        if isinstance(payload, dict):
+            page = payload.get('page') or {}
+            audit['source_pages'].append({'session': session, 'url': page.get('url'), 'title': page.get('title'),
+                'signals': page.get('signals'), 'cards_seen': len(payload.get('cards') or payload.get('items') or []),
+                'detail_heading': (payload.get('active') or {}).get('heading'),
+                'detail_doc_id': (payload.get('active') or {}).get('encoded_docid')})
+        return payload
+
+query = JobSearchQuery(title_phrases=['performance marketing'], onsite=[], sources=sources, max_results_per_source=3)
+audit['query'] = query.model_dump(mode='json')
+with tempfile.TemporaryDirectory(prefix='imx-fictional-source-smoke-') as temporary:
+    os.environ['IMX_HOME'] = temporary
+    for name in ['IMX_PROFILE_DIR', 'IMX_STATE_DB', 'IMX_ARTIFACTS_DIR', 'IMX_BROWSER_DIR', 'IMX_CANDIDATE_ID', 'IMX_JOBS_DB']:
+        os.environ.pop(name, None)
+    store = JobStore(Path(temporary) / 'jobs.sqlite3')
+    transport = SmokeTransport()
+    service = JobSearchService(store, transport, profile=profile, detail_limit=1, max_pages_per_leg=1,
+                               page_pause_s=1.5, close_sessions=True)
+    def report(result):
+        audit.setdefault('results', []).append(result.model_dump(mode='json'))
+        print(json.dumps({'source': result.source, 'state': result.state.value,
+                          'count': result.result_count, 'message': result.message}), flush=True)
+        (receipt_dir / 'receipt_remote.json').write_text(json.dumps(audit, indent=2))
+    run = service.run(query, on_source_start=lambda source: print('START ' + source, flush=True), on_source=report)
+    audit['run'] = run.model_dump(mode='json')
+    audit['listings'] = [listing.model_dump(mode='json') for listing in store.list_listings()]
+    audit['search_navigation_counts'] = transport.searches
+    audit['detail_navigation_counts'] = transport.details
+    store.close()
+for source in sources:
+    audit['after'][source] = tabs(source)
+audit['finished_at'] = datetime.now(UTC).isoformat()
+audit['preservation'] = 'Only imx-jobs-* owned sessions targeted; no bind, tab select, unrelated tab navigation, forms, uploads, or applications. Assessment target never passed to a command. Global unrelated-tab content not inspected.'
+(receipt_dir / 'receipt_remote.json').write_text(json.dumps(audit, indent=2))
+print('RECEIPT ' + str(receipt_dir / 'receipt_remote.json'), flush=True)

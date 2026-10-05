@@ -113,12 +113,14 @@ from .evidence import EvidenceRecorder
 from .needs import consent_gate
 from .normalize import TEXT_INPUT_TYPES, FieldBinding, PageModel, build_page, detect_ats
 from .signals import (
+    APPLIED_STATE,
     APPLY_LINK,
     CONFIRMATION_LINK,
     DATA_CONSENT_GATE,
     LOADING_STATE,
     MANUAL_APPLY,
     NOT_SUBMITTED_STATUS,
+    OTHER_LISTINGS,
     PENDING,
     STATUS_LINK,
     THIRD_PARTY_ASSIST,
@@ -418,6 +420,7 @@ _EFFECTIVE_SUBMISSION = """(sel) => {""" + DEEP_QUERY + """
 }"""
 
 _DOCUMENT_IDENTITY = "() => String(performance.timeOrigin) + ' ' + location.href"
+"""Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
 _NOW = "() => performance.now()"
 """Read-only: the document's clock, the mark ``_REQUESTS_SINCE`` counts from."""
 _REQUESTS_SINCE = """(since) => {
@@ -429,8 +432,10 @@ _REQUESTS_SINCE = """(since) => {
   }).length;
 }"""
 """Read-only: the fetch/XHR requests the page sent to its own site since the mark (a
-click that did something usually asks the site; third-party telemetry does not count)."""
-"""Read-only identity of the loaded document; a navigation produces a new timeOrigin."""
+click that did something usually asks the site; third-party telemetry does not count).
+Chromium records a request here once the page has read its response, as sites read their
+API answers; a request whose answer is never read is not seen, so this only adds to the
+page-state checks, never replaces them."""
 
 _READY_POLL_S = 0.5
 """Interval between page readiness polls (an SPA rendering its form)."""
@@ -534,6 +539,19 @@ class ActionPolicy:
     automation_may_submit: bool = True
 
 
+def _with_posting_location(identity: JobIdentityObservation,
+                           posting: JobIdentityObservation) -> JobIdentityObservation:
+    """Round 15 (item 6): the form page's own identity ("Job ID 4012" in its text) keeps the
+    location the posting page stated (its JSON-LD ``jobLocation``) when it states none, as
+    long as it names the same job (the same job id, or none against the posting's)."""
+    if identity.location or not posting.location:
+        return identity
+    if (identity.external_job_id and posting.external_job_id
+            and identity.external_job_id.lower() != posting.external_job_id.lower()):
+        return identity
+    return identity.model_copy(update={"location": posting.location})
+
+
 def _names_residence(label: str, residence: str) -> bool:
     """Whether a consent policy's name names the person's country of residence: the
     country's name in any case, or its upper-case abbreviation ("US", "U.S.A.", "UK")."""
@@ -567,6 +585,8 @@ class _PendingSubmit:
     next_state: NotSubmittedNext = NotSubmittedNext.FAILED_RETRYABLE
     evidence: list[EvidenceRef] = field(default_factory=list)
     resolved: bool = False
+    dialog: str | None = None
+    """The application dialog the submitted form lived in (its selector), if any."""
 
 
 def _still_on(before: ApplicationForm, after: PageModel, by_progress: bool) -> bool:
@@ -896,6 +916,9 @@ class GenericApplicationBrowser:
         re-render that regenerated only selectors or generated ids is not a change."""
         self._active_fill_signature: str | None = None
         self._steps_advanced = 0
+        self._opened = False
+        """Whether ``open`` already loaded a page in this session (a second one gets a fresh
+        tab where the driver can give one: ``fresh_tab``)."""
         self._last: PageModel | None = None
         self._identity: JobIdentityObservation | None = None
         self._posting_identity: JobIdentityObservation | None = None
@@ -1345,6 +1368,12 @@ class GenericApplicationBrowser:
         self._apply_clicked = set()
         self._followed = set()
         self._last_click = None
+        fresh_tab = getattr(self.driver, "fresh_tab", None)
+        if self._opened and callable(fresh_tab):
+            # Round 15 (live, Wellfound): a tab that already showed a page keeps script state
+            # that leaves the next page's apply control inert; open it in a new tab.
+            await fresh_tab()
+        self._opened = True
         await self.driver.goto(url)
         model = await self._await_ready()
         consent_done = await self._dismiss_cookie_banner(model)
@@ -1387,6 +1416,9 @@ class GenericApplicationBrowser:
             inspection = (await self._model(evidence=label)).inspection
         if inspection.job_identity is None and posting_identity is not None:
             inspection = inspection.model_copy(update={"job_identity": posting_identity})
+        elif inspection.job_identity is not None and posting_identity is not None:
+            inspection = inspection.model_copy(update={
+                "job_identity": _with_posting_location(inspection.job_identity, posting_identity)})
         if notes and inspection.kind not in USER_ACTION_PAGES:
             # How the form (or the page instead of it) was reached; a page that asks the
             # person to act (sign in, a consent, a CAPTCHA) keeps the site's own message.
@@ -1427,8 +1459,8 @@ class GenericApplicationBrowser:
         if frame is not None and _entry_key(frame.src) not in self._followed:
             entries.append(("frame", frame))
         for link in model.snapshot.links:
-            if not APPLY_LINK.search(link.text):
-                continue
+            if not APPLY_LINK.search(link.text) or OTHER_LISTINGS.search(link.heading):
+                continue  # an apply link under "Similar Jobs" applies to another listing
             if _same_document_link(link, model.snapshot.url):
                 if (document, link.selector) not in self._apply_clicked:
                     entries.append(("script-link", link))
@@ -2952,6 +2984,19 @@ class GenericApplicationBrowser:
     async def submit(self) -> SubmitActionResult:
         """Dispatch the final submit once. Call only after
         ``ApplicationStore.begin_submission`` has durably recorded SUBMITTING."""
+        return await self._submit(dom_click_submit=False)
+
+    async def submit_approved(self) -> SubmitActionResult:
+        """Dispatch an approved application's final submit exactly once.
+
+        OpenCLI uses its fixed DOM click for native submit buttons because some
+        sites ignore the bridge's structured click. An unchanged page cannot prove
+        no submission was sent: pending requests may be invisible to resource timing.
+        No dispatch is ever retried automatically.
+        """
+        return await self._submit(dom_click_submit=True)
+
+    async def _submit(self, *, dom_click_submit: bool) -> SubmitActionResult:
         self._refuse_resubmission()
         model = await self._model()
         form = model.form
@@ -3011,15 +3056,29 @@ class GenericApplicationBrowser:
             return not_dispatched(str(exc), next_state=NotSubmittedNext.FILLING)
         text = next((b.button.text for b in model.buttons if b.button.selector == form.submit_selector),
                     form.submit_selector)
+        dialog = (model.snapshot.dialogs[model.dialog_index].selector
+                  if model.dialog_index is not None and model.dialog_index < len(model.snapshot.dialogs) else None)
+        submit_button = next((b for b in model.snapshot.buttons if b.selector == form.submit_selector), None)
+        native_submit = submit_button is not None and submit_button.type in {"submit", "image"}
+        script_submit = (getattr(self.driver, "dom_click_submit", None)
+                         if dom_click_submit and native_submit else None)
         dispatched_at = utc_now()
-        detail = f"clicked {text!r} once"
+        detail = f"clicked {text!r} once" + (" by script (DOM click)" if callable(script_submit) else "")
         try:
-            await self.driver.click(form.submit_selector)
+            if callable(script_submit):
+                await script_submit(form.submit_selector)
+            else:
+                await self.driver.click(form.submit_selector)
+        except NotActionable as exc:
+            if callable(script_submit):
+                # The fixed DOM script explicitly refused before calling element.click().
+                return not_dispatched(f"script submit click was refused: {exc}")
+            # A structured click error after its trial may have happened mid-dispatch.
+            detail = f"click raised after it was dispatched ({exc}); outcome uncertain"
         except DriverError as exc:
-            # The trial click passed; a failure now may have happened mid-dispatch.
             detail = f"click raised after it was dispatched ({exc}); outcome uncertain"
         self._pending = _PendingSubmit(dispatched=True, detail=detail, form=form, tie=tie,
-                                       marker=marker, evidence=before)
+                                       marker=marker, evidence=before, dialog=dialog)
         return SubmitActionResult(dispatched=True, dispatched_at=dispatched_at, detail=detail)
 
     async def confirm(self) -> SubmissionObservation:
@@ -3135,6 +3194,17 @@ class GenericApplicationBrowser:
         evidence = [*pending.evidence, *model.inspection.evidence]
         before = pending.form
         after = model.form
+        applied = self._dialog_accepted(pending, model, same_document)
+        if applied:
+            # Round 15 (Wellfound): checked before "the form is shown again", since the live
+            # dialog stays open after the send and says so.
+            return SubmissionObservation(
+                outcome=SubmissionOutcome.ACCEPTED,
+                signals=applied,
+                observed_url=url,
+                evidence=evidence,
+                detail="the application dialog confirmed the send and the job page shows the job as applied",
+            )
         if before is not None and _same_step_shown_again(before, after, any_url=True):
             assert after is not None
             errors = _validation_errors(after)
@@ -3205,6 +3275,43 @@ class GenericApplicationBrowser:
             detail="no confirmation tied to this application was observed; do not retry "
                    "until the outcome is reconciled",
         )
+
+    def _dialog_accepted(self, pending: _PendingSubmit, model: PageModel, same_document: bool) -> list[str]:
+        """Round 15: Wellfound's acceptance. The form was submitted from a dialog on the job
+        page, and after the submit, in the same document:
+        - the dialog says the application went out ("SUCCESS! YOUR APPLICATION HAS BEEN SENT.",
+          an affirmative acceptance statement; live, it stays open), or it is gone and this
+          job's apply control reads as applied ("✓ Applied", "Application sent");
+        - no apply control of this job is left to click (other listings' under "Similar Jobs"
+          never count);
+        - the page names this job (its title or job id).
+        Signals, or [] when any part is missing."""
+        snapshot = model.snapshot
+        if pending.dialog is None or not same_document:
+            return []
+        dialog = next((d for d in snapshot.dialogs if d.selector == pending.dialog and d.visible), None)
+        statement = affirmative_acceptance(dialog.text) if dialog is not None else None
+        states = [b.text for b in snapshot.buttons if APPLIED_STATE.match(b.text)
+                  and not OTHER_LISTINGS.search(b.heading)]
+        if (dialog is not None and statement is None) or (statement is None and not states):
+            return []
+        if any(APPLY_LINK.search(b.text) and not b.disabled and not OTHER_LISTINGS.search(b.heading)
+               and b.dialog_index == -1 for b in snapshot.buttons):
+            return []  # this job can still be applied to: the send did not go out
+        tie = pending.tie
+        shown = " ".join([snapshot.title, *(h.text for h in snapshot.headings), snapshot.body_text[:4000]])
+        ties: list[str] = []
+        if tie.job_title and normalize_text(tie.job_title) in normalize_text(shown):
+            ties.append(f"job title {tie.job_title!r} shown on the page")
+        if tie.external_job_id and tie.external_job_id.lower() in shown.lower():
+            ties.append(f"job id {tie.external_job_id!r} shown on the page")
+        if not ties:
+            return []
+        signals = ([f"the application dialog says {statement!r}"] if statement
+                   else ["the application dialog closed after the submit"])
+        if states:
+            signals.append(f"the job page's apply control now reads {states[0]!r}")
+        return [*signals, *ties]
 
     # --- user interaction and reconciliation ------------------------------------------
 
@@ -3357,9 +3464,10 @@ class GenericApplicationBrowser:
         Jobvite's data consent) that shows no job identity of its own gets the identity of
         the posting ``open()`` loaded, as ``open()`` gives it to the form an apply link
         leads to, but only while the form continues that posting: same origin, and its
-        path is the posting's or one segment below it (".../job/<id>/apply")."""
+        path is the posting's or one segment below it (".../job/<id>/apply"). A form that
+        shows an identity of its own without a location keeps the posting's (round 15)."""
         posting = self._posting_identity
-        if (posting is None or not posting.observed_url or inspection.job_identity is not None
+        if (posting is None or not posting.observed_url
                 or inspection.kind is not PageKind.APPLICATION_FORM):
             return inspection
         base, here = urlsplit(posting.observed_url), urlsplit(inspection.observed_url)
@@ -3368,6 +3476,9 @@ class GenericApplicationBrowser:
         if ((here.scheme, here.netloc) != (base.scheme, base.netloc) or below is None
                 or (below and not (below.startswith("/") and below.count("/") == 1))):
             return inspection
+        if inspection.job_identity is not None:
+            return inspection.model_copy(update={
+                "job_identity": _with_posting_location(inspection.job_identity, posting)})
         return inspection.model_copy(update={"job_identity": posting})
 
     # --- a data-processing consent in front of the form (round 14) ---------------------

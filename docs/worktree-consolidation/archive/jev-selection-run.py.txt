@@ -1,0 +1,96 @@
+import json
+import math
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from interviewmaxxing_core import Compensation, CompensationPeriod, SelectionChoice, SelectionPreferences, UnknownCompensationPolicy, WorkArrangement
+from interviewmaxxing_selection import JevClient, SelectionService, check_compensation, check_location, effective_decision, load_api_key, location_tier, rank_outcomes
+from interviewmaxxing_selection.jev import urllib_transport
+from interviewmaxxing_selection.policy import evidence_holds, hard_constraint_holds
+from interviewmaxxing_selection.smoke import FICTIONAL_OPERATOR, fictional_listing
+
+OUTPUT = Path(__file__).with_name('receipt.json')
+key = load_api_key(Path('/Users/leo/.superset/worktrees/Interviewmaxxing/caramel-ketch/env.local'))
+prefs = SelectionPreferences()
+assert prefs.minimum_compensation.amount == 100000
+assert prefs.minimum_compensation.currency == 'USD'
+assert prefs.remote.eligible_region == 'United States'
+assert prefs.location_priority.value == 'STRONGLY_PREFER_ONSITE_HYBRID'
+assert prefs.excluded_keywords == []
+report = {
+    'checkpoint': 'd9330698d07ba38911c86eee1d6661939724b042',
+    'started_at': datetime.now(timezone.utc).isoformat(),
+    'requested_model': 'typesafe/jev-1.13',
+    'rubric_version': 'jev-selection-rubric/2026-09-22.7',
+    'fictional_only': True, 'max_http_requests': 6, 'max_attempts_per_request': 1,
+    'preferences': prefs.model_dump(mode='json'),
+    'candidate_projection': FICTIONAL_OPERATOR.for_jev(),
+    'http_calls': [], 'cases': [],
+    'limits': 'Tiny hand-authored acceptance sample, not population quality or calibrated probabilities. No automatic applications. Deterministically held cases are local preflight only; provider not called. Estimated pay case explicitly changes unknown_compensation to REVIEW; default remains KEEP.',
+}
+
+def save():
+    safe = key.redact(json.dumps(report, indent=2, allow_nan=False))
+    OUTPUT.write_text(safe)
+    os.chmod(OUTPUT, 0o600)
+
+def transport(url, headers, body, timeout):
+    if len(report['http_calls']) >= 6:
+        raise RuntimeError('authorized HTTP request cap reached')
+    started = time.monotonic()
+    record = {'number': len(report['http_calls']) + 1, 'endpoint': url}
+    report['http_calls'].append(record)
+    try:
+        response = urllib_transport(url, headers, body, timeout)
+        record['status'] = response.status
+        return response
+    finally:
+        record['elapsed_seconds'] = time.monotonic() - started
+        save()
+
+client = JevClient(key, max_attempts=1, timeout_seconds=20, transport=transport)
+service = SelectionService(client=client)
+pay = Compensation(raw_text='$125,000 - $150,000 annual base salary', minimum=125000, maximum=150000, currency='USD', period=CompensationPeriod.YEAR)
+strong = ('Own a $3M annual paid acquisition budget across Google Ads, Meta and TikTok. Lead two channel managers, run creative and bidding experiments, own incrementality and attribution, and report CAC, ROAS, pipeline and revenue outcomes. Requires 6+ years of paid acquisition experience and 2+ years managing a team. SQL, GA4 and advertising API automation support the marketing responsibilities.')
+
+def item(code, title, description, arrangement=WorkArrangement.HYBRID, location='Austin, TX', eligibility=None, salary=pay):
+    return fictional_listing(code, title=title, company='Fictional Acceptance Company', location=location, arrangement=arrangement, description=description, remote_eligibility=eligibility, compensation=salary)
+
+cases = [
+    ('adjacent_acquisition_director_austin', item('final-acquisition-director', 'Acquisition Director', 'Hybrid in Austin, TX, three office days per week. ' + strong), prefs),
+    ('data_platform_engineer_negative', item('final-data-engineer', 'Data Platform Engineer', 'Hybrid in Austin, TX. Design production Spark and Kafka pipelines, operate Snowflake warehouses, build Python and Scala distributed services, and manage Terraform infrastructure. Requires six years of professional software engineering and production on-call experience. This engineering role owns no paid acquisition, marketing budget, channel management, or demand generation.'), prefs),
+    ('suitable_us_remote', item('final-us-remote', 'Performance Marketing Manager', 'Fully remote and open to candidates anywhere in the United States. ' + strong, WorkArrangement.REMOTE, 'United States', 'United States'), prefs),
+    ('texas_only_remote_local_hold', item('final-tx-only', 'Growth Marketing Manager', 'Remote only for residents of Texas. ' + strong, WorkArrangement.REMOTE, 'Texas', 'United States; Texas only'), prefs),
+    ('estimated_pay_local_hold', item('final-estimate', 'Director of Growth Marketing', 'Hybrid in Austin, TX. Employer has not stated compensation; the marketplace estimate is not an employer range. ' + strong, salary=Compensation(raw_text='Marketplace estimate: about $120k; employer salary not stated')), prefs.model_copy(update={'unknown_compensation': UnknownCompensationPolicy.REVIEW})),
+]
+completed = []
+for name, listing, case_prefs in cases:
+    start = time.monotonic()
+    compensation = check_compensation(listing, case_prefs)
+    location = check_location(listing, case_prefs)
+    holds = hard_constraint_holds(listing, case_prefs, compensation=compensation, location=location, existing_application_id=None)
+    holds += evidence_holds(listing, case_prefs, has_candidate_evidence=True, compensation=compensation, location=location)
+    row = {'case': name, 'fictional_listing': listing.model_dump(mode='json'), 'compensation_check': compensation.value, 'location_check': location.value, 'tier': location_tier(location, case_prefs.location_priority).value, 'unknown_compensation_policy': case_prefs.unknown_compensation.value}
+    if holds:
+        row.update({'path': 'deterministic_preflight_no_provider', 'effective_choice': effective_decision(None, holds).value, 'holds': [h.model_dump(mode='json') for h in holds], 'provider_calls': 0})
+    else:
+        before = len(report['http_calls'])
+        outcome = service.select(listing, case_prefs, FICTIONAL_OPERATOR, use_cache=False)
+        completed.append(outcome)
+        row.update({'path': 'live_selection_service', 'effective_choice': outcome.selection.effective_choice.value, 'outcome': outcome.model_dump(mode='json'), 'provider_calls': len(report['http_calls']) - before})
+    row['elapsed_seconds'] = time.monotonic() - start
+    report['cases'].append(row)
+    save()
+    print(json.dumps({k: row[k] for k in ('case', 'path', 'effective_choice', 'provider_calls', 'elapsed_seconds')}), flush=True)
+
+report['ranked_live_listing_ids'] = [o.selection.listing_id for o in rank_outcomes(completed)]
+report['returned_models'] = sorted({m for o in completed for m in o.returned_models})
+report['actual_http_requests'] = len(report['http_calls'])
+report['reported_cost_usd'] = math.fsum(o.selection.usage.cost_usd or 0 for o in completed if o.selection.usage)
+report['cost_complete'] = all(o.selection.usage and o.selection.usage.cost_usd is not None for o in completed)
+report['completed_at'] = datetime.now(timezone.utc).isoformat()
+save()
+print(json.dumps({k: report[k] for k in ('actual_http_requests', 'returned_models', 'reported_cost_usd', 'cost_complete')}))
+print('Receipt:', OUTPUT)

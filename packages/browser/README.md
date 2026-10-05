@@ -91,6 +91,16 @@ Details in `docs/dynamic-runtime.md` ("Round 14"); mocks `greenhouse-aria`, `pay
 - **ARIA checkboxes and radios** (`button[role=checkbox|radio][aria-checked]` with hidden bubble inputs) are questions with their options, clicked and read back by `aria-checked`.
 - **`data_consent(residence)` / `accept_data_consent(question, residence)`**: a data-processing consent page's question as a one-field `CONSENT` form (read-only), and its acceptance (choose the policy, click the one "I Accept") once the runner found the person's own statement covering it. `consent_gate(inspection)` tells such a page.
 
+## Round 15: Wellfound through OpenCLI
+
+Details in `docs/dynamic-runtime.md` ("Round 15"); mock `wellfound-modal`.
+
+- **`OpenCliDriver.dom_click(selector)` / `dom_click_submit(selector)`**: the two fixed writing scripts (`element.click()`; the first refuses dialogs and form submits, the second takes only an enabled submit button). The runtime uses the first for an apply control whose click changed nothing, and the second only in `submit_approved()`.
+- **`submit_approved()`**: `submit` for an approved, authorized submission, using the DOM script as the single dispatch for native submit buttons on OpenCLI; other controls use one structured click. A possibly dispatched submit is never retried because its page appears unchanged.
+- **Dialogs**: a dialog qualifies as the application form with one question when its submit sends an application or its text has application wording. `DomDialog.text`, `DomButton.heading` and `DomLink.heading` feed this and the "Similar Jobs" guard.
+- **Notes**: a note to the recruiter or company textarea is `COVER_LETTER`.
+- **Job location**: `jobLocation` lists, and "Locality, Region, Country".
+
 ## Runner wiring (I1)
 
 Follow CONTRACTS.md section 7. Browser-specific points:

@@ -156,6 +156,8 @@ class DomButton(_Raw):
     """Index in ``DomSnapshot.dialogs`` of the innermost dialog holding the button."""
     toggle: bool = False
     """A toggle (``aria-pressed``), such as a search filter pill; never an apply control."""
+    heading: str = ""
+    """The nearest heading before it in document order (round 15; "Similar Jobs")."""
 
 
 class DomLink(_Raw):
@@ -163,6 +165,8 @@ class DomLink(_Raw):
     href: str
     selector: str
     dialog_index: int = -1
+    heading: str = ""
+    """The nearest heading before it in document order (round 15)."""
 
 
 class DomHeading(_Raw):

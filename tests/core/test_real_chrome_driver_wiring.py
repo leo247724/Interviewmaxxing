@@ -256,7 +256,8 @@ def test_greenhouse_tries_postal_code_when_full_state_name_opens_no_menu():
     class StateCodeOnly:
         probe = ''
         shown = ''
-        typed = []
+        def __init__(self):
+            self.typed = []
 
         def cli(self, *args):
             if args[0] == 'type':
